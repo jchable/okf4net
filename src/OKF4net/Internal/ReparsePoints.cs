@@ -506,11 +506,11 @@ internal static class ReparsePoints
     /// Moved here from <c>OKF4net.Viewer</c>'s <c>HtmlWriter</c> (originally
     /// private there) so it has one home shared across callers instead of a
     /// leaf-local copy; <c>OKF4net.Viewer</c> reaches it via
-    /// <c>InternalsVisibleTo</c>. <c>BundleConceptWriter</c>'s lock-keying
-    /// gap (<see href="https://github.com/jchable/okf4net/issues/86">#86</see>)
-    /// can call this same method rather than growing its own copy, once that
-    /// fix is designed -- noted here as a pointer only, not acted on by this
-    /// change.
+    /// <c>InternalsVisibleTo</c>. <c>BundleConceptWriter</c>'s write-lock key
+    /// (<see href="https://github.com/jchable/okf4net/issues/86">#86</see>)
+    /// calls it too, through <see cref="ResolveLockKey"/>, which applies it
+    /// repeatedly until the path stops changing -- the second link this
+    /// method deliberately does not chase is the one that loop exists for.
     /// </remarks>
     internal static bool TryResolveThroughReparsePoints(string path, out string resolved)
     {
@@ -571,5 +571,115 @@ internal static class ReparsePoints
             tail.Add(Path.GetFileName(current));
             current = parent;
         }
+    }
+
+    /// <summary>
+    /// Upper bound on the resolution passes <see cref="ResolveLockKey"/> runs
+    /// before giving up and falling back to the lexical key. One pass per link
+    /// that only a previous pass could reveal; real topologies need two or
+    /// three, so reaching this means a cycle.
+    /// </summary>
+    private const int MaxLockKeyRounds = 40;
+
+    /// <summary>
+    /// The registry key <c>BundleConceptWriter</c> takes its write lock under
+    /// (#86): <paramref name="root"/> resolved through every reparse point on
+    /// its path, so a junction or symlink to a bundle -- or to one of its
+    /// ancestors -- yields the same key as the bundle's real path.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Starts from <see cref="CanonicalizeRoot"/> (which stays lexical), then
+    /// repeatedly applies <see cref="TryResolveThroughReparsePoints"/> until a
+    /// pass changes nothing. One pass is not enough: it follows the NEAREST
+    /// link only, and the path it produces can run through another link that
+    /// the first walk never visited (measured on Windows with a dangling chain,
+    /// where .NET follows links one at a time). Convergence is ORDINAL: a pass
+    /// that only changes case is not a fixed point, because on a case-sensitive
+    /// directory the new spelling can name a different entry that still has a
+    /// link above it.
+    /// </para>
+    /// <para>
+    /// Before each comparison the path's Windows namespace form is normalized
+    /// (<see cref="NormalizeNamespaceForLockKey"/>), so <c>\\?\C:\x</c> and
+    /// <c>C:\x</c>, or <c>\\?\UNC\server\share\x</c> and
+    /// <c>\\server\share\x</c>, give one key.
+    /// </para>
+    /// <para>
+    /// Any failure -- an uninspectable entry, a link whose target cannot be
+    /// read, a path the BCL rejects, or no fixed point within
+    /// <see cref="MaxLockKeyRounds"/> passes -- returns the LEXICAL key
+    /// (<see cref="CanonicalizeRoot"/> of <paramref name="root"/>): the lock
+    /// is then what it was before #86, never a throw out of a write.
+    /// </para>
+    /// </remarks>
+    /// <param name="root">The bundle root, as given to the writer.</param>
+    /// <returns>The resolved key, or the lexical one if resolution failed.</returns>
+    internal static string ResolveLockKey(string root)
+    {
+        var lexical = CanonicalizeRoot(root);
+        try
+        {
+            var current = NormalizeNamespaceForLockKey(lexical);
+            for (var round = 0; round < MaxLockKeyRounds; round++)
+            {
+                if (!TryResolveThroughReparsePoints(current, out var resolved))
+                {
+                    return lexical;
+                }
+
+                var next = NormalizeNamespaceForLockKey(resolved);
+                if (string.Equals(next, current, StringComparison.Ordinal))
+                {
+                    return next;
+                }
+
+                current = next;
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or System.Security.SecurityException)
+        {
+            // A resolved target the BCL refuses as a path: fall back below.
+        }
+
+        return lexical;
+    }
+
+    /// <summary>
+    /// On Windows, rewrites a Win32 file namespace path to its ordinary form --
+    /// <c>\\?\C:\x</c> to <c>C:\x</c>, <c>\\?\UNC\server\share\x</c> to
+    /// <c>\\server\share\x</c> -- and re-canonicalizes it, for
+    /// <see cref="ResolveLockKey"/> only. Any other <c>\\?\</c> form (a volume
+    /// GUID path, say) is left as it is. A no-op elsewhere. Used for the lock
+    /// key only, where coalescing two spellings is the goal: a <c>\\?\</c> path
+    /// can name an entry with a trailing dot or space that the ordinary form
+    /// cannot, and would share a lock with its trimmed spelling -- which only
+    /// serializes the two.
+    /// </summary>
+    private static string NormalizeNamespaceForLockKey(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return path;
+        }
+
+        const string Unc = @"\\?\UNC\";
+        const string Device = @"\\?\";
+        if (path.StartsWith(Unc, StringComparison.OrdinalIgnoreCase))
+        {
+            return CanonicalizeRoot(@"\\" + path[Unc.Length..]);
+        }
+
+        if (path.StartsWith(Device, StringComparison.Ordinal)
+            && path.Length >= Device.Length + 2
+            && char.IsAsciiLetter(path[Device.Length])
+            && path[Device.Length + 1] == ':'
+            && (path.Length == Device.Length + 2 || path[Device.Length + 2] is '\\' or '/'))
+        {
+            var drive = path[Device.Length..];
+            return CanonicalizeRoot(drive.Length == 2 ? drive + @"\" : drive);
+        }
+
+        return path;
     }
 }

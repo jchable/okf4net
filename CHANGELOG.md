@@ -36,7 +36,26 @@ and this project adheres to
 
 ### Fixed
 
-All five entries are in `okfgen` (`producers/OkfProducer`, not published, outside
+- **A junction or symlink to a bundle now shares the bundle's write lock
+  (#86).** `BundleConceptWriter` keyed its process-wide lock on the root's
+  lexical full path, so a writer over `alias` (a junction to `actual`) and a
+  writer over `actual` took two different locks over one set of files, and two
+  writers in one process could interleave their read-modify-write cycles
+  through the alias and lose an update. The key is now the root resolved
+  through every junction or symlink on its path, including one above the
+  bundle and one that only a first resolution reveals, with `\\?\C:\…` and
+  `\\?\UNC\…` spellings folded onto `C:\…` and `\\server\…`. It is resolved
+  each time the lock is taken for an operation, not when the writer is built,
+  so two writers built on opposite sides of a topology change (a missing
+  directory later replaced by a junction) still serialize. A nested
+  acquisition on the same thread keeps the object the operation started
+  with: a topology change during an operation is not followed. When the
+  root cannot be resolved (an entry that cannot be inspected, a link target
+  that cannot be read), the key falls back to the lexical path, as before.
+  Still in-process only: a second process writing the same bundle is not
+  serialized against.
+
+The five entries below are in `okfgen` (`producers/OkfProducer`, not published, outside
 CI): they came from the follow-up wave of the post-audit work and were verified by
 running `dotnet test producers/OkfProducer.sln` locally, on Windows and in a Linux
 container.

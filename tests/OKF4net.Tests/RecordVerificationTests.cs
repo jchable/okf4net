@@ -615,7 +615,7 @@ public class RecordVerificationTests
         var settled = false;
         try
         {
-            lock (writer.WriteLock)
+            using (writer.EnterWriteLock())
             {
                 File.WriteAllText(path, "---\ntype: [\n");
                 // Close the handle in the partial-YAML case: ReadAllBytes's

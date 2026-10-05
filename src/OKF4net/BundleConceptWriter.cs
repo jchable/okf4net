@@ -126,7 +126,7 @@ internal readonly record struct VerificationTargetProblem(VerificationTargetProb
 /// atomic read-modify-write append-to-concept, over a single bundle root.
 /// Promoted verbatim from <c>OKF4net.Agents.OkfBundleTools</c> so both that
 /// type and <c>OKF4net.Catalog.FileMemoryStore</c> share one write path and one
-/// process-wide per-path lock registry (no duplicate lock registry, no divergent
+/// process-wide per-bundle lock registry (no duplicate lock registry, no divergent
 /// second write path). Never throws for an expected error — I/O, YAML,
 /// validation, and reparse-point rejections are returned as an
 /// <c>Error: ...</c> result string.
@@ -134,23 +134,23 @@ internal readonly record struct VerificationTargetProblem(VerificationTargetProb
 public sealed class BundleConceptWriter
 {
     /// <summary>
-    /// Process-wide registry of one lock object per canonicalized bundle
-    /// root, keyed by <see cref="ReparsePoints.CanonicalizeRoot"/> of the
-    /// bundle root -- the SAME canonical form <see cref="ReparsePoints.IsWithinBundleRoot"/>
-    /// and <see cref="ReparsePoints.HasReparsePointAncestor(string, string)"/>
-    /// resolve to, so two different
-    /// spellings of the same directory (e.g. a trailing separator, or a
-    /// relative vs. absolute path) still share one lock. Those examples are
-    /// LEXICAL, and that is the exact bound: <see cref="ReparsePoints.CanonicalizeRoot"/>
-    /// does not follow a reparse point, so a junction or symlink pointing at
-    /// the same directory gets its OWN lock and is not serialized against --
-    /// see the constructor's comment and the ROADMAP entry. Every
-    /// <see cref="BundleConceptWriter"/> instance constructed over the same
-    /// bundle path -- not just the same instance -- ends up sharing the
-    /// same lock object via <see cref="ConcurrentDictionary{TKey,TValue}.GetOrAdd(TKey,Func{TKey,TValue})"/>
-    /// in the constructor: a per-INSTANCE lock (the previous design) left
-    /// two separate instances pointed at the
-    /// same bundle directory free to race each other's
+    /// Process-wide registry of one lock object per bundle directory, keyed by
+    /// <see cref="ReparsePoints.ResolveLockKey"/> of the bundle root: the
+    /// root's full path (<see cref="ReparsePoints.CanonicalizeRoot"/>, so a
+    /// trailing separator or a relative spelling does not matter) resolved
+    /// through every junction or symlink on it, with Windows <c>\\?\</c>
+    /// namespace forms normalized. A junction or symlink to the bundle, or
+    /// to one of its ancestors, therefore lands on the same entry as the
+    /// bundle's real path (#86). The key is computed each time a thread takes
+    /// the lock for an operation (see <see cref="EnterWriteLock"/>), not when
+    /// the writer is built, so two writers built on opposite sides of a
+    /// topology change still meet at write time. When resolution fails, the
+    /// key falls back to the lexical full path. Every
+    /// <see cref="BundleConceptWriter"/> instance over the same bundle
+    /// directory -- not just the same instance -- shares the same lock object
+    /// via <see cref="ConcurrentDictionary{TKey,TValue}.GetOrAdd(TKey,Func{TKey,TValue})"/>:
+    /// a per-INSTANCE lock (an earlier design) left two separate instances
+    /// pointed at the same bundle directory free to race each other's
     /// <see cref="AppendToConceptAtomic"/>/<see cref="WriteConcept(string, string, string)"/> calls,
     /// even though each instance's OWN calls were already serialized against
     /// themselves. <see cref="StringComparer.OrdinalIgnoreCase"/> is
@@ -163,8 +163,11 @@ public sealed class BundleConceptWriter
     /// directories on a case-sensitive volume sharing a lock anyway) only
     /// costs them a little unnecessary serialization against each other,
     /// while under-coalescing reopens the race -- <c>OrdinalIgnoreCase</c>
-    /// picks the harmless side. The registry grows by one small object
-    /// per distinct bundle path for the process's lifetime -- bounded in
+    /// picks the harmless side. Over-coalescing cannot deadlock either: it
+    /// only maps more roots onto one object, and a monitor re-entered by the
+    /// thread that already holds it does not block.
+    /// The registry grows by one small object
+    /// per distinct key for the process's lifetime -- bounded in
     /// practice by how many distinct bundle directories a process ever
     /// opens, and never removed (there is no matching "last instance for
     /// this path went away" signal to remove it on). Evicting correctly would
@@ -178,24 +181,26 @@ public sealed class BundleConceptWriter
     private static readonly ConcurrentDictionary<string, object> BundleLocks = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Guards every write this class performs to disk. Callers may invoke
-    /// write methods concurrently from multiple threads; the same lock also
-    /// lets a co-located caller (e.g. <c>OkfBundleTools.AppendLog</c>/
-    /// <c>RegenerateIndexes</c>/cache access) serialize its own
-    /// read-modify-write sequences against this writer's writes via
-    /// <see cref="WriteLock"/>.
-    ///
-    /// Obtained from the process-wide <see cref="BundleLocks"/> registry, so
-    /// this guarantee extends to every <see cref="BundleConceptWriter"/>
-    /// instance constructed over the same canonicalized bundle root -- not
-    /// just calls on THIS instance. It does NOT serialize writes across
-    /// separate processes (e.g. two CLI invocations, or two server processes
-    /// sharing a network path), and a C# lock cannot defend against a
-    /// concurrent external actor mutating the bundle's files directly on
-    /// disk -- see <see cref="ValidateConceptTarget"/>'s remarks for that
-    /// separate, residual TOCTOU limitation.
+    /// The lock objects the CURRENT thread holds, keyed by each writer's
+    /// lexical root (<see cref="_lexicalRoot"/>, compared
+    /// <see cref="StringComparer.OrdinalIgnoreCase"/> like
+    /// <see cref="BundleLocks"/>), with how many times each was entered. Lets
+    /// <see cref="EnterWriteLock"/> reuse the object an outer acquisition on
+    /// this thread already holds instead of resolving the root again: a
+    /// nested acquisition (<c>OkfBundleTools</c> takes the lock, then calls
+    /// writer methods that take it again) must never enter a second object
+    /// because the topology changed in between, or two threads could each
+    /// hold one object and wait for the other's.
     /// </summary>
-    private readonly object _bundleLock;
+    [ThreadStatic]
+    private static Dictionary<string, HeldLock>? t_heldLocks;
+
+    /// <summary>
+    /// <see cref="BundleRoot"/> through <see cref="ReparsePoints.CanonicalizeRoot"/>,
+    /// computed once: the key of <see cref="t_heldLocks"/>, and the starting
+    /// point <see cref="ReparsePoints.ResolveLockKey"/> resolves from.
+    /// </summary>
+    private readonly string _lexicalRoot;
 
     private readonly Action? _onWriteCommitted;
 
@@ -236,42 +241,118 @@ public sealed class BundleConceptWriter
         BundleRoot = bundleRoot;
         _onWriteCommitted = onWriteCommitted;
 
-        // Canonicalize BEFORE looking up the shared lock so two LEXICAL
-        // spellings of the same bundle directory (e.g. with/without a
-        // trailing separator) still resolve to the same registry entry --
-        // the same canonicalization ReparsePoints.IsWithinBundleRoot and
-        // ReparsePoints.HasReparsePointAncestor use for their own root (see
-        // ReparsePoints.CanonicalizeRoot's remarks); otherwise those two
-        // spellings would land in different registry entries and defeat the
-        // very serialization this lock exists to provide (F3).
-        //
-        // LEXICAL is the operative word, and an external review had to show it:
-        // CanonicalizeRoot is Path.GetFullPath plus a trailing-separator trim,
-        // so it does NOT follow a reparse point. A junction `alias` -> `actual`
-        // is exactly "two spellings of the same bundle directory", and it lands
-        // in two registry entries -- two writers, two locks, one set of files,
-        // no serialization at all. Demonstrated with mklink /J: the two lock
-        // objects are not reference-equal. Resolving the root properly means
-        // walking and following reparse points, which is the same
-        // security-sensitive seam ValidateConceptTarget guards and deserves its
-        // own pass (see ROADMAP). Until then the guarantee is: same lexical
-        // root, one lock; aliased root, none -- which is a narrower promise
-        // than this comment used to make, and the narrower one is the true one.
-        var canonicalRoot = ReparsePoints.CanonicalizeRoot(bundleRoot);
-        _bundleLock = BundleLocks.GetOrAdd(canonicalRoot, static _ => new object());
+        // Only the LEXICAL form is computed here (and an invalid path still
+        // throws here, as before). The write lock's registry key is NOT: it
+        // is resolved through reparse points each time a thread takes the
+        // lock (EnterWriteLock), because the topology can change after
+        // construction -- a writer built over `later/bundle` while `later` did
+        // not exist must still meet a writer over the junction target once
+        // `later` becomes a junction (#86).
+        _lexicalRoot = ReparsePoints.CanonicalizeRoot(bundleRoot);
     }
 
     /// <summary>The bundle root, as passed to the constructor.</summary>
     public string BundleRoot { get; }
 
     /// <summary>
-    /// The shared per-path lock object for this bundle root, obtained from the
-    /// process-wide registry keyed by the canonicalized root. Exposed so a
-    /// co-located caller (<c>OkfBundleTools.AppendLog</c>/<c>RegenerateIndexes</c>/
-    /// cache access) can serialize its own read-modify-write sequences against
+    /// Enters this bundle's write lock and returns a scope whose
+    /// <see cref="WriteLockScope.Dispose"/> exits it. Every write this class
+    /// performs runs inside one, and a co-located caller
+    /// (<c>OkfBundleTools.AppendLog</c>/<c>RegenerateIndexes</c>/cache access)
+    /// takes one to serialize its own read-modify-write sequences against
     /// this writer's writes.
     /// </summary>
-    internal object WriteLock => _bundleLock;
+    /// <remarks>
+    /// <para>
+    /// The guarantee, exactly: writers in one process serialize when, at the
+    /// moment they take the lock, their roots resolve to the same directory
+    /// (<see cref="ReparsePoints.ResolveLockKey"/>). A junction or symlink to
+    /// the bundle, or to one of its ancestors, is such an alias and shares the
+    /// lock. If resolution fails, the key falls back to the lexical root, so
+    /// the lock is then shared only by spellings of the same lexical path. A
+    /// topology change DURING an operation is not followed: the outermost
+    /// acquisition on a thread resolves the root, and every nested acquisition
+    /// on that thread for the same writer root re-enters the object it already
+    /// holds (<see cref="Monitor"/> is re-entrant) without resolving again, for
+    /// the whole operation. Still in-process only: nothing here serializes a
+    /// second process writing the same bundle, and a C# lock cannot stop an
+    /// external actor mutating the bundle's files on disk -- see
+    /// <see cref="ValidateConceptTarget"/>'s remarks for that separate,
+    /// residual TOCTOU limitation.
+    /// </para>
+    /// <para>
+    /// The scope is thread-affine, like the monitor under it: dispose it on
+    /// the thread that entered it, and never hold it across an
+    /// <see langword="await"/>.
+    /// </para>
+    /// </remarks>
+    internal WriteLockScope EnterWriteLock()
+    {
+        var held = t_heldLocks ??= new Dictionary<string, HeldLock>(StringComparer.OrdinalIgnoreCase);
+        if (held.TryGetValue(_lexicalRoot, out var outer))
+        {
+            Monitor.Enter(outer.LockObject);
+            outer.Depth++;
+            return new WriteLockScope(_lexicalRoot, outer.LockObject);
+        }
+
+        var lockObject = ResolveLockObject();
+        Monitor.Enter(lockObject);
+        held.Add(_lexicalRoot, new HeldLock(lockObject));
+        return new WriteLockScope(_lexicalRoot, lockObject);
+    }
+
+    /// <summary>
+    /// The registry object this writer's root resolves to NOW, without
+    /// entering it and without consulting what the current thread holds.
+    /// Test-only.
+    /// </summary>
+    internal object CurrentLockObjectForTest() => ResolveLockObject();
+
+    private object ResolveLockObject() =>
+        BundleLocks.GetOrAdd(ReparsePoints.ResolveLockKey(_lexicalRoot), static _ => new object());
+
+    /// <summary>One entry of <see cref="t_heldLocks"/>: the object held and how many scopes hold it.</summary>
+    private sealed class HeldLock(object lockObject)
+    {
+        public object LockObject { get; } = lockObject;
+
+        public int Depth { get; set; } = 1;
+    }
+
+    /// <summary>
+    /// A hold of a bundle's write lock, from <see cref="EnterWriteLock"/>.
+    /// Dispose it exactly once, on the thread that entered it.
+    /// </summary>
+    internal readonly struct WriteLockScope : IDisposable
+    {
+        private readonly string _lexicalRoot;
+
+        internal WriteLockScope(string lexicalRoot, object lockObject)
+        {
+            _lexicalRoot = lexicalRoot;
+            LockObject = lockObject;
+        }
+
+        /// <summary>The registry object this scope entered.</summary>
+        internal object LockObject { get; }
+
+        /// <summary>Exits the lock, and forgets it on this thread once the outermost scope ends.</summary>
+        public void Dispose()
+        {
+            if (LockObject is null)
+            {
+                return; // default(WriteLockScope): nothing was entered.
+            }
+
+            if (t_heldLocks is { } held && held.TryGetValue(_lexicalRoot, out var entry) && --entry.Depth == 0)
+            {
+                held.Remove(_lexicalRoot);
+            }
+
+            Monitor.Exit(LockObject);
+        }
+    }
 
     /// <summary>
     /// Test-only hook, invoked (if set) immediately before the late
@@ -345,14 +426,15 @@ public sealed class BundleConceptWriter
                 return buildError;
             }
 
-            // Serialized under _bundleLock (shared with AppendToConceptAtomic
-            // and, since _bundleLock is obtained from the process-wide
-            // BundleLocks registry, with every OTHER BundleConceptWriter
-            // instance pointed at this same canonicalized bundle root, not
-            // just this instance) so concurrent writers can't interleave an
+            // Serialized under the bundle's write lock (shared with
+            // AppendToConceptAtomic and, since EnterWriteLock takes it from
+            // the process-wide BundleLocks registry under the root's resolved
+            // key, with every OTHER BundleConceptWriter instance whose root
+            // resolves to this same directory, not just this instance) so
+            // concurrent writers can't interleave an
             // existence check with another writer's write, and so the
             // committed callback below is atomic with the write it follows.
-            lock (_bundleLock)
+            using (EnterWriteLock())
             {
                 return WriteValidatedContentLocked(target.Id, target.TargetPath, content!);
             }
@@ -417,7 +499,7 @@ public sealed class BundleConceptWriter
                 return buildError;
             }
 
-            lock (_bundleLock)
+            using (EnterWriteLock())
             {
                 return WriteValidatedContentLocked(target.Id, target.TargetPath, content!);
             }
@@ -457,14 +539,17 @@ public sealed class BundleConceptWriter
     /// a count divergence between the two.
     /// Here, the read of the concept's CURRENT on-disk body, the caller's
     /// <paramref name="buildBody"/> transform, and the validated write all
-    /// happen inside one unbroken hold of <see cref="_bundleLock"/>, so two
+    /// happen inside one unbroken hold of the bundle's write lock
+    /// (<see cref="EnterWriteLock"/>), so two
     /// concurrent calls for the same concept id can never interleave: the
     /// second call's read always observes the first call's completed write.
-    /// Because <see cref="_bundleLock"/> is obtained from the process-wide
-    /// <c>BundleLocks</c> registry (keyed by the canonicalized bundle root),
+    /// Because that lock comes from the process-wide
+    /// <c>BundleLocks</c> registry (keyed by the bundle root resolved through
+    /// reparse points when the lock is taken),
     /// this holds for two concurrent calls on the SAME <see cref="BundleConceptWriter"/>
     /// instance AND for two concurrent calls on two SEPARATE instances
-    /// constructed over the same bundle path -- but only within one process:
+    /// whose roots resolve to the same directory, a junction or symlink to it
+    /// included -- but only within one process:
     /// it does not serialize a second process writing the same bundle path,
     /// and a C# lock cannot stop a concurrent external actor from mutating
     /// the target file/its ancestor directories on disk out from under this
@@ -534,7 +619,7 @@ public sealed class BundleConceptWriter
             // never released and reacquired in between — which is what makes
             // the whole read-modify-write atomic against a concurrent
             // WriteConcept/AppendToConceptAtomic call for the same concept.
-            lock (_bundleLock)
+            using (EnterWriteLock())
             {
                 string frontmatterYaml;
                 string? currentBody;
@@ -719,7 +804,7 @@ public sealed class BundleConceptWriter
             // Target validation also reads the files. Keep it in the same
             // lock hold as prepare/write: otherwise a cooperating writer can
             // expose a sharing violation or a partially written document (#131).
-            lock (_bundleLock)
+            using (EnterWriteLock())
             {
                 // Checked FIRST for five of its six kinds, so THIS method's own
                 // refusal names the offender: before this call existed, an
@@ -1067,8 +1152,8 @@ public sealed class BundleConceptWriter
     /// target itself) — shared by <see cref="WriteConcept(string, string, string)"/>
     /// and <see cref="AppendToConceptAtomic"/> so the two can never diverge
     /// on what counts as a valid write target. Pure: performs no I/O beyond
-    /// the reparse-point/existence checks themselves, and does not touch
-    /// <see cref="_bundleLock"/>.
+    /// the reparse-point/existence checks themselves, and does not take the
+    /// write lock (<see cref="EnterWriteLock"/>).
     /// </summary>
     /// <remarks>
     /// <b>Scope of the reparse-point guarantee (read this before assuming
@@ -1079,8 +1164,8 @@ public sealed class BundleConceptWriter
     /// (after YAML parsing and producer validation in between), so this is a
     /// classic check-then-write (TOCTOU): a concurrent local actor able to
     /// replace a path component with a symlink/junction between this check
-    /// and that later write is not stopped by this method, and the <see cref="_bundleLock"/>
-    /// this class otherwise relies on for atomicity is a C# in-process lock —
+    /// and that later write is not stopped by this method, and the write lock
+    /// (<see cref="EnterWriteLock"/>) this class otherwise relies on for atomicity is a C# in-process lock —
     /// it has no effect on what a separate, unsynchronized filesystem
     /// mutation can do to the same paths. <see cref="WriteValidatedContentLocked"/>
     /// re-runs the same two checks immediately before its actual
@@ -1198,7 +1283,7 @@ public sealed class BundleConceptWriter
         // CLI/agent callers also use this preflight on its own. Serialize its
         // reads against writers; RecordVerifications keeps this reentrant
         // monitor held through the subsequent prepare/write as well.
-        lock (_bundleLock)
+        using (EnterWriteLock())
         {
             return CheckVerificationTargetsLocked(conceptIds);
         }
@@ -1475,7 +1560,7 @@ public sealed class BundleConceptWriter
     /// Late, best-effort reparse-point re-check used by
     /// <see cref="WriteValidatedContentLocked"/> immediately before its
     /// <see cref="File.WriteAllText(string, string, System.Text.Encoding)"/>
-    /// call, still inside the caller's hold of <see cref="_bundleLock"/>.
+    /// call, still inside the caller's hold of the write lock.
     /// Re-runs the same two checks <see cref="ValidateConceptTarget"/>
     /// already ran earlier: a reparse point among <paramref name="targetPath"/>'s
     /// directory ancestors (up to <see cref="BundleRoot"/>), or at
@@ -1507,14 +1592,14 @@ public sealed class BundleConceptWriter
     /// <summary>
     /// Writes already-validated <paramref name="content"/> to <paramref name="targetPath"/>
     /// and invokes <see cref="_onWriteCommitted"/>. CALLER MUST already hold
-    /// <see cref="_bundleLock"/> — this method does not acquire it itself,
+    /// the write lock (<see cref="EnterWriteLock"/>) — this method does not acquire it itself,
     /// so that <see cref="AppendToConceptAtomic"/> can enclose its own
     /// preceding read-and-transform in the SAME lock acquisition as this
     /// write (a nested/second acquisition here would either reintroduce the
-    /// exact gap this seam exists to close, or -- if <see cref="_bundleLock"/>
+    /// exact gap this seam exists to close, or -- if the write lock
     /// were ever changed to a non-reentrant primitive -- deadlock). Shared
     /// verbatim by <see cref="WriteConcept(string, string, string)"/> (which wraps a single call to
-    /// this in its own <c>lock (_bundleLock)</c>) and
+    /// this in its own <c>using (EnterWriteLock())</c>) and
     /// <see cref="AppendToConceptAtomic"/>.
     /// </summary>
     /// <remarks>
@@ -1525,7 +1610,7 @@ public sealed class BundleConceptWriter
     /// <see cref="ValidateConceptTarget"/> already ran earlier (a reparse
     /// point among <paramref name="targetPath"/>'s parent directories, or at
     /// <paramref name="targetPath"/> itself), still inside the caller's hold
-    /// of <see cref="_bundleLock"/>. This narrows the window a concurrent
+    /// of the write lock. This narrows the window a concurrent
     /// local filesystem substitution would need to land in — from "anywhere
     /// between validation and the write" down to "between this re-check and
     /// the write two lines later" — but does NOT close it: .NET has no
@@ -1541,7 +1626,7 @@ public sealed class BundleConceptWriter
     /// <param name="existedBefore">
     /// Whether <paramref name="targetPath"/> already existed, if the caller
     /// already knows this from a check performed earlier under the same
-    /// <see cref="_bundleLock"/> hold (<see cref="AppendToConceptAtomic"/>
+    /// write-lock hold (<see cref="AppendToConceptAtomic"/>
     /// passes its own earlier <see cref="File.Exists(string)"/> result here
     /// to avoid a redundant second stat of the same path). <see langword="null"/>
     /// (the default, used by <see cref="WriteConcept(string, string, string)"/>'s single-call site)

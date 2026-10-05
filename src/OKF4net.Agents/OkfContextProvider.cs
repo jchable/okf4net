@@ -694,7 +694,7 @@ public sealed class OkfContextProvider : AIContextProvider
     /// core that the public <see cref="OkfBundleTools.WriteConcept"/> uses)
     /// added specifically so the day concept's read-current-body, append,
     /// and write happen inside one unbroken hold of the shared
-    /// <c>_bundleLock</c> -- otherwise two concurrent captures on the same
+    /// bundle write lock -- otherwise two concurrent captures on the same
     /// UTC day could each read the same "before" body outside any lock and
     /// the second write would silently clobber the first's appended
     /// section, even though a separately-locked <see cref="OkfBundleTools.AppendLog"/>

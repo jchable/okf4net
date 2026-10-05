@@ -53,20 +53,18 @@ public sealed class OkfBundleTools
     /// The core write primitive this tool set delegates every write to:
     /// producer-validated create/update (<see cref="WriteConcept"/>) and
     /// atomic read-modify-write append (<see cref="AppendToConceptAtomic"/>),
-    /// plus the process-wide per-bundle-root lock registry shared by every
-    /// <see cref="BundleConceptWriter"/> (and therefore every
-    /// <see cref="OkfBundleTools"/>) instance constructed over the same
-    /// canonicalized bundle root. Constructed with <c>onWriteCommitted:
+    /// plus the bundle's write lock, which this class takes through
+    /// <see cref="BundleConceptWriter.EnterWriteLock"/> at each site rather
+    /// than caching a lock object. Constructed with <c>onWriteCommitted:
     /// () =&gt; _bundle = null</c> so a successful write invalidates this
     /// instance's cache atomically with the write, from inside the shared
     /// lock.
     /// </summary>
-    private readonly BundleConceptWriter _writer;
-
-    /// <summary>
-    /// Guards <see cref="_bundle"/> and every write this class performs to
-    /// disk. Agent hosts may invoke tool methods concurrently from multiple
-    /// threads, so the lazy cache in <see cref="GetBundle"/> and the
+    /// <remarks>
+    /// <para>
+    /// The write lock guards <see cref="_bundle"/> and every write this class
+    /// performs to disk. Agent hosts may invoke tool methods concurrently from
+    /// multiple threads, so the lazy cache in <see cref="GetBundle"/> and the
     /// invalidation in <see cref="InvalidateBundle"/> must not race; the same
     /// lock also serializes <see cref="AppendLog"/> and
     /// <see cref="RegenerateIndexes"/>'s own read-modify-write sequences
@@ -74,24 +72,27 @@ public sealed class OkfBundleTools
     /// invalidation) against <see cref="_writer"/>'s own writes, so two
     /// concurrent calls into the same tool can't interleave and lose one
     /// side's update.
-    ///
-    /// This is <see cref="_writer"/>'s own <see cref="BundleConceptWriter.WriteLock"/>,
-    /// obtained from the process-wide registry it maintains, so this
-    /// guarantee extends to every <see cref="OkfBundleTools"/> instance
-    /// constructed over the same canonicalized bundle root -- not just calls
-    /// on THIS instance. It does NOT serialize writes across separate
-    /// processes (e.g. two CLI invocations, or two server processes sharing
-    /// a network path), and a C# lock cannot defend against a concurrent
-    /// external actor mutating the bundle's files directly on disk. The
-    /// per-instance <see cref="_bundle"/> CACHE deliberately stays
-    /// instance-level (unaffected by this change): <see cref="AppendToConceptAtomic"/>
-    /// always re-reads the concept's on-disk body under this lock rather
-    /// than trusting any cache, so two instances having independent caches
-    /// does not affect write correctness, only how eagerly each one's
-    /// read-only calls see another instance's writes before their own next
-    /// reload.
-    /// </summary>
-    private readonly object _bundleLock;
+    /// </para>
+    /// <para>
+    /// The guarantee is <see cref="BundleConceptWriter.EnterWriteLock"/>'s:
+    /// tool sets and writers in one process serialize when, at the moment they
+    /// take the lock, their roots resolve to the same directory, so a junction
+    /// or symlink to the bundle shares the lock; resolution failure falls back
+    /// to the lexical root; a topology change during an operation is not
+    /// followed -- a writer method called while this class already holds the
+    /// lock re-enters the object held, never a second one. It does NOT
+    /// serialize writes across separate processes (e.g. two CLI invocations,
+    /// or two server processes sharing a network path), and a C# lock cannot
+    /// defend against a concurrent external actor mutating the bundle's files
+    /// directly on disk. The per-instance <see cref="_bundle"/> CACHE
+    /// deliberately stays instance-level: <see cref="AppendToConceptAtomic"/>
+    /// always re-reads the concept's on-disk body under this lock rather than
+    /// trusting any cache, so two instances having independent caches does not
+    /// affect write correctness, only how eagerly each one's read-only calls
+    /// see another instance's writes before their own next reload.
+    /// </para>
+    /// </remarks>
+    private readonly BundleConceptWriter _writer;
 
     private Bundle? _bundle;
 
@@ -143,7 +144,6 @@ public sealed class OkfBundleTools
         _orchestrator = orchestrator;
 
         _writer = new BundleConceptWriter(bundleRoot, onWriteCommitted: () => _bundle = null);
-        _bundleLock = _writer.WriteLock;
         _writer.AutoStampGenerated = true;
         _writer.UtcNow = () => UtcNow();
     }
@@ -188,7 +188,7 @@ public sealed class OkfBundleTools
     /// </summary>
     internal Bundle GetBundle()
     {
-        lock (_bundleLock)
+        using (_writer.EnterWriteLock())
         {
             return _bundle ??= Bundle.Load(BundleRoot);
         }
@@ -200,7 +200,7 @@ public sealed class OkfBundleTools
     /// </summary>
     internal void InvalidateBundle()
     {
-        lock (_bundleLock)
+        using (_writer.EnterWriteLock())
         {
             _bundle = null;
         }
@@ -823,7 +823,7 @@ public sealed class OkfBundleTools
     /// so it fires immediately before the late reparse-point re-check inside
     /// <see cref="_writer"/>'s own write methods, and separately consulted by
     /// <see cref="AppendLog"/>'s own inline late re-check (after computing the
-    /// new log content, still inside <see cref="_bundleLock"/>). Lets a test
+    /// new log content, still inside the bundle write lock). Lets a test
     /// deterministically simulate a filesystem substitution racing the final
     /// write -- e.g. deleting the just-created parent directory and replacing
     /// it with a junction to an external directory, or swapping <c>log.md</c>
@@ -1036,7 +1036,7 @@ public sealed class OkfBundleTools
     /// heading for today's date already exists, the entry is appended to the
     /// end of that day's entries (days are newest-first by convention (§9),
     /// but entries within a day stay chronological). The read-modify-write is
-    /// serialized under <see cref="_bundleLock"/> (shared with
+    /// serialized under the bundle write lock (shared with
     /// <see cref="WriteConcept"/> and <see cref="RegenerateIndexes"/>) so
     /// concurrent calls can't lose an update to each other. The existing file,
     /// if any, is read with the same strict-UTF-8 decoding <see cref="ChangesSince"/>
@@ -1092,13 +1092,13 @@ public sealed class OkfBundleTools
             var foldedKind = FoldLogField(kind);
             var entry = new LogEntry(foldedKind, FoldLogField(text));
 
-            // Serialized under _bundleLock (shared with WriteConcept and
+            // Serialized under the bundle write lock (shared with WriteConcept and
             // RegenerateIndexes): without it, two concurrent AppendLog calls
             // could both read the same "before" text, each append their own
             // entry to it, and the second write would silently clobber the
             // first (a lost update). Locking the whole read-modify-write
             // makes it atomic.
-            lock (_bundleLock)
+            using (_writer.EnterWriteLock())
             {
                 // Strict UTF-8, matching ChangesSince's AppendLogFileChanges:
                 // a non-UTF-8 log.md throws DecoderFallbackException (caught
@@ -1131,7 +1131,7 @@ public sealed class OkfBundleTools
                 // BundleConceptWriter's own late re-check (see its remarks);
                 // AppendLog has the identical validate-then-write shape
                 // between the early check above (run before acquiring
-                // _bundleLock) and the write below, just without an
+                // the write lock) and the write below, just without an
                 // intervening Directory.CreateDirectory call. log.md always
                 // lives directly at BundleRoot, so the ancestor-walk half of
                 // this re-check is a no-op here, same as the early check's
@@ -1159,7 +1159,7 @@ public sealed class OkfBundleTools
     /// <summary>
     /// Regenerates every <c>index.md</c> in the bundle (progressive
     /// disclosure listings). The regeneration and cache invalidation are
-    /// serialized under <see cref="_bundleLock"/> (shared with
+    /// serialized under the bundle write lock (shared with
     /// <see cref="WriteConcept"/> and <see cref="AppendLog"/>) so a
     /// concurrent write can't be missed by (or interleave with) this pass.
     /// Never throws for expected errors (a bundle root that disappeared out
@@ -1171,7 +1171,7 @@ public sealed class OkfBundleTools
         return RunTool(() =>
         {
             IReadOnlyList<string> written;
-            lock (_bundleLock)
+            using (_writer.EnterWriteLock())
             {
                 written = IndexGenerator.RegenerateIndexes(BundleRoot);
                 _bundle = null;

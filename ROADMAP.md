@@ -72,38 +72,6 @@ are the concrete entry points.
   therefore contained to one method — it is the *interaction* with the late
   reparse-point re-check and the lock that needs the tests, not a scattered
   edit.
-- **Resolve the bundle root before keying the write lock.**
-  `BundleConceptWriter`'s process-wide lock registry is keyed by
-  `ReparsePoints.CanonicalizeRoot`, which is `Path.GetFullPath` plus a
-  trailing-separator trim — purely lexical. A junction or symlink
-  `alias` -> `actual` therefore yields two distinct locks over one set of
-  files, so two writers in the same process can interleave their
-  read-modify-write cycles and lose a stamp. Shown with `mklink /J`: the two
-  lock objects are not reference-equal. Fixing it means following reparse
-  points on the root, which touches the same seam `ValidateConceptTarget`
-  guards, so it needs its own tests (junction, symlink, a root whose parent
-  is a reparse point, and the cross-platform behaviour of
-  `Directory.ResolveLinkTarget`). Pre-existing and shared by every write
-  path, but verification raises the stakes: it is the first operation to hold
-  that lock across a batch of files. The lock is in-process only either way —
-  a second `okf` process was never serialized against, and that limit is
-  already documented on the class. Tracked as
-  [#86](https://github.com/jchable/okf4net/issues/86), which carries the
-  reproduction.
-  **The design question comes before the fix, and it is bigger than the title
-  suggests.** `CanonicalizeRoot` has thirteen call sites across three projects
-  — `OKF4net` (`Bundle`, `IndexGenerator`, `BundleConceptWriter` and
-  `ReparsePoints` itself), `OKF4net.Catalog` (`CatalogPathResolver`,
-  `FileMemoryStore`) and `OKF4net.Viewer` (`HtmlWriter`) — and three of
-  them are the path-safety guards themselves, `IsWithinBundleRoot` and the
-  2-arg `HasReparsePointAncestor` and its strict twin
-  `HasReparsePointOrUninspectableAncestor`. Making it resolve reparse points would therefore
-  change what "inside the bundle" means everywhere, which is a security change
-  with a repo-wide blast radius, not a lock fix. The narrower alternative is to
-  leave `CanonicalizeRoot` lexical and give the lock registry its own resolved
-  key, so only the serialization contract moves. Deciding between those two —
-  and saying what each does when resolution fails, or when the target does not
-  exist — is the actual work; the code after it is small.
 - **Reconcile the YAML depth counters between the parser and the emitter.**
   `YamlParser` enforces its 1000-level cap with TWO independent counters (one
   for block nesting, one for flow); `YamlEmitter` has a single counter covering
