@@ -8,6 +8,12 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- **`okf --help` now lists the bare `help` and `version` commands (#11).** Both
+  already worked as aliases of `-h`/`--help` and `-V`/`--version`, but nothing
+  said so; a test now pins that each answers exactly like its flag form.
+
 ### Fixed
 
 All five entries are in `okfgen` (`producers/OkfProducer`, not published, outside
