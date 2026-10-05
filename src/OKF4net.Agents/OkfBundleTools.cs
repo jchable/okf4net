@@ -80,7 +80,10 @@ public sealed class OkfBundleTools
     /// or symlink to the bundle shares the lock; resolution failure falls back
     /// to the lexical root; a topology change during an operation is not
     /// followed -- a writer method called while this class already holds the
-    /// lock re-enters the object held, never a second one. It does NOT
+    /// lock re-enters the object held, never a second resolved one. A stable
+    /// gate also serializes identical namespace-normalized lexical roots
+    /// across changes of resolved key. Different aliases can still diverge
+    /// during an active topology change; targets are not pinned. It does NOT
     /// serialize writes across separate processes (e.g. two CLI invocations,
     /// or two server processes sharing a network path), and a C# lock cannot
     /// defend against a concurrent external actor mutating the bundle's files

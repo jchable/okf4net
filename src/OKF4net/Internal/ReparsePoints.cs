@@ -656,14 +656,14 @@ internal static class ReparsePoints
     /// On Windows, rewrites a Win32 file namespace path to its ordinary form --
     /// <c>\\?\C:\x</c> to <c>C:\x</c>, <c>\\?\UNC\server\share\x</c> to
     /// <c>\\server\share\x</c> -- and re-canonicalizes it, for
-    /// <see cref="ResolveLockKey"/> only. Any other <c>\\?\</c> form (a volume
+    /// the resolved and lexical write-lock keys only. Any other <c>\\?\</c> form (a volume
     /// GUID path, say) is left as it is. A no-op elsewhere. Used for the lock
     /// key only, where coalescing two spellings is the goal: a <c>\\?\</c> path
     /// can name an entry with a trailing dot or space that the ordinary form
     /// cannot, and would share a lock with its trimmed spelling -- which only
     /// serializes the two.
     /// </summary>
-    private static string NormalizeNamespaceForLockKey(string path)
+    internal static string NormalizeNamespaceForLockKey(string path)
     {
         if (!OperatingSystem.IsWindows())
         {

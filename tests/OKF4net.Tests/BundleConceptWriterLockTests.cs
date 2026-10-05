@@ -287,6 +287,279 @@ public class BundleConceptWriterLockTests
         Assert.Same(first.CurrentLockObjectForTest(), second.CurrentLockObjectForTest());
     }
 
+
+    [SkippableFact]
+    public void Case_distinct_aliases_do_not_reuse_each_others_held_lock()
+    {
+        using var tmp = new TempDir();
+        using var x = new TempDir();
+        using var y = new TempDir();
+        if (OperatingSystem.IsWindows())
+        {
+            Skip.IfNot(Run("fsutil.exe", "file", "setCaseSensitiveInfo", tmp.Path, "enable"),
+                "cannot mark a directory case-sensitive on this host");
+        }
+
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("A", x.Path), NoLinkPrivilege);
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("a", y.Path),
+            "needs case-distinct junctions/symlinks on this host");
+        var upper = new BundleConceptWriter(Path.Combine(tmp.Path, "A"));
+        var lower = new BundleConceptWriter(Path.Combine(tmp.Path, "a"));
+        var yLock = new BundleConceptWriter(y.Path).CurrentLockObjectForTest();
+        Assert.NotSame(upper.CurrentLockObjectForTest(), yLock);
+        Assert.Same(lower.CurrentLockObjectForTest(), yLock);
+
+        using var outer = upper.EnterWriteLock();
+        // Independent physical bundles must remain independently acquirable.
+        AssertAnotherThreadCanEnter(lower);
+        using var inner = lower.EnterWriteLock();
+        Assert.Same(yLock, inner.LockObject);
+        Assert.True(Monitor.IsEntered(yLock));
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_topology_change_during_an_append_does_not_split_the_same_lexical_root(bool separateWriter)
+    {
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        var root = Path.Combine(tmp.Path, "later");
+        var first = new BundleConceptWriter(root);
+        var second = separateWriter ? new BundleConceptWriter(root) : first;
+        string? secondResult = null;
+        Exception? workerError = null;
+        var worker = new Thread(() =>
+        {
+            try
+            {
+                secondResult = second.AppendToConceptAtomic("notes/shared", Fm,
+                    body => (body ?? string.Empty).Trim() + "[B]");
+            }
+            catch (Exception e)
+            {
+                workerError = e;
+            }
+        })
+        { IsBackground = true };
+
+        var settled = false;
+        var finishedWhileHeld = false;
+        var firstResult = first.AppendToConceptAtomic("notes/shared", Fm, body =>
+        {
+            // The first read happened under the old key. A new acquisition
+            // must wait even though the link now resolves to another key.
+            Skip.IfNot(tmp.TryCreateJunctionToExternalDir("later", external.Path), NoLinkPrivilege);
+            worker.Start();
+            settled = SpinWait.SpinUntil(
+                () => (worker.ThreadState & (ThreadState.WaitSleepJoin | ThreadState.Stopped)) != 0,
+                TimeSpan.FromSeconds(10));
+            finishedWhileHeld = (worker.ThreadState & ThreadState.Stopped) != 0;
+            return (body ?? string.Empty).Trim() + "[A]";
+        });
+
+        Assert.True(worker.Join(TimeSpan.FromSeconds(10)), "The second append did not finish.");
+        Assert.Null(workerError);
+        Assert.True(settled, "The worker neither waited nor completed.");
+        Assert.False(finishedWhileHeld, "The second append completed while the first still held its lock.");
+        Assert.DoesNotContain("Error", firstResult, StringComparison.Ordinal);
+        Assert.DoesNotContain("Error", secondResult!, StringComparison.Ordinal);
+        Assert.Equal("[A][B]", OkfDocument.Parse(File.ReadAllText(
+            Path.Combine(external.Path, "notes", "shared.md"))).Body.Trim());
+    }
+
+    [SkippableFact]
+    public void A_waiter_through_an_alias_does_not_block_the_owners_nested_acquisition()
+    {
+        using var tmp = new TempDir();
+        using var actual = new TempDir();
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("a", actual.Path), NoLinkPrivilege);
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("b", actual.Path), NoLinkPrivilege);
+        var a = new BundleConceptWriter(Path.Combine(tmp.Path, "a"));
+        var b = new BundleConceptWriter(Path.Combine(tmp.Path, "b"));
+        Exception? ownerError = null;
+        Exception? waiterError = null;
+        var waiterEntered = false;
+        var waiter = new Thread(() =>
+        {
+            try
+            {
+                using var scope = b.EnterWriteLock();
+                waiterEntered = true;
+            }
+            catch (Exception e)
+            {
+                waiterError = e;
+            }
+        })
+        { IsBackground = true };
+
+        // Run the owner on a background thread as well: a broken acquisition
+        // order must fail the deadline, not deadlock the xunit thread.
+        var owner = new Thread(() =>
+        {
+            try
+            {
+                using var outer = a.EnterWriteLock();
+                waiter.Start();
+                Assert.True(SpinWait.SpinUntil(
+                    () => (waiter.ThreadState & (ThreadState.WaitSleepJoin | ThreadState.Stopped)) != 0,
+                    TimeSpan.FromSeconds(10)));
+                Assert.False(waiterEntered);
+                using var inner = b.EnterWriteLock();
+                Assert.Same(outer.LockObject, inner.LockObject);
+            }
+            catch (Exception e)
+            {
+                ownerError = e;
+            }
+        })
+        { IsBackground = true };
+
+        owner.Start();
+        Assert.True(owner.Join(TimeSpan.FromSeconds(15)), "Nested alias acquisition deadlocked.");
+        Assert.True(waiter.Join(TimeSpan.FromSeconds(10)), "The waiter did not finish.");
+        Assert.Null(ownerError);
+        Assert.Null(waiterError);
+        Assert.True(waiterEntered);
+    }
+
+    [Fact]
+    public void Out_of_order_scope_disposal_keeps_the_remaining_hold()
+    {
+        using var tmp = new TempDir();
+        var writer = new BundleConceptWriter(tmp.Path);
+        var outer = writer.EnterWriteLock();
+        var inner = writer.EnterWriteLock();
+        outer.Dispose();
+        Assert.True(Monitor.IsEntered(inner.LockObject));
+        inner.Dispose();
+        Assert.False(Monitor.IsEntered(inner.LockObject));
+        AssertAnotherThreadCanEnter(writer);
+        using var next = writer.EnterWriteLock();
+        Assert.Same(inner.LockObject, next.LockObject);
+    }
+
+
+    [SkippableTheory]
+    [InlineData(@"\\?\UNC\server\share\bundle", @"\\server\share\bundle")]
+    [InlineData(@"\\?\unc\server\share\bundle\", @"\\server\share\bundle")]
+    [InlineData(@"\\?\C:\bundle", @"C:\bundle")]
+    public void Windows_lock_namespace_normalization_needs_no_accessible_share(string path, string expected)
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows namespaces");
+        Assert.Equal(expected, ReparsePoints.NormalizeNamespaceForLockKey(path));
+    }
+
+
+    [Fact]
+    public void An_exception_in_the_append_callback_releases_both_locks()
+    {
+        using var tmp = new TempDir();
+        var writer = new BundleConceptWriter(tmp.Path);
+        Assert.Throws<InvalidOperationException>(() =>
+            writer.AppendToConceptAtomic("notes/shared", Fm, _ => throw new InvalidOperationException("probe")));
+        AssertAnotherThreadCanEnter(writer);
+    }
+
+    [SkippableFact]
+    public void An_interrupted_waiter_does_not_leave_a_lexical_gate_held()
+    {
+        using var tmp = new TempDir();
+        using var actual = new TempDir();
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("alias", actual.Path), NoLinkPrivilege);
+        var owner = new BundleConceptWriter(actual.Path);
+        var waiterWriter = new BundleConceptWriter(Path.Combine(tmp.Path, "alias"));
+        Exception? error = null;
+        var waiter = new Thread(() =>
+        {
+            try
+            {
+                using var scope = waiterWriter.EnterWriteLock();
+            }
+            catch (Exception e)
+            {
+                error = e;
+            }
+        })
+        { IsBackground = true };
+
+        using (owner.EnterWriteLock())
+        {
+            waiter.Start();
+            Assert.True(SpinWait.SpinUntil(
+                () => (waiter.ThreadState & ThreadState.WaitSleepJoin) != 0,
+                TimeSpan.FromSeconds(10)));
+            waiter.Interrupt();
+            Assert.True(waiter.Join(TimeSpan.FromSeconds(10)));
+            Assert.IsType<ThreadInterruptedException>(error);
+        }
+
+        AssertAnotherThreadCanEnter(waiterWriter);
+    }
+
+
+    [SkippableFact]
+    public void A_waiter_resolves_the_root_again_after_waiting_for_the_old_target()
+    {
+        using var tmp = new TempDir();
+        using var before = new TempDir();
+        using var after = new TempDir();
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("alias", before.Path), NoLinkPrivilege);
+        var root = Path.Combine(tmp.Path, "alias");
+        var owner = new BundleConceptWriter(before.Path);
+        var waiterWriter = new BundleConceptWriter(root);
+        object? entered = null;
+        Exception? error = null;
+        var waiter = new Thread(() =>
+        {
+            try
+            {
+                using var scope = waiterWriter.EnterWriteLock();
+                entered = scope.LockObject;
+            }
+            catch (Exception e)
+            {
+                error = e;
+            }
+        })
+        { IsBackground = true };
+
+        using (owner.EnterWriteLock())
+        {
+            waiter.Start();
+            Assert.True(SpinWait.SpinUntil(
+                () => (waiter.ThreadState & ThreadState.WaitSleepJoin) != 0,
+                TimeSpan.FromSeconds(10)));
+            // Delete only the link itself, never the directory it targets.
+            Directory.Delete(root);
+            Assert.True(tmp.TryCreateJunctionToExternalDir("alias", after.Path));
+        }
+
+        Assert.True(waiter.Join(TimeSpan.FromSeconds(10)));
+        Assert.Null(error);
+        Assert.Same(new BundleConceptWriter(after.Path).CurrentLockObjectForTest(), entered);
+    }
+    private static void AssertAnotherThreadCanEnter(BundleConceptWriter writer)
+    {
+        Exception? error = null;
+        var worker = new Thread(() =>
+        {
+            try
+            {
+                using var scope = writer.EnterWriteLock();
+            }
+            catch (Exception e)
+            {
+                error = e;
+            }
+        })
+        { IsBackground = true };
+        worker.Start();
+        Assert.True(worker.Join(TimeSpan.FromSeconds(10)), "A lock was leaked.");
+        Assert.Null(error);
+    }
+
     private static bool Run(string fileName, params string[] args)
     {
         try

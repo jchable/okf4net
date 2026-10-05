@@ -134,72 +134,47 @@ internal readonly record struct VerificationTargetProblem(VerificationTargetProb
 public sealed class BundleConceptWriter
 {
     /// <summary>
-    /// Process-wide registry of one lock object per bundle directory, keyed by
-    /// <see cref="ReparsePoints.ResolveLockKey"/> of the bundle root: the
-    /// root's full path (<see cref="ReparsePoints.CanonicalizeRoot"/>, so a
-    /// trailing separator or a relative spelling does not matter) resolved
-    /// through every junction or symlink on it, with Windows <c>\\?\</c>
-    /// namespace forms normalized. A junction or symlink to the bundle, or
-    /// to one of its ancestors, therefore lands on the same entry as the
-    /// bundle's real path (#86). The key is computed each time a thread takes
-    /// the lock for an operation (see <see cref="EnterWriteLock"/>), not when
-    /// the writer is built, so two writers built on opposite sides of a
-    /// topology change still meet at write time. When resolution fails, the
-    /// key falls back to the lexical full path. Every
-    /// <see cref="BundleConceptWriter"/> instance over the same bundle
-    /// directory -- not just the same instance -- shares the same lock object
-    /// via <see cref="ConcurrentDictionary{TKey,TValue}.GetOrAdd(TKey,Func{TKey,TValue})"/>:
-    /// a per-INSTANCE lock (an earlier design) left two separate instances
-    /// pointed at the same bundle directory free to race each other's
-    /// <see cref="AppendToConceptAtomic"/>/<see cref="WriteConcept(string, string, string)"/> calls,
-    /// even though each instance's OWN calls were already serialized against
-    /// themselves. <see cref="StringComparer.OrdinalIgnoreCase"/> is
-    /// deliberate: two case-variant spellings of the same physical bundle
-    /// directory must coalesce onto one lock object, or each spelling gets
-    /// its own lock and two writers pointed at the same physical directory
-    /// could still race each other's writes -- the exact bug this registry
-    /// exists to prevent. The two failure directions are asymmetric:
-    /// over-coalescing (two spellings that happen to be genuinely different
-    /// directories on a case-sensitive volume sharing a lock anyway) only
-    /// costs them a little unnecessary serialization against each other,
-    /// while under-coalescing reopens the race -- <c>OrdinalIgnoreCase</c>
-    /// picks the harmless side. Over-coalescing cannot deadlock either: it
-    /// only maps more roots onto one object, and a monitor re-entered by the
-    /// thread that already holds it does not block.
-    /// The registry grows by one small object
-    /// per distinct resolved key ever observed for the process's lifetime --
-    /// which is how many distinct bundle directories it opens, plus one for
-    /// each new place a link on a root's path is retargeted to (keys are
-    /// resolution results, computed at every acquisition, and a link's target
-    /// need not exist) -- and never removed (there is no matching "last instance for
-    /// this path went away" signal to remove it on). Evicting correctly would
-    /// need reference counting, since a lock must never be evicted while it is
-    /// held -- disproportionate for one small object per root. That makes the
-    /// bound a HOST CONSTRAINT rather than an implementation detail: a service
-    /// that maps untrusted input to bundle roots (a multi-tenant server opening
-    /// a root per request, say) must bound the number of distinct roots
-    /// upstream, or the registry grows with the input.
+    /// One monitor per resolved bundle root, shared across writers and aliases.
+    /// Resolution happens at each outermost acquisition, through
+    /// <see cref="ReparsePoints.ResolveLockKey"/>; failures use the normalized
+    /// lexical path. Case-insensitive registry keys deliberately over-serialize
+    /// case-distinct paths rather than split ordinary case-variant spellings.
+    /// <see cref="LexicalLocks"/> additionally keeps operations on the same
+    /// lexical root serialized when resolution changes between acquisitions.
     /// </summary>
+    /// <remarks>
+    /// Both registries live for the process's lifetime: one entry per lexical
+    /// root and one per resolved key ever observed, including new targets of a
+    /// retargeted link. Hosts accepting untrusted bundle roots must bound those
+    /// distinct roots and targets upstream. Entries cannot simply be evicted
+    /// while writers may still be using their monitors.
+    /// </remarks>
     private static readonly ConcurrentDictionary<string, object> BundleLocks = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// The lock objects the CURRENT thread holds, keyed by each writer's
-    /// lexical root (<see cref="_lexicalRoot"/>, compared
-    /// <see cref="StringComparer.OrdinalIgnoreCase"/> like
-    /// <see cref="BundleLocks"/>), with how many times each was entered. Lets
-    /// <see cref="EnterWriteLock"/> reuse the object an outer acquisition on
-    /// this thread already holds instead of resolving the root again: a
-    /// nested acquisition (<c>OkfBundleTools</c> takes the lock, then calls
-    /// writer methods that take it again) must never enter a second object
-    /// because the topology changed in between, or two threads could each
-    /// hold one object and wait for the other's.
+    /// Stable gates for identical namespace-normalized lexical roots (ordinal).
+    /// Case-distinct aliases must not create extra dependencies between otherwise
+    /// independent resolved bundles. An operation holds
+    /// its gate and its resolved monitor together, preserving same-root
+    /// serialization across topology changes. A contended resolved monitor is
+    /// waited for WITHOUT this gate, so its owner can re-enter through an alias.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, object> LexicalLocks = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The current thread's held locks, keyed ORDINALly by normalized lexical
+    /// root. Unlike registry over-coalescing, conflating two case-distinct
+    /// aliases here can substitute another bundle's resolved monitor. Each
+    /// nested acquisition of the same root re-enters both held monitors without
+    /// following topology changes. Scopes are thread-affine.
     /// </summary>
     [ThreadStatic]
     private static Dictionary<string, HeldLock>? t_heldLocks;
 
     /// <summary>
     /// <see cref="BundleRoot"/> through <see cref="ReparsePoints.CanonicalizeRoot"/>,
-    /// computed once: the key of <see cref="t_heldLocks"/>, and the starting
+    /// with Windows namespace forms normalized, computed once: the key of
+    /// <see cref="t_heldLocks"/>, and the starting
     /// point <see cref="ReparsePoints.ResolveLockKey"/> resolves from.
     /// </summary>
     private readonly string _lexicalRoot;
@@ -250,7 +225,7 @@ public sealed class BundleConceptWriter
         // construction -- a writer built over `later/bundle` while `later` did
         // not exist must still meet a writer over the junction target once
         // `later` becomes a junction (#86).
-        _lexicalRoot = ReparsePoints.CanonicalizeRoot(bundleRoot);
+        _lexicalRoot = ReparsePoints.NormalizeNamespaceForLockKey(ReparsePoints.CanonicalizeRoot(bundleRoot));
     }
 
     /// <summary>The bundle root, as passed to the constructor.</summary>
@@ -276,7 +251,12 @@ public sealed class BundleConceptWriter
     /// acquisition on a thread resolves the root, and every nested acquisition
     /// on that thread for the same writer root re-enters the object it already
     /// holds (<see cref="Monitor"/> is re-entrant) without resolving again, for
-    /// the whole operation. Still in-process only: nothing here serializes a
+    /// the whole operation. A stable lexical gate also prevents another thread
+    /// using the same lexical root from overlapping it, even if resolution
+    /// changes. Different aliases can still diverge if topology changes during
+    /// an active operation; no filesystem handles pin its target. Nested calls
+    /// across independent bundles require a consistent caller lock order.
+    /// Still in-process only: nothing here serializes a
     /// second process writing the same bundle, and a C# lock cannot stop an
     /// external actor mutating the bundle's files on disk -- see
     /// <see cref="ValidateConceptTarget"/>'s remarks for that separate,
@@ -290,18 +270,61 @@ public sealed class BundleConceptWriter
     /// </remarks>
     internal WriteLockScope EnterWriteLock()
     {
-        var held = t_heldLocks ??= new Dictionary<string, HeldLock>(StringComparer.OrdinalIgnoreCase);
+        // Case-distinct lexical aliases can resolve to DIFFERENT bundles.
+        // Reusing a held lock is therefore stricter than coalescing registry
+        // keys: an ordinal match is required here.
+        var held = t_heldLocks ??= new Dictionary<string, HeldLock>(StringComparer.Ordinal);
         if (held.TryGetValue(_lexicalRoot, out var outer))
         {
+            Monitor.Enter(outer.LexicalLock);
             Monitor.Enter(outer.LockObject);
             outer.Depth++;
-            return new WriteLockScope(_lexicalRoot, outer.LockObject);
+            return new WriteLockScope(_lexicalRoot, outer.LockObject, outer.LexicalLock);
         }
 
-        var lockObject = ResolveLockObject();
-        Monitor.Enter(lockObject);
-        held.Add(_lexicalRoot, new HeldLock(lockObject));
-        return new WriteLockScope(_lexicalRoot, lockObject);
+        var lexicalLock = LexicalLocks.GetOrAdd(_lexicalRoot, static _ => new object());
+        while (true)
+        {
+            object? lockObject = null;
+            var lexicalTaken = false;
+            var resolvedTaken = false;
+            try
+            {
+                Monitor.Enter(lexicalLock, ref lexicalTaken);
+                // Resolve AFTER acquiring the stable gate, including after
+                // each wait. An earlier operation may have changed the root.
+                lockObject = ResolveLockObject();
+                Monitor.TryEnter(lockObject, ref resolvedTaken);
+                if (resolvedTaken)
+                {
+                    held.Add(_lexicalRoot, new HeldLock(lockObject, lexicalLock));
+                    // Both holds now belong to the scope.
+                    lexicalTaken = false;
+                    resolvedTaken = false;
+                    return new WriteLockScope(_lexicalRoot, lockObject, lexicalLock);
+                }
+            }
+            finally
+            {
+                if (resolvedTaken)
+                {
+                    Monitor.Exit(lockObject!);
+                }
+
+                if (lexicalTaken)
+                {
+                    Monitor.Exit(lexicalLock);
+                }
+            }
+
+            // Never wait for another thread's resolved lock while holding
+            // the lexical gate. Its owner may need that gate to enter this
+            // alias recursively. Wait without the gate, then retry BOTH
+            // acquisition and resolution; this is not the operation's hold.
+            lock (lockObject!)
+            {
+            }
+        }
     }
 
     /// <summary>
@@ -315,9 +338,11 @@ public sealed class BundleConceptWriter
         BundleLocks.GetOrAdd(ReparsePoints.ResolveLockKey(_lexicalRoot), static _ => new object());
 
     /// <summary>One entry of <see cref="t_heldLocks"/>: the object held and how many scopes hold it.</summary>
-    private sealed class HeldLock(object lockObject)
+    private sealed class HeldLock(object lockObject, object lexicalLock)
     {
         public object LockObject { get; } = lockObject;
+
+        public object LexicalLock { get; } = lexicalLock;
 
         public int Depth { get; set; } = 1;
     }
@@ -330,10 +355,13 @@ public sealed class BundleConceptWriter
     {
         private readonly string _lexicalRoot;
 
-        internal WriteLockScope(string lexicalRoot, object lockObject)
+        private readonly object _lexicalLock;
+
+        internal WriteLockScope(string lexicalRoot, object lockObject, object lexicalLock)
         {
             _lexicalRoot = lexicalRoot;
             LockObject = lockObject;
+            _lexicalLock = lexicalLock;
         }
 
         /// <summary>The registry object this scope entered.</summary>
@@ -353,6 +381,7 @@ public sealed class BundleConceptWriter
             }
 
             Monitor.Exit(LockObject);
+            Monitor.Exit(_lexicalLock);
         }
     }
 

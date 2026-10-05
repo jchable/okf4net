@@ -20,6 +20,13 @@
   - #115: duplicate `verified` entries are compared with multiplicity. #113: migration note completed. `Provenance.UsageWindowToYaml` becomes `internal`.
   - Several r1 tests and mutations could not fail; they are replaced (see each task).
 
+- **r3 (2026-10-05)** — implemented external-review corrections, authorized by the user:
+  - Held-root lookup compares namespace-normalized lexical roots ordinally: case-distinct aliases can point at different bundles.
+  - Each operation holds a stable lexical gate as well as its resolved monitor. Resolution runs after taking the gate. If the resolved monitor is busy, release the gate before waiting and retry resolution/acquisition afterwards, so an owner can re-enter through a waiting alias.
+  - Lexical gates also compare ordinally: coalescing case-distinct aliases here would introduce dependencies between otherwise independent bundles. Identical normalized roots stay serialized across topology changes; different aliases under an active topology change remain outside the guarantee.
+  - Added regression tests for both losses, alias contention, interrupted acquisition and scope cleanup; strengthened the unequal-entry-count mutation test; UNC normalization has a test independent of share access.
+  The Task 1 design below records r2; these r3 corrections supersede its acquisition algorithm.
+
 ## Global Constraints
 
 - Work in `E:\Sources\okf-post-audit`, branch `fix/write-path-hardening` (rebased on `origin/dev`). Never touch `E:\Sources\okf` (shared checkout; `dev` is checked out there) or any other worktree. To start from `dev`, use `git switch --detach origin/dev` or `git checkout -B <branch> origin/dev`; never `git checkout dev`.

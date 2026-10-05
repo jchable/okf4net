@@ -585,7 +585,11 @@ A few known v1 caveats:
   `OkfBundleTools` instance whose bundle root resolves, at the moment it
   takes the lock, to the same directory (a junction or symlink to the bundle
   shares its lock; if resolution fails, the lexical path is the key; a
-  topology change during an operation is not followed). So two (or more) truly concurrent
+  topology change during an operation is not followed). Operations using an
+  identical namespace-normalized lexical root also remain serialized when
+  its resolved key changes. Different aliases can still diverge if the
+  topology changes during an active operation: no filesystem handle pins
+  their targets. Within these limits, two (or more) truly concurrent
   `StoreAIContextAsync` calls, even across separate `OkfBundleTools`/
   `OkfContextProvider` instances sharing a session pool, never lose a
   same-day section as long as they're all in **the same process**. This

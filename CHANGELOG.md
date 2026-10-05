@@ -78,7 +78,14 @@ and this project adheres to
   so two writers built on opposite sides of a topology change (a missing
   directory later replaced by a junction) still serialize. A nested
   acquisition on the same thread keeps the object the operation started
-  with: a topology change during an operation is not followed. When the
+  with: a topology change during an operation is not followed. An additional
+  stable gate serializes operations over an identical namespace-normalized
+  lexical root even when its resolved key changes; a waiting alias releases
+  that gate before waiting for the resolved monitor, so the current owner
+  can re-enter through it. Held-root lookup is case-sensitive: distinct
+  aliases such as A and a cannot substitute each other's resolved lock.
+  Different aliases may still diverge if topology changes while an operation
+  is active; the lock does not pin filesystem targets. When the
   root cannot be resolved (an entry that cannot be inspected, a link target
   that cannot be read), the key falls back to the lexical path, as before.
   Still in-process only: a second process writing the same bundle is not

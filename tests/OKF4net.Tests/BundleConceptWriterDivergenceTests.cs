@@ -88,5 +88,13 @@ public class BundleConceptWriterDivergenceTests
             "the frontmatter changed outside the verified block",
             BundleConceptWriter.DescribeFrontmatterDivergence(
                 Map("type: table\ntitle: Users\n"),
-                Map("type: table\ntitle: Users\nowner: me\n")));
+                Map("type: table\ntitle: Clients\nowner: me\n")));
+
+    [Fact]
+    public void Fewer_actual_entries_give_the_generic_message()
+        => Assert.Equal(
+            "the frontmatter changed outside the verified block",
+            BundleConceptWriter.DescribeFrontmatterDivergence(
+                Map("type: table\ntitle: Users\n"),
+                Map("type: table\n")));
 }
