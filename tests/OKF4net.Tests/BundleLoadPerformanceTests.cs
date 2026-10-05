@@ -33,10 +33,14 @@ namespace OKF4net.Tests;
 /// alone: the directory walk, reading and UTF-8-decoding every file, parsing
 /// frontmatter and scanning bodies for links, building the id index and the
 /// link/backlink graph. Generating the files is timed separately and is NOT
-/// part of the reported load numbers. Two loads are reported: the first pays
-/// for JIT compilation of the load path, the second runs it warm. Neither is
-/// a cold-disk measurement: the files were just written, so the OS file cache
-/// holds them for both. Not measured: validation, index generation, search,
+/// part of the reported load numbers. Two loads are reported: the first and
+/// the second measured load of this bundle. Whether the first one pays for
+/// JIT compilation of the load path depends on what ran before it: run alone
+/// (the filter below) it usually does, but in the full suite other tests have
+/// typically called <see cref="Bundle.Load"/> already and xunit gives no
+/// ordering guarantee, so it is not a JIT-cold figure. The second runs right
+/// after the first, on this same bundle. Neither is a cold-disk measurement:
+/// the files were just written, so the OS file cache holds them for both. Not measured: validation, index generation, search,
 /// memory use.</para>
 ///
 /// <para><b>How to see the numbers.</b>
@@ -92,7 +96,7 @@ public class BundleLoadPerformanceTests
         first.Stop();
 
         var second = Stopwatch.StartNew();
-        var warm = Bundle.Load(tmp.Path);
+        var repeat = Bundle.Load(tmp.Path);
         second.Stop();
 
         var resolvedLinks = bundle.Concepts.Sum(c => bundle.LinksFrom(c.Id).Count);
@@ -100,14 +104,14 @@ public class BundleLoadPerformanceTests
 
         _output.WriteLine($"bundle: {bundle.Count} concepts, {resolvedLinks} resolved links ({broken.Count} broken), {bundle.IndexFiles.Count} index file(s)");
         _output.WriteLine($"generate: {Ms(generation.Elapsed)} (not part of the load figures)");
-        _output.WriteLine($"load #1 (JIT cold, OS cache warm): {Ms(first.Elapsed)}, {Rate(bundle.Count, first.Elapsed)} concepts/s, {Rate(resolvedLinks, first.Elapsed)} links/s");
-        _output.WriteLine($"load #2 (warm):                    {Ms(second.Elapsed)}, {Rate(warm.Count, second.Elapsed)} concepts/s, {Rate(resolvedLinks, second.Elapsed)} links/s");
+        _output.WriteLine($"load #1 (first measured): {Ms(first.Elapsed)}, {Rate(bundle.Count, first.Elapsed)} concepts/s, {Rate(resolvedLinks, first.Elapsed)} links/s");
+        _output.WriteLine($"load #2 (repeat):         {Ms(second.Elapsed)}, {Rate(repeat.Count, second.Elapsed)} concepts/s, {Rate(resolvedLinks, second.Elapsed)} links/s");
 
         // ---- Shape: the load did all of its work --------------------------
 
         Assert.Empty(bundle.ParseErrors);
         Assert.Equal(GeneratedConcepts + 1, bundle.Count);
-        Assert.Equal(bundle.Count, warm.Count);
+        Assert.Equal(bundle.Count, repeat.Count);
         Assert.Single(bundle.IndexFiles);
         Assert.Equal("0.2", bundle.OkfVersion);
 
@@ -153,7 +157,7 @@ public class BundleLoadPerformanceTests
             $"Bundle.Load took {Ms(first.Elapsed)} on {bundle.Count} concepts, above the {PathologicalCeiling.TotalSeconds:0} s pathology ceiling.");
         Assert.True(
             second.Elapsed < PathologicalCeiling,
-            $"the warm Bundle.Load took {Ms(second.Elapsed)} on {warm.Count} concepts, above the {PathologicalCeiling.TotalSeconds:0} s pathology ceiling.");
+            $"the repeat Bundle.Load took {Ms(second.Elapsed)} on {repeat.Count} concepts, above the {PathologicalCeiling.TotalSeconds:0} s pathology ceiling.");
     }
 
     /// <summary>Writes the synthetic bundle and returns what its links should resolve to.</summary>
