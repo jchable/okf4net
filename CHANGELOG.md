@@ -62,6 +62,7 @@ and this project adheres to
   root cannot be resolved (an entry that cannot be inspected, a link target
   that cannot be read), the key falls back to the lexical path, as before.
   Still in-process only: a second process writing the same bundle is not
+  serialized against.
 
 - **A verification refusal no longer names an unchanged or the wrong key
   (#115).** When the in-place `verified` edit fails its round-trip check,
@@ -73,7 +74,6 @@ and this project adheres to
   order and with multiplicity, so adding, dropping or altering one is reported
   as a `verified` divergence rather than a change outside it. A NaN used as a
   mapping key now gets the NaN-specific message, as a NaN value already did.
-  serialized against.
 
 The five entries below are in `okfgen` (`producers/OkfProducer`, not published, outside
 CI): they came from the follow-up wave of the post-audit work and were verified by

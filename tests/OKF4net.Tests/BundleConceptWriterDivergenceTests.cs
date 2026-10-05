@@ -73,4 +73,20 @@ public class BundleConceptWriterDivergenceTests
             BundleConceptWriter.DescribeFrontmatterDivergence(
                 Map("verified: {by: ada}\nverified: {by: bob}\n"),
                 Map("verified: {by: ada}\nverified: {by: eve}\n")));
+
+    [Fact]
+    public void One_differing_position_where_the_key_differs_gives_the_generic_message()
+        => Assert.Equal(
+            "the frontmatter changed outside the verified block",
+            BundleConceptWriter.DescribeFrontmatterDivergence(
+                Map("type: table\ntitle: Users\n"),
+                Map("type: table\nowner: Users\n")));
+
+    [Fact]
+    public void Unequal_counts_of_other_entries_give_the_generic_message()
+        => Assert.Equal(
+            "the frontmatter changed outside the verified block",
+            BundleConceptWriter.DescribeFrontmatterDivergence(
+                Map("type: table\ntitle: Users\n"),
+                Map("type: table\ntitle: Users\nowner: me\n")));
 }
