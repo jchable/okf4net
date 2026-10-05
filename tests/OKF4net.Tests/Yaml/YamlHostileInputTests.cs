@@ -24,6 +24,10 @@ public class YamlHostileInputTests
     [InlineData("flow-mappings", 1)]
     [InlineData("dash-lines", 1001)]
     [InlineData("block-then-flow", 999)]
+    [InlineData("flow-root", 1)]
+    [InlineData("flow-in-sequence-item", 1)]
+    [InlineData("flow-under-compact-mapping", 1)]
+    [InlineData("relaxed-sequence-under-key", 1001)]
     public void A_hostile_input_is_refused_in_a_clean_exit(string name, int line)
     {
         var (code, stdout, stderr) = RunProbe(name);
@@ -52,6 +56,36 @@ public class YamlHostileInputTests
         Assert.True(code == 0, $"probe exited with {code}\nstdout:\n{stdout}\nstderr:\n{stderr}");
         var lines = stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         Assert.Equal(["accepted", "accepted"], lines);
+    }
+
+    /// <summary>
+    /// On a host thread with a 256 KB stack, smaller than a 1000-deep block
+    /// document needs, a document or value WITHIN the 1000 rule must still not
+    /// crash the process: the parser and the emitter also check
+    /// <c>RuntimeHelpers.TryEnsureSufficientExecutionStack</c> at every
+    /// counted point and refuse with their usual exception type. The test
+    /// accepts either a refusal naming the limit or success (should the stack
+    /// suffice on some runtime); what it rules out is a crash.
+    /// </summary>
+    [Theory]
+    [InlineData("small-stack-block-mappings", 2)]
+    [InlineData("small-stack-block-sequences", 2)]
+    [InlineData("small-stack-flow", 2)]
+    [InlineData("small-stack-emit", 1)]
+    public void A_small_stack_thread_gets_a_refusal_not_a_crash(string name, int steps)
+    {
+        var (code, stdout, stderr) = RunProbe(name);
+
+        Assert.True(code == 0, $"probe exited with {code} (a crash, e.g. a stack overflow?)\nstdout:\n{stdout}\nstderr:\n{stderr}");
+        var lines = stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        Assert.Equal(steps, lines.Length);
+        Assert.All(lines, l => Assert.True(
+            l is "accepted" or "emitted"
+            || (l.StartsWith("YamlParseException line=", StringComparison.Ordinal)
+                || l.StartsWith("DocumentParseException: Invalid YAML in frontmatter: YAML error at line ", StringComparison.Ordinal)
+                || l.StartsWith("YamlEmitException: YAML emit error: ", StringComparison.Ordinal))
+                && l.Contains("nesting depth limit exceeded", StringComparison.Ordinal),
+            l));
     }
 
     /// <summary>

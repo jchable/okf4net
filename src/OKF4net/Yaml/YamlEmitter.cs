@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace OKF4net.Yaml;
@@ -28,7 +29,10 @@ public static class YamlEmitter
     /// this emitter writes, and a value this emitter writes the parser reads
     /// back. It is also this emitter's stack guard: a pathologically deep
     /// <see cref="YamlValue"/> tree, however it was constructed, is refused
-    /// before it can overflow the stack.
+    /// before it can overflow the stack. On a thread too small for a value
+    /// within the rule, the same exception is raised when
+    /// <see cref="RuntimeHelpers.TryEnsureSufficientExecutionStack"/> reports no
+    /// stack left (<see cref="YamlParser.InsufficientStackMessage"/>).
     /// Reaching the refusal is errors-as-data on every caller's path — see
     /// <see cref="YamlEmitException"/>.
     /// </summary>
@@ -37,6 +41,11 @@ public static class YamlEmitter
         if (depth > YamlParser.MaxNestingDepth)
         {
             throw new YamlEmitException(YamlParser.NestingDepthExceededMessage);
+        }
+
+        if (!RuntimeHelpers.TryEnsureSufficientExecutionStack())
+        {
+            throw new YamlEmitException(YamlParser.InsufficientStackMessage);
         }
     }
 

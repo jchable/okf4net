@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text;
 using OKF4net.Internal;
 
@@ -33,6 +34,19 @@ internal static class YamlParser
 
     /// <summary>Shared message for every place <see cref="MaxNestingDepth"/> is enforced, reader and writer.</summary>
     internal const string NestingDepthExceededMessage = "nesting depth limit exceeded";
+
+    /// <summary>
+    /// Shared message, reader and writer, for the second guard beside
+    /// <see cref="MaxNestingDepth"/>: every counted point also asks
+    /// <see cref="RuntimeHelpers.TryEnsureSufficientExecutionStack"/> whether the
+    /// CURRENT thread has stack left, and refuses with the same exception type
+    /// when it does not. The 1000 rule is unchanged; this matters only on a
+    /// thread whose stack is too small for a document within the rule (a
+    /// 1000-deep block document needs several hundred KB), where it turns an
+    /// uncatchable stack overflow into a catchable refusal. It keeps the limit's
+    /// wording, so a caller matching "nesting depth limit exceeded" sees both.
+    /// </summary>
+    internal const string InsufficientStackMessage = "nesting depth limit exceeded: not enough stack left on this thread";
 
     // The YAML features the subset rejects rather than silently reading as
     // plain strings (see README "A documented YAML subset"). Each message names
@@ -376,7 +390,9 @@ internal static class YamlParser
 
         /// <summary>
         /// Opens one collection: counts it, refusing the 1001st on the current
-        /// line. Paired with <see cref="LeaveCollection"/> in a <c>finally</c>.
+        /// line, or any collection when this thread has no stack left
+        /// (<see cref="InsufficientStackMessage"/>). Paired with
+        /// <see cref="LeaveCollection"/> in a <c>finally</c>.
         /// </summary>
         private void EnterCollection()
         {
@@ -384,6 +400,11 @@ internal static class YamlParser
             if (_depth > MaxNestingDepth)
             {
                 throw Err(NestingDepthExceededMessage);
+            }
+
+            if (!RuntimeHelpers.TryEnsureSufficientExecutionStack())
+            {
+                throw Err(InsufficientStackMessage);
             }
         }
 
@@ -1228,6 +1249,11 @@ internal static class YamlParser
             if (_depth > MaxNestingDepth)
             {
                 throw Err(NestingDepthExceededMessage);
+            }
+
+            if (!RuntimeHelpers.TryEnsureSufficientExecutionStack())
+            {
+                throw Err(InsufficientStackMessage);
             }
 
             try
