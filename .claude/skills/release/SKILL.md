@@ -293,3 +293,26 @@ carry. Fix it on the PR's branch in the fork — insert the line right after
 `gh api -X PUT repos/jchable/winget-pkgs/contents/<path>` (`content` base64,
 the file's current `sha`, `branch` = the PR head). Check the PR comments a few
 minutes after it opens; the validator posts there.
+
+**About an hour after it opens, the winget PR gets `Validation-Executable-Error`**
+(stage "08. Installation Validation", usually with no explanatory comment). The
+validator runs each installed portable executable with **no argument** and flags
+any non-zero exit. Up to and including 0.6.0, a bare `okf` / `okf-render` printed
+usage and exited 1, so **every version got this label**: 0.5.0 (#432603, log line
+`okf.exe returned exit code: 1`) and 0.6.0 (#444991, #444993). It is not a build
+regression and a green `release.yml` does not prevent it. Since the version after
+0.6.0, a bare invocation prints usage on stdout and exits 0 (`OkfCli.Run`,
+`OkfRenderCli.Run`, pinned by `No_args_is_the_same_request_as_help`), so the
+label should no longer appear. If it does, first run the published exe with no
+argument (`okf.exe; echo $?`) from the release zip: a non-zero exit means that
+behaviour regressed. For a version that still carries the label:
+- Only a Microsoft **administrator** can clear it. `@wingetbot installationmetadata
+  exe add …` is refused to PR authors, and community moderators cannot waive it
+  (`doc/ValidationFailureGuide.md` and `doc/Moderation.md` in winget-pkgs).
+- Post one plain PR comment naming the executable and an argument that exits 0,
+  as the guide asks, e.g. "`okf.exe` prints usage and exits 1 without arguments;
+  `okf.exe --version` exits 0. Could an administrator add the installation
+  metadata for `okf.exe` with `--version`?" Posting is public and in the user's
+  name: get the user's approval first.
+- Then wait: administrators work the queue oldest-first (0.5.0 waited ~12 h). A
+  polite follow-up is reasonable after 7–10 days without movement.

@@ -238,9 +238,17 @@ public static class OkfCli
 
         if (args.Length == 0)
         {
-            stderr.Write(Usage);
-            stderr.Write("\n");
-            return 1;
+            // A bare invocation is the same request as `okf help`: usage on
+            // stdout, exit 0. Not a usage error. It used to be (stderr, exit 1),
+            // inherited from the reference CLI rather than decided, and it cost
+            // every release a manual unblock: winget's validator runs a portable
+            // exe with no argument and flags any non-zero exit
+            // (Validation-Executable-Error), which only a Microsoft
+            // administrator can clear. A missing BUNDLE argument to a verb is
+            // still an error; only "no arguments at all" changed.
+            stdout.Write(Usage);
+            stdout.Write("\n");
+            return 0;
         }
 
         var cmd = args[0];
