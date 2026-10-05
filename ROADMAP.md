@@ -134,7 +134,10 @@ are the concrete entry points.
   personal-notes sample over `OKF4net.Mcp` in Claude Desktop — the current
   MCP story is read-only-focused; this would exercise write/append and
   `IndexGenerator`/`ChangeLog` (§8/§9) updating live as notes are added.
-- Performance baselines for large bundle loads.
+- Performance baselines for large bundle loads: **a `Bundle.Load` baseline
+  exists** (`BundleLoadPerformanceTests`, a 2,001-concept synthetic bundle,
+  [#6](https://github.com/jchable/okf4net/issues/6)) — it prints its timings
+  and gates only on a pathology ceiling, not on a target.
 - Bundle viewer: **static render shipped** as the standalone `okf-render`
   binary (`OKF4net.Render`, over `OKF4net.Viewer`) — split out of `okf`
   itself so the CI-facing validator does not carry the viewer's JavaScript.
