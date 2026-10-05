@@ -57,6 +57,8 @@ public static class OkfCli
         "    graph    <bundle>    Print the cross-link graph (--dot for Graphviz DOT)\n" +
         "    parse    <file>      Parse one concept document and print its structure\n" +
         "    fmt      <file>      Normalize a document by parse + re-serialize (-w writes)\n" +
+        "    help                 Show this help (same as -h, --help)\n" +
+        "    version              Show version (same as -V, --version)\n" +
         "\n" +
         "OPTIONS:\n" +
         "    -h, --help           Show this help\n" +
