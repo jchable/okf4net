@@ -50,28 +50,59 @@ are the concrete entry points.
     extension (`digest`, `scope`, `note` on the stamp) is planned to
     recreate this information inside the bundle instead — that question is
     answered by git, on purpose.
-- **Atomic write-then-rename in `BundleConceptWriter`.** Every write path
-  in the class ends at `File.WriteAllText`, which truncates the target and
-  writes in place, so a failure mid-write (full disk, device error) can
-  leave a concept truncated or half-written. `RecordVerifications` reports
-  the concepts whose write returned, and that file is not among them — so
-  the report is not wrong, but "exactly what landed" is a stronger claim
-  than the primitive supports, and the docs now say so. Closing it means
-  writing to a temporary file in the same directory and `File.Replace`-ing
-  it over the target. Deliberately its own pass rather than a footnote to
-  `okf verify`: the call sits immediately after the late reparse-point
-  re-check and inside the per-bundle lock, so a replacement needs tests for
-  `File.Replace` semantics (cross-volume, existing-file, permissions,
-  what happens to the backup), for the path-safety guard still holding
-  against the *temporary* name, and for the lock — a security-sensitive
-  seam that must not be swapped in passing. Pre-existing and shared by
-  every write path; not introduced by verification.
-  One thing in its favour, measured rather than assumed: every write path in
-  the class funnels through the single `WriteValidatedContentLocked`, whose
-  `File.WriteAllText` is the only line that touches disk. The change is
-  therefore contained to one method — it is the *interaction* with the late
-  reparse-point re-check and the lock that needs the tests, not a scattered
-  edit.
+- **Atomic write-then-rename in `BundleConceptWriter`: its own design lot.**
+  Every write path in the class funnels through the single
+  `WriteValidatedContentLocked`, whose `File.WriteAllText` truncates the target
+  and writes in place, so a failure mid-write (full disk, device error) can
+  leave a concept truncated or half-written. `RecordVerifications` reports the
+  concepts whose write returned, and that file is not among them, so the
+  report is not wrong, but "exactly what landed" is stronger than the
+  primitive supports. Writing a temporary beside the target and renaming it
+  over is the obvious shape; an external review of the first design (kept out
+  of the write-path hardening lot for that reason) found that the obvious
+  shape is not safe as sketched, and the design starts from these findings:
+  - **The commit protocol must separate failures that happened before the
+    commit from indeterminate ones.** Windows `ReplaceFile` can fail with
+    `ERROR_UNABLE_TO_MOVE_REPLACEMENT` (1176) and, when no backup file is
+    given, leave no file at the target and the replacement under its temporary
+    name. Deleting the temporary on every exception would then lose both
+    versions, so a pre-commit failure may clean up, an indeterminate one must
+    keep the recoverable artifacts.
+  - **The temporary must be created with restrictive permissions before any
+    content is written.** A POSIX create at `0644` under umask 022 exposed the
+    content of a `0600` target, and a `chmod` by path afterwards can follow a
+    link substituted in the meantime. On Windows, the ACL the temporary
+    inherits at creation has to be considered too, not assumed to match the
+    target's.
+  - **`File.Move(overwrite: false)` is not a no-clobber primitive on Unix.**
+    It is an `lstat` followed by a `rename`, so it is not race-proof, and it
+    can fall back to copying.
+  - **The durability promise has to be stated:** surviving a process crash is
+    not surviving power loss, and the latter needs the file flushed and, on
+    POSIX, the directory fsynced.
+  - **Orphaned temporaries are ignored as concepts but not harmless.** They
+    can block the producer's `RequireEmpty` and its pruning.
+
+  Still to be done beside the commit protocol: tests for the path-safety guard
+  holding against the *temporary* name, and for the per-bundle lock, since the
+  write sits immediately after the late reparse-point re-check inside it — a
+  security-sensitive seam that must not be swapped in passing. Pre-existing and
+  shared by every write path; not introduced by verification.
+- **`YamlValue.GetHashCode` (and likely `Equals`) recurse without a bound.**
+  The parser caps a parsed value's nesting at 1000, but a value built in code
+  is not capped: one deeper than 1000 overflowed the test host's stack when
+  hashed. The depth rule now shared by the parser and the emitter does not
+  reach these two members; they need the same bound, or an iterative walk.
+- **A cancelled computation can leave its container behind
+  ([#110](https://github.com/jchable/okf4net/issues/110)).** Cancelling or
+  timing out while Docker is still creating the container leaves it in
+  `Created` state: `kill` on an unstarted container is a no-op and `--rm` only
+  fires for one that ran. The issue's suggested `docker rm -f` is the obvious
+  half; the other half is the container's lifecycle (what owns the name, who
+  tears down when the client process is killed first), which needs a design
+  before the fix — and it is the cause of the flaky
+  `Cancellation_kills_the_container_and_propagates_as_OperationCanceledException`
+  integration test.
 - More `OKF4net.Agents` samples with Microsoft Agent Framework — the first,
   `samples/acme-retail-agent`, shipped in 0.4.0, and
   `samples/agents-quickstart` (no model or API key needed) followed; more
