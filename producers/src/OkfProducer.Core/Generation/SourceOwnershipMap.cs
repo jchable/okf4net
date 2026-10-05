@@ -210,8 +210,8 @@ public sealed class SourceOwnershipMap
     /// of the repository, the key the old guard existed to refuse. Rendering it with POSIX separator
     /// semantics instead (<c>..\x/x.cs</c>) is not available without breaking that rule: the same
     /// rendering would key a directory named <c>a\b</c> as <c>a\b/x.cs</c>, which no normalised lookup
-    /// can ever reach, where today it resolves. So a key whose normalised first segment is <c>..</c> is
-    /// dropped: the file is simply not owned (no package link), which is the degraded-but-honest outcome
+    /// can ever reach, where today it resolves. So a key with a normalised segment equal to <c>..</c>, in
+    /// any position (see <see cref="HasClimbSegment"/>), is dropped: the file is simply not owned (no package link), which is the degraded-but-honest outcome
     /// this type already chooses for anything it cannot key safely, and never a key that reads as
     /// escaping the repository.</para>
     /// </summary>
@@ -234,8 +234,18 @@ public sealed class SourceOwnershipMap
         }
 
         var key = Normalize(relative);
-        return key == ".." || key.StartsWith("../", StringComparison.Ordinal) ? null : key;
+        return HasClimbSegment(key) ? null : key;
     }
+
+    /// <summary>
+    /// Whether any <c>/</c>-separated segment of <paramref name="key"/> is exactly <c>..</c>. Not only
+    /// the first: under <see cref="Normalize"/>'s fold a POSIX directory <c>a</c> holding one named
+    /// <c>..\..\y</c> becomes <c>a/../../y/F.cs</c>, which reads as a climb out of the repository
+    /// from the middle of the key (#117). A segment that merely contains dots (<c>..b</c>, <c>x..</c>)
+    /// is an ordinary name and is kept.
+    /// </summary>
+    private static bool HasClimbSegment(string key) =>
+        key.Split('/').Contains("..", StringComparer.Ordinal);
 
     /// <summary>
     /// Separator normalization only (<c>\</c> -> <c>/</c>, a leading <c>./</c> dropped): one spelling

@@ -276,7 +276,9 @@ public sealed class RepositoryScanner : IRepositoryScanner
             var description = propertyGroups
                 .SelectMany(group => group.Elements())
                 .FirstOrDefault(e => e.Name.LocalName == "Description")?.Value;
-            var relativePath = Path.GetRelativePath(repoPath, csprojPath).Replace('\\', '/');
+            // Only the separator this platform produced is folded to '/': on POSIX a '\' is part of a
+            // directory's NAME, and folding it would turn a directory called `..\x` into `../x` (#117).
+            var relativePath = Path.GetRelativePath(repoPath, csprojPath).Replace(Path.DirectorySeparatorChar, '/');
 
             return new PackageManifest("nuget", relativePath, name, string.IsNullOrWhiteSpace(description) ? null : description);
         }

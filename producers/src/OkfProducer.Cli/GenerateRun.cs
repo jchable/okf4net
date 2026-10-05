@@ -880,7 +880,7 @@ internal static class GenerateRun
     {
         try
         {
-            return Path.GetRelativePath(repoPath, path).Replace('\\', '/');
+            return Path.GetRelativePath(repoPath, path).Replace(Path.DirectorySeparatorChar, '/');
         }
         catch (ArgumentException)
         {

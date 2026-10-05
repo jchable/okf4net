@@ -140,6 +140,28 @@ public class SourceOwnershipMapTests
         Assert.Equal("A.csproj", map.OwnerOf("a\\b/Kept.cs"));
     }
 
+    [UnixOnlyFact]
+    public void A_posix_directory_whose_name_puts_a_climb_in_the_middle_of_the_key_is_never_keyed_as_one_posix()
+    {
+        // #117. The round-1 refusal above looked only at the FIRST segment, so a directory `a` holding a
+        // directory literally named `..\..\y` (one name on POSIX, inside the repository) folded to
+        // `a/../../y/Hidden.cs` -- a climb out of the repository spelled mid-key, which was kept.
+        // `a/..b` and `a/x..` are ordinary names, not climbs, and must keep resolving.
+        var root = Path.Combine(Path.GetTempPath(), "okfproducer-ownership");
+        var map = SourceOwnershipMap.From(root,
+            [
+                new ProjectCompileItems(
+                    Path.Combine(root, "A.csproj"),
+                    "net10.0",
+                    [root + "/a/..\\..\\y/Hidden.cs", root + "/a/..b/Kept.cs", root + "/a/x../AlsoKept.cs"]),
+            ]);
+
+        Assert.Null(map.OwnerOf("a/../../y/Hidden.cs"));
+        Assert.Null(map.OwnerOf("a/..\\..\\y/Hidden.cs"));
+        Assert.Equal("A.csproj", map.OwnerOf("a/..b/Kept.cs"));
+        Assert.Equal("A.csproj", map.OwnerOf("a/x../AlsoKept.cs"));
+    }
+
     [Fact]
     public void A_rooted_compile_path_the_platform_rejects_is_dropped_rather_than_thrown()
     {
