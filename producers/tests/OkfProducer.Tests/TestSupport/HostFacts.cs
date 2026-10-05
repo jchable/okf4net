@@ -115,16 +115,7 @@ internal static class DirectoryLinks
         }
         finally
         {
-            try
-            {
-                Directory.Delete(scratch, recursive: true);
-            }
-            catch (IOException)
-            {
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
+            TempTree.Delete(scratch);
         }
     }
 }

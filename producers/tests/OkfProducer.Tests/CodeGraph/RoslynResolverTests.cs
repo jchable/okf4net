@@ -1470,16 +1470,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         }
         finally
         {
-            try
-            {
-                Directory.Delete(outside.FullName, recursive: true);
-            }
-            catch (IOException)
-            {
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
+            TempTree.Delete(outside.FullName);
         }
     }
 
@@ -1514,16 +1505,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         }
         finally
         {
-            try
-            {
-                Directory.Delete(outside.FullName, recursive: true);
-            }
-            catch (IOException)
-            {
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
+            TempTree.Delete(outside.FullName);
         }
     }
 
@@ -2043,17 +2025,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
 
         public void Dispose()
         {
-            try
-            {
-                Directory.Delete(Root, recursive: true);
-            }
-            catch (IOException)
-            {
-                // Best-effort cleanup; a locked file on the way out should not fail the test run.
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
+            TempTree.Delete(Root);
         }
 
         // No LangVersion, deliberately: this project exercises whatever the SDK reports for a plain
@@ -2979,17 +2951,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
 
         public void Dispose()
         {
-            try
-            {
-                Directory.Delete(Root, recursive: true);
-            }
-            catch (IOException)
-            {
-                // Best-effort cleanup; a locked file on the way out should not fail the test run.
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
+            TempTree.Delete(Root);
         }
     }
 

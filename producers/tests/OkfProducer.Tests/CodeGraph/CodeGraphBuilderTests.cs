@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using OkfProducer.Core.CodeGraph;
 using OkfProducer.Core.Scanning;
+using OkfProducer.Tests.TestSupport;
 
 namespace OkfProducer.Tests.CodeGraph;
 
@@ -17,17 +18,7 @@ public class CodeGraphBuilderTests : IDisposable
     {
         foreach (var directory in _tempDirectories)
         {
-            try
-            {
-                Directory.Delete(directory, recursive: true);
-            }
-            catch (IOException)
-            {
-                // Best-effort: a locked file on the way out must not fail a green run.
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
+            TempTree.Delete(directory);
         }
 
         GC.SuppressFinalize(this);

@@ -4,6 +4,7 @@ using OkfProducer.Core.CodeGraph;
 using OkfProducer.Core.Generation;
 using OkfProducer.Core.Scanning;
 using OkfProducer.Core.Validation;
+using OkfProducer.Tests.TestSupport;
 
 // `CodeGraph` alone would bind to the sibling namespace OkfProducer.Tests.CodeGraph, not to the type
 // (CS0118) -- see the same alias, and the same reason, at the top of ConceptGenerator.cs.
@@ -680,16 +681,7 @@ public class ContainmentTests
 
         public void Dispose()
         {
-            try
-            {
-                Directory.Delete(Path, recursive: true);
-            }
-            catch (IOException)
-            {
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
+            TempTree.Delete(Path);
         }
     }
 }

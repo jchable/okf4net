@@ -158,17 +158,7 @@ public sealed class Sdk8ImplicitDefinesTests
 
         public void Dispose()
         {
-            try
-            {
-                Directory.Delete(Root, recursive: true);
-            }
-            catch (IOException)
-            {
-                // Best-effort cleanup; a locked file on the way out should not fail the test run.
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
+            TempTree.Delete(Root);
         }
 
         private const string GlobalJson = """

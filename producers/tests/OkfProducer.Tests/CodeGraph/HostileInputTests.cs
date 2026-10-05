@@ -25,17 +25,7 @@ public class HostileInputTests : IDisposable
 
         foreach (var directory in _tempDirectories)
         {
-            try
-            {
-                Directory.Delete(directory, recursive: true);
-            }
-            catch (IOException)
-            {
-                // Best-effort cleanup; a locked file on the way out should not fail the test run.
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
+            TempTree.Delete(directory);
         }
     }
 
@@ -54,18 +44,25 @@ public class HostileInputTests : IDisposable
     private static OkfProducer.Core.CodeGraph.CodeGraph BuildWith(params (string Path, FileStatus Status)[] files)
     {
         var repoPath = Directory.CreateTempSubdirectory("okfproducer-hostile-").FullName;
-        foreach (var (path, _) in files)
+        try
         {
-            var fullPath = Path.Combine(repoPath, path.Replace('/', Path.DirectorySeparatorChar));
-            Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
-            File.WriteAllText(fullPath, string.Empty);
+            foreach (var (path, _) in files)
+            {
+                var fullPath = Path.Combine(repoPath, path.Replace('/', Path.DirectorySeparatorChar));
+                Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+                File.WriteAllText(fullPath, string.Empty);
+            }
+
+            var snapshot = new RepositorySnapshot(repoPath, "test-repo", [], []);
+            var statusByPath = files.ToDictionary(f => f.Path, f => f.Status);
+            var builder = new CodeGraphBuilder(new StubExtractor(statusByPath), [CSharpProfile.Instance], []);
+
+            return builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
         }
-
-        var snapshot = new RepositorySnapshot(repoPath, "test-repo", [], []);
-        var statusByPath = files.ToDictionary(f => f.Path, f => f.Status);
-        var builder = new CodeGraphBuilder(new StubExtractor(statusByPath), [CSharpProfile.Instance], []);
-
-        return builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
+        finally
+        {
+            TempTree.Delete(repoPath);
+        }
     }
 
     [Theory]
@@ -1131,16 +1128,7 @@ public class HostileInputTests : IDisposable
 
         public void Dispose()
         {
-            try
-            {
-                Directory.Delete(Path, recursive: true);
-            }
-            catch (IOException)
-            {
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
+            TempTree.Delete(Path);
         }
     }
 
