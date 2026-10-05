@@ -296,19 +296,18 @@ are the concrete entry points.
     deliberately outside git (so the suite stays at ~16 s and spawns no MSBuild), and the detached
     -HEAD case is covered by the one test that does build a git repository. The auto-detected
     branch name is verified by manual run only.
-  - **`LiftedMarkdown` mirrors a `LinkScanner` that no longer exists.** Its safety argument is
-    agreement with the consumer, not with CommonMark: `NeutralizeMarkdownLinks` toggles a code span
-    on every single backtick, per line, with no backslash awareness; `UnclosedFenceLine` replays a
-    fence loop without indentation or container rules; `LinkText` swaps backticks for `&#96;`
-    because the old scanner blanked to the end of a line. Since #101 and #105 the scanner matches
-    backtick runs, blanks raw HTML, reads containers and resolves links a paragraph at a time. So
-    the mirror can now manufacture a live link: on ``` `` a ` b `` [x](y) ``` it believes
-    `[x](y)` is still inside a span and leaves its `]` unescaped, while the scanner closes the span
-    and extracts the link. Its tests stay green because they pin the old rules
-    (`CodeConceptGeneratorTests`, `ConceptGeneratorTests` quote `BlankInlineCode` by name). The fix
-    re-derives each rule from the current scanner — or has the producer ask the scanner itself,
-    through `LinkScanner.ExtractLinks` on the text it emits — then checks the generated bundle. Not
-    started; found 2026-09-14 while reviewing #105.
+  - **`LiftedMarkdown`'s escaping rules are a copy of a scanner that has since been rewritten.**
+    Fixed (#111): `LiftedMarkdown` still *prefers* its own rendering of lifted text, but it now
+    asks `LinkScanner.ExtractLinks` on what it is about to emit and falls back to an encoded form
+    when the scanner disagrees, so the rules can drift without the output becoming unsafe.
+    `LiftedMarkdownAgreementTests` is the executable guard — against the real scanner, over a fixed
+    payload list and a seeded sweep, and over the whole generated bundle. Measured before the fix,
+    on 40,000 random strings built from the characters the scanner turns on (an adversarial
+    alphabet, not typical text): about 7% either manufactured a link or hid the producer's own (an
+    unclosed `<!--` swallowed `## Contains`), the ticket's payload ``` `` a ` b `` [x](y) ```
+    among them. This repository's own bundle (763 concepts) is byte-identical before and after.
+    What remains is a limit of the method, not a gap in it: the check runs in a frame shaped like
+    the generated body, so a context the generator adds later has to be added to the frame too.
 - **Known limitation: without `--repo-url`, `packages/` and `docs/` `resource` paths don't resolve
   against the bundle.** `producers/OkfProducer` records those families' `resource` relative to the
   *scanned repository* (e.g. `src/OKF4net/OKF4net.csproj`), which is the semantically correct
