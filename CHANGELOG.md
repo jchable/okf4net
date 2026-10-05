@@ -8,6 +8,53 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+All five entries are in `okfgen` (`producers/OkfProducer`, not published, outside
+CI): they came from the follow-up wave of the post-audit work and were verified by
+running `dotnet test producers/OkfProducer.sln` locally, on Windows and in a Linux
+container.
+
+- **A repository holding directory links can no longer hang `okfgen` (#118).**
+  The code-graph walk followed a symbolic link or junction while recursing, and
+  nothing stopped a link that points back at an ancestor. On Linux one such
+  link cost 42 paths before the kernel refused another hop, but two under the
+  same directory multiply per level: a standalone walk had produced 432,906
+  paths when it was abandoned after 15 seconds, still climbing. On Windows the
+  first one ended the whole walk with a `PathTooLongException` that discarded
+  every file. The walk now never enters a directory link, on any platform; each
+  one is named under the `run:` report (`alias/: skipped, directory is a link,
+  not entered`) and makes the run not complete, but does not stop the traversal
+  counting as complete, so pruning is unaffected — the extractor already
+  refuses files reached through a link. The Hidden/System behaviour of the walk
+  (`AttributesToSkip = 0`) is now pinned by a test.
+- **Lifted text can no longer manufacture a link or hide the producer's own
+  (#111).** `LiftedMarkdown` neutralised link syntax with a hand-copy of the
+  scanner's rules, made before the scanner was rewritten, and the copy was wrong
+  in both directions: `` `` a ` b `` [x](y) `` stayed a live link, and an
+  unclosed `<!--` in a description or title swallowed `## Contains` without
+  `okf validate` seeing anything dangle. About 7% of 40,000 random strings built
+  from the characters the scanner turns on did one or the other. Each lifted
+  text is now checked by the real `LinkScanner` in a frame shaped like the body
+  it will sit in, and replaced by a stricter encoding when the scanner
+  disagrees. This repository's own 763-concept bundle is unchanged.
+- **`dotnet exec OkfProducer.Cli.dll` no longer queries a different `dotnet`
+  than every other way of launching `okfgen` (#112).** `Process.Start("dotnet")`
+  searches the running application's directory before `PATH`, and under
+  `dotnet exec` the application is `dotnet` itself, so a repository whose
+  `global.json` pins an SDK only the `PATH` install has degraded to
+  `MsBuildQueryFailed` with exit code 0. The query now resolves `dotnet` on
+  `PATH`, and falls back to the hosting install only when `PATH` has none.
+- **A POSIX directory name containing a backslash no longer reads as a path
+  climb (#117).** `..\x` is one directory name on POSIX, but it was folded to
+  `../x` in a package's `resource` and in the source-ownership keys. Only the
+  platform's own separator is folded now, and an ownership key with a `..`
+  segment anywhere is refused, not only at the start.
+- **The producer's test suite no longer leaks scratch directories into the
+  system temp (#119).** A recursive delete fails on a directory junction and on
+  git's read-only object files, and every disposer swallowed it; one test never
+  deleted its directory at all. About 20,000 directories had accumulated.
+
 ## [0.6.0] - 2026-10-01
 
 This release is large: 146 entries below. What follows is the short version —
