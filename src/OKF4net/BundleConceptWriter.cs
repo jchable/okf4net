@@ -167,9 +167,11 @@ public sealed class BundleConceptWriter
     /// only maps more roots onto one object, and a monitor re-entered by the
     /// thread that already holds it does not block.
     /// The registry grows by one small object
-    /// per distinct key for the process's lifetime -- bounded in
-    /// practice by how many distinct bundle directories a process ever
-    /// opens, and never removed (there is no matching "last instance for
+    /// per distinct resolved key ever observed for the process's lifetime --
+    /// which is how many distinct bundle directories it opens, plus one for
+    /// each new place a link on a root's path is retargeted to (keys are
+    /// resolution results, computed at every acquisition, and a link's target
+    /// need not exist) -- and never removed (there is no matching "last instance for
     /// this path went away" signal to remove it on). Evicting correctly would
     /// need reference counting, since a lock must never be evicted while it is
     /// held -- disproportionate for one small object per root. That makes the

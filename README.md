@@ -580,10 +580,12 @@ A few known v1 caveats:
 - **Concurrent same-day capture is safe only within one process, and only up
   to a residual filesystem-race caveat:** same-day capture is a
   read-modify-write on one concept file, done through
-  `OkfBundleTools.AppendToConceptAtomic` under a write lock that's shared by
-  every `OkfBundleTools` instance pointed at the same canonicalized bundle
-  path — not just one instance — via a process-wide registry keyed on the
-  resolved bundle root. So two (or more) truly concurrent
+  `OkfBundleTools.AppendToConceptAtomic` under a write lock that's shared —
+  not just by one instance — via a process-wide registry, by every
+  `OkfBundleTools` instance whose bundle root resolves, at the moment it
+  takes the lock, to the same directory (a junction or symlink to the bundle
+  shares its lock; if resolution fails, the lexical path is the key; a
+  topology change during an operation is not followed). So two (or more) truly concurrent
   `StoreAIContextAsync` calls, even across separate `OkfBundleTools`/
   `OkfContextProvider` instances sharing a session pool, never lose a
   same-day section as long as they're all in **the same process**. This

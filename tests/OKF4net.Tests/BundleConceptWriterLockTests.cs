@@ -206,6 +206,33 @@ public class BundleConceptWriterLockTests
     }
 
     /// <summary>
+    /// The fallback keeps the namespace normalization: when resolution FAILS,
+    /// <c>\\?\C:\x</c> and <c>C:\x</c> still share one lock, not one each. The
+    /// failure is forced with a junction whose attributes are readable but
+    /// whose target is not (a deny ReadAttributes ACE, see
+    /// <see cref="TempDir.TryCreateUninspectableJunction"/>), so
+    /// <see cref="ReparsePoints.TryResolveThroughReparsePoints"/> returns false;
+    /// the precondition asserts that.
+    /// </summary>
+    [SkippableFact]
+    public void Windows_namespace_spellings_share_one_lock_when_resolution_fails()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "the \\\\?\\ namespace is Windows-only");
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        using var junction = tmp.TryCreateUninspectableJunction("link", external.Path, denyParentListing: false);
+        Skip.If(junction is null, "needs a junction plus deny ACEs");
+        var plain = junction!.LinkPath;
+        var device = @"\\?\" + plain;
+
+        Assert.False(ReparsePoints.TryResolveThroughReparsePoints(plain, out _), "precondition: resolution must fail");
+        Assert.Equal(ReparsePoints.ResolveLockKey(plain), ReparsePoints.ResolveLockKey(device));
+        Assert.Same(
+            new BundleConceptWriter(plain).CurrentLockObjectForTest(),
+            new BundleConceptWriter(device).CurrentLockObjectForTest());
+    }
+
+    /// <summary>
     /// The UNC half of the namespace test, split out so the drive-letter half
     /// still runs on a host where the local administrative share is not
     /// reachable (it is opened through the server service, which can be off).

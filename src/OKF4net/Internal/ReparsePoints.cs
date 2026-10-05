@@ -609,8 +609,10 @@ internal static class ReparsePoints
     /// Any failure -- an uninspectable entry, a link whose target cannot be
     /// read, a path the BCL rejects, or no fixed point within
     /// <see cref="MaxLockKeyRounds"/> passes -- returns the LEXICAL key
-    /// (<see cref="CanonicalizeRoot"/> of <paramref name="root"/>): the lock
-    /// is then what it was before #86, never a throw out of a write.
+    /// (<see cref="CanonicalizeRoot"/> of <paramref name="root"/>, in the same
+    /// normalized namespace spelling, so two spellings of a root still share
+    /// one lock): the lock is then what it was before #86, never a throw out
+    /// of a write.
     /// </para>
     /// </remarks>
     /// <param name="root">The bundle root, as given to the writer.</param>
@@ -618,14 +620,19 @@ internal static class ReparsePoints
     internal static string ResolveLockKey(string root)
     {
         var lexical = CanonicalizeRoot(root);
+        // What every failure path returns: the lexical path in its normalized
+        // namespace spelling, so \\?\C:\x and C:\x still share one lock when
+        // resolution fails. Plain lexical only if normalizing is itself refused.
+        var fallback = lexical;
         try
         {
             var current = NormalizeNamespaceForLockKey(lexical);
+            fallback = current;
             for (var round = 0; round < MaxLockKeyRounds; round++)
             {
                 if (!TryResolveThroughReparsePoints(current, out var resolved))
                 {
-                    return lexical;
+                    return fallback;
                 }
 
                 var next = NormalizeNamespaceForLockKey(resolved);
@@ -642,7 +649,7 @@ internal static class ReparsePoints
             // A resolved target the BCL refuses as a path: fall back below.
         }
 
-        return lexical;
+        return fallback;
     }
 
     /// <summary>

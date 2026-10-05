@@ -69,8 +69,11 @@ Note: the token budget is a soft chars/4 estimate
 (can be exceeded slightly), its `<okf-context>` fences are readability
 markers rather than a security boundary, and same-day memory capture is safe
 across concurrent sessions **within one process** — `OkfBundleTools` shares
-its write lock across every instance pointed at the same canonicalized
-bundle path via a process-wide registry — but not across separate processes
+its write lock, via a process-wide registry, across every instance whose
+bundle root resolves to the same directory when the lock is taken (a junction
+or symlink to the bundle shares its lock; if resolution fails, the lexical
+path is the key; a topology change during an operation is not followed) —
+but not across separate processes
 sharing a bundle path, and the reparse-point guard write tools rely on is a
 best-effort check-then-write, not a guarantee against a concurrent local
 actor substituting a path component mid-write (see the project README's

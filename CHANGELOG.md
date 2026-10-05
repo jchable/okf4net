@@ -58,7 +58,10 @@ and this project adheres to
   parser used to reject, are now accepted; documents mixing block and flow
   deeper than 1000 in total, which used to load, are now rejected (they could
   not be written back); values nested 1001 deep, which the emitter used to
-  write, are now refused. Real frontmatter is a handful of levels deep.
+  write, are now refused. Real frontmatter is a handful of levels deep. On a
+  thread with too little stack left, a document or value within the limit is
+  refused with `nesting depth limit exceeded: not enough stack left on this
+  thread`, where it would otherwise have crashed the process.
 
 ### Fixed
 

@@ -100,7 +100,7 @@ are the concrete entry points.
   fires for one that ran. The issue's suggested `docker rm -f` is the obvious
   half; the other half is the container's lifecycle (what owns the name, who
   tears down when the client process is killed first), which needs a design
-  before the fix — and it is the cause of the flaky
+  before the fix — and it is the likely cause of the flaky
   `Cancellation_kills_the_container_and_propagates_as_OperationCanceledException`
   integration test.
 - More `OKF4net.Agents` samples with Microsoft Agent Framework — the first,
