@@ -747,6 +747,170 @@ public class ContainerIntegrationTests
     }
 
     /// <summary>
+    /// #110, and the real proof of it: a run cancelled or timed out while its container
+    /// exists but has not started leaves nothing behind. <c>kill</c> is a no-op on such a
+    /// container and <c>--rm</c> only fires for one that ran, so before the teardown
+    /// learned <c>rm -f</c> it stayed in <c>Created</c> state forever -- the failure the
+    /// unit tests with a fake engine cannot observe, because only a real engine can say
+    /// whether a container still exists.
+    /// <para>
+    /// The window is hit deterministically, not by racing it: the "engine" is a shim that
+    /// turns <c>run</c> into <c>create</c> (same arguments, so the same <c>--name</c> and
+    /// <c>--rm</c>) and then hangs without ever starting the container, and passes every
+    /// other subcommand -- the teardown's <c>kill</c> and <c>rm</c> -- to the real
+    /// <c>docker</c>. The test waits until the engine itself reports the container as
+    /// <c>created</c> before the caller cancels (or, for the timeout case, asserts it saw
+    /// that state, so the test cannot pass without having reached the window), then
+    /// asks the engine -- <c>docker ps -a</c>, not the exception, not the arguments
+    /// that were sent -- whether a container by that name still exists. Reverting the
+    /// <c>rm -f</c> half of the teardown makes this fail with the container still there.
+    /// </para>
+    /// <para>
+    /// Docker only: the shim's <c>create</c> is spelled the Docker way, and this repo has
+    /// never run Podman or nerdctl.
+    /// </para>
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Cancellation_or_timeout_between_create_and_start_leaves_no_container_behind(bool callerCancels)
+    {
+        Skip.IfNot(DockerAvailable(), "docker is not on PATH");
+
+        using var tmp = new TempDir();
+        var engine = new CliContainerEngine(CreateButNeverStartEngine(tmp));
+        var before = ContainerStates().Keys.ToHashSet();
+        var spec = new ContainerRunSpec(
+            Image: "python:3.12-slim",
+            Command: ["sleep", "60"],
+            Stdin: null,
+            Environment: new Dictionary<string, string>(),
+            NetworkMode: "none",
+            MemoryBytes: 128 * 1024 * 1024,
+            Cpus: 0.5,
+            PidsLimit: 16,
+            // Only the timeout case relies on this: long enough for `docker create` to
+            // have finished (it takes a fraction of a second on a local image), short
+            // enough that the test does not sit there.
+            Timeout: callerCancels ? TimeSpan.FromSeconds(60) : TimeSpan.FromSeconds(8));
+
+        using var cts = new CancellationTokenSource();
+        string? created = null;
+        var observer = Task.Run(async () =>
+        {
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
+            while (DateTime.UtcNow < deadline)
+            {
+                var name = ContainerStates()
+                    .Where(c => !before.Contains(c.Key) && c.Value == "created")
+                    .Select(c => c.Key)
+                    .FirstOrDefault();
+                if (name is not null)
+                {
+                    created = name;
+                    if (callerCancels)
+                    {
+                        cts.Cancel();
+                    }
+
+                    return;
+                }
+
+                await Task.Delay(100);
+            }
+        });
+
+        try
+        {
+            if (callerCancels)
+            {
+                await Assert.ThrowsAsync<OperationCanceledException>(async () => await engine.RunAsync(spec, cts.Token));
+            }
+            else
+            {
+                var ex = await Assert.ThrowsAsync<ContainerExecutionException>(async () => await engine.RunAsync(spec));
+                Assert.Contains("exceeded its timeout", ex.Message);
+            }
+
+            await observer;
+            Assert.True(created is not null, "no new container was ever seen in the `created` state, so the window this test is about was not reached");
+            Assert.True(
+                await NoContainerNamedWithin(created!, TimeSpan.FromSeconds(10)),
+                $"container {created} was left behind by a {(callerCancels ? "cancelled" : "timed-out")} run: `docker ps -a` still lists it");
+        }
+        finally
+        {
+            // Whatever the outcome, do not leave this test's own container to the next run.
+            await observer;
+            if (created is not null)
+            {
+                RunDocker("rm -f " + created);
+            }
+        }
+    }
+
+    /// <summary>
+    /// An "engine" that is <c>docker</c> except for <c>run</c>, which it performs as
+    /// <c>create</c> with the same arguments and then never follows with a <c>start</c>:
+    /// it just waits, as a <c>docker run</c> stuck between creating and starting would.
+    /// Anything else is handed to the real <c>docker</c> unchanged.
+    /// </summary>
+    private static string CreateButNeverStartEngine(TempDir tmp)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return tmp.Write(
+                "engine.cmd",
+                "@echo off\r\n"
+                + "if \"%1\"==\"run\" goto run\r\n"
+                + "docker %*\r\n"
+                + "exit /b %errorlevel%\r\n"
+                + ":run\r\n"
+                + "set \"args=%*\"\r\n"
+                + "set \"args=%args:*run =%\"\r\n"
+                + "docker create %args%\r\n"
+                + "ping -n 61 127.0.0.1 >nul\r\n");
+        }
+
+        var path = tmp.Write(
+            "engine.sh",
+            "#!/bin/sh\n"
+            + "if [ \"$1\" = \"run\" ]; then\n"
+            + "  shift\n"
+            + "  docker create \"$@\"\n"
+            + "  sleep 60\n"
+            + "else\n"
+            + "  exec docker \"$@\"\n"
+            + "fi\n");
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        return path;
+    }
+
+    /// <summary>Every <c>okf-&lt;guid&gt;</c>-named container (any state) mapped to its state (<c>created</c>, <c>running</c>, ...).</summary>
+    private static Dictionary<string, string> ContainerStates() =>
+        RunDocker("ps -a --filter name=okf- --format {{.Names}}|{{.State}}")
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(line => line.Split('|', 2))
+            .Where(parts => parts.Length == 2 && EngineContainerName.IsMatch(parts[0]))
+            .ToDictionary(parts => parts[0], parts => parts[1]);
+
+    private static async Task<bool> NoContainerNamedWithin(string name, TimeSpan budget)
+    {
+        var deadline = DateTime.UtcNow + budget;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (RunDocker("ps -a --filter name=" + name + " --format {{.Names}}").Length == 0)
+            {
+                return true;
+            }
+
+            await Task.Delay(250);
+        }
+
+        return RunDocker("ps -a --filter name=" + name + " --format {{.Names}}").Length == 0;
+    }
+
+    /// <summary>
     /// <see cref="CliContainerEngine"/> names each run <c>okf-{Guid:N}</c>, so a
     /// leftover is a name of exactly that shape. Matching a bare <c>okf-</c> prefix
     /// instead would also catch <c>okf-demo-pg</c> — the Postgres fixture this class's

@@ -8,6 +8,16 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- `OKF4net.Attestation.Containers`: a container run cancelled or timed out
+  between the engine creating its container and starting it no longer leaves
+  that container behind in `Created` state (#110). Teardown still issues
+  `kill` first, then — only when `kill` fails, which is what it does on a
+  container that never started or does not exist yet — `rm -f` of the same
+  name, inside the same 3 s teardown budget; `rm -f` removes a container in any
+  state, where `--rm` only fires for one that ran.
+
 ## [0.6.0] - 2026-10-01
 
 This release is large: 146 entries below. What follows is the short version —
