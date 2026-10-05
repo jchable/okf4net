@@ -309,18 +309,22 @@ public class YamlRoundtripTests
     }
 
     /// <summary>
-    /// The reachable version of the guard above: not a tree assembled in
-    /// memory, but a document a bundle can hold. The parser counts block and
-    /// flow nesting on two independent counters while the emitter counts both
-    /// on one, so 600 + 600 levels parse and then fail to emit — proving the
-    /// throw is reachable from ordinary input, which is what makes its type
-    /// matter.
+    /// A document a bundle can hold, mixing block and flow nesting up to the
+    /// limit, parses AND re-emits whole: the parser and the emitter count
+    /// nesting by one rule. This used to be the reachable asymmetry — the
+    /// parser counted block and flow on two counters, the emitter on one, so a
+    /// 450 block + 600 flow document parsed and then could not be emitted. That
+    /// same document is now refused where it is read.
     /// </summary>
     [Fact]
-    public void A_document_can_parse_and_still_exceed_the_emitters_depth()
+    public void A_document_at_the_limit_re_emits_and_one_over_it_is_refused_on_read()
     {
         var document = OkfDocument.Parse(DeepYamlDocument.Text());
+        var frontmatter = document.Frontmatter.AsMapping();
 
-        Assert.Throws<YamlEmitException>(() => document.Frontmatter.AsMapping().ToYamlString());
+        Assert.Equal(frontmatter, YamlValue.Parse(frontmatter.ToYamlString()));
+
+        var ex = Assert.Throws<DocumentParseException>(() => OkfDocument.Parse(DeepYamlDocument.Text(blockLevels: 450, flowLevels: 600)));
+        Assert.Contains("nesting depth limit exceeded", ex.Message, StringComparison.Ordinal);
     }
 }

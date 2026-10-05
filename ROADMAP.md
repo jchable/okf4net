@@ -72,21 +72,6 @@ are the concrete entry points.
   therefore contained to one method — it is the *interaction* with the late
   reparse-point re-check and the lock that needs the tests, not a scattered
   edit.
-- **Reconcile the YAML depth counters between the parser and the emitter.**
-  `YamlParser` enforces its 1000-level cap with TWO independent counters (one
-  for block nesting, one for flow); `YamlEmitter` has a single counter covering
-  both. A frontmatter mixing the two — roughly 450 block levels with 900 flow
-  levels — therefore parses happily and then cannot be re-emitted, breaking the
-  invariant a format library owes its callers: whatever it can read, it can
-  write back. Only the *symptom* was addressed alongside `okf verify`: the
-  emitter now raises a catchable `YamlEmitException` instead of a bare
-  `InvalidOperationException`, so the failure is errors-as-data on every path
-  rather than a stack trace out of the CLI or a fault in an MCP host. The
-  asymmetry itself is untouched, deliberately: making the two agree changes what
-  the library ACCEPTS, on the read path, which is a compatibility decision with
-  its own tests (what a bundle in the wild may already contain) and not a
-  footnote to a write feature. Pre-existing; reachable from any caller that
-  parses a hostile-but-loadable document.
 - **A typed `OkfDocumentBuilder` method for the shared `usage_window`.** The
   builder can now write a *per-entry* §5.1 override (`AddSource(…,
   usageWindow:)`), but the shared, top-level `usage_window` — §5.1's normal

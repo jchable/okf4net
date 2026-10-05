@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Child-process harness for hostile YAML (see Program.cs). A stack overflow
+    kills the process it happens in, so these inputs cannot be parsed inside the
+    xunit host: OKF4net.Tests runs this program once per case, with a deadline,
+    and asserts on its output and exit code (Yaml/YamlHostileInputTests.cs).
+    References src/OKF4net only and has no PackageReference: it drives the
+    library through its PUBLIC parse entry points, exactly as a host would.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\OKF4net\OKF4net.csproj" />
+  </ItemGroup>
+
+</Project>

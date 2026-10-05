@@ -104,6 +104,9 @@ public class OkfVerifyToolTests
 
         Assert.StartsWith("Error: ", text);
         Assert.Contains("nesting depth limit exceeded", text);
+        // Refused by the EMITTER (the stamp nests the value one level deeper),
+        // not by the parser: the document itself loads.
+        Assert.Contains("YAML emit error", text);
     }
 
     [Fact]

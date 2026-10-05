@@ -12,16 +12,27 @@ namespace OKF4net.Yaml;
 internal static class YamlParser
 {
     /// <summary>
-    /// Maximum recursive-descent nesting depth (block and flow alike) before
-    /// the parser gives up. A safety guard: pathological input like
-    /// "tags: [[[[...]]]]" with thousands of levels of nesting throws a
-    /// catchable <see cref="YamlParseException"/> here instead of overflowing
-    /// the stack (an uncatchable crash).
+    /// The YAML subset's one nesting rule, held by this parser and by
+    /// <see cref="YamlEmitter"/> alike (it reads this constant, so the two
+    /// cannot drift). The <b>depth</b> of a node is the number of collections
+    /// (mapping or sequence, block or flow, empty or not) on the path from the
+    /// root down to and including that node; a scalar adds nothing, and the
+    /// root collection has depth 1. A document or value is accepted when every
+    /// collection in it has depth at most this many.
+    ///
+    /// The parser counts on ONE counter for the whole document: the block
+    /// parser increments it once per collection it enters, and every flow
+    /// collection it hands off starts counting from where the block parser
+    /// stands. Beyond being the format's rule, the limit is a safety guard:
+    /// every recursive path of the parser passes through a counted point, so
+    /// pathological input like <c>tags: [[[[...]]]]</c> with thousands of
+    /// levels throws a catchable <see cref="YamlParseException"/> instead of
+    /// overflowing the stack (an uncatchable crash).
     /// </summary>
-    private const int MaxNestingDepth = 1000;
+    internal const int MaxNestingDepth = 1000;
 
-    /// <summary>Shared message for every place <see cref="MaxNestingDepth"/> is enforced.</summary>
-    private const string NestingDepthExceededMessage = "nesting depth limit exceeded";
+    /// <summary>Shared message for every place <see cref="MaxNestingDepth"/> is enforced, reader and writer.</summary>
+    internal const string NestingDepthExceededMessage = "nesting depth limit exceeded";
 
     // The YAML features the subset rejects rather than silently reading as
     // plain strings (see README "A documented YAML subset"). Each message names
@@ -350,35 +361,41 @@ internal static class YamlParser
         public int CurrentIndent() => IndentOf(Lines[Pos]) ?? throw Err("tab character in indentation");
 
         /// <summary>
-        /// Recursion depth guard shared by <see cref="ParseNode"/> and
-        /// <see cref="ParseMapping"/> — between them every block-level
-        /// recursive path (nested mappings, nested sequences, and the
-        /// "- key: value" inline-mapping shortcut that calls
-        /// <see cref="ParseMapping"/> directly from <see cref="ParseSequence"/>)
-        /// passes through one of the two. See <see cref="MaxNestingDepth"/>.
+        /// The document's nesting depth (see <see cref="MaxNestingDepth"/>): the
+        /// number of collections enclosing the parse position. Incremented
+        /// exactly once per collection entered, by <see cref="ParseMapping"/> and
+        /// <see cref="ParseSequence"/> — the only two block methods that open
+        /// one. Every block-level recursive cycle passes through one of them
+        /// (<see cref="ParseNode"/> and <see cref="ParseNested"/> only dispatch),
+        /// including the "- key: value" shortcut that calls
+        /// <see cref="ParseMapping"/> directly from <see cref="ParseSequence"/>.
+        /// A flow collection on a line continues from this value
+        /// (<see cref="ParseInlineValue"/>), so block and flow share one count.
         /// </summary>
         private int _depth;
 
-        /// <summary>Parses a node whose block items begin at column <paramref name="indent"/>.</summary>
-        public YamlValue ParseNode(int indent)
+        /// <summary>
+        /// Opens one collection: counts it, refusing the 1001st on the current
+        /// line. Paired with <see cref="LeaveCollection"/> in a <c>finally</c>.
+        /// </summary>
+        private void EnterCollection()
         {
             _depth++;
             if (_depth > MaxNestingDepth)
             {
                 throw Err(NestingDepthExceededMessage);
             }
-
-            try
-            {
-                return ParseNodeCore(indent);
-            }
-            finally
-            {
-                _depth--;
-            }
         }
 
-        private YamlValue ParseNodeCore(int indent)
+        private void LeaveCollection() => _depth--;
+
+        /// <summary>
+        /// Parses a node whose block items begin at column <paramref name="indent"/>.
+        /// Not counted itself: it opens no collection, it dispatches to
+        /// <see cref="ParseSequence"/> or <see cref="ParseMapping"/> (which count)
+        /// or to a single-line value (whose flow collections count).
+        /// </summary>
+        public YamlValue ParseNode(int indent)
         {
             var line = Lines[Pos];
             var content = line[Math.Min(indent, line.Length)..];
@@ -406,24 +423,20 @@ internal static class YamlParser
             // block header.
             var entryLine = Pos;
             Pos++;
-            return ParseInlineValue(trimmed, entryLine);
+            return ParseInlineValue(trimmed, entryLine, _depth);
         }
 
+        /// <summary>Parses a block mapping at column <paramref name="indent"/>: one collection.</summary>
         public YamlValue ParseMapping(int indent)
         {
-            _depth++;
-            if (_depth > MaxNestingDepth)
-            {
-                throw Err(NestingDepthExceededMessage);
-            }
-
+            EnterCollection();
             try
             {
                 return ParseMappingCore(indent);
             }
             finally
             {
-                _depth--;
+                LeaveCollection();
             }
         }
 
@@ -483,29 +496,26 @@ internal static class YamlParser
             return map;
         }
 
+        /// <summary>
+        /// Parses a block sequence at column <paramref name="indent"/>: one
+        /// collection. It counts itself because it is also reached without
+        /// <see cref="ParseNode"/>: <see cref="ParseNested"/> calls it directly for the
+        /// "indentation-relaxed" style (items at the SAME column as their parent
+        /// key, <c>tags:\n- a</c>), and an empty item <c>-</c> followed by another
+        /// item at its own column recurses ParseSequence -> ParseNested ->
+        /// ParseSequence, one level per line (<c>"-\n"</c> repeated), without
+        /// passing through <see cref="ParseNode"/> or <see cref="ParseMapping"/>.
+        /// </summary>
         public YamlValue ParseSequence(int indent)
         {
-            // Guarded independently of ParseNode/ParseMapping: the
-            // "indentation-relaxed" block sequence style (list items at the
-            // SAME indent as their parent key, e.g. "tags:\n- a\n- b") is
-            // parsed by right-recursion — ParseSequence -> ParseNested ->
-            // ParseSequence, one stack frame per item — bypassing both
-            // ParseNode and ParseMapping entirely. Without this, even a
-            // very long flat list (not just deeply *nested* structures)
-            // could overflow the stack.
-            _depth++;
-            if (_depth > MaxNestingDepth)
-            {
-                throw Err(NestingDepthExceededMessage);
-            }
-
+            EnterCollection();
             try
             {
                 return ParseSequenceCore(indent);
             }
             finally
             {
-                _depth--;
+                LeaveCollection();
             }
         }
 
@@ -736,7 +746,7 @@ internal static class YamlParser
             var t = firstLineRest.Trim();
             if (t.StartsWith('[') || t.StartsWith('{') || t.StartsWith('"') || t.StartsWith('\''))
             {
-                return ParseInlineValue(firstLineRest, entryLine);
+                return ParseInlineValue(firstLineRest, entryLine, _depth);
             }
 
             var body = new List<string> { StripTrailingComment(t) };
@@ -903,13 +913,18 @@ internal static class YamlParser
         return null;
     }
 
-    /// <summary>Parses a single-line value: a flow collection or a scalar.</summary>
-    private static YamlValue ParseInlineValue(string s, int line)
+    /// <summary>
+    /// Parses a single-line value: a flow collection or a scalar.
+    /// <paramref name="depth"/> is the number of collections enclosing the value
+    /// (the block parser's own count), where a flow collection's count starts,
+    /// so block and flow nesting add up under one <see cref="MaxNestingDepth"/>.
+    /// </summary>
+    private static YamlValue ParseInlineValue(string s, int line, int depth)
     {
         var t = s.Trim();
         if (t.StartsWith('[') || t.StartsWith('{'))
         {
-            var fp = new FlowParser(t, line);
+            var fp = new FlowParser(t, line, depth);
             var v = fp.ParseValue();
             fp.SkipWs();
             // Allow a trailing comment after the flow collection.
@@ -1161,8 +1176,13 @@ internal static class YamlParser
         throw new YamlParseException(line + 1, "unterminated single-quoted string");
     }
 
-    /// <summary>A recursive parser for flow collections (`[...]`, `{...}`).</summary>
-    private sealed class FlowParser(string chars, int line)
+    /// <summary>
+    /// A recursive parser for flow collections (`[...]`, `{...}`).
+    /// <paramref name="startDepth"/> is the number of collections enclosing the
+    /// flow value — the block parser's count where the value sits — so the
+    /// first <c>[</c> or <c>{</c> here is collection <c>startDepth + 1</c>.
+    /// </summary>
+    private sealed class FlowParser(string chars, int line, int startDepth)
     {
         public string Chars { get; } = chars;
 
@@ -1179,13 +1199,16 @@ internal static class YamlParser
         private YamlParseException Err(string message) => new(line + 1, message);
 
         /// <summary>
-        /// Recursion depth guard: every flow-collection recursive path
-        /// (<c>[</c> and <c>{</c> alike) funnels through <see cref="ParseValue"/>
-        /// (<see cref="ParseSeq"/> and <see cref="ParseMap"/> both call back
-        /// into it for each element), so guarding this single choke point
-        /// covers all of it. See <see cref="MaxNestingDepth"/>.
+        /// The document's nesting depth (see <see cref="MaxNestingDepth"/>),
+        /// continuing the block parser's count. Every flow-collection recursive
+        /// path (<c>[</c> and <c>{</c> alike) funnels through
+        /// <see cref="ParseCollection"/> (<see cref="ParseSeq"/> and
+        /// <see cref="ParseMap"/> call back into <see cref="ParseValue"/> for each
+        /// element, which reaches them only through it), so this single counted
+        /// point covers all of it, empty collections included. A scalar is not a
+        /// collection and is not counted.
         /// </summary>
-        private int _depth;
+        private int _depth = startDepth;
 
         public YamlValue ParseValue()
         {
@@ -1195,6 +1218,12 @@ internal static class YamlParser
                 return YamlNull.Instance;
             }
 
+            return Chars[Pos] is '[' or '{' ? ParseCollection() : ParseFlowScalar();
+        }
+
+        /// <summary>Parses the flow sequence or mapping at <see cref="Pos"/>: one collection.</summary>
+        private YamlValue ParseCollection()
+        {
             _depth++;
             if (_depth > MaxNestingDepth)
             {
@@ -1203,12 +1232,7 @@ internal static class YamlParser
 
             try
             {
-                return Chars[Pos] switch
-                {
-                    '[' => ParseSeq(),
-                    '{' => ParseMap(),
-                    _ => ParseFlowScalar(),
-                };
+                return Chars[Pos] == '[' ? ParseSeq() : ParseMap();
             }
             finally
             {
@@ -1216,7 +1240,7 @@ internal static class YamlParser
             }
         }
 
-        public YamlValue ParseSeq()
+        private YamlValue ParseSeq()
         {
             Pos += 1; // consume '['
             var seq = new List<YamlValue>();
@@ -1254,7 +1278,7 @@ internal static class YamlParser
             return new YamlSequence(seq);
         }
 
-        public YamlValue ParseMap()
+        private YamlValue ParseMap()
         {
             Pos += 1; // consume '{'
             var map = new YamlMapping();

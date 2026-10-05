@@ -1759,6 +1759,9 @@ public class CliTests
         Assert.Equal(1, r.Code);
         Assert.StartsWith("error: ", r.Err);
         Assert.Contains("nesting depth limit exceeded", r.Err);
+        // Refused by the EMITTER (the stamp nests the value one level deeper),
+        // not by the parser: the document itself loads.
+        Assert.Contains("YAML emit error", r.Err);
         Assert.DoesNotContain("   at ", r.Err);
         // This is the test that actually reaches CmdVerify's
         // outcome.Message.Replace("Error: ", …) call: deep nesting is not one

@@ -4,29 +4,33 @@ using System.Text;
 namespace OKF4net.Tests;
 
 /// <summary>
-/// Builds a concept document whose frontmatter <b>parses</b> and then
-/// <b>cannot be emitted</b> — the one input shape that reaches
-/// <c>YamlEmitter</c>'s nesting guard through a normal read-modify-write.
+/// Builds a concept document nested EXACTLY at the YAML subset's limit: 1000
+/// collections deep, the most the parser reads and the emitter writes (the
+/// one nesting rule, <c>YamlParser.MaxNestingDepth</c>). Under the defaults:
+/// the frontmatter's root mapping (1), then <c>blockLevels</c> block
+/// mappings (450), then <c>flowLevels</c> flow mappings (549) — 1000.
 ///
-/// It exists because the two limits are counted differently.
-/// <c>YamlParser</c> enforces its 1000-level cap with two independent
-/// counters, one for block nesting and one for flow; <c>YamlEmitter</c> has a
-/// single counter covering both. So a frontmatter mixing 450 block levels
-/// with 600 flow levels is under the cap twice on the way in and over it once
-/// on the way out. Building it by hand (rather than assembling a
-/// <c>YamlValue</c> tree in memory) is the point: this is a file a bundle can
-/// actually contain, so every layer that loads and rewrites a concept meets
-/// it the way a caller would.
+/// It loads, and re-emits whole. What it cannot survive is one more level,
+/// which is exactly what <c>okf verify</c> adds when the nesting lives IN
+/// <c>verified</c>: <c>UpsertStamp</c> normalizes a bare <c>verified</c>
+/// mapping into a sequence holding it (the new stamp beside it), pushing the
+/// deepest collection to 1001 — so <c>YamlEmitter</c> refuses the
+/// re-emitted <c>verified</c> block. That is how this document reaches the
+/// emitter's guard through a normal read-modify-write, now that the parser
+/// and the emitter count nesting the same way: a document the parser reads
+/// re-emits whole, so only a write that ADDS a level can exceed the limit
+/// (before, a 450 block + 600 flow document parsed, because the parser
+/// counted block and flow on separate counters, and then could not be
+/// re-emitted at all). Building it
+/// by hand (rather than assembling a <c>YamlValue</c> tree in memory) is the
+/// point: this is a file a bundle can actually contain, so every layer that
+/// loads and rewrites a concept meets it the way a caller would.
 ///
-/// The defaults are not symmetric because the counters are not: the block
-/// parser charges its counter roughly twice per nesting level (a node and its
-/// mapping/nested arm both increment it), so 450 block levels sit near 900 of
-/// its 1000 — 600 there fails to PARSE, which would test nothing. The flow
-/// counter charges about once per level. Their sum, 1050, is what clears the
-/// emitter's single 1000.
+/// Block and flow are mixed on purpose: the parser must count both on one
+/// counter for this document to sit at, not over, the limit.
 ///
 /// Shared by the emitter, writer and CLI tests so all three describe the same
-/// artifact — a second hand-rolled copy would drift the moment either limit
+/// artifact — a second hand-rolled copy would drift the moment the limit
 /// moved.
 /// </summary>
 internal static class DeepYamlDocument
@@ -49,9 +53,9 @@ internal static class DeepYamlDocument
     /// fixture meaningful there: <c>UpsertStamp</c> preserves a pre-existing,
     /// non-matching <c>verified</c> value (or, for a bare mapping, wraps it
     /// whole) rather than discarding it, so the deep structure survives into
-    /// the sequence that IS re-emitted.
+    /// the sequence that IS re-emitted, one level deeper than it was read.
     /// </param>
-    internal static string Text(int blockLevels = 450, int flowLevels = 600, string key = "deep")
+    internal static string Text(int blockLevels = 450, int flowLevels = 549, string key = "deep")
     {
         var sb = new StringBuilder("---\ntype: Metric\ntitle: Deep\n").Append(key).Append(":\n");
 

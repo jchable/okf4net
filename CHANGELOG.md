@@ -42,6 +42,13 @@ and this project adheres to
   element assignment, passing them where a `string[]` is required, and
   reflection on them as fields. `Frontmatter.RecommendedFieldsFor` keeps its
   signature and now returns a read-only list on both of its branches.
+- **Breaking (0.x):** the YAML subset's nesting limit is one rule for block and
+  flow, reader and writer: at most 1000 nested collections, the root and empty
+  collections included. Block-only documents nested 501–1000 deep, which the
+  parser used to reject, are now accepted; documents mixing block and flow
+  deeper than 1000 in total, which used to load, are now rejected (they could
+  not be written back); values nested 1001 deep, which the emitter used to
+  write, are now refused. Real frontmatter is a handful of levels deep.
 
 ### Fixed
 

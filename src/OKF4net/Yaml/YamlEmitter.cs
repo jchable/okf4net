@@ -19,41 +19,60 @@ public static class YamlEmitter
     private const int IndentStep = 2;
 
     /// <summary>
-    /// Maximum recursion depth for <see cref="EmitMapping"/>/
-    /// <see cref="EmitSequence"/>, matching the parser's
-    /// <c>YamlParser.MaxNestingDepth</c>. A safety guard: a pathologically
-    /// deep <see cref="YamlValue"/> tree — however it was constructed, since
-    /// this guards the emitter independently of the parser's own limit —
-    /// throws a catchable <see cref="YamlEmitException"/> here instead of
-    /// overflowing the stack.
-    ///
-    /// The numbers match; the counting does not. <c>YamlParser</c> enforces
-    /// its limit with TWO independent counters (one for block nesting, one for
-    /// flow), while this emitter has a single counter covering both, so a
-    /// frontmatter mixing, say, 450 block levels with 900 flow levels parses
-    /// happily and then exceeds the limit here. That asymmetry is a real
-    /// problem and is deliberately NOT fixed by this guard: it is a change to
-    /// what the library ACCEPTS, on the read path, and belongs in its own pass
-    /// with its own tests. What matters here is that reaching this line is
-    /// errors-as-data on every caller's path — see <see cref="YamlEmitException"/>.
+    /// The nesting rule is the parser's, read from one place
+    /// (<see cref="YamlParser.MaxNestingDepth"/>): a node's depth is the number
+    /// of collections, empty ones included, from the root down to and
+    /// including it; the root collection has depth 1; a value nested deeper
+    /// than the limit is refused with a catchable <see cref="YamlEmitException"/>
+    /// rather than written. So, as far as nesting goes, a value the parser reads
+    /// this emitter writes, and a value this emitter writes the parser reads
+    /// back. It is also this emitter's stack guard: a pathologically deep
+    /// <see cref="YamlValue"/> tree, however it was constructed, is refused
+    /// before it can overflow the stack.
+    /// Reaching the refusal is errors-as-data on every caller's path — see
+    /// <see cref="YamlEmitException"/>.
     /// </summary>
-    private const int MaxNestingDepth = 1000;
+    private static void CheckDepth(int depth)
+    {
+        if (depth > YamlParser.MaxNestingDepth)
+        {
+            throw new YamlEmitException(YamlParser.NestingDepthExceededMessage);
+        }
+    }
+
+    /// <summary>
+    /// Counts <paramref name="value"/> at <paramref name="depth"/> when it is
+    /// an EMPTY collection, which is written inline (<c>[]</c>, <c>{}</c>)
+    /// without recursing but is a collection all the same.
+    /// </summary>
+    private static void CheckInlineCollection(YamlValue value, int depth)
+    {
+        if (value is YamlMapping or YamlSequence)
+        {
+            CheckDepth(depth);
+        }
+    }
 
     /// <summary>
     /// Emits a value as YAML text (always ends with "\n").
     /// </summary>
+    /// <exception cref="YamlEmitException">
+    /// <paramref name="value"/> nests collections deeper than the parser's
+    /// limit (<see cref="CheckDepth"/>).
+    /// </exception>
     public static string Emit(YamlValue value)
     {
         var outSb = new StringBuilder();
         switch (value)
         {
             case YamlMapping m when !m.IsEmpty:
-                EmitMapping(m, 0, 0, outSb);
+                EmitMapping(m, 0, 1, outSb);
                 break;
             case YamlSequence s when s.Items.Count > 0:
-                EmitSequence(s.Items, 0, 0, outSb);
+                EmitSequence(s.Items, 0, 1, outSb);
                 break;
             default:
+                CheckInlineCollection(value, 1);
                 outSb.Append(EmitScalar(value));
                 outSb.Append('\n');
                 break;
@@ -62,13 +81,10 @@ public static class YamlEmitter
         return outSb.ToString();
     }
 
-    /// <summary>Emits a non-empty mapping in block style.</summary>
+    /// <summary>Emits a non-empty mapping, at depth <paramref name="depth"/>, in block style.</summary>
     private static void EmitMapping(YamlMapping map, int indent, int depth, StringBuilder outSb)
     {
-        if (depth > MaxNestingDepth)
-        {
-            throw new YamlEmitException("nesting depth limit exceeded");
-        }
+        CheckDepth(depth);
 
         var pad = new string(' ', indent);
         foreach (var (key, value) in map.Entries)
@@ -85,19 +101,17 @@ public static class YamlEmitter
                     EmitSequence(s.Items, indent + IndentStep, depth + 1, outSb);
                     break;
                 default:
+                    CheckInlineCollection(value, depth + 1);
                     outSb.Append(pad).Append(keyText).Append(": ").Append(EmitScalar(value)).Append('\n');
                     break;
             }
         }
     }
 
-    /// <summary>Emits a non-empty sequence in block style.</summary>
+    /// <summary>Emits a non-empty sequence, at depth <paramref name="depth"/>, in block style.</summary>
     private static void EmitSequence(IReadOnlyList<YamlValue> seq, int indent, int depth, StringBuilder outSb)
     {
-        if (depth > MaxNestingDepth)
-        {
-            throw new YamlEmitException("nesting depth limit exceeded");
-        }
+        CheckDepth(depth);
 
         var pad = new string(' ', indent);
         foreach (var item in seq)
@@ -113,6 +127,7 @@ public static class YamlEmitter
                     EmitSequence(s.Items, indent + IndentStep, depth + 1, outSb);
                     break;
                 default:
+                    CheckInlineCollection(item, depth + 1);
                     outSb.Append(pad).Append("- ").Append(EmitScalar(item)).Append('\n');
                     break;
             }
