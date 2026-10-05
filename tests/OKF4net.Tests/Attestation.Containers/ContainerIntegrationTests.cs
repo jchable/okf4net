@@ -757,13 +757,17 @@ public class ContainerIntegrationTests
     /// The window is hit deterministically, not by racing it: the "engine" is a shim that
     /// turns <c>run</c> into <c>create</c> (same arguments, so the same <c>--name</c> and
     /// <c>--rm</c>) and then hangs without ever starting the container, and passes every
-    /// other subcommand -- the teardown's <c>kill</c> and <c>rm</c> -- to the real
-    /// <c>docker</c>. The test waits until the engine itself reports the container as
-    /// <c>created</c> before the caller cancels (or, for the timeout case, asserts it saw
-    /// that state, so the test cannot pass without having reached the window), then
-    /// asks the engine -- <c>docker ps -a</c>, not the exception, not the arguments
-    /// that were sent -- whether a container by that name still exists. Reverting the
-    /// <c>rm -f</c> half of the teardown makes this fail with the container still there.
+    /// other subcommand -- the teardown's <c>kill</c>, <c>rm</c> and <c>inspect</c> -- to
+    /// the real <c>docker</c>. The shim writes down the <c>--name</c> it was handed, and
+    /// this test looks at THAT container only: the daemon is shared with whatever else
+    /// runs on the machine, so "any new okf-guid" would be someone else's. It waits until
+    /// the engine reports that container as <c>created</c> before the caller cancels (or,
+    /// for the timeout case, asserts it saw that state, so the test cannot pass without
+    /// having reached the window), then asks the engine -- <c>docker ps -a</c>, not the
+    /// exception, not the arguments that were sent -- whether a container by that name
+    /// still exists. This covers only a COMMITTED created container; the cancellation
+    /// that lands while <c>create</c> is still in flight is
+    /// <see cref="Cancelling_early_while_the_create_may_be_in_flight_leaves_no_container_behind"/>.
     /// </para>
     /// <para>
     /// Docker only: the shim's <c>create</c> is spelled the Docker way, and this repo has
@@ -778,112 +782,213 @@ public class ContainerIntegrationTests
         Skip.IfNot(DockerAvailable(), "docker is not on PATH");
 
         using var tmp = new TempDir();
-        var engine = new CliContainerEngine(CreateButNeverStartEngine(tmp));
-        var before = ContainerStates().Keys.ToHashSet();
-        var spec = new ContainerRunSpec(
-            Image: "python:3.12-slim",
-            Command: ["sleep", "60"],
-            Stdin: null,
-            Environment: new Dictionary<string, string>(),
-            NetworkMode: "none",
-            MemoryBytes: 128 * 1024 * 1024,
-            Cpus: 0.5,
-            PidsLimit: 16,
+        var nameFile = System.IO.Path.Combine(tmp.Path, "names.txt");
+        var engine = new CliContainerEngine(NameRecordingEngine(tmp, nameFile, createWithoutStarting: true));
+        var spec = SleepingSpec(
             // Only the timeout case relies on this: long enough for `docker create` to
             // have finished (it takes a fraction of a second on a local image), short
             // enough that the test does not sit there.
-            Timeout: callerCancels ? TimeSpan.FromSeconds(60) : TimeSpan.FromSeconds(8));
+            callerCancels ? TimeSpan.FromSeconds(60) : TimeSpan.FromSeconds(8));
 
         using var cts = new CancellationTokenSource();
-        string? created = null;
-        var observer = Task.Run(async () =>
-        {
-            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
-            while (DateTime.UtcNow < deadline)
-            {
-                var name = ContainerStates()
-                    .Where(c => !before.Contains(c.Key) && c.Value == "created")
-                    .Select(c => c.Key)
-                    .FirstOrDefault();
-                if (name is not null)
-                {
-                    created = name;
-                    if (callerCancels)
-                    {
-                        cts.Cancel();
-                    }
-
-                    return;
-                }
-
-                await Task.Delay(100);
-            }
-        });
-
         try
         {
+            var run = engine.RunAsync(spec, cts.Token).AsTask();
+            var created = await WaitUntilAsync(() => RecordedNames(nameFile).Any(name => ContainerState(name) == "created"), TimeSpan.FromSeconds(30));
             if (callerCancels)
             {
-                await Assert.ThrowsAsync<OperationCanceledException>(async () => await engine.RunAsync(spec, cts.Token));
+                cts.Cancel();
+                await Assert.ThrowsAsync<OperationCanceledException>(async () => await run);
             }
             else
             {
-                var ex = await Assert.ThrowsAsync<ContainerExecutionException>(async () => await engine.RunAsync(spec));
+                var ex = await Assert.ThrowsAsync<ContainerExecutionException>(async () => await run);
                 Assert.Contains("exceeded its timeout", ex.Message);
             }
 
-            await observer;
-            Assert.True(created is not null, "no new container was ever seen in the `created` state, so the window this test is about was not reached");
+            Assert.True(created, "the run's container was never seen in the `created` state, so the window this test is about was not reached");
+            var name = Assert.Single(RecordedNames(nameFile));
             Assert.True(
-                await NoContainerNamedWithin(created!, TimeSpan.FromSeconds(10)),
-                $"container {created} was left behind by a {(callerCancels ? "cancelled" : "timed-out")} run: `docker ps -a` still lists it");
+                await NoContainerNamedWithin(name, TimeSpan.FromSeconds(10)),
+                $"container {name} was left behind by a {(callerCancels ? "cancelled" : "timed-out")} run: `docker ps -a` still lists it");
         }
         finally
         {
-            // Whatever the outcome, do not leave this test's own container to the next run.
-            await observer;
-            if (created is not null)
-            {
-                RunDocker("rm -f " + created);
-            }
+            // Whatever the outcome, remove this test's own container(s) -- the names its
+            // shim recorded, nobody else's -- including one it never got to observe.
+            RemoveAll(RecordedNames(nameFile));
         }
     }
 
     /// <summary>
-    /// An "engine" that is <c>docker</c> except for <c>run</c>, which it performs as
-    /// <c>create</c> with the same arguments and then never follows with a <c>start</c>:
-    /// it just waits, as a <c>docker run</c> stuck between creating and starting would.
-    /// Anything else is handed to the real <c>docker</c> unchanged.
+    /// #110, the half the test above cannot reach: the caller cancels within a few
+    /// milliseconds of the run starting, while the engine's <c>create</c> may still be in
+    /// flight. The daemon commits such a create on its own schedule after the local
+    /// client is gone, and a teardown that stopped at the first <c>rm -f</c> exiting 0
+    /// (Docker exits 0 for a name it does not know yet) left the container behind in 24
+    /// of 35 early cancellations measured on Docker 29.4.1 -- more than the code before
+    /// the #110 fix. The teardown now verifies instead: it kills the client first, then
+    /// removes and <c>inspect</c>s until the name is absent twice.
+    /// <para>
+    /// 50 runs, each cancelled after a different delay in a 0-100 ms sweep (so some land
+    /// before the CLI has even started, some during <c>create</c>, some after it), each
+    /// through a shim that records the <c>--name</c> it was handed -- so the assertion is
+    /// about the engine's own containers, never "any okf-guid". After the last run the
+    /// test waits 3 s for a late-committed create to show, then asks <c>docker ps -a</c>
+    /// which of the recorded names still exist. Measured on this machine (Docker 29.4.1
+    /// on Windows): see CHANGELOG.md. A residual late create the budget cannot see would
+    /// show up here as a flake, not be hidden.
+    /// </para>
     /// </summary>
-    private static string CreateButNeverStartEngine(TempDir tmp)
+    [SkippableFact]
+    public async Task Cancelling_early_while_the_create_may_be_in_flight_leaves_no_container_behind()
+    {
+        Skip.IfNot(DockerAvailable(), "docker is not on PATH");
+
+        using var tmp = new TempDir();
+        var nameFile = System.IO.Path.Combine(tmp.Path, "names.txt");
+        var engine = new CliContainerEngine(NameRecordingEngine(tmp, nameFile, createWithoutStarting: false));
+        const int Runs = 50;
+        try
+        {
+            for (var i = 0; i < Runs; i++)
+            {
+                using var cts = new CancellationTokenSource();
+                cts.CancelAfter(TimeSpan.FromMilliseconds(i * 4 % 100));
+                await Assert.ThrowsAsync<OperationCanceledException>(async () => await engine.RunAsync(SleepingSpec(TimeSpan.FromSeconds(60)), cts.Token));
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(3));
+            var names = RecordedNames(nameFile);
+            var existing = ContainerStates();
+            var leaked = names.Where(existing.ContainsKey)
+                .Select(name => $"{name} ({existing[name]}, created/started {RunDocker("inspect -f {{.Created}}/{{.State.StartedAt}} " + name)})")
+                .ToArray();
+            Assert.True(
+                names.Count >= Runs / 2,
+                $"only {names.Count} of {Runs} runs got as far as telling the engine to create a container, so the window this test is about was mostly not reached");
+            Assert.True(leaked.Length == 0, $"{leaked.Length} of {Runs} early-cancelled runs left a container behind: {string.Join(", ", leaked)}");
+        }
+        finally
+        {
+            RemoveAll(RecordedNames(nameFile));
+        }
+    }
+
+    private static ContainerRunSpec SleepingSpec(TimeSpan timeout) => new(
+        Image: "python:3.12-slim",
+        Command: ["sleep", "60"],
+        Stdin: null,
+        Environment: new Dictionary<string, string>(),
+        NetworkMode: "none",
+        MemoryBytes: 128 * 1024 * 1024,
+        Cpus: 0.5,
+        PidsLimit: 16,
+        Timeout: timeout);
+
+    /// <summary>
+    /// An "engine" that is <c>docker</c>, except that on <c>run</c> it first appends the
+    /// value of <c>--name</c> to <paramref name="nameFile"/> -- the one name the engine
+    /// under test asked for -- and, when <paramref name="createWithoutStarting"/>, performs
+    /// <c>run</c> as <c>create</c> with the same arguments and then never follows with a
+    /// <c>start</c>: it just waits, as a <c>docker run</c> stuck between creating and
+    /// starting would. Everything else is handed to the real <c>docker</c> unchanged.
+    /// </summary>
+    private static string NameRecordingEngine(TempDir tmp, string nameFile, bool createWithoutStarting)
     {
         if (OperatingSystem.IsWindows())
         {
+            // `>> file echo x`, not `echo x >> file`: a GUID ending in a digit would
+            // otherwise be read as a file-handle number in front of the `>>`.
             return tmp.Write(
                 "engine.cmd",
                 "@echo off\r\n"
-                + "if \"%1\"==\"run\" goto run\r\n"
+                + "setlocal enabledelayedexpansion\r\n"
+                + "if not \"%1\"==\"run\" goto passthrough\r\n"
+                + "set \"prev=\"\r\n"
+                + "for %%a in (%*) do (\r\n"
+                + $"  if \"!prev!\"==\"--name\" >> \"{nameFile}\" echo %%a\r\n"
+                + "  set \"prev=%%a\"\r\n"
+                + ")\r\n"
+                + (createWithoutStarting
+                    ? "set \"args=%*\"\r\n"
+                      + "set \"args=!args:*run =!\"\r\n"
+                      + "docker create !args!\r\n"
+                      + "ping -n 61 127.0.0.1 >nul\r\n"
+                      + "exit /b 0\r\n"
+                    : "")
+                + ":passthrough\r\n"
                 + "docker %*\r\n"
-                + "exit /b %errorlevel%\r\n"
-                + ":run\r\n"
-                + "set \"args=%*\"\r\n"
-                + "set \"args=%args:*run =%\"\r\n"
-                + "docker create %args%\r\n"
-                + "ping -n 61 127.0.0.1 >nul\r\n");
+                + "exit /b %errorlevel%\r\n");
         }
 
         var path = tmp.Write(
             "engine.sh",
             "#!/bin/sh\n"
             + "if [ \"$1\" = \"run\" ]; then\n"
-            + "  shift\n"
-            + "  docker create \"$@\"\n"
-            + "  sleep 60\n"
-            + "else\n"
-            + "  exec docker \"$@\"\n"
-            + "fi\n");
+            + "  prev=\"\"\n"
+            + "  for a in \"$@\"; do\n"
+            + $"    if [ \"$prev\" = \"--name\" ]; then echo \"$a\" >> '{nameFile}'; fi\n"
+            + "    prev=\"$a\"\n"
+            + "  done\n"
+            + (createWithoutStarting
+                ? "  shift\n  docker create \"$@\"\n  sleep 60\n  exit 0\n"
+                : "")
+            + "fi\n"
+            + "exec docker \"$@\"\n");
         File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         return path;
+    }
+
+    /// <summary>The container names a <see cref="NameRecordingEngine"/> shim has been asked to run so far.</summary>
+    private static List<string> RecordedNames(string nameFile) =>
+        (File.Exists(nameFile) ? ReadSharedLines(nameFile) : [])
+            .Select(static line => line.Trim())
+            .Where(static line => EngineContainerName.IsMatch(line))
+            .Distinct()
+            .ToList();
+
+    /// <summary>Reads a file the shim may be appending to at this moment.</summary>
+    private static string[] ReadSharedLines(string path)
+    {
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream);
+            return reader.ReadToEnd().Split('\n');
+        }
+        catch (IOException)
+        {
+            return [];
+        }
+    }
+
+    private static async Task<bool> WaitUntilAsync(Func<bool> condition, TimeSpan budget)
+    {
+        var deadline = DateTime.UtcNow + budget;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (condition())
+            {
+                return true;
+            }
+
+            await Task.Delay(100);
+        }
+
+        return condition();
+    }
+
+    /// <summary>The state (<c>created</c>, <c>running</c>, ...) <c>docker ps -a</c> reports for exactly this name, or <see langword="null"/> when there is none.</summary>
+    private static string? ContainerState(string name) =>
+        ContainerStates().TryGetValue(name, out var state) ? state : null;
+
+    private static void RemoveAll(IEnumerable<string> names)
+    {
+        foreach (var name in names)
+        {
+            RunDocker("rm -f " + name);
+        }
     }
 
     /// <summary>Every <c>okf-&lt;guid&gt;</c>-named container (any state) mapped to its state (<c>created</c>, <c>running</c>, ...).</summary>

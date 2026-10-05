@@ -204,25 +204,7 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
         }
         catch (OperationCanceledException)
         {
-            await TearDownContainerAsync(containerName).ConfigureAwait(false);
-            if (!process.HasExited)
-            {
-                try
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-                catch (Exception)
-                {
-                    // Best-effort: the TOCTOU window between the HasExited
-                    // check and this call means the process may have exited
-                    // right here (the very thing TearDownContainerAsync
-                    // succeeding is expected to cause), which Process.Kill
-                    // can surface as AggregateException/InvalidOperationException.
-                    // Letting that escape would replace the
-                    // OperationCanceledException/ContainerExecutionException
-                    // this block exists to shape.
-                }
-            }
+            await TearDownContainerAsync(containerName, process).ConfigureAwait(false);
 
             // stdinTask is otherwise abandoned on these throwing paths;
             // observe it so a fault there never surfaces as an unobserved
@@ -289,9 +271,10 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     }
 
     /// <summary>
-    /// The whole teardown budget for <see cref="TearDownContainerAsync"/>: both attempts
-    /// AND the delay between them together, not a per-attempt bound. A slow but
-    /// responsive engine (a few hundred ms per <c>kill</c> or <c>rm</c>) finishes well inside it;
+    /// The whole teardown budget for <see cref="TearDownContainerAsync"/>: the stop
+    /// command, the wait for the local client to exit, every removal round AND the delays
+    /// between them together, not a per-command bound. A slow but
+    /// responsive engine (a few hundred ms per <c>kill</c>, <c>rm</c> or <c>inspect</c>) finishes well inside it;
     /// an engine whose daemon has gone away and never answers is cut off here rather
     /// than being allowed to turn the timeout <see cref="RunAsync"/> promised into a
     /// multi-attempt hang (a Medium external-audit finding: a 750 ms-per-call `kill`
@@ -318,64 +301,78 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     internal TimeSpan TeardownBudget { get; init; } = DefaultTeardownBudget;
 
     /// <summary>
-    /// How much of <see cref="TeardownBudget"/> must remain before the retry in
-    /// <see cref="TearDownContainerAsync"/> is attempted at all -- including the delay
+    /// How much of <see cref="TeardownBudget"/> must remain before another removal round
+    /// in <see cref="TearDownContainerAsync"/> is started at all -- including the delay
     /// that precedes it. Below this, the caller is already close enough to its
-    /// deadline that starting a second attempt (which cannot itself be bounded by
+    /// deadline that starting another round (which cannot itself be bounded by
     /// less time than it would need to even report failure cleanly) is not worth it.
     /// </summary>
     private static readonly TimeSpan RetryThreshold = TimeSpan.FromMilliseconds(500);
 
-    /// <summary>Delay between the two teardown attempts; counts against <see cref="TeardownBudget"/>.</summary>
+    /// <summary>Delay between two removal rounds; counts against <see cref="TeardownBudget"/>.</summary>
     private static readonly TimeSpan RetryDelay = TimeSpan.FromMilliseconds(250);
 
+    /// <summary>How many consecutive rounds must find the container absent before teardown believes it.</summary>
+    private const int AbsentRoundsRequired = 2;
+
     /// <summary>
-    /// Removes the container <see cref="RunAsync"/> asked the engine to create, whatever
-    /// state it is in, best-effort. One attempt is <c>binaryName kill</c> and, only if
-    /// that fails, <c>binaryName rm -f</c>; the whole attempt is retried once after a
-    /// short delay.
-    /// <para>
-    /// Why two commands, and why in this order. <c>kill</c> is a no-op on a container
-    /// that was created but never started, and <c>--rm</c> only fires for one that ran,
-    /// so a run cancelled in that window used to leave a <c>Created</c> container
-    /// behind for good (#110). <c>rm -f</c> removes a container in any state --
-    /// created, running, exited -- and is the only half that closes that window. But it
-    /// does not replace <c>kill</c>: <c>kill</c> is the one command whose meaning is the
-    /// same on all three engines this class drives -- an immediate SIGKILL of a running
-    /// container -- whereas whether <c>rm -f</c> force-stops one at once or after a grace
-    /// period is each engine's own policy, and only Docker's has been observed here
-    /// (Podman and nerdctl are never exercised by this repo's tests). So a running
-    /// container still gets <c>kill</c> first, exactly as before, and a successful
-    /// <c>kill</c> ends teardown: <c>--rm</c> removes the container once it has
-    /// exited, and a following <c>rm -f</c> would only report "no such container" and
-    /// provoke a pointless retry. <c>rm -f</c> runs only when <c>kill</c> failed, which is
-    /// exactly when it is needed: the container exists but never started, or does not
-    /// exist yet.
-    /// </para>
-    /// <para>
-    /// Why it is retried. A container whose creation was still in flight when the first
-    /// attempt ran is reported as "no such container" by both commands -- the engine
-    /// has not committed it yet -- and the retry, a moment later, finds it. A
-    /// non-zero exit from <c>rm -f</c> is therefore the expected, harmless outcome when
-    /// the CLI client was cancelled before it ever sent <c>create</c>: the name does not
-    /// exist, nothing leaked, and the attempt simply ends without being reported
-    /// anywhere (teardown never throws).
-    /// </para>
-    /// <para>
-    /// Unlike the first version, no single attempt gets its own fixed bound --
-    /// one <see cref="TeardownBudget"/> deadline, computed once here, covers every
-    /// command and the delay between the two attempts, so an unresponsive engine cannot
-    /// make teardown outlive the timeout <see cref="RunAsync"/> promised no matter how
-    /// the budget is split between them. A command that hits the remaining budget is not
-    /// followed by another, and the retry itself only runs when at least
-    /// <see cref="RetryThreshold"/> of the budget is still left (delay included) -- an
-    /// engine that did not answer once will not answer a second time, and starting one
-    /// is not worth eating what little budget remains. Never throws -- a failure here
-    /// only means <see cref="RunAsync"/> also calls <see cref="Process.Kill(bool)"/> on
-    /// its own local process, which is the other half of teardown.
-    /// </para>
+    /// How long, from the first round that found the container absent, absence must hold
+    /// before teardown believes it -- but only while the container has not been seen to
+    /// exist at all (see <see cref="TearDownContainerAsync"/>). A <c>create</c> still in
+    /// flight when the client died is committed by the daemon on its own schedule. Measured
+    /// on Docker 29.4.1 for Windows, early-cancelled runs: no leak in ~2900 runs on a
+    /// quiet daemon; during one period of heavy load from other sessions on the shared
+    /// daemon, 18 leaks in 400 runs with two rounds alone and 12 in 700 with this window
+    /// -- fewer, not none. Where teardown durations were recorded the leaking runs had
+    /// used up the whole <see cref="TeardownBudget"/> (2.8-3.4 s against ~2 s when quiet).
+    /// Counts against <see cref="TeardownBudget"/>.
     /// </summary>
-    private async Task TearDownContainerAsync(string containerName)
+    private static readonly TimeSpan AbsentWindow = TimeSpan.FromMilliseconds(1500);
+
+    /// <summary>
+    /// Tears down the container <see cref="RunAsync"/> asked the engine to create, and
+    /// the local client driving it, best-effort, and VERIFIES that the container is
+    /// gone rather than trusting any exit code to say so (#110). Never throws.
+    /// <list type="number">
+    /// <item><c>kill &lt;name&gt;</c>, once: stops a container that is running right
+    /// now at once, the same SIGKILL on all three engines this class drives. Its result
+    /// is not used -- it fails on a container that never started and on one that does
+    /// not exist yet, and the removal below covers both.</item>
+    /// <item>The local client process tree is killed and waited for. This comes
+    /// BEFORE the removal so that nothing on our side is still driving the
+    /// <c>create</c>/<c>start</c> the removal is about to race: a client left running
+    /// could start the container just after it was removed. A <c>create</c> the client
+    /// had already sent is still committed by the daemon on its own schedule, which is
+    /// why the next step does not stop at the first success.</item>
+    /// <item>Rounds of <c>rm -f &lt;name&gt;</c> then <c>inspect &lt;name&gt;</c>.
+    /// <c>rm -f</c> removes a container in any state -- created, running, exited --
+    /// but its exit code proves nothing: Docker exits 0 for a name that does not exist
+    /// (observed on Docker 29.4.1), so "succeeded" cannot be told from "never existed
+    /// yet". <c>inspect</c> exits non-zero for a name the engine does not know (Docker
+    /// 29.4.1: exit 1); that, seen after the client has exited, is the only signal taken
+    /// as absence. Absence has to be seen in <see cref="AbsentRoundsRequired"/>
+    /// consecutive rounds, a <see cref="RetryDelay"/> apart, to catch a <c>create</c> the
+    /// daemon commits late -- and, for as long as the engine has not once confirmed the
+    /// container exists (<c>kill</c> exiting 0, or <c>inspect</c> finding it), to hold for
+    /// <see cref="AbsentWindow"/> as well, because only then can a <c>create</c> still be
+    /// in flight. A round that finds the container present, or cannot get an answer,
+    /// starts the count over. Podman's and nerdctl's exit codes for these
+    /// commands are NOT verified by this repo (it has never run either) -- the design
+    /// assumes only that <c>inspect</c> of a missing name exits non-zero and says
+    /// nothing about what their <c>rm -f</c> of a missing name does.</item>
+    /// </list>
+    /// Everything shares one <see cref="TeardownBudget"/> deadline, computed once here,
+    /// so an unresponsive engine cannot make teardown outlive the timeout
+    /// <see cref="RunAsync"/> promised. A command that hits the remaining budget is not
+    /// followed by another, and a further round only starts when at least
+    /// <see cref="RetryThreshold"/> of the budget is left (delay included). Residual
+    /// risk, not closable from here: a <c>create</c> the daemon commits after the last
+    /// check (or after the budget ran out) is not seen; the integration tests measure
+    /// how often that happens. A failure of any command here only means the container
+    /// may be left behind, never an exception: <see cref="RunAsync"/> then reports the
+    /// same <see cref="OperationCanceledException"/> or timeout failure it would have.
+    /// </summary>
+    private async Task TearDownContainerAsync(string containerName, Process client)
     {
         var elapsed = Stopwatch.StartNew();
         TimeSpan Remaining()
@@ -384,62 +381,98 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             return left > TimeSpan.Zero ? left : TimeSpan.Zero;
         }
 
-        for (var attempt = 0; attempt < 2; attempt++)
+        int? killed = null;
+        if (Remaining() > TimeSpan.Zero)
         {
-            var bound = Remaining();
-            if (bound == TimeSpan.Zero)
+            killed = await TryEngineCommandOnceAsync(Remaining(), "kill", containerName).ConfigureAwait(false);
+        }
+
+        await StopClientAsync(client, Remaining()).ConfigureAwait(false);
+
+        // Whether the engine has ever confirmed the container exists. Once it has, its
+        // create is done and nothing can appear later under this name, so absence needs
+        // only AbsentRoundsRequired rounds. A kill that exited 0 is such a confirmation
+        // (Docker 29.4.1: a running container -> 0, a name it does not know or a
+        // container that is not running -> 1); so is an inspect that finds it. Until then
+        // the daemon may still be committing a create, and absence has to hold for
+        // AbsentWindow as well.
+        var existed = killed == 0;
+        var absentRounds = 0;
+        TimeSpan? firstAbsent = null;
+        while (Remaining() > TimeSpan.Zero)
+        {
+            // The exit code is deliberately ignored; inspect below is the check.
+            await TryEngineCommandOnceAsync(Remaining(), "rm", "-f", containerName).ConfigureAwait(false);
+            if (Remaining() == TimeSpan.Zero)
             {
                 return;
             }
 
-            if (await TryEngineCommandOnceAsync(bound, "kill", containerName).ConfigureAwait(false))
+            var inspected = await TryEngineCommandOnceAsync(Remaining(), "inspect", containerName).ConfigureAwait(false);
+            if (inspected is { } code && code != 0)
             {
-                return;
-            }
-
-            // kill could not help: the container never started, does not exist yet, or
-            // the engine did not answer. Removing it covers the first of those. If the
-            // kill ate the whole budget there is nothing left to spend on this.
-            bound = Remaining();
-            if (bound == TimeSpan.Zero)
-            {
-                return;
-            }
-
-            if (await TryEngineCommandOnceAsync(bound, "rm", "-f", containerName).ConfigureAwait(false))
-            {
-                return;
-            }
-
-            // Back off only when another attempt follows, and only when enough
-            // budget remains to make it worthwhile.
-            if (attempt < 1)
-            {
-                var remaining = Remaining();
-                if (remaining < RetryThreshold)
+                absentRounds++;
+                firstAbsent ??= elapsed.Elapsed;
+                if (absentRounds >= AbsentRoundsRequired && (existed || elapsed.Elapsed - firstAbsent.Value >= AbsentWindow))
                 {
                     return;
                 }
-
-                var delay = RetryDelay < remaining ? RetryDelay : remaining;
-                if (delay > TimeSpan.Zero)
-                {
-                    await Task.Delay(delay).ConfigureAwait(false);
-                }
             }
+            else
+            {
+                existed |= inspected == 0;
+                absentRounds = 0;
+                firstAbsent = null;
+            }
+
+            var remaining = Remaining();
+            if (remaining < RetryThreshold)
+            {
+                return;
+            }
+
+            await Task.Delay(RetryDelay < remaining ? RetryDelay : remaining).ConfigureAwait(false);
         }
     }
 
     /// <summary>
-    /// Runs one <c>binaryName &lt;arguments&gt;</c> (<c>kill &lt;name&gt;</c> or
-    /// <c>rm -f &lt;name&gt;</c> -- the only two the teardown issues), bounded by
-    /// <paramref name="bound"/> (a slice of <see cref="TearDownContainerAsync"/>'s overall
-    /// <see cref="TeardownBudget"/>, never negative -- the caller clamps). Returns
-    /// <c>true</c> only on a clean exit 0; a non-zero exit, an exception starting or
-    /// running the process, or hitting <paramref name="bound"/> all come back
-    /// <c>false</c> so the caller can decide what to try next.
+    /// Kills the local engine client and its children and waits, within
+    /// <paramref name="bound"/>, for it to be gone. Best-effort: the process may already
+    /// have exited between a check and the kill (which <see cref="Process.Kill(bool)"/>
+    /// can surface as an AggregateException or InvalidOperationException), and letting
+    /// that escape would replace the OperationCanceledException/ContainerExecutionException
+    /// <see cref="RunAsync"/> is about to shape.
     /// </summary>
-    private async Task<bool> TryEngineCommandOnceAsync(TimeSpan bound, params string[] arguments)
+    private static async Task StopClientAsync(Process client, TimeSpan bound)
+    {
+        try
+        {
+            if (!client.HasExited)
+            {
+                client.Kill(entireProcessTree: true);
+            }
+
+            if (bound > TimeSpan.Zero)
+            {
+                using var cts = new CancellationTokenSource(bound);
+                await client.WaitForExitAsync(cts.Token).ConfigureAwait(false);
+            }
+        }
+        catch (Exception)
+        {
+            // See above: best-effort.
+        }
+    }
+
+    /// <summary>
+    /// Runs one <c>binaryName &lt;arguments&gt;</c> (<c>kill</c>, <c>rm -f</c> or
+    /// <c>inspect</c> of the run's container -- the only three the teardown issues),
+    /// bounded by <paramref name="bound"/> (a slice of <see cref="TearDownContainerAsync"/>'s
+    /// overall <see cref="TeardownBudget"/>, never negative -- the caller clamps).
+    /// Returns the exit code, or <see langword="null"/> when the command gave no
+    /// answer: it could not be started, threw, or hit <paramref name="bound"/>.
+    /// </summary>
+    private async Task<int?> TryEngineCommandOnceAsync(TimeSpan bound, params string[] arguments)
     {
         using var command = new Process
         {
@@ -488,17 +521,17 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
                 {
                 }
 
-                return false;
+                return null;
             }
 
             await Task.WhenAll(drainOut, drainErr).ConfigureAwait(false);
-            return command.ExitCode == 0;
+            return command.ExitCode;
         }
         catch (Exception)
         {
-            // Best-effort teardown; Process.Kill on the local process
+            // Best-effort teardown; the local client is killed separately, which
             // handles the case where the engine binary itself is gone.
-            return false;
+            return null;
         }
     }
 
