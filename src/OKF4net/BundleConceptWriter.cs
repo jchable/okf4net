@@ -1081,10 +1081,10 @@ public sealed class BundleConceptWriter
     /// could not confirm the edit, instead of the generic message implying a
     /// real corruption.
     /// </summary>
-    private static bool ContainsNaN(YamlValue value) => value switch
+    internal static bool ContainsNaN(YamlValue value) => value switch
     {
         YamlFloat f => double.IsNaN(f.Value),
-        YamlMapping m => m.Entries.Any(e => ContainsNaN(e.Value)),
+        YamlMapping m => m.Entries.Any(e => ContainsNaN(e.Key) || ContainsNaN(e.Value)),
         YamlSequence s => s.Items.Any(ContainsNaN),
         _ => false,
     };
@@ -1104,41 +1104,51 @@ public sealed class BundleConceptWriter
     /// rather than guessing which key -- per the rule that a message should
     /// name a cause it actually checked, not one it merely suspects.
     /// </summary>
-    private static string DescribeFrontmatterDivergence(YamlMapping expected, YamlMapping actual)
+    internal static string DescribeFrontmatterDivergence(YamlMapping expected, YamlMapping actual)
     {
-        var expectedVerified = expected.Get("verified");
-        var actualVerified = actual.Get("verified");
-        var verifiedMatches = expectedVerified is null
-            ? actualVerified is null
-            : expectedVerified.Equals(actualVerified);
-        if (!verifiedMatches)
+        // A YamlMapping keeps duplicate keys (the parser pushes entries raw),
+        // and Get returns only the first, so compare EVERY verified entry, in
+        // order and with multiplicity: an edit that adds, drops or alters a
+        // second `verified` is a divergence of the verified block itself.
+        var expectedVerified = expected.Entries.Where(IsVerified).Select(e => e.Value).ToList();
+        var actualVerified = actual.Entries.Where(IsVerified).Select(e => e.Value).ToList();
+        if (expectedVerified.Count != actualVerified.Count
+            || !expectedVerified.SequenceEqual(actualVerified))
         {
             return "the verified block itself did not round-trip";
         }
 
-        var expectedOthers = expected.Entries.Where(NotVerified).ToList();
-        var actualOthers = actual.Entries.Where(NotVerified).ToList();
+        // Name a key only when exactly one position differs and both sides hold
+        // the same key there (a value change). Anything else -- a changed count,
+        // two or more differing positions, a key that moved or was inserted and
+        // so shifted its neighbours -- cannot be pinned to one key, and naming
+        // the first mismatch would name an unchanged or the wrong key.
+        var expectedOthers = expected.Entries.Where(e => !IsVerified(e)).ToList();
+        var actualOthers = actual.Entries.Where(e => !IsVerified(e)).ToList();
         if (expectedOthers.Count == actualOthers.Count)
         {
+            var differing = new List<int>();
             for (var i = 0; i < expectedOthers.Count; i++)
             {
-                var (expectedKey, expectedValue) = expectedOthers[i];
-                var (actualKey, actualValue) = actualOthers[i];
-                if (!expectedKey.Equals(actualKey) || !expectedValue.Equals(actualValue))
+                if (!expectedOthers[i].Key.Equals(actualOthers[i].Key)
+                    || !expectedOthers[i].Value.Equals(actualOthers[i].Value))
                 {
-                    var name = expectedKey.AsDisplayString() ?? expectedKey.AsString() ?? "<non-string key>";
-                    return $"the frontmatter key '{name}' changed";
+                    differing.Add(i);
                 }
+            }
+
+            if (differing.Count == 1 && expectedOthers[differing[0]].Key.Equals(actualOthers[differing[0]].Key))
+            {
+                var key = expectedOthers[differing[0]].Key;
+                var name = key.AsDisplayString() ?? key.AsString() ?? "<non-string key>";
+                return $"the frontmatter key '{name}' changed";
             }
         }
 
-        // verified matches and no single other key could be pinned (e.g. the
-        // key SETS differ in count/order beyond a simple positional swap) --
-        // say so honestly instead of naming a key that was never checked.
         return "the frontmatter changed outside the verified block";
 
-        static bool NotVerified((YamlValue Key, YamlValue Value) entry) =>
-            !string.Equals(entry.Key.AsString(), "verified", StringComparison.Ordinal);
+        static bool IsVerified((YamlValue Key, YamlValue Value) entry) =>
+            string.Equals(entry.Key.AsString(), "verified", StringComparison.Ordinal);
     }
 
     /// <summary>A validated concept id and the absolute path it resolves to, produced by <see cref="ValidateConceptTarget"/>.</summary>

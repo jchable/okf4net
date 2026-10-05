@@ -33,6 +33,15 @@ and this project adheres to
   still fails, so a script passing an empty variable as the bundle is still
   caught. A script that relied on a bare `okf` failing must now check its own
   arguments.
+- **Breaking (0.x): `Frontmatter.RequiredKeys` and `Frontmatter.RecommendedFields`
+  are now read-only `IReadOnlyList<string>` properties (#113).** They were
+  mutable `public static readonly string[]` fields in 0.6.0, so any caller could
+  assign an element and change what every document validates against.
+  Binary-breaking (compiled field references do not bind to properties).
+  Source-breaking for `.Length` (use `.Count`), array-specific operations,
+  element assignment, passing them where a `string[]` is required, and
+  reflection on them as fields. `Frontmatter.RecommendedFieldsFor` keeps its
+  signature and now returns a read-only list on both of its branches.
 
 ### Fixed
 
@@ -53,6 +62,17 @@ and this project adheres to
   root cannot be resolved (an entry that cannot be inspected, a link target
   that cannot be read), the key falls back to the lexical path, as before.
   Still in-process only: a second process writing the same bundle is not
+
+- **A verification refusal no longer names an unchanged or the wrong key
+  (#115).** When the in-place `verified` edit fails its round-trip check,
+  `BundleConceptWriter` names a frontmatter key only when exactly one entry
+  differs and it is a value change; a changed count, two or more differences, or
+  an inserted key that shifts its neighbours now gives the unlocated "changed
+  outside the verified block" message instead of the first positional mismatch.
+  Duplicate `verified` entries, which the YAML mapping keeps, are compared in
+  order and with multiplicity, so adding, dropping or altering one is reported
+  as a `verified` divergence rather than a change outside it. A NaN used as a
+  mapping key now gets the NaN-specific message, as a NaN value already did.
   serialized against.
 
 The five entries below are in `okfgen` (`producers/OkfProducer`, not published, outside
