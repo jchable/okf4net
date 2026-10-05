@@ -12,11 +12,29 @@ and this project adheres to
 
 - `OKF4net.Attestation.Containers`: a container run cancelled or timed out
   between the engine creating its container and starting it no longer leaves
-  that container behind in `Created` state (#110). Teardown still issues
-  `kill` first, then — only when `kill` fails, which is what it does on a
-  container that never started or does not exist yet — `rm -f` of the same
-  name, inside the same 3 s teardown budget; `rm -f` removes a container in any
-  state, where `--rm` only fires for one that ran.
+  that container behind in `Created` state (#110) in the cases measured below,
+  but this is a reduction, not a guarantee. Teardown now issues `kill` once,
+  kills and waits for the local engine client, and only then repeats
+  `rm -f <name>` followed by `inspect <name>` until `inspect` reports the name
+  absent in two consecutive rounds 250 ms apart — and, as long as the engine
+  has not once confirmed the container exists, for 1.5 s in all. It does not
+  take an exit code of `rm -f` as proof, because Docker (29.4.1) exits 0 for a
+  name it does not know yet. All of it stays inside the existing 3 s teardown
+  budget (an early cancellation takes about 2 s on a quiet daemon, one on a
+  running container about 1–1.6 s). Measured on Docker 29.4.1 on Windows, cancelling 0–100 ms
+  after the run starts (50 runs per integration-test execution): the first
+  version of this fix, which stopped at the first `rm -f`, leaked a container
+  in 8 of 250 runs; this version in none of about 2,900 runs on a quiet
+  daemon. During one period of heavy load from other sessions on the shared
+  daemon it still leaked 12 of 700 runs (18 of 400 with two rounds and no
+  1.5 s hold). Not traced to a cause in those runs; in one later harness run
+  during such a period, 4 of 16 runs leaked while teardown took 2.8–3.4 s
+  against 1.6–2.1 s when quiet, i.e. a slow daemon used up the 3 s budget
+  before absence was confirmed. A `create` the daemon commits after the last
+  check, or after the budget is spent, is not seen. Podman and nerdctl
+  have not been run; their `rm -f` exit code for an unknown name is
+  unverified, and the design assumes only that `inspect` of an unknown name
+  exits non-zero.
 
 ## [0.6.0] - 2026-10-01
 

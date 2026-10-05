@@ -252,9 +252,10 @@ public class CliContainerEngineRunTests
     /// promised into a hang. The "engine" here always hangs on <c>run</c> (so the
     /// outer run genuinely times out) and hangs 20 s on <c>kill</c> too, standing in
     /// for exactly that unresponsive daemon, and records one line per <c>kill</c>
-    /// invocation to a marker file so this test can also assert no retry was
-    /// attempted -- a kill that already hung once will not answer a second time
-    /// either, and the caller is already past its own deadline.
+    /// invocation to a marker file so this test can also assert nothing else was
+    /// attempted -- no removal, no check -- since the hung kill used up the whole
+    /// budget, an engine that did not answer once will not answer a second time, and
+    /// the caller is already past its own deadline.
     /// <para>
     /// <see cref="CliContainerEngine.TeardownBudget"/> is shrunk to 1 s here instead of
     /// asserting against its 3 s production default: the old, unbounded-per-attempt
@@ -283,53 +284,51 @@ public class CliContainerEngineRunTests
         Assert.Equal(1, CountInvocations(marker, "kill"));
         // The hung kill used up the whole budget, so no removal was started either.
         Assert.Equal(0, CountInvocations(marker, "rm"));
+        Assert.Equal(0, CountInvocations(marker, "inspect"));
     }
 
     /// <summary>
     /// The other half of the same budget: a <c>kill</c> that answers -- slowly, and
-    /// with failure -- must still get its retry, because the retry exists for a
-    /// container whose creation was still in flight, not only for a dead engine. The
-    /// "engine" here targets roughly 750 ms then exits non-zero on every <c>kill</c>
-    /// call (a real <c>sleep 0.75</c> on POSIX; an approximate <c>ping</c>-based wait
-    /// on Windows that in practice can run notably shorter, measured 275-485 ms) and
-    /// records one marker line per call, so this test can assert the retry actually
-    /// happened (two lines).
+    /// with failure -- must not stop the removal that follows it, and the removal rounds
+    /// that follow must still get to run, because they are what verifies the container
+    /// is gone. The "engine" here targets roughly 750 ms then exits non-zero on every
+    /// <c>kill</c> call (a real <c>sleep 0.75</c> on POSIX; an approximate <c>ping</c>-based
+    /// wait on Windows that in practice can run notably shorter, measured 275-485 ms),
+    /// answers <c>rm -f</c> with 0 and <c>inspect</c> with 1 (absent), and records one
+    /// marker line per call. Expected: one <c>kill</c> (teardown no longer retries it --
+    /// once the local client is dead the removal subsumes it), then at least two rounds
+    /// of <c>rm -f</c> + <c>inspect</c>: absence has to be seen twice, and, since this
+    /// engine never confirmed the container existed, to hold for a further 1.5 s.
     /// <para>
     /// <see cref="CliContainerEngine.TeardownBudget"/> is widened here rather than
     /// shrunk, unlike the sibling <see cref="A_hung_engine_kill_does_not_hang_the_timed_out_run"/>:
     /// that sibling shrinks its budget purely for test speed (a hung <c>kill</c>
     /// consumes its whole slice of the budget every time, so a smaller budget makes a
     /// deterministically slow test faster without changing what it proves). This test
-    /// is different -- its <c>kill</c> answers on its own, so the retry firing depends
-    /// on the budget still having the internal <c>RetryThreshold</c> (500 ms) left
-    /// over after the first attempt, and that first attempt's real cost is <em>not</em>
-    /// just the ~750 ms POSIX <c>sleep</c> (or the Windows <c>ping</c>, measured
-    /// 275-485 ms): it also carries process-spawn and pipe-drain overhead that a
-    /// previous 2 s budget gave only ~750 ms of headroom to absorb, which was enough on
-    /// an unloaded box but not on a loaded windows-latest runner (3.59 s against a
-    /// 3.5 s bound) and, per the CI run this comment now documents, not on a loaded
-    /// ubuntu-latest runner either (only 1 of the 2 expected `kill` markers was
-    /// written -- the retry was skipped because too little budget was left). A 3.5 s
-    /// (windows) or 2 s (POSIX) budget both left too little of that margin. Rather than
-    /// re-tuning the same knob a second time, <c>budget</c> here is set to comfortably
-    /// exceed 2x the slower attempt plus the retry delay (2 x 0.75 s + 0.25 s = 1.75 s
-    /// on POSIX; smaller on Windows) by roughly 3 s of headroom -- enough to absorb
-    /// even a heavily loaded shared CI runner's scheduling noise without the
-    /// RetryThreshold check ever coming close to the edge. The assertion below still
-    /// derives its elapsed bound from this budget plus a fixed slack (matching the
-    /// sibling's own pattern) rather than a bare literal, so the two numbers cannot
-    /// drift apart the way the old literal 3.5 s did. Confirmed empirically: 20 runs on
-    /// Windows and 20 runs in a Linux container (dotnet/sdk:10.0), see the
-    /// retry-test-fix report.
+    /// is different -- its engine answers on its own, so the second round only runs if
+    /// the budget still has the internal <c>RetryThreshold</c> (500 ms) left after the
+    /// first one, and what the first round costs is <em>not</em> just the kill's
+    /// ~750 ms (POSIX <c>sleep</c>; the Windows <c>ping</c> measured 275-485 ms): the
+    /// teardown launches 1 kill, then rounds of rm + inspect (each a cmd or sh spawn
+    /// plus pipe drain, tens of ms on an idle box and several hundred on a loaded
+    /// runner) separated by 250 ms delays, for at least the 1.5 s the absence has to
+    /// hold. An earlier version of this test with a 2 s budget lost its retry on a loaded
+    /// windows-latest runner (3.59 s against a 3.5 s bound) and on a loaded
+    /// ubuntu-latest one (1 of the 2 expected markers written). So <c>budget</c> stays
+    /// at 5 s: the 0.75 s kill + the 1.5 s window + a last round is about 2.5-3 s on an
+    /// idle box, and a round only starts while at least the 500 ms RetryThreshold of
+    /// the budget remains, so a slow runner ends the teardown early rather than running
+    /// past the budget. The elapsed bound is derived from the budget plus a fixed slack
+    /// rather than a bare literal, so the two cannot drift apart.
     /// </para>
     /// </summary>
     [Fact]
-    public async Task A_slow_failing_kill_still_gets_retried_within_the_budget()
+    public async Task A_slow_failing_kill_does_not_stop_the_removal_rounds_within_the_budget()
     {
         using var tmp = new TempDir();
-        var marker = System.IO.Path.Combine(tmp.Path, "kill-calls.txt");
+        var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
         var budget = TimeSpan.FromSeconds(5);
-        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, killMode: KillMode.SlowFail))
+        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, killMode: KillMode.SlowFail, rmExitCode: 0, inspectExitCode: 1))
         {
             TeardownBudget = budget,
         };
@@ -341,58 +340,67 @@ public class CliContainerEngineRunTests
         var bound = budget + TimeSpan.FromSeconds(3);
         Assert.Contains("exceeded its timeout", ex.Message);
         Assert.True(clock.Elapsed < bound, $"the timed-out run took {clock.Elapsed} against a bound of {bound} (budget {budget})");
-        Assert.Equal(2, CountInvocations(marker, "kill"));
-        // Each attempt that kill could not satisfy falls through to a removal.
-        Assert.Equal(2, CountInvocations(marker, "rm"));
+        Assert.Equal(1, CountInvocations(marker, "kill"));
+        Assert.True(CountInvocations(marker, "rm") >= 2);
+        Assert.True(CountInvocations(marker, "inspect") >= 2);
     }
 
     private static readonly System.Text.RegularExpressions.Regex EngineContainerName =
         new("^okf-[0-9a-f]{32}$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     /// <summary>
-    /// #110: a run cancelled or timed out between "created" and "started" leaves a
-    /// container <c>kill</c> cannot touch (it is not running) and <c>--rm</c> never
-    /// fires for (it never ran). The teardown therefore has to issue <c>rm -f</c> for the
-    /// run's container -- its exact name, not a pattern -- whenever <c>kill</c> fails.
-    /// Here <c>kill</c> exits 1, as the real one does on an unstarted container, and
-    /// <c>rm -f</c> answers 0. The CI-visible half only: whether the engine then really
-    /// has no such container is
-    /// <c>ContainerIntegrationTests.Cancellation_or_timeout_between_create_and_start_leaves_no_container_behind</c>.
+    /// #110: a run cancelled or timed out while its container is created but not
+    /// started leaves one <c>kill</c> cannot touch (it is not running) and <c>--rm</c>
+    /// never fires for (it never ran). The teardown therefore issues <c>rm -f</c> for the
+    /// run's container -- its exact name, not a pattern -- and then <c>inspect</c> of the
+    /// same name to check it is gone. Absence has to be seen in two rounds, and -- as
+    /// <c>kill</c> never confirmed the container existed, so its <c>create</c> may still
+    /// be in flight -- to hold for a further 1.5 s (the lower bound asserted on the
+    /// elapsed time below; the code's own <c>AbsentWindow</c>). The CI-visible half only:
+    /// whether the engine really has no such container is <c>ContainerIntegrationTests</c>'
+    /// to say.
     /// </summary>
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task When_kill_cannot_help_the_teardown_removes_the_container_by_name(bool callerCancels)
+    public async Task The_teardown_removes_the_container_by_name_and_checks_it_is_gone(bool callerCancels)
     {
         using var tmp = new TempDir();
         var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
         var budget = TimeSpan.FromSeconds(5);
-        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 0))
+        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 0, inspectExitCode: 1))
         {
             TeardownBudget = budget,
         };
+        var clock = Stopwatch.StartNew();
 
         await AssertRunEndsAsync(engine, callerCancels);
 
         var kill = Assert.Single(Invocations(marker, "kill"));
-        var removal = Assert.Single(Invocations(marker, "rm"));
-        Assert.Matches(EngineContainerName, kill.Single());
-        // `rm -f <name>`, the surface Docker, Podman and nerdctl share, aimed at the very
-        // container `kill` was just refused for.
-        Assert.Equal(["-f", kill.Single()], removal);
+        var name = kill.Single();
+        Assert.Matches(EngineContainerName, name);
+        // `rm -f <name>` and `inspect <name>`, the surface Docker, Podman and nerdctl
+        // share, both aimed at the very container `kill` was just refused for.
+        Assert.True(CountInvocations(marker, "rm") >= 2);
+        Assert.All(Invocations(marker, "rm"), removal => Assert.Equal(["-f", name], removal));
+        Assert.True(CountInvocations(marker, "inspect") >= 2);
+        Assert.All(Invocations(marker, "inspect"), inspection => Assert.Equal([name], inspection));
+        // The run alone is ~0.3 s (the timeout / the cancel delay); the 1.5 s hold on
+        // top of it is what keeps teardown watching for a late create.
+        Assert.True(clock.Elapsed >= TimeSpan.FromMilliseconds(1500), $"teardown gave up after {clock.Elapsed}");
     }
 
     /// <summary>
-    /// A <c>kill</c> that succeeded ran a container: <c>--rm</c> removes it once it has
-    /// exited, and a following <c>rm -f</c> would only answer "no such container" and
-    /// start a pointless retry on the commonest cancellation path (a running container).
+    /// A <c>kill</c> that succeeded does not end the teardown: <c>--rm</c> may well have
+    /// removed the container, but nothing here has checked, and that is the whole point.
+    /// The removal rounds run exactly as when <c>kill</c> failed.
     /// </summary>
     [Fact]
-    public async Task A_successful_kill_ends_the_teardown_without_a_removal()
+    public async Task A_successful_kill_does_not_end_the_teardown_before_the_container_is_checked()
     {
         using var tmp = new TempDir();
         var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
-        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Succeed, rmExitCode: 1))
+        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Succeed, rmExitCode: 1, inspectExitCode: 1))
         {
             TeardownBudget = TimeSpan.FromSeconds(5),
         };
@@ -400,28 +408,26 @@ public class CliContainerEngineRunTests
         await AssertRunEndsAsync(engine, callerCancels: false);
 
         Assert.Equal(1, CountInvocations(marker, "kill"));
-        Assert.Equal(0, CountInvocations(marker, "rm"));
+        Assert.Equal(2, CountInvocations(marker, "rm"));
+        Assert.Equal(2, CountInvocations(marker, "inspect"));
     }
 
     /// <summary>
-    /// <c>rm -f</c> of a name the engine does not know exits non-zero, and that is the
-    /// expected, harmless case: the CLI client was cancelled before it ever sent
-    /// <c>create</c>, so there is nothing to remove. It must neither replace the
-    /// outcome the run was already going to report -- the caller's
-    /// <see cref="OperationCanceledException"/>, or the timeout's
-    /// <see cref="ContainerExecutionException"/> -- nor escape as an exception of its
-    /// own. The attempt is retried (the container may still be being created), and the
-    /// second removal is the last: two of each, then the outcome.
+    /// <c>rm -f</c> of a name the engine does not know exits 0 on Docker (29.4.1), so its
+    /// exit code is no evidence that the container is gone, and teardown must not stop on
+    /// it. Here <c>rm -f</c> exits 0 every time but <c>inspect</c> keeps finding the
+    /// container: the rounds repeat until the budget is spent -- more than the two a clean
+    /// check needs -- and the outcome is still the one the run was going to report.
     /// </summary>
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task A_failing_removal_does_not_change_the_outcome(bool callerCancels)
+    public async Task A_removal_that_exits_zero_is_not_taken_as_proof_the_container_is_gone(bool callerCancels)
     {
         using var tmp = new TempDir();
         var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
-        var budget = TimeSpan.FromSeconds(5);
-        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 1))
+        var budget = TimeSpan.FromSeconds(2);
+        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 0, inspectExitCode: 0))
         {
             TeardownBudget = budget,
         };
@@ -431,8 +437,38 @@ public class CliContainerEngineRunTests
 
         var bound = budget + TimeSpan.FromSeconds(3);
         Assert.True(clock.Elapsed < bound, $"the run took {clock.Elapsed} against a bound of {bound} (budget {budget})");
-        Assert.Equal(2, CountInvocations(marker, "kill"));
-        Assert.Equal(2, CountInvocations(marker, "rm"));
+        Assert.True(CountInvocations(marker, "rm") >= 2, "teardown stopped after one removal although the container was still there");
+        Assert.True(CountInvocations(marker, "inspect") >= 2);
+    }
+
+    /// <summary>
+    /// A <c>rm -f</c> or <c>inspect</c> that fails -- as one does on an engine that is
+    /// down or odd -- must neither replace the outcome the run was already going to
+    /// report (the caller's <see cref="OperationCanceledException"/>, or the timeout's
+    /// <see cref="ContainerExecutionException"/>) nor escape as an exception of its own;
+    /// teardown never throws. A non-zero <c>inspect</c> is read as "absent".
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_failing_removal_does_not_change_the_outcome(bool callerCancels)
+    {
+        using var tmp = new TempDir();
+        var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
+        var budget = TimeSpan.FromSeconds(5);
+        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 1, inspectExitCode: 1))
+        {
+            TeardownBudget = budget,
+        };
+        var clock = Stopwatch.StartNew();
+
+        await AssertRunEndsAsync(engine, callerCancels);
+
+        var bound = budget + TimeSpan.FromSeconds(3);
+        Assert.True(clock.Elapsed < bound, $"the run took {clock.Elapsed} against a bound of {bound} (budget {budget})");
+        Assert.Equal(1, CountInvocations(marker, "kill"));
+        Assert.True(CountInvocations(marker, "rm") >= 2);
+        Assert.True(CountInvocations(marker, "inspect") >= 2);
     }
 
     /// <summary>
@@ -488,12 +524,15 @@ public class CliContainerEngineRunTests
     /// An "engine" that dispatches on its first argument the way a real one does:
     /// <c>run</c> always hangs for <paramref name="runHangSeconds"/> (so
     /// <see cref="CliContainerEngine.RunAsync"/> genuinely times out and proceeds to
-    /// teardown), <c>kill</c> behaves per <paramref name="killMode"/>, and <c>rm</c>
-    /// exits <paramref name="rmExitCode"/> at once. Every invocation appends its own
-    /// arguments as one line to <paramref name="markerFile"/>, so a test can count how
-    /// many of each ran and with what.
+    /// teardown), <c>kill</c> behaves per <paramref name="killMode"/>, and <c>rm</c> and
+    /// <c>inspect</c> exit <paramref name="rmExitCode"/> and <paramref name="inspectExitCode"/>
+    /// at once. Every invocation appends its own arguments as one line to
+    /// <paramref name="markerFile"/>, so a test can count how many of each ran and with
+    /// what. The defaults model an engine that answers every teardown command with
+    /// failure; the real Docker's answers (verified on 29.4.1) are <c>kill</c> 1 and
+    /// <c>inspect</c> 1 for a name it does not know, <c>rm -f</c> 0.
     /// </summary>
-    private static string DispatchingEngine(TempDir tmp, string markerFile, int runHangSeconds, KillMode killMode, int rmExitCode = 1)
+    private static string DispatchingEngine(TempDir tmp, string markerFile, int runHangSeconds, KillMode killMode, int rmExitCode = 1, int inspectExitCode = 1)
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
@@ -510,10 +549,13 @@ public class CliContainerEngineRunTests
                 + $"echo %* >> \"{markerFile}\"\r\n"
                 + "if \"%1\"==\"kill\" goto kill\r\n"
                 + "if \"%1\"==\"rm\" goto rm\r\n"
+                + "if \"%1\"==\"inspect\" goto inspect\r\n"
                 + $"ping -n {runHangSeconds + 1} 127.0.0.1 >nul\r\n"
                 + "exit /b 0\r\n"
                 + ":rm\r\n"
                 + $"exit /b {rmExitCode}\r\n"
+                + ":inspect\r\n"
+                + $"exit /b {inspectExitCode}\r\n"
                 + ":kill\r\n"
                 + killBody);
         }
@@ -532,6 +574,7 @@ public class CliContainerEngineRunTests
             + "case \"$1\" in\n"
             + $"  kill) {killBodySh} ;;\n"
             + $"  rm) exit {rmExitCode} ;;\n"
+            + $"  inspect) exit {inspectExitCode} ;;\n"
             + $"  *) sleep {runHangSeconds} ;;\n"
             + "esac\n");
         File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
