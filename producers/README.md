@@ -219,13 +219,23 @@ there are hundreds of them.
 
 **A directory the walk could not list at all is named the same way, but it is not a
 "visited" file.** One inaccessible subdirectory (a permission-denying ACL, most
-concretely) no longer empties the whole file list the way an unreadable repository root or
-a circular junction does — every other file the walk finds is still visited and reported,
+concretely) no longer empties the whole file list the way an unreadable repository root does —
+every other file the walk finds is still visited and reported,
 and the directory itself is named under the line (`- locked/: skipped, directory not
 readable`), sharing the same ten-entry cap as the per-file causes above. It does not,
 however, add to the "N source file(s) visited" count: that count is a statement about files
 this run actually *attempted*, and a directory it could not even list was never one of
 those — counting it there would overstate how much of the repository this run touched.
+
+**A directory link — a symbolic link or a junction — is named, never entered.** The walk does
+not descend into one, on any platform, and says so under the line (`- alias/: skipped,
+directory is a link, not entered`, same ten-entry cap). It is not a "visited" file either, and it
+makes the run *not complete*, but it does not stop the traversal counting as complete: the
+extractor already refuses any file reached through a link, so nothing a link hides could have
+been extracted, and pruning is unaffected. Entering links was not merely noise. A link back to an
+ancestor made the walk fail outright on Windows and, on Linux, followed it until the kernel
+refused another hop — and with two such links under one directory the count multiplies per
+level (a standalone walk had produced 432,906 paths when it was abandoned after 15 seconds).
 
 **What the line still cannot tell you.** It states what the run *visited* and how it
 *resolved* — never what it chose not to *emit*. A file read in full, extracted cleanly and
@@ -252,8 +262,8 @@ fire. Reproduced on this host, each exiting 0 having printed *nothing at all*
 beyond `Wrote N concept(s)`: a `--max-file-size` below the only source file, which drops
 every `code` concept; a repository with no package manifest and no source-ownership map,
 where every `code` concept is unreachable from `overview` while `okf validate` stays
-silent because nothing dangles; and a walk truncated by a circular junction, which writes
-`overview` alone. A fourth — a repository with no `.csproj` but *with* a package manifest,
+silent because nothing dangles. (A walk truncated by a circular junction, which wrote
+`overview` alone, belonged here until the walk stopped entering directory links.) A third — a repository with no `.csproj` but *with* a package manifest,
 where the whole Roslyn stage sits behind a guard with no `else` — printed the generic "no
 source-ownership map" note and nothing more: true as far as it goes, and silent about the
 stage having been skipped and about every call link being a name match.

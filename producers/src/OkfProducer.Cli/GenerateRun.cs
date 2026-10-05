@@ -529,9 +529,11 @@ internal static class GenerateRun
                 : $"{Count(visited)} source file(s) visited: {breakdown}";
 
         // Stated in both directions rather than only when it fails. The false case is the one that
-        // forbids pruning outright, and it is reachable without any file being unreadable: a circular
-        // junction empties the walk's file list (measured on this host -- see the wave-3 report), and
-        // the run then writes `overview` alone and exits 0.
+        // forbids pruning outright, and it is reachable without any file being unreadable: a run that
+        // is cancelled or times out partway, or whose repository root cannot be listed, visits too few
+        // files and then writes little more than `overview` and exits 0. (A circular junction used to
+        // be the measured example -- it emptied the walk's file list; the walk no longer enters a
+        // directory link, see RunStatus.LinkedDirectories.)
         var traversal = status.TraversalComplete
             ? "the traversal visited every eligible file"
             : "THE TRAVERSAL DID NOT COMPLETE -- some eligible files were never visited, so a symbol may have moved into one of them and nothing was pruned";
@@ -586,6 +588,7 @@ internal static class GenerateRun
             .Where(f => f.Status is not (FileStatus.Extracted or FileStatus.PartiallyExtracted))
             .Select(f => $"{f.Path}: {Label(f.Status)}")
             .Concat(status.InaccessibleDirectories.Select(d => $"{d}/: skipped, directory not readable"))
+            .Concat(status.LinkedDirectories.Select(d => $"{d}/: skipped, directory is a link, not entered"))
             .ToList();
 
         foreach (var line in unanalysedLines.Take(UnanalysedFilesListed))

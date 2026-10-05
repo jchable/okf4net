@@ -8,8 +8,7 @@ namespace OkfProducer.Core.CodeGraph;
 /// -- was every eligible file even visited -- and, per file, <see cref="Skipped"/>'s recorded
 /// <see cref="FileStatus"/> -- did the file that WAS visited extract cleanly. These matter separately
 /// for Task 11's pruning gate, because they carry different risk. A truncated traversal (a missing or
-/// unreadable repository root, an enumeration failure such as a circular reparse point, or an explicit
-/// or timeout cancellation -- <see cref="TraversalComplete"/> <see langword="false"/>) means some files
+/// unreadable repository root, or an explicit or timeout cancellation -- <see cref="TraversalComplete"/> <see langword="false"/>) means some files
 /// were never visited at all: a symbol may have *moved* to one of them, so deleting its old concept
 /// would lose it with no replacement -- pruning is unsafe here for a reason that has nothing to do with
 /// parse quality. A completed traversal where some individual files still hit a hostile-input guard or
@@ -33,7 +32,30 @@ public sealed record RunStatus(bool TraversalComplete, IReadOnlyList<(string Pat
     /// this is the same check <see cref="IsComplete"/> always was, not a weakened one, just built from
     /// parts a consumer can now also inspect individually.
     /// </summary>
-    public bool IsComplete => TraversalComplete && Skipped.All(s => s.Status == FileStatus.Extracted);
+    public bool IsComplete =>
+        TraversalComplete && LinkedDirectories.Count == 0 && Skipped.All(s => s.Status == FileStatus.Extracted);
+
+    /// <summary>
+    /// Repo-relative, <c>/</c>-separated paths of directory links (a symbolic link or a junction) the
+    /// walk found and deliberately did not enter (#118). Entering one is not safe to leave to the
+    /// platform: .NET follows a directory link while recursing, and nothing stops a link that points
+    /// back at an ancestor. Measured on Linux: one such link yields 42 paths before the kernel refuses
+    /// to resolve more hops, but two of them under one directory had yielded 430,000 paths when the
+    /// measurement was abandoned after 15 seconds (every level can take either link, so the count
+    /// multiplies per level). On Windows the first one ends the whole walk with a
+    /// <see cref="PathTooLongException"/> that discards every file. Not entering a link is also what
+    /// <c>RepositoryScanner</c> already does, and nothing is lost by it: <c>TreeSitterExtractor</c>
+    /// refuses a file reached through a link (<see cref="FileStatus.SkippedSymlink"/>) in any case.
+    ///
+    /// <para>
+    /// Kept apart from <see cref="Skipped"/> for the reason <see cref="InaccessibleDirectories"/> is -- a
+    /// directory is not a file this run attempted -- but, unlike an unreadable directory, a link does
+    /// <b>not</b> clear <see cref="TraversalComplete"/>: the pruning gate keys off that, and no symbol can
+    /// have moved into a file this producer would never have extracted. It does clear
+    /// <see cref="IsComplete"/>, so the summary still says something was not analysed.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<string> LinkedDirectories { get; init; } = [];
 
     /// <summary>
     /// Repo-relative, <c>/</c>-separated paths of directories the walk found but could not list

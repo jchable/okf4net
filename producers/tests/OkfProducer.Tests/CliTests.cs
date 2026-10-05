@@ -1171,6 +1171,28 @@ public class CliTests
     }
 
     [Fact]
+    public void A_directory_link_is_named_in_the_unanalysed_list_and_leaves_the_traversal_complete()
+    {
+        // #118: RunStatus.LinkedDirectories rides the same listing as an inaccessible directory, and for
+        // the same reason is not a visited file. Unlike one, it does NOT flip TraversalComplete -- the
+        // pruning gate keys off that -- so the traversal line must still say it completed.
+        var status = new RunStatus(true, [("src/ok.cs", FileStatus.Extracted)]) { LinkedDirectories = ["src/alias"] };
+
+        var lines = GenerateRun.Summarize(
+            noMsBuild: false,
+            status,
+            projectsDetected: 0,
+            [],
+            owns: null,
+            []);
+
+        Assert.False(status.IsComplete);
+        Assert.Contains("1 source file(s) visited, all extracted", lines[0], StringComparison.Ordinal);
+        Assert.Contains("the traversal visited every eligible file", lines[0], StringComparison.Ordinal);
+        Assert.Contains("  - src/alias/: skipped, directory is a link, not entered", lines);
+    }
+
+    [Fact]
     public void Reachability_uses_the_validators_own_resolver_and_not_a_hand_rolled_prefix_strip()
     {
         // The doc comment claims the walk "gives the validator's own answer". Half that answer is
