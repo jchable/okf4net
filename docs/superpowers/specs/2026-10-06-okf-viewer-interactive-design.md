@@ -194,6 +194,10 @@ navigateur. **La mesure sur le schéma définitif précède P1** ; au chargement
 d'une page, seuls l'arbre et l'état courant sont construits, les structures de
 graphe le sont à la demande.
 
+Mesure sur le schéma définitif (P1, 2026-10-06, `--no-msbuild`, commande de la
+tâche 4 du plan P1) : bundle d'OKF4net — 795 concepts, 0 fantômes, 912 arêtes,
+`okf-index.js` de 280890 octets ; `acme_retail` — 9 concepts, 3165 octets.
+
 ## 4. JavaScript
 
 ### 4.1 Fichiers et chargement
