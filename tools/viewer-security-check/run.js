@@ -1013,6 +1013,10 @@ function type(window, input, value) {
 
 const asyncChecks = [];
 
+// checkAsync only queues: every async result prints after ALL synchronous
+// output, under the last header printed. So page cases share the one
+// "Interactive viewer pages" header below; a console.log header placed
+// between checkAsync calls would print at queue time, above none of them.
 /** @param {string} name @param {() => Promise<void>} fn */
 function checkAsync(name, fn) {
   asyncChecks.push({ name, fn });
@@ -1091,8 +1095,6 @@ checkAsync("the generated index executes with hostile ids as plain values", asyn
   assert(window.OKF_INDEX.concepts.find((c) => c.id === "__proto__").title === "Proto", "__proto__ lost its record");
   assert(Object.getPrototypeOf(window.OKF_INDEX) === window.Object.prototype, "the index object's prototype was replaced");
 });
-
-console.log("\nexplorer and theme:");
 
 function treeLink(window, id) {
   return Array.from(window.document.querySelectorAll("#okf-explorer a.okf-tree-link"))
@@ -1205,8 +1207,6 @@ checkAsync("theme: the announced state follows a system preference change while 
   query.dispatchEvent(new window.Event("change"));
   assert(toggle.getAttribute("aria-pressed") === "true", "a change of the system preference was not re-announced");
 });
-
-console.log("\npalette:");
 
 function paletteOptions(window) {
   return Array.from(window.document.querySelectorAll("#okf-palette-list [role=option]"));
@@ -1437,8 +1437,6 @@ checkAsync("palette: from a nested page, the target resolves up to the site root
     assert(navigated === "../edge.html", `navigated to ${navigated} (${JSON.stringify(opts)})`);
   }
 });
-
-console.log("\ncontents, heading anchors and fragments:");
 
 checkAsync("headings get generated ids only, the contents list them, no content id survives", async () => {
   const window = await openPage("foo.html");
