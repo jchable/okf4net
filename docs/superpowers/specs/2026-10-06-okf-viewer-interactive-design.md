@@ -1,9 +1,18 @@
 # Viewer interactif (`okf-render`) — design
 
 Date : 2026-10-06
-Statut : proposé — révision 3 (2026-10-06) : revue externe intégrée
-(verdict « prêt après corrections nommées »), arbitrages du propriétaire rendus
-(section 10)
+Statut : proposé — révision 4 (2026-10-06) : seconde passe de la revue externe
+intégrée (verdict « prêt après corrections nommées », aucun arbitrage rouvert),
+arbitrages du propriétaire rendus (section 10) ; prêt pour le plan de P1
+
+**Révision 4 (seconde passe de revue, 2026-10-06)** : trois constats, vérifiés
+avant intégration. Le budget par tranche contredisait l'interdiction de couper
+une itération : la simulation se suspend désormais à l'intérieur d'une
+itération, curseurs et accumulateurs conservés (§4.2, contrôles 1 et 2) ; la
+date d'affichage devient un champ `staleAfterDate` de l'index, jamais
+reconstruit depuis l'instant arrondi (§3.3, §4.4) ; le graphe gagne une
+navigation précédent/suivant dans l'ordre de l'index et une règle de focus sous
+filtrage (§8, contrôle 9). Exigences ajoutées au plan pour les ancres (§5).
 
 **Révision 3 (revue externe, 2026-10-06)** : douze constats, tous vérifiés
 dans le code avant intégration. Corrections : instant de péremption transmis en
@@ -124,8 +133,8 @@ par nom, les ancêtres des résultats restent affichés.
 ### 3.3 Concepts, arêtes, fantômes
 
 - **Concepts** : tableau d'enregistrements (id, titre, type, tags, chemin de page,
-  palier de confiance, `staleAfterMs`) ; un concept est désigné partout par son
-  **indice** dans ce tableau.
+  palier de confiance, `staleAfterMs`, `staleAfterDate`) ; un concept est désigné
+  partout par son **indice** dans ce tableau.
 - **Palier de confiance** : `AuditFinding.Trust`, sous son nom
   `AuditVocabulary.Name(TrustTier)` (A1).
 - **`staleAfterMs`** : voir §4.4 ; `null` quand `stale_after` est absent ou
@@ -207,13 +216,19 @@ Module pur, sans DOM :
   l'arrondi ; `Math.sin/cos/exp/pow/atan2` sont approchées selon le moteur ;
 - **ordre des accumulations fixé** (nœuds par indice, cellules de grille dans un
   ordre fixe) ;
-- **indépendance au découpage en frames** : une tranche s'arrête toujours entre
-  deux itérations complètes, jamais au milieu ; l'état après k itérations est le
-  même quel que soit le découpage ;
 - **deux bornes** : un nombre maximal d'itérations, et un budget de travail qui
   compte les **paires candidates visitées** (pas seulement les forces
   calculées), avec un plafond par cellule, plus les **interactions de ressorts** ;
   chaque tranche a son propre budget ;
+- **suspension à l'intérieur d'une itération** : quand le budget d'une tranche
+  est épuisé, le calcul se suspend là où il en est — curseurs (nœud, cellule,
+  arête en cours) et accumulateurs de forces conservés — et reprend à la tranche
+  suivante **dans le même ordre d'opérations**. Une itération peut donc couvrir
+  plusieurs tranches ; les positions ne sont mises à jour qu'à la fin d'une
+  itération complète, si bien que l'état après k itérations est le même quel que
+  soit le découpage. (Imposer qu'une itération tienne toujours dans une tranche
+  est intenable : son coût croît avec le nombre de nœuds, alors que le budget de
+  tranche est une constante faite pour garder les frames courtes.)
 - graphe vide ou à un nœud : terminé sans itérer ;
 - **annulation** : un changement de filtre invalide la simulation en cours
   (jeton de génération) ;
@@ -251,7 +266,11 @@ sous V8, pas l'égalité entre moteurs, qui repose sur les contraintes ci-dessus
   (`Lifecycle.IsStale`). Une chaîne ISO ne convient pas : comparée à un nombre
   elle donne `NaN`, et `Date.parse` perd les fractions sous la milliseconde
   (`2026-10-06T00:00:00.0001000Z` serait périmé en JS à `.000Z` et pas en C#).
-- L'affichage de la date reprend `Lifecycle.StaleAfterDate`, préparé en C#.
+- L'affichage de la date utilise le champ **`staleAfterDate`** de l'index
+  (`Lifecycle.StaleAfterDate`, `yyyy-MM-dd`, ou `null`), préparé en C# ; il n'est
+  **jamais reconstruit** depuis `staleAfterMs` : une échéance à
+  `23:59:59.9999Z` est arrondie au lendemain en millisecondes, alors que sa date
+  est encore celle du jour. Test xunit à cette frontière de minuit.
 - **Recalcul** (A9) : au chargement de la page et à chaque retour au premier plan
   (`visibilitychange` vers `visible`).
 - C'est la seule part de §5.5 refaite en JS — une comparaison — et une exception
@@ -301,7 +320,9 @@ id, et un id HTML fourni par le bundle est supprimé par le sanitizer
 - Les ids sont générés par le viewer **après** la sanitation : préfixe `okf-h-`
   suivi d'un identifiant dérivé du texte du titre par une règle unique (à fixer au plan :
   minuscules, espaces en `-`, ponctuation retirée), suffixes `-1`, `-2` en cas de
-  doublon.
+  doublon. Le plan doit couvrir : les fragments déjà préfixés (`#okf-h-usage`),
+  les doublons, et les collisions entre un suffixe généré et un titre réel (deux
+  « Usage » puis un titre « Usage 1 » ne doivent pas se disputer `usage-1`).
 - **Fragments existants** : un fragment `#usage` (au clic, et à l'ouverture
   directe d'une URL avec fragment) est résolu vers l'élément `okf-h-usage` par la
   même règle, puis l'élément est atteint et reçoit le focus de lecture.
@@ -343,9 +364,12 @@ Contrôles :
 1. **Simulation** : graphes vide, singleton, sans arêtes, agglutiné, à arêtes
    répétées, de plusieurs milliers de nœuds ; aucune valeur `NaN`/infinie,
    positions bornées, itérations ≤ borne, travail compté ≤ budget (**compté,
-   jamais chronométré**) ; changements rapides de filtre et annulation.
+   jamais chronométré**) ; changements rapides de filtre et annulation ; **une
+   itération plus coûteuse qu'une tranche** (budget de tranche minimal) se
+   suspend et reprend sans dépasser le budget de chaque tranche.
 2. **Déterminisme** : même entrée → même sortie sur deux exécutions **et sous
-   des découpages en frames différents** ; contrôle statique qu'aucune fonction
+   des découpages en frames différents**, y compris des découpages qui coupent
+   une itération en son milieu ; contrôle statique qu'aucune fonction
    `Math` hors `sqrt` n'est appelée (smoke check, dit comme tel dans son
    commentaire). Validé sous V8 seulement.
 3. **Texte hostile** : titre/id/tag contenant du HTML (`<img onerror=…>`) inerte
@@ -366,6 +390,9 @@ Contrôles :
    présents et distincts dans l'explorateur, la palette et le graphe.
 8. **Contrat VS Code** : `viewer.js` seul, avec seulement `{ body, links }` et
    sans aucun nouveau global, rend et nettoie comme aujourd'hui.
+9. **Clavier du graphe** : deux composantes et un nœud isolé tous atteignables
+   par précédent/suivant ; focus déplacé selon §8 quand un filtrage masque le
+   nœud actif.
 
 Côté xunit : la projection `SiteModel` → index (ordre `ConceptId.CompareTo`,
 arbre destination + enfants, arêtes fusionnées et fantômes, palier issu de
@@ -399,6 +426,12 @@ fige en revanche l'ensemble d'arêtes de `okf graph` (A3).
   comportement réel.
 - **Graphe** : un seul arrêt de tabulation pour tout le graphe (tabindex
   itinérant), flèches pour passer d'un nœud à ses voisins, Entrée pour ouvrir ;
+  **précédent/suivant dans l'ordre de l'index** parmi les nœuds visibles,
+  indépendamment des arêtes (touches à fixer au plan, par ex. Page préc./Page
+  suiv., Début/Fin pour le premier et le dernier), pour atteindre un nœud isolé
+  ou une autre composante ; si un filtrage masque le nœud actif, le focus passe
+  au nœud visible suivant dans l'ordre de l'index, à défaut au précédent, à
+  défaut au conteneur du graphe ;
   zoom, dézoom et recentrage par boutons ; la liste équivalente remplace le
   glisser-déposer pour qui ne peut pas glisser.
 - **Explorateur** : commandes distinctes ouvrir/déplier (§3.2), état
