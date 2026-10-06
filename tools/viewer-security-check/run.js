@@ -1092,6 +1092,120 @@ checkAsync("the generated index executes with hostile ids as plain values", asyn
   assert(Object.getPrototypeOf(window.OKF_INDEX) === window.Object.prototype, "the index object's prototype was replaced");
 });
 
+console.log("\nexplorer and theme:");
+
+function treeLink(window, id) {
+  return Array.from(window.document.querySelectorAll("#okf-explorer a.okf-tree-link"))
+    .find((a) => a.getAttribute("title") === id) || null;
+}
+
+function isShown(el) {
+  return el !== null && !el.closest("[hidden]");
+}
+
+checkAsync("explorer: a node is both a page and a folder, with separate open and expand commands", async () => {
+  const window = await openPage("foo/bar.html");
+  assert(!window.document.getElementById("okf-explorer").hidden, "the explorer stayed hidden");
+  const foo = treeLink(window, "foo");
+  assert(foo && foo.getAttribute("href") === "../foo.html", `foo href: ${foo && foo.getAttribute("href")} (must resolve from the site root)`);
+  const toggle = foo.parentElement.querySelector("button.okf-tree-toggle");
+  assert(toggle, "foo has no expand button although foo/bar exists");
+  assert(toggle.getAttribute("aria-expanded") === "true", "the path to the current page is not expanded");
+  const current = window.document.querySelector('#okf-explorer a[aria-current="page"]');
+  assert(current && current.getAttribute("title") === "foo/bar", "the current page is not marked");
+  toggle.click();
+  assert(toggle.getAttribute("aria-expanded") === "false" && !isShown(treeLink(window, "foo/bar")), "the toggle did not collapse");
+});
+
+checkAsync("explorer links resolve from the site root wherever the generated folder is moved", async () => {
+  const window = await openPage("foo/bar.html", { mount: "moved/elsewhere/" });
+  const foo = treeLink(window, "foo");
+  assert(foo.href === `${BASE}moved/elsewhere/foo.html`, `foo resolves to ${foo.href}`);
+  const proto = treeLink(window, "__proto__");
+  assert(proto.href === `${BASE}moved/elsewhere/__proto__.html`, `__proto__ resolves to ${proto.href}`);
+});
+
+checkAsync("explorer: the filter keeps the ancestors of a match and hides the rest", async () => {
+  const window = await openPage("index.html");
+  const filter = window.document.getElementById("okf-tree-filter");
+  type(window, filter, "bar");
+  assert(isShown(treeLink(window, "foo/bar")), "the match is hidden");
+  assert(isShown(treeLink(window, "foo")), "the match's ancestor is hidden");
+  assert(!isShown(treeLink(window, "toString")), "a non-matching concept stayed visible");
+  type(window, filter, "");
+  assert(isShown(treeLink(window, "toString")), "clearing the filter did not restore the tree");
+});
+
+checkAsync("explorer: ids naming Object.prototype members are distinct entries", async () => {
+  const window = await openPage("index.html");
+  for (const id of ["__proto__", "constructor", "toString"]) {
+    const link = treeLink(window, id);
+    assert(link && link.getAttribute("href") === `${id}.html`, `${id}: ${link && link.getAttribute("href")}`);
+  }
+});
+
+checkAsync("explorer: trust badges follow ConceptAudit's tiers", async () => {
+  const window = await openPage("index.html");
+  const row = (id) => treeLink(window, id).parentElement;
+  assert(row("foo/bar").querySelector(".okf-trust-human"), "human-reviewed badge missing");
+  assert(row("broken").querySelector(".okf-trust-machine"), "machine-confirmed badge missing");
+  assert(!row("toString").querySelector(".okf-trust-human, .okf-trust-machine"), "an unverified concept got a trust badge");
+});
+
+checkAsync("staleness is evaluated at reading time and refreshed when the page becomes visible", async () => {
+  let now = Date.UTC(2026, 9, 6);
+  const window = await openPage("index.html", { now: () => now });
+  const stale = (id) => treeLink(window, id).parentElement.querySelector(".okf-stale");
+  assert(!stale("foo/bar").hidden, "a 2000 deadline is not shown as stale in 2026");
+  assert(stale("broken").hidden, "a 2999 deadline is shown as stale in 2026");
+  assert(stale("toString") === null, "a concept without stale_after got a stale mark");
+  now = Date.UTC(3000, 0, 1);
+  window.document.dispatchEvent(new window.Event("visibilitychange"));
+  assert(!stale("broken").hidden, "visibilitychange did not refresh staleness");
+});
+
+checkAsync("a sub-millisecond deadline is stale from the next whole millisecond, as in C#", async () => {
+  const midnight = Date.UTC(2026, 9, 6);
+  const window = await openPage("index.html", { now: () => midnight });
+  const edge = window.OKF_INDEX.concepts.find((c) => c.id === "edge");
+  assert(edge.staleAfterMs === midnight + 1, `staleAfterMs ${edge.staleAfterMs}, expected ${midnight + 1}`);
+  assert(edge.staleAfterDate === "2026-10-06", `staleAfterDate ${edge.staleAfterDate}`);
+  assert(treeLink(window, "edge").parentElement.querySelector(".okf-stale").hidden, "stale at .000 although the deadline is .0001");
+  assert(window.OkfSite.isStale(edge.staleAfterMs, midnight + 1), "not stale one millisecond later");
+});
+
+checkAsync("theme: a stored choice applies from <head>; denied storage degrades without errors", async () => {
+  const window = await openPage("index.html", { storedTheme: "dark" });
+  const html = window.document.documentElement;
+  assert(html.getAttribute("data-theme") === "dark", "the stored theme was not applied");
+  const toggle = window.document.getElementById("okf-theme-toggle");
+  assert(toggle && toggle.getAttribute("aria-pressed") === "true", "the toggle does not announce the dark state");
+  toggle.click();
+  assert(html.getAttribute("data-theme") === "light", "the toggle did not switch");
+  assert(window.localStorage.getItem("okf-theme") === "light", "the choice was not stored");
+  const denied = await openPage("index.html", { storage: "denied" });
+  const toggle2 = denied.document.getElementById("okf-theme-toggle");
+  assert(toggle2, "the toggle is missing when storage is denied");
+  toggle2.click();
+  assert(denied.document.documentElement.getAttribute("data-theme") === "dark", "the toggle is broken when storage is denied");
+});
+
+checkAsync("theme: the announced state follows a system preference change while nothing is forced", async () => {
+  let query = null;
+  const window = await openPage("index.html", {
+    beforeParse(w) {
+      query = new w.EventTarget();
+      query.matches = false;
+      w.matchMedia = () => query;
+    },
+  });
+  const toggle = window.document.getElementById("okf-theme-toggle");
+  assert(toggle.getAttribute("aria-pressed") === "false", "a light system preference is announced as dark");
+  query.matches = true;
+  query.dispatchEvent(new window.Event("change"));
+  assert(toggle.getAttribute("aria-pressed") === "true", "a change of the system preference was not re-announced");
+});
+
 // --- end of async checks ---
 
 // A pending Promise does not keep Node alive: a case awaiting an event that
