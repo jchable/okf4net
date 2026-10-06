@@ -83,20 +83,23 @@ and this project adheres to
   lexical root even when its resolved key changes; a waiting alias releases
   that gate before waiting for the resolved monitor, so the current owner
   can re-enter through it. A thread that already holds a write lock never
-  waits for a gate: it only tries it and, if it is busy, takes the resolved
-  monitor alone. Waiting there let two aliases of one bundle, nested in
-  opposite order while a link on their path was retargeted, hang both
-  threads. The cost: such a nested acquisition can overlap the gate owner's
-  operation on the same lexical root when the root's resolution changed
-  during that operation. Held-root lookup is case-sensitive: distinct
+  waits for a gate, so a nested call through another alias cannot hang on
+  one: it only tries the gate and, if it is busy, takes the resolved
+  monitor alone. The gate does not cover every case: ordinary contention
+  on a root (no topology change needed) can make it busy, and such a nested
+  acquisition then holds no gate for its whole operation; if the root's
+  resolution changes while it runs, another writer on the same lexical root
+  can overlap it. Releasing the gate before the monitor narrows this but
+  does not close it. Held-root lookup is case-sensitive: distinct
   aliases such as A and a cannot substitute each other's resolved lock.
   Different aliases may still diverge if topology changes while an operation
   is active; the lock does not pin filesystem targets. Nested calls over
   different resolved bundles need a consistent caller lock order over the
   registry's case-folded keys (`Foo` and `foo` on a case-sensitive volume
-  count as one); aliases that come to resolve to different directories
-  during an operation count as different bundles, and nested in opposite
-  order they can still deadlock, as before. When the
+  count as one). A link on the path retargeted during an operation, even
+  one every alias follows, splits the bundle in two for that purpose:
+  aliases of it nested in opposite order can then deadlock between their
+  resolved monitors. When the
   root cannot be resolved (an entry that cannot be inspected, a link target
   that cannot be read), the key falls back to the lexical path, as before.
   Still in-process only: a second process writing the same bundle is not

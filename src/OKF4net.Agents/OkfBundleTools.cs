@@ -82,15 +82,19 @@ public sealed class OkfBundleTools
     /// followed -- a writer method called while this class already holds the
     /// lock re-enters the object held, never a second resolved one. A stable
     /// gate also serializes identical namespace-normalized lexical roots
-    /// across changes of resolved key, except for a nested acquisition (a
-    /// thread already holding a write lock never waits for that gate), which
-    /// can overlap the gate owner's operation when the root's resolution
-    /// changed during it. Different aliases can still diverge during an
-    /// active topology change; targets are not pinned. Nested calls over
-    /// different resolved bundles need a consistent lock order over the
-    /// registry's case-folded keys; aliases that come to resolve to different
-    /// directories during an operation count as different bundles and, nested
-    /// in opposite order, can still deadlock. It does NOT
+    /// across changes of resolved key, with one exception: a thread already
+    /// holding a write lock never waits for that gate. A nested acquisition
+    /// that finds it busy (which ordinary contention on that root causes, with
+    /// no topology change) holds no gate for its whole operation; if the
+    /// root's resolution changes while it runs, another writer on the same
+    /// lexical root can overlap it. Releasing the gate before the monitor
+    /// narrows this but does not close it. Different aliases can still
+    /// diverge during an active topology change; targets are not pinned.
+    /// Nested calls over different resolved bundles need a consistent lock
+    /// order over the registry's case-folded keys. A link on the path
+    /// retargeted during an operation, even one every alias follows, splits
+    /// the bundle in two for that purpose: aliases of it nested in opposite
+    /// order can then deadlock between their resolved monitors. It does NOT
     /// serialize writes across separate processes (e.g. two CLI invocations,
     /// or two server processes sharing a network path), and a C# lock cannot
     /// defend against a concurrent external actor mutating the bundle's files

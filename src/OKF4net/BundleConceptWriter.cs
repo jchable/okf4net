@@ -159,7 +159,8 @@ public sealed class BundleConceptWriter
     /// serialization across topology changes. A contended resolved monitor is
     /// waited for WITHOUT this gate, so its owner can re-enter through an alias.
     /// A thread already holding a write lock only TRIES a gate and, when it is
-    /// busy, holds the resolved monitor alone (see <see cref="EnterWriteLock"/>).
+    /// busy, holds the resolved monitor alone for its whole operation (see
+    /// <see cref="EnterWriteLock"/>'s remarks for what that costs).
     /// </summary>
     private static readonly ConcurrentDictionary<string, object> LexicalLocks = new(StringComparer.Ordinal);
 
@@ -260,11 +261,16 @@ public sealed class BundleConceptWriter
     /// never waits for a gate (that wait could close a cycle with the gate's
     /// owner, who may come to need a gate this thread holds). It only tries
     /// the gate and, when the gate is busy, takes the resolved monitor alone.
-    /// So a NESTED acquisition can overlap the gate owner's operation on the
-    /// same lexical root when the root's resolution changed during that
-    /// operation (the two then hold different resolved monitors). Different
-    /// aliases can still diverge if topology changes during an active
-    /// operation; no filesystem handles pin its target.
+    /// Ordinary contention on that root makes the gate busy, with no topology
+    /// change (an outermost writer between taking the gate and taking its
+    /// monitor, for instance). Such a NESTED acquisition then holds no gate
+    /// for its whole operation, and if the root's resolution changes while it
+    /// runs, another writer on the same lexical root resolves the new target,
+    /// takes a different monitor and overlaps it. A scope releases its gate
+    /// before its monitor, so a nested waiter woken by that release usually
+    /// finds the gate free; this narrows the case but does not close it.
+    /// Different aliases can still diverge if topology changes during an
+    /// active operation; no filesystem handles pin its target.
     /// </para>
     /// <para>
     /// Deadlock: no wait cycle passes through a lexical gate, because only a
@@ -275,10 +281,12 @@ public sealed class BundleConceptWriter
     /// CASE-FOLDED: two case-distinct bundles (<c>Foo</c> and <c>foo</c> on a
     /// case-sensitive volume) share one monitor and count as one bundle for
     /// ordering, so <c>Foo &lt; Bar &lt; foo</c> is not a consistent order.
-    /// Aliases of one bundle that come to resolve to different directories
-    /// during an operation are different bundles for this purpose: nested in
-    /// opposite order while a link is retargeted, they can still deadlock
-    /// between their resolved monitors.
+    /// Because an operation keeps the monitor it resolved first, a link on the
+    /// path retargeted during an operation -- even one that every alias
+    /// follows, so the aliases always agree with each other -- splits one
+    /// bundle into two for this purpose: aliases of it nested in opposite
+    /// order can then still deadlock between their resolved monitors (never
+    /// through a gate).
     /// </para>
     /// <para>
     /// Contention: the root is resolved (filesystem I/O) while the gate is
@@ -401,6 +409,13 @@ public sealed class BundleConceptWriter
     /// </summary>
     internal object CurrentLockObjectForTest() => ResolveLockObject();
 
+    /// <summary>
+    /// This writer's lexical gate, so a test can hold it from another thread
+    /// and stand in for an outermost writer caught between taking the gate and
+    /// taking its resolved monitor. Test-only.
+    /// </summary>
+    internal object LexicalGateForTest() => LexicalLocks.GetOrAdd(_lexicalRoot, static _ => new object());
+
     private object ResolveLockObject() =>
         BundleLocks.GetOrAdd(ReparsePoints.ResolveLockKey(_lexicalRoot), static _ => new object());
 
@@ -438,6 +453,12 @@ public sealed class BundleConceptWriter
         /// <summary>The registry object this scope entered.</summary>
         internal object LockObject { get; }
 
+        /// <summary>
+        /// Whether this scope holds its root's lexical gate; <see langword="false"/>
+        /// for a nested acquisition that proceeded without a busy gate. Test-only.
+        /// </summary>
+        internal bool HoldsLexicalGateForTest => _lexicalLock is not null;
+
         /// <summary>Exits the lock, and forgets it on this thread once the outermost scope ends.</summary>
         public void Dispose()
         {
@@ -451,11 +472,17 @@ public sealed class BundleConceptWriter
                 held.Remove(_lexicalRoot);
             }
 
-            Monitor.Exit(LockObject);
+            // The gate first, then the monitor. A nested waiter blocked on
+            // the monitor, woken by its release, then usually finds the gate
+            // free and keeps it, instead of retrying a gate still held for
+            // an instant and proceeding without it. Exits never block, so
+            // the order cannot add a wait; both objects are this scope's.
             if (_lexicalLock is not null)
             {
                 Monitor.Exit(_lexicalLock); // null: entered without its gate.
             }
+
+            Monitor.Exit(LockObject);
         }
     }
 

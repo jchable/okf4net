@@ -632,6 +632,125 @@ public class BundleConceptWriterLockTests
         AssertAnotherThreadCanEnter(y);
     }
 
+    /// <summary>
+    /// Characterizes the documented cost of never waiting for a gate while
+    /// holding a write lock. No topology change is needed for a nested
+    /// acquisition to lose its gate: a helper holds <c>l</c>'s gate, standing
+    /// in for an outermost writer caught between taking that gate and taking
+    /// its resolved monitor. T, already holding the bundle through its real
+    /// path, nests over <c>l -&gt; A</c> and proceeds WITHOUT the gate, and
+    /// keeps it that way for its whole operation. Once the helper is gone and
+    /// <c>l</c> is retargeted, a new outermost writer over the same lexical
+    /// root <c>l</c> takes the gate and another monitor and runs while T still
+    /// holds its <c>l</c> scope: the overlap the docs disclose. If this test
+    /// starts failing because the overlap no longer happens, the docs (and
+    /// this test) must be revised with it.
+    /// </summary>
+    [SkippableFact]
+    public void A_nested_acquisition_that_finds_the_gate_busy_holds_no_gate_and_can_be_overlapped_after_a_retarget()
+    {
+        using var tmp = new TempDir();
+        using var a = new TempDir();
+        using var b = new TempDir();
+        var l = Path.Combine(tmp.Path, "l");
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("l", a.Path), NoLinkPrivilege);
+        var direct = new BundleConceptWriter(a.Path);
+        var overL = new BundleConceptWriter(l);
+        Assert.Same(direct.CurrentLockObjectForTest(), overL.CurrentLockObjectForTest());
+
+        using var helperHolds = new ManualResetEventSlim();
+        using var helperMayRelease = new ManualResetEventSlim();
+        using var tNested = new ManualResetEventSlim();
+        using var tMayLeave = new ManualResetEventSlim();
+        bool? tHeldGate = null;
+        object? tLock = null;
+        object? vLock = null;
+        var vEnteredWhileTHeld = false;
+        Exception? helperError = null;
+        Exception? tError = null;
+        Exception? vError = null;
+
+        var helper = new Thread(() =>
+        {
+            try
+            {
+                var gate = overL.LexicalGateForTest();
+                lock (gate)
+                {
+                    helperHolds.Set();
+                    helperMayRelease.Wait();
+                }
+            }
+            catch (Exception e)
+            {
+                helperError = e;
+            }
+        })
+        { IsBackground = true };
+        var t = new Thread(() =>
+        {
+            try
+            {
+                using var outer = direct.EnterWriteLock();
+                using var inner = overL.EnterWriteLock();
+                tHeldGate = inner.HoldsLexicalGateForTest;
+                tLock = inner.LockObject;
+                tNested.Set();
+                tMayLeave.Wait();
+            }
+            catch (Exception e)
+            {
+                tError = e;
+            }
+        })
+        { IsBackground = true };
+
+        helper.Start();
+        Assert.True(helperHolds.Wait(TimeSpan.FromSeconds(10)), "The helper never took the gate.");
+        t.Start();
+        try
+        {
+            Assert.True(tNested.Wait(TimeSpan.FromSeconds(10)), "The nested acquisition waited for the busy gate.");
+            Assert.False(tHeldGate, "The nested acquisition holds the gate.");
+            Assert.Same(direct.CurrentLockObjectForTest(), tLock);
+
+            helperMayRelease.Set();
+            Assert.True(helper.Join(TimeSpan.FromSeconds(10)), "The helper did not release the gate.");
+            Retarget(tmp, l, b.Path);
+
+            var v = new Thread(() =>
+            {
+                try
+                {
+                    using var scope = overL.EnterWriteLock();
+                    vLock = scope.LockObject;
+                    vEnteredWhileTHeld = t.IsAlive && !tMayLeave.IsSet;
+                }
+                catch (Exception e)
+                {
+                    vError = e;
+                }
+            })
+            { IsBackground = true };
+            v.Start();
+            Assert.True(v.Join(TimeSpan.FromSeconds(10)), "The outermost writer over l was serialized after T.");
+            Assert.Null(vError);
+            Assert.True(vEnteredWhileTHeld, "The outermost writer did not run while T held its l scope.");
+            Assert.NotSame(tLock, vLock);
+        }
+        finally
+        {
+            helperMayRelease.Set();
+            tMayLeave.Set();
+        }
+
+        Assert.True(t.Join(TimeSpan.FromSeconds(10)), "T did not finish.");
+        Assert.Null(helperError);
+        Assert.Null(tError);
+        AssertAnotherThreadCanEnter(overL);
+        AssertAnotherThreadCanEnter(direct);
+    }
+
     private static void Retarget(TempDir tmp, string link, string target)
     {
         // Delete only the link itself, never the directory it targets.
