@@ -593,7 +593,8 @@ A few known v1 caveats:
   no topology change) takes the resolved monitor without the gate and holds
   no gate for its whole operation; if the root's resolution changes while
   it runs, another writer on the same lexical root can overlap it.
-  Releasing the gate before the monitor narrows this but does not close it.
+  Releasing the gate before the monitor, and retrying it once (without
+  blocking) after resolving, narrow this but do not close it.
   Different aliases can still diverge if the
   topology changes during an active operation: no filesystem handle pins
   their targets. Nested calls over different resolved bundles need a

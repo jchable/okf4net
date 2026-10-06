@@ -79,8 +79,9 @@ already holding a write lock never waits for that lexical gate. A nested
 acquisition that finds the gate busy (which ordinary contention on that root
 causes, with no topology change) holds no gate for its whole operation; if
 the root's resolution changes while it runs, another writer on the same
-lexical root can overlap it. Releasing the gate before the monitor narrows
-this but does not close it. Different aliases may still diverge during an
+lexical root can overlap it. Releasing the gate before the monitor, and
+retrying it once (without blocking) after resolving, narrow this but do not
+close it. Different aliases may still diverge during an
 active topology change; targets are not pinned. Nested calls over different
 resolved bundles need a consistent lock order over the registry's
 case-folded keys. A link on the path retargeted during an operation, even

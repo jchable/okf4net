@@ -260,7 +260,8 @@ public sealed class BundleConceptWriter
     /// changes, with one exception: a thread that already holds a write lock
     /// never waits for a gate (that wait could close a cycle with the gate's
     /// owner, who may come to need a gate this thread holds). It only tries
-    /// the gate and, when the gate is busy, takes the resolved monitor alone.
+    /// the gate, retries it once (still without blocking) after resolving the
+    /// root, and, when the gate is still busy, takes the resolved monitor alone.
     /// Ordinary contention on that root makes the gate busy, with no topology
     /// change (an outermost writer between taking the gate and taking its
     /// monitor, for instance). Such a NESTED acquisition then holds no gate
@@ -268,7 +269,8 @@ public sealed class BundleConceptWriter
     /// runs, another writer on the same lexical root resolves the new target,
     /// takes a different monitor and overlaps it. A scope releases its gate
     /// before its monitor, so a nested waiter woken by that release usually
-    /// finds the gate free; this narrows the case but does not close it.
+    /// finds the gate free, and the retry catches a gate released while the
+    /// root was being resolved; these narrow the case but do not close it.
     /// Different aliases can still diverge if topology changes during an
     /// active operation; no filesystem handles pin its target.
     /// </para>
@@ -353,9 +355,23 @@ public sealed class BundleConceptWriter
                     Monitor.Enter(lexicalLock, ref lexicalTaken);
                 }
 
+                if (!lexicalTaken)
+                {
+                    GateBusyForTest?.Invoke();
+                }
+
                 // Resolve AFTER the gate attempt, including after each wait.
                 // An earlier operation may have changed the root.
                 lockObject = ResolveLockObject();
+
+                // A nested acquisition retries a busy gate once, still
+                // without blocking: its owner may have released it while
+                // this thread resolved (filesystem I/O). Taken here, it is
+                // recorded and released exactly like a gate taken above.
+                if (holdsAnotherWriteLock && !lexicalTaken)
+                {
+                    Monitor.TryEnter(lexicalLock, ref lexicalTaken);
+                }
 
                 // Never blocks. Succeeds re-entrantly when this thread
                 // already holds the resolved monitor through another root.
@@ -401,6 +417,14 @@ public sealed class BundleConceptWriter
     /// and released the gate, immediately before it waits for that monitor.
     /// </summary>
     internal Action? BeforeContendedWaitForTest { get; set; }
+
+    /// <summary>
+    /// Test-only hook, invoked (if set) on the acquiring thread in
+    /// <see cref="EnterWriteLock"/> when a nested acquisition's first,
+    /// non-blocking attempt at the lexical gate failed, before it resolves
+    /// the root.
+    /// </summary>
+    internal Action? GateBusyForTest { get; set; }
 
     /// <summary>
     /// The registry object this writer's root resolves to NOW, without

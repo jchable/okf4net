@@ -751,6 +751,92 @@ public class BundleConceptWriterLockTests
         AssertAnotherThreadCanEnter(direct);
     }
 
+    /// <summary>
+    /// A nested acquisition retries a busy gate once, without blocking, after
+    /// resolving the root. Here the gate's owner releases everything while
+    /// the nested thread is between its first (failed) gate attempt and its
+    /// resolution, so the retry finds the gate free and the nested hold keeps
+    /// it. Without the retry, the hold would proceed without the gate.
+    /// </summary>
+    [SkippableFact]
+    public void A_nested_acquisition_retries_a_gate_released_while_it_resolved_the_root()
+    {
+        using var tmp = new TempDir();
+        using var a = new TempDir();
+        using var unrelated = new TempDir();
+        var l = Path.Combine(tmp.Path, "l");
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("l", a.Path), NoLinkPrivilege);
+        var ownerWriter = new BundleConceptWriter(l);
+        var nestedWriter = new BundleConceptWriter(l);
+        var outerWriter = new BundleConceptWriter(unrelated.Path);
+
+        using var ownerHolds = new ManualResetEventSlim();
+        using var ownerMayRelease = new ManualResetEventSlim();
+        using var ownerReleased = new ManualResetEventSlim();
+        var releasedDuringHook = false;
+        bool? nestedHeldGate = null;
+        Exception? ownerError = null;
+        Exception? nestedError = null;
+        nestedWriter.GateBusyForTest = () =>
+        {
+            ownerMayRelease.Set();
+            releasedDuringHook |= ownerReleased.Wait(TimeSpan.FromSeconds(10));
+        };
+
+        var owner = new Thread(() =>
+        {
+            try
+            {
+                using (ownerWriter.EnterWriteLock())
+                {
+                    ownerHolds.Set();
+                    ownerMayRelease.Wait();
+                }
+
+                ownerReleased.Set();
+            }
+            catch (Exception e)
+            {
+                ownerError = e;
+            }
+        })
+        { IsBackground = true };
+        var nested = new Thread(() =>
+        {
+            try
+            {
+                using var outer = outerWriter.EnterWriteLock();
+                using var inner = nestedWriter.EnterWriteLock();
+                nestedHeldGate = inner.HoldsLexicalGateForTest;
+            }
+            catch (Exception e)
+            {
+                nestedError = e;
+            }
+        })
+        { IsBackground = true };
+
+        owner.Start();
+        Assert.True(ownerHolds.Wait(TimeSpan.FromSeconds(10)), "The owner never entered.");
+        nested.Start();
+        try
+        {
+            Assert.True(nested.Join(TimeSpan.FromSeconds(15)), "The nested acquisition did not finish.");
+        }
+        finally
+        {
+            ownerMayRelease.Set();
+        }
+
+        Assert.True(owner.Join(TimeSpan.FromSeconds(10)), "The owner did not finish.");
+        Assert.Null(ownerError);
+        Assert.Null(nestedError);
+        Assert.True(releasedDuringHook, "The nested thread never found the gate busy, or the owner never released.");
+        Assert.True(nestedHeldGate, "The nested acquisition proceeded without the gate its owner had released.");
+        AssertAnotherThreadCanEnter(nestedWriter);
+        AssertAnotherThreadCanEnter(outerWriter);
+    }
+
     private static void Retarget(TempDir tmp, string link, string target)
     {
         // Delete only the link itself, never the directory it targets.

@@ -89,9 +89,10 @@ and this project adheres to
   on a root (no topology change needed) can make it busy, and such a nested
   acquisition then holds no gate for its whole operation; if the root's
   resolution changes while it runs, another writer on the same lexical root
-  can overlap it. Releasing the gate before the monitor narrows this but
-  does not close it. Held-root lookup is case-sensitive: distinct
-  aliases such as A and a cannot substitute each other's resolved lock.
+  can overlap it. Releasing the gate before the monitor, and retrying it
+  once (without blocking) after resolving, narrow this but do not close
+  it. Held-root lookup is case-sensitive: distinct aliases such as A and a
+  cannot substitute each other's resolved lock.
   Different aliases may still diverge if topology changes while an operation
   is active; the lock does not pin filesystem targets. Nested calls over
   different resolved bundles need a consistent caller lock order over the
