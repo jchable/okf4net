@@ -1530,6 +1530,32 @@ checkAsync("without okf-index.js the page renders, the explorer stays hidden and
   assert(!doc.getElementById("okf-toc").hidden, "the contents list depends on the index");
 });
 
+checkAsync("explorer, palette and contents render hostile titles as inert text", async () => {
+  const window = await openPage("foo.html");
+  const doc = window.document;
+  // Spec §7, control 3: the DOM is inspected AFTER opening, filtering and
+  // selection, since each of those re-renders bundle text.
+  type(window, doc.getElementById("okf-tree-filter"), "foo");
+  assert(isShown(treeLink(window, "foo")), "the tree filter hid the hostile concept");
+  assert(!isShown(treeLink(window, "toString")), "the tree filter did not filter");
+  key(window, doc.body, { key: "/" });
+  assert(!doc.querySelector(".okf-palette-backdrop").hidden, "'/' did not open the palette");
+  const input = doc.getElementById("okf-palette-input");
+  type(window, input, "foo");
+  assert(paletteOptions(window).map(optionId).includes("foo"), "the palette does not list the hostile concept");
+  key(window, input, { key: "ArrowDown" });
+  assert(input.getAttribute("aria-activedescendant") === "okf-palette-opt-1", "ArrowDown did not move the selection");
+  for (const id of ["okf-explorer", "okf-palette-list", "okf-toc"]) {
+    const root = doc.getElementById(id);
+    assert(root.querySelectorAll("img, script, svg, iframe, object").length === 0, `markup from bundle text became live in #${id}`);
+  }
+  assert(doc.getElementById("okf-explorer").textContent.includes("<img"), "the hostile title was dropped instead of shown as text");
+  assert(doc.getElementById("okf-palette-list").textContent.includes("<img"), "the palette dropped the hostile title");
+  assert(doc.getElementById("okf-toc").textContent.includes("<img"), "the contents dropped the hostile heading text");
+  assert(doc.querySelectorAll("[onerror]").length === 0, "an onerror attribute reached the page");
+  assert(window.__pwned === undefined, "a hostile title executed");
+});
+
 // --- end of async checks ---
 
 // A pending Promise does not keep Node alive: a case awaiting an event that
