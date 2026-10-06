@@ -97,10 +97,13 @@ public static class HtmlWriter
     /// output volume. The asset files under <c>assets/</c> (the static scripts
     /// and stylesheet, and the generated <c>okf-index.js</c>) are left out
     /// of the set: every generated page path ends in <c>.html</c> and every
-    /// asset path ends in <c>.js</c> or <c>.css</c>, so no page can ever
-    /// collide with an asset under any string comparer -- adding entries that
-    /// can never fire would only pad the set without making it any more
-    /// honest.
+    /// asset path ends in <c>.js</c> or <c>.css</c>, so no page FILE can
+    /// collide with an asset file under any string comparer -- adding entries
+    /// that can never fire would only pad the set without making it any more
+    /// honest. A page DIRECTORY can still be named like an asset (a concept
+    /// <c>assets/okf-site.js/x</c> needs a directory where the asset file
+    /// is): this guard does not catch that, and the write then fails with an
+    /// <see cref="IOException"/> rather than overwriting anything.
     /// </remarks>
     private static void GuardNoCaseCollisions(ViewerSite site)
     {

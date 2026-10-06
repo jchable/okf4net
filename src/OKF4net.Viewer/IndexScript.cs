@@ -10,12 +10,16 @@ namespace OKF4net.Viewer;
 /// </summary>
 /// <remarks>
 /// Hand-built so that every bundle-derived string goes through
-/// <see cref="HtmlSafeJson.Quote"/>: its escaping beyond plain JSON
-/// (<c>&lt;</c>, <c>&gt;</c>, <c>&amp;</c>, U+2028, U+2029) is the security
-/// requirement, not a formatting choice. (A reflection-based
-/// <c>System.Text.Json</c> would also fail under Native AOT, but that is
-/// not the reason.) The object has fixed keys only -- arrays and
-/// fixed-key records, never a dictionary keyed by an id or a title -- because
+/// <see cref="HtmlSafeJson.Quote"/>. Plain JSON string escaping is what keeps
+/// bundle text inert here: <c>okf-index.js</c> is an external file loaded by
+/// <c>&lt;script src&gt;</c>, so no HTML parser ever sees its text, and
+/// U+2028 and U+2029 have been legal in string literals since ES2019. The
+/// extra escapes (<c>&lt;</c>, <c>&gt;</c>, <c>&amp;</c>, U+2028, U+2029)
+/// are defence in depth: the text stays safe to inline in a page, and older
+/// engines still parse it. (A reflection-based <c>System.Text.Json</c> would
+/// also fail under Native AOT, but that is not the reason.) The object has
+/// fixed keys only -- arrays and fixed-key records, never a dictionary keyed
+/// by an id or a title -- because
 /// <c>__proto__</c>, <c>constructor</c> and <c>toString</c> are valid concept
 /// ids, and an object literal keyed by one of them does not mean what
 /// <c>JSON.parse</c> of the same text means (spec §3.4).

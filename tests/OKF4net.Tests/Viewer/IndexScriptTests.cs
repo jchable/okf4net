@@ -62,12 +62,12 @@ public class IndexScriptTests
     [Fact]
     public void Stale_fields_render_as_a_number_and_a_date_or_as_null()
     {
-        var dated = new IndexConcept(ConceptId.Parse("a"), "A", "Note", [], "a.html", "unverified", 1759708800001L, "2026-10-06");
+        var dated = new IndexConcept(ConceptId.Parse("a"), "A", "Note", [], "a.html", "unverified", 1791244800001L, "2026-10-06");
         var undated = new IndexConcept(ConceptId.Parse("b"), "B", "Note", [], "b.html", "unverified", null, null);
 
         var script = IndexScript.Render(new ViewerIndex([dated, undated], [], [], []));
 
-        Assert.Contains("\"staleAfterMs\":1759708800001,\"staleAfterDate\":\"2026-10-06\"", script);
+        Assert.Contains("\"staleAfterMs\":1791244800001,\"staleAfterDate\":\"2026-10-06\"", script);
         Assert.Contains("\"staleAfterMs\":null,\"staleAfterDate\":null", script);
     }
 

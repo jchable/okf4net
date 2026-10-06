@@ -30,6 +30,7 @@ try {
 
 const index = global.window.OKF_INDEX;
 if (!index || typeof index !== "object") fail("window.OKF_INDEX is not defined");
+if (index.version !== 1) fail(`version is ${JSON.stringify(index.version)}, expected 1`);
 for (const key of ["concepts", "ghosts", "edges", "tree"]) {
   if (!Array.isArray(index[key])) fail(`${key} is not an array`);
 }
@@ -46,6 +47,9 @@ index.concepts.forEach((c, i) => {
   }
   if (!Array.isArray(c.tags) || !c.tags.every(isStr)) fail(`concepts[${i}].tags is not an array of strings`);
   if (c.path !== `${c.id}.html`) fail(`concepts[${i}].path is not id + ".html"`);
+  // A deadline rounded up to a whole millisecond, and its date as written.
+  if (c.staleAfterMs !== null && !isInt(c.staleAfterMs)) fail(`concepts[${i}].staleAfterMs is neither an integer nor null`);
+  if (c.staleAfterDate !== null && !isStr(c.staleAfterDate)) fail(`concepts[${i}].staleAfterDate is neither a string nor null`);
 });
 
 index.ghosts.forEach((x, i) => {

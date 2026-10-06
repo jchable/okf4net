@@ -51,10 +51,6 @@ are the concrete entry points.
   server would have added over `okf-render` alone was one saved command
   invocation per edit; search was the only capability that genuinely
   required it, and the extension gets that too.
-  P1 of the interactive viewer — tree explorer, "Jump to" palette, page
-  contents (design `docs/superpowers/specs/2026-10-06-okf-viewer-interactive-design.md`)
-  — has landed in `okf-render` itself; the global link graph continues under
-  [#162](https://github.com/jchable/okf4net/issues/162).
   - **The client-side XSS defense is guarded by a JS harness, not by xunit.**
     xunit runs on .NET and cannot execute JavaScript, so
     `tests/OKF4net.Tests/Viewer/ViewerAssetsTests.cs` only smoke-checks for

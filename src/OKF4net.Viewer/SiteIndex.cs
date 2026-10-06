@@ -5,7 +5,7 @@ namespace OKF4net.Viewer;
 
 /// <summary>
 /// Projects a loaded <see cref="Bundle"/> into the <see cref="ViewerIndex"/>
-/// behind <c>assets/okf-index.js</c>. Pure: no I/O, and no clock is read.
+/// behind <c>assets/okf-index.js</c>. Pure: no I/O, and no system clock is read.
 /// </summary>
 public static class SiteIndex
 {
