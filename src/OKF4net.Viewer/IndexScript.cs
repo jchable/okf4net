@@ -1,0 +1,115 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Globalization;
+using System.Text;
+
+namespace OKF4net.Viewer;
+
+/// <summary>
+/// Serializes a <see cref="ViewerIndex"/> as the classic script
+/// <c>assets/okf-index.js</c>, which assigns <c>window.OKF_INDEX</c>.
+/// </summary>
+/// <remarks>
+/// Every bundle-derived string goes through <see cref="HtmlSafeJson.Quote"/>
+/// (hand-built rather than <c>System.Text.Json</c> by reflection, which
+/// would fail under Native AOT). The object has fixed keys only -- arrays and
+/// fixed-key records, never a dictionary keyed by an id or a title -- because
+/// <c>__proto__</c>, <c>constructor</c> and <c>toString</c> are valid concept
+/// ids, and an object literal keyed by one of them does not mean what
+/// <c>JSON.parse</c> of the same text means (spec §3.4).
+/// </remarks>
+public static class IndexScript
+{
+    /// <summary>The fixed text every index script starts with.</summary>
+    public const string Prefix = "window.OKF_INDEX = ";
+
+    /// <summary>Renders <paramref name="index"/> as a complete script, ending with <c>;\n</c>.</summary>
+    /// <param name="index">The site index.</param>
+    public static string Render(ViewerIndex index)
+    {
+        var sb = new StringBuilder(Prefix);
+        sb.Append("{\"version\":1,\"concepts\":[");
+        for (var i = 0; i < index.Concepts.Count; i++)
+        {
+            if (i > 0)
+            {
+                sb.Append(',');
+            }
+
+            var c = index.Concepts[i];
+            sb.Append("{\"id\":").Append(HtmlSafeJson.Quote(c.Id.ToString()))
+              .Append(",\"title\":").Append(HtmlSafeJson.Quote(c.Title))
+              .Append(",\"type\":").Append(HtmlSafeJson.Quote(c.Type))
+              .Append(",\"tags\":[");
+            for (var t = 0; t < c.Tags.Count; t++)
+            {
+                if (t > 0)
+                {
+                    sb.Append(',');
+                }
+
+                sb.Append(HtmlSafeJson.Quote(c.Tags[t]));
+            }
+
+            sb.Append("],\"path\":").Append(HtmlSafeJson.Quote(c.Path))
+              .Append(",\"trust\":").Append(HtmlSafeJson.Quote(c.Trust))
+              .Append(",\"staleAfterMs\":")
+              .Append(c.StaleAfterMs is { } ms ? ms.ToString(CultureInfo.InvariantCulture) : "null")
+              .Append(",\"staleAfterDate\":")
+              .Append(c.StaleAfterDate is { } date ? HtmlSafeJson.Quote(date) : "null")
+              .Append('}');
+        }
+
+        sb.Append("],\"ghosts\":[");
+        for (var i = 0; i < index.Ghosts.Count; i++)
+        {
+            if (i > 0)
+            {
+                sb.Append(',');
+            }
+
+            sb.Append("{\"id\":").Append(HtmlSafeJson.Quote(index.Ghosts[i].Id.ToString())).Append('}');
+        }
+
+        sb.Append("],\"edges\":[");
+        for (var i = 0; i < index.Edges.Count; i++)
+        {
+            if (i > 0)
+            {
+                sb.Append(',');
+            }
+
+            var e = index.Edges[i];
+            sb.Append('[')
+              .Append(e.From.ToString(CultureInfo.InvariantCulture)).Append(',')
+              .Append(e.To.ToString(CultureInfo.InvariantCulture)).Append(',')
+              .Append(e.Count.ToString(CultureInfo.InvariantCulture)).Append(',')
+              .Append(e.ToGhost ? '1' : '0')
+              .Append(']');
+        }
+
+        sb.Append("],\"tree\":");
+        AppendNodes(sb, index.Tree);
+        sb.Append("};\n");
+        return sb.ToString();
+    }
+
+    private static void AppendNodes(StringBuilder sb, IReadOnlyList<IndexTreeNode> nodes)
+    {
+        sb.Append('[');
+        for (var i = 0; i < nodes.Count; i++)
+        {
+            if (i > 0)
+            {
+                sb.Append(',');
+            }
+
+            sb.Append("{\"name\":").Append(HtmlSafeJson.Quote(nodes[i].Name))
+              .Append(",\"concept\":").Append(nodes[i].Concept.ToString(CultureInfo.InvariantCulture))
+              .Append(",\"children\":");
+            AppendNodes(sb, nodes[i].Children);
+            sb.Append('}');
+        }
+
+        sb.Append(']');
+    }
+}
