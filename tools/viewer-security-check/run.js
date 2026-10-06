@@ -1239,13 +1239,17 @@ checkAsync("palette: shortcuts open it only outside editable fields and IME comp
   const backdrop = doc.querySelector(".okf-palette-backdrop");
   key(window, doc.body, { key: "k", ctrlKey: true, isComposing: true });
   assert(backdrop.hidden, "opened during IME composition");
-  // Self-contained: Task 6 owns #okf-tree-filter; any text field will do here.
-  const filter = doc.body.appendChild(doc.createElement("input"));
+  // The explorer's real filter field (an <input type="search">), not a
+  // stand-in: "/" is an ordinary character there and must reach the field.
+  const filter = doc.getElementById("okf-tree-filter");
+  assert(filter, "this case needs the explorer's filter field");
   filter.focus();
-  key(window, filter, { key: "/" });
-  assert(backdrop.hidden, "'/' typed in a text field opened the palette");
-  key(window, filter, { key: "k", ctrlKey: true });
+  const slashInField = key(window, filter, { key: "/" });
+  assert(backdrop.hidden, "'/' typed in the tree filter opened the palette");
+  assert(!slashInField.defaultPrevented, "'/' typed in the tree filter was prevented, so the field never receives it");
+  const ctrlKInField = key(window, filter, { key: "k", ctrlKey: true });
   assert(backdrop.hidden, "Ctrl+K in an editable field opened the palette");
+  assert(!ctrlKInField.defaultPrevented, "Ctrl+K in the tree filter was prevented although the palette did not take it");
   filter.blur();
   key(window, doc.body, { key: "k", ctrlKey: true, altKey: true });
   assert(backdrop.hidden, "Ctrl+Alt+K opened the palette");
