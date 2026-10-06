@@ -30,9 +30,10 @@ Read, in this order:
   version: this is the most reliable signal for "what's new."
 - `README.md` — technical reference, including the spec-section → type
   mapping table; the site's `docs/spec` page should track it.
-- `ROADMAP.md` — Now/Next/Later/Out of scope; anything the site claims is
-  "coming soon" should agree with this, and anything that graduated from
-  Next to Now (or shipped) should move too.
+- The GitHub milestones `v0.7.0` and `v-next` (`gh issue list --milestone
+  <name>`) — planned work lives there now; anything the site claims is
+  "coming soon" should agree with them, and anything that shipped should move
+  too. `ROADMAP.md` keeps only shipped-work notes, Later and Out of scope.
 - `git log --oneline -- src/` since roughly the last time `web/` content was
   touched (`git log -1 --format=%H -- web/src/pages web/src/content` gives
   you that point) — this surfaces new projects under `src/` (new CLI verbs,
@@ -69,7 +70,7 @@ site looks fine" without checking the specific spot:
   lives) should track README's mapping table — if README gained a row for a
   new spec section, the site should too.
 - **Roadmap-driven copy.** Any "coming soon" / "in progress" language on the
-  site should agree with `ROADMAP.md`'s current Now/Next/Later buckets.
+  site should agree with the open milestones and `ROADMAP.md`'s Later list.
 
 If you're unsure whether something counts as "notable enough" to add to the
 site, ask the user rather than guessing — the site is public-facing and
