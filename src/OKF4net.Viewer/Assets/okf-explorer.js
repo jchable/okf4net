@@ -128,7 +128,9 @@
   }
 
   var head = el("div", "okf-explorer-head");
-  var label = el("label", "okf-explorer-label", "Explorer");
+  // The label names the field's job (its accessible name); the <nav> around
+  // it is already announced as "Explorer".
+  var label = el("label", "okf-explorer-label", "Filter the explorer");
   label.setAttribute("for", "okf-tree-filter");
   var filter = document.createElement("input");
   filter.type = "search";

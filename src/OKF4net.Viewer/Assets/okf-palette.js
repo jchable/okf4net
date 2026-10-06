@@ -162,6 +162,11 @@
     return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable === true;
   }
 
+  // Ctrl+K and nothing else (spec §8, "sans autre modificateur").
+  function isCtrlK(e) {
+    return e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && (e.key === "k" || e.key === "K");
+  }
+
   // One listener serves both states, on document, because a click inside the
   // dialog on something unfocusable can leave focus on <body>: the open-state
   // keys must not depend on where focus is.
@@ -169,6 +174,8 @@
   // Closed: Ctrl+K and "/" are also browser shortcuts (Chrome, Firefox), so
   // they are taken only outside editable fields, without other modifiers and
   // outside IME composition, and prevented only when taken (spec §8).
+  // Open: Ctrl+K again is swallowed (the palette stays open, focus returns to
+  // its field) rather than handed to the browser's own Ctrl+K.
   document.addEventListener("keydown", function (e) {
     // Keys that confirm or cancel an IME composition belong to the IME, not
     // to the palette (Enter would navigate, Escape would close).
@@ -192,13 +199,15 @@
         // Close (from <body> or the dialog itself, Tab lands on the field).
         e.preventDefault();
         (document.activeElement === input ? close : input).focus();
+      } else if (isCtrlK(e)) {
+        e.preventDefault();
+        input.focus();
       }
       return;
     }
     if (e.defaultPrevented || isEditable(e.target)) { return; }
-    var ctrlK = e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && (e.key === "k" || e.key === "K");
     var slash = e.key === "/" && !e.ctrlKey && !e.altKey && !e.metaKey;
-    if (ctrlK || slash) {
+    if (isCtrlK(e) || slash) {
       e.preventDefault();
       open();
     }

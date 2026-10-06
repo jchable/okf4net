@@ -1220,9 +1220,33 @@ checkAsync("a sub-millisecond deadline is stale from the next whole millisecond,
   assert(window.OkfSite.isStale(edge.staleAfterMs, midnight + 1), "not stale one millisecond later");
 });
 
-checkAsync("theme: a stored choice applies from <head>; denied storage degrades without errors", async () => {
-  const window = await openPage("index.html", { storedTheme: "dark" });
+// What this case can and cannot show: jsdom parses the WHOLE document before
+// it runs even a <head> script (a MutationObserver sees <link> and <body>
+// inserted before okf-theme.js executes), so "applied before the first
+// paint" is not observable here. It pins the two halves a browser needs:
+// okf-theme.js sits in <head> before the stylesheet, and it applies the
+// stored choice synchronously while it runs (not on DOMContentLoaded or
+// later). That no other theme flashes on load is checked by hand
+// (ACCEPTANCE.md, "Theme").
+checkAsync("theme: a stored choice is applied while okf-theme.js runs, ahead of the stylesheet; denied storage degrades without errors", async () => {
+  let atScriptLoad = "not recorded";
+  const window = await openPage("index.html", {
+    storedTheme: "dark",
+    beforeParse(w) {
+      // A classic script's load event fires right after it has executed.
+      w.document.addEventListener("load", (e) => {
+        const src = e.target && e.target.nodeType === 1 ? e.target.getAttribute("src") || "" : "";
+        if (/okf-theme\.js$/.test(src)) { atScriptLoad = w.document.documentElement.getAttribute("data-theme"); }
+      }, true);
+    },
+  });
   const html = window.document.documentElement;
+  const head = window.document.head;
+  const themeScript = head.querySelector('script[src$="okf-theme.js"]');
+  const stylesheet = head.querySelector('link[rel="stylesheet"]');
+  assert(themeScript && stylesheet && (themeScript.compareDocumentPosition(stylesheet) & window.Node.DOCUMENT_POSITION_FOLLOWING),
+    "okf-theme.js is not in <head> ahead of the stylesheet");
+  assert(atScriptLoad === "dark", `when okf-theme.js had run, data-theme was ${atScriptLoad} (the stored choice must apply synchronously)`);
   assert(html.getAttribute("data-theme") === "dark", "the stored theme was not applied");
   const toggle = window.document.getElementById("okf-theme-toggle");
   assert(toggle && toggle.getAttribute("aria-pressed") === "true", "the toggle does not announce the dark state");
@@ -1278,6 +1302,16 @@ checkAsync("palette: shortcuts open it only outside editable fields and IME comp
   assert(backdrop.hidden, "Ctrl+K in an editable field opened the palette");
   assert(!ctrlKInField.defaultPrevented, "Ctrl+K in the tree filter was prevented although the palette did not take it");
   filter.blur();
+  // Any other text field too: a plain <input> (type text) and a <textarea>.
+  for (const tag of ["input", "textarea"]) {
+    const field = doc.createElement(tag);
+    doc.body.appendChild(field);
+    field.focus();
+    const slash = key(window, field, { key: "/" });
+    assert(backdrop.hidden, `'/' typed in a <${tag}> opened the palette`);
+    assert(!slash.defaultPrevented, `'/' typed in a <${tag}> was prevented, so the field never receives it`);
+    field.remove();
+  }
   key(window, doc.body, { key: "k", ctrlKey: true, altKey: true });
   assert(backdrop.hidden, "Ctrl+Alt+K opened the palette");
   const event = key(window, doc.body, { key: "k", ctrlKey: true });
@@ -1530,9 +1564,11 @@ checkAsync("an author fragment resolves to the generated heading, on load and on
   assert(window.location.hash === "#okf-h-usage", `URL fragment after click: ${window.location.hash}`);
   assert(window.history.length === before + 1, `history length ${window.history.length}, expected ${before + 1}`);
   assert(window.document.activeElement.id === "okf-h-usage", `focus after click: ${window.document.activeElement.id}`);
-  const modified = new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0, ctrlKey: true });
-  link.dispatchEvent(modified);
-  assert(!modified.defaultPrevented, "a Ctrl+click was taken over instead of left to the browser");
+  for (const modifier of ["ctrlKey", "shiftKey", "metaKey", "altKey"]) {
+    const modified = new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0, [modifier]: true });
+    link.dispatchEvent(modified);
+    assert(!modified.defaultPrevented, `a click with ${modifier} was taken over instead of left to the browser (new tab, new window, download)`);
+  }
 });
 
 checkAsync("clicking an accented fragment link a second time still moves the reading focus", async () => {
@@ -1670,6 +1706,134 @@ checkAsync("chrome classes worn by body content change none of its styles", asyn
         `<code class="${el.getAttribute("class")}"> ${prop}: ${style.getPropertyValue(prop)} (an unclassed <code> has ${expected.getPropertyValue(prop)})`);
     }
   }
+});
+
+checkAsync("palette: Shift+Tab also stays inside the modal", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  doc.querySelector(".okf-palette-open").click();
+  const input = doc.getElementById("okf-palette-input");
+  const close = doc.querySelector(".okf-palette-close");
+  assert(doc.activeElement === input, "focus is not in the field on open");
+  const back = key(window, input, { key: "Tab", shiftKey: true });
+  assert(back.defaultPrevented && doc.activeElement === close, `Shift+Tab from the field left it to ${doc.activeElement.tagName} (prevented: ${back.defaultPrevented})`);
+  const back2 = key(window, close, { key: "Tab", shiftKey: true });
+  assert(back2.defaultPrevented && doc.activeElement === input, `Shift+Tab from Close left it to ${doc.activeElement.tagName} (prevented: ${back2.defaultPrevented})`);
+});
+
+checkAsync("palette: Ctrl+K or '/' with any other modifier stays the browser's", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const backdrop = doc.querySelector(".okf-palette-backdrop");
+  const inits = [
+    { key: "k", ctrlKey: true, metaKey: true },
+    { key: "k", ctrlKey: true, shiftKey: true },
+    { key: "K", ctrlKey: true, shiftKey: true },
+    { key: "/", ctrlKey: true },
+    { key: "/", altKey: true },
+    { key: "/", metaKey: true },
+  ];
+  for (const init of inits) {
+    const event = key(window, doc.body, init);
+    assert(backdrop.hidden, `${JSON.stringify(init)} opened the palette`);
+    assert(!event.defaultPrevented, `${JSON.stringify(init)} was prevented although the palette did not take it`);
+  }
+});
+
+checkAsync("palette: Ctrl+K while it is open is swallowed and keeps it open, focus in the field", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const backdrop = doc.querySelector(".okf-palette-backdrop");
+  key(window, doc.body, { key: "/" });
+  const input = doc.getElementById("okf-palette-input");
+  const close = doc.querySelector(".okf-palette-close");
+  assert(!backdrop.hidden, "this case needs the palette open");
+  for (const from of [input, close]) {
+    from.focus();
+    const event = key(window, from, { key: "k", ctrlKey: true });
+    assert(event.defaultPrevented, `Ctrl+K on the open palette (focus on ${from.tagName}) fell through to the browser`);
+    assert(!backdrop.hidden, "Ctrl+K closed the palette");
+    assert(doc.activeElement === input, `after Ctrl+K focus is on ${doc.activeElement.tagName}, not the field`);
+  }
+});
+
+checkAsync("palette: Enter on the Close button closes without navigating", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const backdrop = doc.querySelector(".okf-palette-backdrop");
+  doc.querySelector(".okf-palette-open").click();
+  type(window, doc.getElementById("okf-palette-input"), "o");
+  assert(paletteOptions(window).length > 0, "this case needs an active option Enter could open");
+  let navigated = 0;
+  doc.addEventListener("okf:navigate", (e) => { navigated++; e.preventDefault(); });
+  const close = doc.querySelector(".okf-palette-close");
+  close.focus();
+  const enter = key(window, close, { key: "Enter" });
+  assert(navigated === 0, "Enter on Close opened the active option");
+  assert(!enter.defaultPrevented, "Enter on Close was prevented, so the button never activates");
+  // jsdom does not turn Enter on a button into a click; a browser does.
+  close.click();
+  assert(backdrop.hidden, "Close did not close the palette");
+  assert(navigated === 0 && navigations(window) === 0, "closing navigated");
+});
+
+checkAsync("palette: a modal dialog, with its result count in a status region", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const dialog = doc.querySelector(".okf-palette-backdrop .okf-palette");
+  assert(dialog.getAttribute("role") === "dialog", `role: ${dialog.getAttribute("role")}`);
+  assert(dialog.getAttribute("aria-modal") === "true", `aria-modal: ${dialog.getAttribute("aria-modal")}`);
+  const title = doc.getElementById(dialog.getAttribute("aria-labelledby"));
+  assert(title && title.textContent.trim() !== "" && dialog.contains(title), "the dialog has no name");
+  const status = doc.getElementById("okf-palette-status");
+  assert(status && status.getAttribute("role") === "status" && dialog.contains(status), `status role: ${status && status.getAttribute("role")}`);
+});
+
+checkAsync("palette: reopening starts from an empty query", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const opener = doc.querySelector(".okf-palette-open");
+  const input = doc.getElementById("okf-palette-input");
+  opener.click();
+  type(window, input, "foo");
+  assert(paletteOptions(window).length > 0, "this case needs results before closing");
+  key(window, input, { key: "Escape" });
+  opener.click();
+  assert(input.value === "", `the field reopened with "${input.value}"`);
+  assert(paletteOptions(window).length === 0, `${paletteOptions(window).length} options listed for an empty query`);
+  assert(doc.getElementById("okf-palette-status").textContent === "", "the status kept the previous count");
+  assert(!input.hasAttribute("aria-activedescendant"), "an option is still active");
+});
+
+checkAsync("palette: a key another handler already prevented does not open it", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const backdrop = doc.querySelector(".okf-palette-backdrop");
+  doc.body.addEventListener("keydown", (e) => e.preventDefault());
+  key(window, doc.body, { key: "/" });
+  assert(backdrop.hidden, "'/' opened the palette although a page handler had taken it");
+  key(window, doc.body, { key: "k", ctrlKey: true });
+  assert(backdrop.hidden, "Ctrl+K opened the palette although a page handler had taken it");
+});
+
+checkAsync("explorer: the filter field is labelled by what it does", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const filter = doc.getElementById("okf-tree-filter");
+  const label = doc.querySelector('#okf-explorer label[for="okf-tree-filter"]');
+  assert(label, "the filter has no <label for>");
+  assert(filter.labels && filter.labels.length === 1 && filter.labels[0] === label, "the <label> is not associated with the filter");
+  assert(label.textContent.trim() === "Filter the explorer", `the filter's accessible name is "${label.textContent.trim()}"`);
+});
+
+checkAsync("explorer: the stale badge shows staleAfterDate as written, never a date rebuilt from staleAfterMs", async () => {
+  // The two fields disagree on purpose, so the case tells which one is shown.
+  const concepts = [{ id: "x", title: "X", type: "Note", tags: [], path: "x.html", trust: "unverified", staleAfterMs: 0, staleAfterDate: "2026-10-06" }];
+  const source = `window.OKF_INDEX = ${JSON.stringify({ version: 1, concepts, ghosts: [], edges: [], tree: [{ name: "x", concept: 0, children: [] }] })};`;
+  const window = await openPage("index.html", { override: { "assets/okf-index.js": source }, now: () => Date.UTC(2026, 9, 7) });
+  const stale = treeLink(window, "x").parentElement.querySelector(".okf-stale");
+  assert(stale && !stale.hidden, "this case needs a shown stale badge");
+  assert(stale.getAttribute("title") === "stale after 2026-10-06", `stale badge title: ${stale.getAttribute("title")}`);
 });
 
 checkAsync("an all-punctuation fragment focuses nothing, even beside a heading titled Section", async () => {
