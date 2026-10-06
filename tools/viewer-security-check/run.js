@@ -1092,6 +1092,68 @@ checkAsync("the generated index executes with hostile ids as plain values", asyn
   assert(Object.getPrototypeOf(window.OKF_INDEX) === window.Object.prototype, "the index object's prototype was replaced");
 });
 
+console.log("\ncontents, heading anchors and fragments:");
+
+checkAsync("headings get generated ids only, the contents list them, no content id survives", async () => {
+  const window = await openPage("foo.html");
+  const doc = window.document;
+  const ids = Array.from(doc.querySelectorAll("#okf-body h1, #okf-body h2, #okf-body h3"), (h) => h.id);
+  assert(JSON.stringify(ids.slice(0, 3)) === JSON.stringify(["okf-h-usage", "okf-h-usage-1", "okf-h-usage-1-1"]), `ids: ${ids}`);
+  assert(ids.every((id) => id.startsWith("okf-h-")), `an id escaped the prefix: ${ids}`);
+  assert(doc.getElementById("OKF_INDEX") === null, "an id from bundle content survived");
+  assert(doc.querySelectorAll("#okf-body [name]").length === 0, "a name attribute from bundle content survived");
+  const toc = doc.getElementById("okf-toc");
+  assert(!toc.hidden && !doc.getElementById("okf-context").hidden, "the contents list was not shown");
+  assert(toc.querySelector("a").getAttribute("href") === "#okf-h-usage", "the first contents link is wrong");
+});
+
+checkAsync("an author fragment resolves to the generated heading, on load and on click, as a real navigation", async () => {
+  const opened = await openPage("foo/bar.html", { hash: "#usage" });
+  const focused = opened.document.activeElement;
+  assert(focused && focused.id === "okf-h-usage", `focus on load: ${focused && focused.id}`);
+  const window = await openPage("foo.html");
+  const link = Array.from(window.document.querySelectorAll("#okf-body a")).find((a) => a.getAttribute("href") === "#usage");
+  assert(link, "the fixture lost its #usage link");
+  const before = window.history.length;
+  const changed = new Promise((resolve) => window.addEventListener("hashchange", resolve, { once: true }));
+  const event = new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+  link.dispatchEvent(event);
+  assert(event.defaultPrevented, "the click was left to the browser, which finds no element 'usage'");
+  await changed;
+  assert(window.location.hash === "#okf-h-usage", `URL fragment after click: ${window.location.hash}`);
+  assert(window.history.length === before + 1, `history length ${window.history.length}, expected ${before + 1}`);
+  assert(window.document.activeElement.id === "okf-h-usage", `focus after click: ${window.document.activeElement.id}`);
+  const modified = new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0, ctrlKey: true });
+  link.dispatchEvent(modified);
+  assert(!modified.defaultPrevented, "a Ctrl+click was taken over instead of left to the browser");
+});
+
+checkAsync("clicking an accented fragment link a second time still moves the reading focus", async () => {
+  const window = await openPage("foo.html");
+  const doc = window.document;
+  // marked percent-encodes the destination: the href is "#caf%C3%A9".
+  const link = Array.from(doc.querySelectorAll("#okf-body a")).find((a) => decodeURIComponent(a.getAttribute("href")) === "#café");
+  assert(link, "the fixture lost its #café link");
+  const changed = new Promise((resolve) => window.addEventListener("hashchange", resolve, { once: true }));
+  link.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }));
+  await changed;
+  assert(doc.activeElement.id === "okf-h-café", `focus after the first click: ${doc.activeElement.id}`);
+  link.focus();
+  link.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }));
+  assert(doc.activeElement.id === "okf-h-café", `focus after the second click stayed on: ${doc.activeElement.tagName} ${doc.activeElement.id}`);
+});
+
+checkAsync("without okf-index.js the page renders, the explorer stays hidden and nothing is clobbered", async () => {
+  const window = await openPage("foo.html", { blocked: ["assets/okf-index.js"] });
+  const doc = window.document;
+  assert(doc.getElementById("okf-explorer").hidden, "the explorer rendered without an index");
+  assert(doc.querySelector(".okf-palette-open") === null, "the palette rendered without an index");
+  assert(window.OkfSite.readIndex(window) === null, "readIndex accepted something that is not the index");
+  assert(doc.getElementById("OKF_INDEX") === null, "bundle content created an element named OKF_INDEX");
+  assert(doc.getElementById("okf-body").textContent.includes("first"), "the body did not render");
+  assert(!doc.getElementById("okf-toc").hidden, "the contents list depends on the index");
+});
+
 // --- end of async checks ---
 
 // A pending Promise does not keep Node alive: a case awaiting an event that
