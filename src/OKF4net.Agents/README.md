@@ -74,8 +74,15 @@ bundle root resolves to the same directory when the lock is taken (a junction
 or symlink to the bundle shares its lock; if resolution fails, the lexical
 path is the key; a topology change during an operation is not followed).
 Operations over an identical namespace-normalized lexical root remain
-serialized even when its resolved key changes. Different aliases may
-still diverge during an active topology change; targets are not pinned.
+serialized even when its resolved key changes, except for a nested
+acquisition (a thread already holding a write lock never waits for that
+lexical gate), which can overlap the gate owner's operation when the root's
+resolution changed during it. Different aliases may still diverge during
+an active topology change; targets are not pinned. Nested calls over
+different resolved bundles need a consistent lock order over the
+registry's case-folded keys; aliases that come to resolve to different
+directories during an operation count as different bundles and, nested in
+opposite order, can still deadlock.
 The guarantee does not extend across separate processes
 sharing a bundle path, and the reparse-point guard write tools rely on is a
 best-effort check-then-write, not a guarantee against a concurrent local

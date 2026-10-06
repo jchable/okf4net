@@ -82,8 +82,15 @@ public sealed class OkfBundleTools
     /// followed -- a writer method called while this class already holds the
     /// lock re-enters the object held, never a second resolved one. A stable
     /// gate also serializes identical namespace-normalized lexical roots
-    /// across changes of resolved key. Different aliases can still diverge
-    /// during an active topology change; targets are not pinned. It does NOT
+    /// across changes of resolved key, except for a nested acquisition (a
+    /// thread already holding a write lock never waits for that gate), which
+    /// can overlap the gate owner's operation when the root's resolution
+    /// changed during it. Different aliases can still diverge during an
+    /// active topology change; targets are not pinned. Nested calls over
+    /// different resolved bundles need a consistent lock order over the
+    /// registry's case-folded keys; aliases that come to resolve to different
+    /// directories during an operation count as different bundles and, nested
+    /// in opposite order, can still deadlock. It does NOT
     /// serialize writes across separate processes (e.g. two CLI invocations,
     /// or two server processes sharing a network path), and a C# lock cannot
     /// defend against a concurrent external actor mutating the bundle's files

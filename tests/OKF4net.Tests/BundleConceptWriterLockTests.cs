@@ -377,6 +377,8 @@ public class BundleConceptWriterLockTests
         Skip.IfNot(tmp.TryCreateJunctionToExternalDir("b", actual.Path), NoLinkPrivilege);
         var a = new BundleConceptWriter(Path.Combine(tmp.Path, "a"));
         var b = new BundleConceptWriter(Path.Combine(tmp.Path, "b"));
+        using var aboutToWait = new ManualResetEventSlim();
+        b.BeforeContendedWaitForTest = aboutToWait.Set;
         Exception? ownerError = null;
         Exception? waiterError = null;
         var waiterEntered = false;
@@ -402,9 +404,7 @@ public class BundleConceptWriterLockTests
             {
                 using var outer = a.EnterWriteLock();
                 waiter.Start();
-                Assert.True(SpinWait.SpinUntil(
-                    () => (waiter.ThreadState & (ThreadState.WaitSleepJoin | ThreadState.Stopped)) != 0,
-                    TimeSpan.FromSeconds(10)));
+                Assert.True(aboutToWait.Wait(TimeSpan.FromSeconds(10)), "The waiter never found the monitor busy.");
                 Assert.False(waiterEntered);
                 using var inner = b.EnterWriteLock();
                 Assert.Same(outer.LockObject, inner.LockObject);
@@ -470,6 +470,8 @@ public class BundleConceptWriterLockTests
         Skip.IfNot(tmp.TryCreateJunctionToExternalDir("alias", actual.Path), NoLinkPrivilege);
         var owner = new BundleConceptWriter(actual.Path);
         var waiterWriter = new BundleConceptWriter(Path.Combine(tmp.Path, "alias"));
+        using var aboutToWait = new ManualResetEventSlim();
+        waiterWriter.BeforeContendedWaitForTest = aboutToWait.Set;
         Exception? error = null;
         var waiter = new Thread(() =>
         {
@@ -487,9 +489,9 @@ public class BundleConceptWriterLockTests
         using (owner.EnterWriteLock())
         {
             waiter.Start();
-            Assert.True(SpinWait.SpinUntil(
-                () => (waiter.ThreadState & ThreadState.WaitSleepJoin) != 0,
-                TimeSpan.FromSeconds(10)));
+            // The interrupt is pended until the waiter's wait for the busy
+            // monitor, which follows this hook.
+            Assert.True(aboutToWait.Wait(TimeSpan.FromSeconds(10)), "The waiter never found the monitor busy.");
             waiter.Interrupt();
             Assert.True(waiter.Join(TimeSpan.FromSeconds(10)));
             Assert.IsType<ThreadInterruptedException>(error);
@@ -509,6 +511,11 @@ public class BundleConceptWriterLockTests
         var root = Path.Combine(tmp.Path, "alias");
         var owner = new BundleConceptWriter(before.Path);
         var waiterWriter = new BundleConceptWriter(root);
+        using var aboutToWait = new ManualResetEventSlim();
+        // Deterministic: fires only after the waiter resolved the OLD target
+        // and found its monitor busy, so the junction swap below cannot
+        // race the waiter's first resolution.
+        waiterWriter.BeforeContendedWaitForTest = aboutToWait.Set;
         object? entered = null;
         Exception? error = null;
         var waiter = new Thread(() =>
@@ -528,9 +535,7 @@ public class BundleConceptWriterLockTests
         using (owner.EnterWriteLock())
         {
             waiter.Start();
-            Assert.True(SpinWait.SpinUntil(
-                () => (waiter.ThreadState & ThreadState.WaitSleepJoin) != 0,
-                TimeSpan.FromSeconds(10)));
+            Assert.True(aboutToWait.Wait(TimeSpan.FromSeconds(10)), "The waiter never found the old target busy.");
             // Delete only the link itself, never the directory it targets.
             Directory.Delete(root);
             Assert.True(tmp.TryCreateJunctionToExternalDir("alias", after.Path));
@@ -540,6 +545,100 @@ public class BundleConceptWriterLockTests
         Assert.Null(error);
         Assert.Same(new BundleConceptWriter(after.Path).CurrentLockObjectForTest(), entered);
     }
+
+    /// <summary>
+    /// Two aliases of one bundle, <c>j -&gt; A</c> and <c>k -&gt; j</c>,
+    /// nested in opposite order on two threads while <c>j</c> is retargeted.
+    /// T holds X's gate and M(A); after the retarget, U holds Y's gate and
+    /// M(B); then each nests the other alias. With <paramref name="retargetAgain"/>,
+    /// <c>j</c> moves once more (to C) before they nest, so neither thread
+    /// holds the monitor its nested alias now resolves to. A lock-holding
+    /// thread that waited (blocking or retrying) for the other's lexical
+    /// gate closed a cycle here; neither thread may wait for a gate.
+    /// The outcome does not depend on which thread nests first.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Aliases_nested_in_opposite_order_across_a_retarget_do_not_deadlock(bool retargetAgain)
+    {
+        using var tmp = new TempDir();
+        using var a = new TempDir();
+        using var b = new TempDir();
+        using var c = new TempDir();
+        var j = Path.Combine(tmp.Path, "j");
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("j", a.Path), NoLinkPrivilege);
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("k", j), NoLinkPrivilege);
+        var x = new BundleConceptWriter(j);
+        var y = new BundleConceptWriter(Path.Combine(tmp.Path, "k"));
+        Assert.Same(x.CurrentLockObjectForTest(), y.CurrentLockObjectForTest());
+
+        using var tHolds = new ManualResetEventSlim();
+        using var uMayEnter = new ManualResetEventSlim();
+        using var uHolds = new ManualResetEventSlim();
+        using var nest = new ManualResetEventSlim();
+        Exception? tError = null;
+        Exception? uError = null;
+        var t = new Thread(() =>
+        {
+            try
+            {
+                using var outer = x.EnterWriteLock();
+                tHolds.Set();
+                nest.Wait();
+                using var inner = y.EnterWriteLock();
+            }
+            catch (Exception e)
+            {
+                tError = e;
+            }
+        })
+        { IsBackground = true };
+        var u = new Thread(() =>
+        {
+            try
+            {
+                uMayEnter.Wait();
+                using var outer = y.EnterWriteLock();
+                uHolds.Set();
+                nest.Wait();
+                using var inner = x.EnterWriteLock();
+            }
+            catch (Exception e)
+            {
+                uError = e;
+            }
+        })
+        { IsBackground = true };
+
+        t.Start();
+        u.Start();
+        Assert.True(tHolds.Wait(TimeSpan.FromSeconds(10)), "T never entered X.");
+        Retarget(tmp, j, b.Path);
+        uMayEnter.Set();
+        Assert.True(uHolds.Wait(TimeSpan.FromSeconds(10)), "U never entered Y after the retarget.");
+        if (retargetAgain)
+        {
+            Retarget(tmp, j, c.Path);
+        }
+
+        nest.Set();
+        var tDone = t.Join(TimeSpan.FromSeconds(15));
+        var uDone = u.Join(TimeSpan.FromSeconds(15));
+        Assert.True(tDone && uDone, "Aliases nested in opposite order deadlocked.");
+        Assert.Null(tError);
+        Assert.Null(uError);
+        AssertAnotherThreadCanEnter(x);
+        AssertAnotherThreadCanEnter(y);
+    }
+
+    private static void Retarget(TempDir tmp, string link, string target)
+    {
+        // Delete only the link itself, never the directory it targets.
+        Directory.Delete(link);
+        Assert.True(tmp.TryCreateJunctionToExternalDir(Path.GetFileName(link), target), "Could not recreate the junction.");
+    }
+
     private static void AssertAnotherThreadCanEnter(BundleConceptWriter writer)
     {
         Exception? error = null;

@@ -587,9 +587,16 @@ A few known v1 caveats:
   shares its lock; if resolution fails, the lexical path is the key; a
   topology change during an operation is not followed). Operations using an
   identical namespace-normalized lexical root also remain serialized when
-  its resolved key changes. Different aliases can still diverge if the
+  its resolved key changes, except for a nested acquisition (a thread that
+  already holds a write lock never waits for that lexical gate, so it can
+  overlap the gate owner's operation when the root's resolution changed
+  during it). Different aliases can still diverge if the
   topology changes during an active operation: no filesystem handle pins
-  their targets. Within these limits, two (or more) truly concurrent
+  their targets. Nested calls over different resolved bundles need a
+  consistent caller lock order over the registry's case-folded keys;
+  aliases that come to resolve to different directories during an
+  operation count as different bundles and, nested in opposite order, can
+  still deadlock. Within these limits, two (or more) truly concurrent
   `StoreAIContextAsync` calls, even across separate `OkfBundleTools`/
   `OkfContextProvider` instances sharing a session pool, never lose a
   same-day section as long as they're all in **the same process**. This
