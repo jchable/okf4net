@@ -114,7 +114,8 @@ async and are awaited before the summary.
 What the harness cannot check (layout, browser shortcuts, focus rings,
 contrast, absence of a theme flash) is in `ACCEPTANCE.md`.
 
-`check-index.js` executes one `okf-index.js` and checks that it is a well-formed
-index (every concept, edge and tree node has the shape `IndexScript.cs` writes;
-a smoke check on a non-empty bundle, not a validator for an empty one). CI's `aot-publish` job runs it on the file the **native** `okf-render`
-writes, which the harness above never sees.
+`check-index.js` executes one `okf-index.js` and checks that it is a
+well-formed index (every concept, edge and tree node has the shape
+`IndexScript.cs` writes; a smoke check on a non-empty bundle, not a validator
+for an empty one). CI's `aot-publish` job runs it on the file the **native**
+`okf-render` writes, which the harness above never sees.
