@@ -127,3 +127,12 @@ table.frontmatter th { font-family: var(--mono); font-weight: 400; color: var(--
 .okf-palette-status { margin: 0; padding: 8px 16px; font-size: 13px; color: var(--gray); }
 .okf-palette-close { margin: 0 16px 12px; }
 .okf-palette:focus { outline: none; }
+.okf-toc h2, .okf-backlinks h2 {
+  font-family: var(--mono); font-size: 11px; font-weight: 400; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--gray); margin: 0 0 8px;
+}
+.okf-toc ul, .okf-backlinks ul { list-style: none; margin: 0 0 24px; padding: 0; font-size: 14px; }
+.okf-toc li { padding: 4px 0 4px 10px; border-left: 2px solid var(--hair); }
+.okf-toc li.okf-toc-sub { padding-left: 22px; }
+.okf-backlinks li { padding: 6px 0; border-bottom: 1px solid var(--hair); }
+#okf-body [tabindex="-1"]:focus { outline: 2px solid var(--blue); outline-offset: 4px; }
