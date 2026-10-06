@@ -1645,6 +1645,29 @@ checkAsync("chrome classes worn by body content change none of its styles", asyn
   }
 });
 
+checkAsync("long unbroken titles and ids may wrap in the palette and the contents", async () => {
+  // jsdom does no layout: this checks the declarations only. That nothing
+  // overflows at 390 px is checked by hand (ACCEPTANCE.md).
+  const window = await openPage("foo.html");
+  const doc = window.document;
+  key(window, doc.body, { key: "/" });
+  type(window, doc.getElementById("okf-palette-input"), "foo");
+  const option = paletteOptions(window)[0];
+  assert(option, "this case needs a palette option");
+  const targets = [
+    option.querySelector(".okf-palette-title"),
+    option.querySelector(".okf-palette-id"),
+    doc.querySelector("#okf-toc a"),
+  ];
+  for (const el of targets) {
+    assert(el, "an element this case needs is missing");
+    const style = window.getComputedStyle(el);
+    const where = `<${el.tagName.toLowerCase()} class="${el.getAttribute("class") || ""}">`;
+    assert(style.getPropertyValue("overflow-wrap") === "anywhere", `${where} overflow-wrap: ${style.getPropertyValue("overflow-wrap")}`);
+    assert(style.getPropertyValue("min-width") === "0px" || style.getPropertyValue("min-width") === "0", `${where} min-width: ${style.getPropertyValue("min-width")}`);
+  }
+});
+
 // --- end of async checks ---
 
 // A pending Promise does not keep Node alive: a case awaiting an event that

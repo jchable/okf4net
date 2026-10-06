@@ -25,3 +25,4 @@ Record the date, browser versions and any failure in the pull request.
 - [ ] Contents list: clicking an entry lands on the heading; Back and Forward return through the visited headings.
 - [ ] Opening `<page>.html#<heading text>` (an author fragment) lands on that heading.
 - [ ] At 390 px wide, the zones stack without horizontal scrolling and the palette fits.
+- [ ] At 390 px wide, a concept with a long unbroken id and title (e.g. `a-very-long-identifier-without-any-space-at-all-repeated-until-it-overflows`) wraps inside its palette option, and a long unbroken heading wraps inside its contents entry, instead of widening the palette or the page.

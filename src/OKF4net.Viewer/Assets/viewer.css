@@ -131,6 +131,8 @@ body > .okf-palette-backdrop .okf-palette-option {
 }
 body > .okf-palette-backdrop .okf-palette-option[aria-selected="true"] { background: var(--blue-soft); border-left-color: var(--blue); }
 body > .okf-palette-backdrop .okf-palette-id { font-family: var(--mono); font-size: 12px; color: var(--gray); }
+/* A long unbroken title or id wraps instead of widening the palette (390 px). */
+body > .okf-palette-backdrop :is(.okf-palette-title, .okf-palette-id) { min-width: 0; overflow-wrap: anywhere; }
 body > .okf-palette-backdrop .okf-palette-status { margin: 0; padding: 8px 16px; font-size: 13px; color: var(--gray); }
 body > .okf-palette-backdrop .okf-palette-close { margin: 0 16px 12px; }
 body > .okf-palette-backdrop .okf-palette:focus { outline: none; }
@@ -141,5 +143,6 @@ body > .okf-palette-backdrop .okf-palette:focus { outline: none; }
 #okf-context :is(.okf-toc, .okf-backlinks) ul { list-style: none; margin: 0 0 24px; padding: 0; font-size: 14px; }
 #okf-context .okf-toc li { padding: 4px 0 4px 10px; border-left: 2px solid var(--hair); }
 #okf-context .okf-toc li.okf-toc-sub { padding-left: 22px; }
+#okf-context .okf-toc a { min-width: 0; overflow-wrap: anywhere; }
 #okf-context .okf-backlinks li { padding: 6px 0; border-bottom: 1px solid var(--hair); }
 #okf-body [tabindex="-1"]:focus { outline: 2px solid var(--blue); outline-offset: 4px; }
