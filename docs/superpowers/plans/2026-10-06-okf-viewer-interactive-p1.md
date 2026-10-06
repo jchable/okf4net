@@ -10,6 +10,19 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-06-okf-viewer-interactive-design.md` (revision 4). This plan implements its slice **P1** (§9): §2, §2.1, §3 (all), §4.1, §4.4, §4.6, §4.7, §5, §6, §7 (controls 3–8 and the xunit list), §8 (palette, shortcuts, explorer, theme). P2 (local graph) and P3 (global graph, simulation, facets, controls 1, 2 and 9) are out of scope and get their own plans.
 
+## Revision history
+
+- **r1 (2026-10-06)** — first version, commit `244359d`.
+- **r2 (2026-10-06)** — after an external review that applied the plan's blocks in a throwaway copy (verdict "executable after named corrections"). Every finding was checked before being taken:
+  - Task 5: jsdom 29.1.1 exports no `ResourceLoader` (`Class extends value undefined`); the harness serves the site through `resources.interceptors` + `requestInterceptor`, never reaching the network, and gains `opts.override`.
+  - Task 3: the existing `Write_keeps_a_script_closing_tag_in_a_body_inside_the_payload` counted 3 `</script>`; the shell emits 9 — new Step 7 updates it.
+  - Task 5: errors raised by handlers after load were never checked (a mutation left the run green); every page a case opens is now checked when the case returns, then closed; Task 6 Step 8 proves it with that mutation.
+  - Task 7: the dialog ignores keys during IME composition; the active option is scrolled into view; **no result cap** (owner decision) — the 50-result limit is gone, with a 60-match test.
+  - Task 8: a click on `#usage` becomes a real fragment navigation to the generated id (URL, history, Back/Forward stay native); modified clicks are left to the browser.
+  - Task 9: the AOT check executes the native binary's `okf-index.js` with `check-index.js` instead of a prefix test.
+  - Task 6: the theme button re-announces its state when the system preference changes.
+  - Task 4: **no size threshold** (owner decision) — the measurement is recorded, the owner judges it.
+
 ## Global Constraints
 
 - Work in the worktree `.claude/worktrees/viewer-interactive-spec`, on a new branch `feat/viewer-interactive-p1` created from `docs/viewer-interactive-spec` (Task 1, Step 0). Stage files by name; never `git add -A`.
@@ -1114,12 +1127,36 @@ In `RenderIndex`, replace the last line `return RenderShell("Bundle index", stri
     }
 ```
 
-- [ ] **Step 7: Run the viewer tests**
+- [ ] **Step 7: Update the existing script-count test to the new shell**
+
+`Write_keeps_a_script_closing_tag_in_a_body_inside_the_payload` in `tests/OKF4net.Tests/Viewer/HtmlWriterTests.cs` counts every `</script>` of a page whose body contains a literal `</script>`: any extra one means the body broke out of the payload. The shell now emits nine script elements, so replace
+
+```csharp
+        // RenderShell always emits exactly three <script> elements (the JSON
+        // payload, marked, viewer.js). A fourth </script> would mean the
+        // body's own literal "</script>" text broke out of the payload
+        // container instead of staying HTML-safe-JSON-escaped inside it.
+        Assert.Equal(3, CountOccurrences(page, "</script>"));
+```
+
+with
+
+```csharp
+        // RenderShell always emits exactly nine <script> elements: okf-theme.js
+        // in <head>, then the JSON payload, marked, viewer.js, okf-index.js,
+        // okf-site.js, okf-explorer.js, okf-palette.js and okf-toc.js. A tenth
+        // </script> would mean the body's own literal "</script>" text broke out
+        // of the payload container instead of staying HTML-safe-JSON-escaped
+        // inside it.
+        Assert.Equal(9, CountOccurrences(page, "</script>"));
+```
+
+- [ ] **Step 8: Run the viewer tests**
 
 Run: `dotnet test OKF4net.sln --filter "FullyQualifiedName~OKF4net.Tests.Viewer|FullyQualifiedName~OKF4net.Tests.Render"`
 Expected: PASS, including every pre-existing `HtmlWriterTests` and `OkfRenderCliTests` case.
 
-- [ ] **Step 8: Format and commit**
+- [ ] **Step 9: Format and commit**
 
 ```bash
 dotnet format OKF4net.sln --verify-no-changes
@@ -1129,14 +1166,14 @@ git commit -m "feat(viewer): three-zone page shell, interactive asset slots and 
 
 ---
 
-### Task 4: Measurement gate (spec §3.6)
+### Task 4: Measurement (spec §3.6)
 
 **Files:**
 - Modify: `docs/superpowers/specs/2026-10-06-okf-viewer-interactive-design.md` (§3.6 numbers)
 
 **Interfaces:**
 - Consumes: the generator from Tasks 1–3.
-- Produces: measured sizes recorded in the spec; a go/stop decision.
+- Produces: measured sizes recorded in the spec (no threshold: the owner judges the numbers).
 
 - [ ] **Step 1: Generate the two reference sites**
 
@@ -1161,11 +1198,9 @@ done
 
 Expected: two lines, e.g. `okf4net-site: 776 concepts, 40 ghosts, 891 edges, 250000 bytes`. Executing the file with Node is also a first check that the generated script runs.
 
-- [ ] **Step 3: Apply the gate**
+There is no size threshold (owner decision, 2026-10-06): the numbers are recorded, and the owner judges them. Report them when the task ends.
 
-If `okf4net-site/assets/okf-index.js` exceeds **1 MiB**, STOP: do not start Task 5, report the numbers and ask the owner (spec §3.6: the measurement on the final schema precedes the UI work). Otherwise continue.
-
-- [ ] **Step 4: Record the numbers in the spec**
+- [ ] **Step 3: Record the numbers in the spec**
 
 In `docs/superpowers/specs/2026-10-06-okf-viewer-interactive-design.md`, §3.6, append after the paragraph ending "les structures de graphe le sont à la demande.":
 
@@ -1178,11 +1213,11 @@ tâche 4 du plan P1) : bundle d'OKF4net — C concepts, G fantômes, E arêtes,
 
 writing the date of the run and the six numbers Step 2 printed in place of `AAAA-MM-JJ`, `C`, `G`, `E`, `B`, `c` and `b`.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add docs/superpowers/specs/2026-10-06-okf-viewer-interactive-design.md
-git commit -m "docs(spec): record the measured okf-index.js size (P1 gate)"
+git commit -m "docs(spec): record the measured okf-index.js size (P1)"
 ```
 
 ---
@@ -1201,7 +1236,7 @@ git commit -m "docs(spec): record the measured okf-index.js size (P1 gate)"
 - Consumes: the DOM contract of Task 3, the index shape of Task 2.
 - Produces:
   - `window.OkfSite` (frozen): `HEADING_PREFIX` (`"okf-h-"`), `readIndex(win) → index|null`, `normalize(text) → string`, `rank(index, query) → number[]`, `isStale(staleAfterMs, nowMs) → boolean`, `rootOf(doc) → string`, `resolve(root, path) → string`, `slugify(text) → string`, `uniqueSlugs(texts) → string[]`, `fragmentCandidates(hash) → string[]`, `element(doc, tag, className, text) → Element`.
-  - Harness: `BASE` (`"https://okf.test/"`), `okfSite()` (bare window with `okf-site.js` loaded), `openPage(rel, opts) → Promise<window>` with `opts.hash`, `opts.mount` (serve the site under `BASE + mount`, i.e. a moved folder), `opts.blocked` (site-relative paths not served), `opts.now` (function returning ms), `opts.storage` (`"denied"`), `opts.storedTheme`; `checkAsync(name, fn)`; `key(window, target, init) → KeyboardEvent`; `type(window, input, value)`; the marker comment `// --- end of async checks ---` before the runner.
+  - Harness: `BASE` (`"https://okf.test/"`), `okfSite()` (bare window with `okf-site.js` loaded), `openPage(rel, opts) → Promise<window>` with `opts.hash`, `opts.mount` (serve the site under `BASE + mount`, i.e. a moved folder), `opts.blocked` (site-relative paths answered with an empty script), `opts.override` (site-relative path → source served instead of the generated file), `opts.now` (function returning ms), `opts.storage` (`"denied"`), `opts.storedTheme`, `opts.beforeParse(window)`; every page a case opens is checked for script errors raised after load (handler exceptions) when the case returns, then closed; `checkAsync(name, fn)`; `key(window, target, init) → KeyboardEvent`; `type(window, input, value)`; the marker comment `// --- end of async checks ---` before the runner.
 
 - [ ] **Step 1: Write the fixture bundle**
 
@@ -1348,7 +1383,7 @@ check("viewer.js alone, with only { body, links }, adds no global and still rend
 // queued and awaited before the summary, so a late assertion still fails
 // the run.
 
-const { ResourceLoader, VirtualConsole } = require("jsdom");
+const { requestInterceptor, VirtualConsole } = require("jsdom");
 const SITE = path.join(__dirname, ".generated", "hostile-site");
 const BASE = "https://okf.test/";
 const siteSource = fs.readFileSync(path.join(ASSETS, "okf-site.js"), "utf8");
@@ -1359,21 +1394,35 @@ function okfSite() {
   return dom.window;
 }
 
-// Serves SITE under BASE + mount, so a case can "move" the generated folder.
-class SiteLoader extends ResourceLoader {
-  constructor(blocked, mount) {
-    super();
-    this.blocked = blocked || [];
-    this.prefix = BASE + (mount || "");
-  }
-
-  fetch(url) {
-    if (!url.startsWith(this.prefix)) { return null; }
-    const rel = decodeURIComponent(url.slice(this.prefix.length).split(/[?#]/)[0]);
-    if (this.blocked.includes(rel)) { return null; }
-    return Promise.resolve(fs.readFileSync(path.join(SITE, rel)));
-  }
+// jsdom 29 has no ResourceLoader any more: resources go through undici
+// interceptors. This one serves SITE under BASE + mount (so a case can
+// "move" the generated folder) and never lets a request reach the network.
+// A path in `blocked` answers with an empty script, as if the file defined
+// nothing; a path in `override` answers with the given source instead of
+// the generated file.
+function siteResources(opts) {
+  const prefix = BASE + (opts.mount || "");
+  return {
+    interceptors: [
+      requestInterceptor((request) => {
+        if (!request.url.startsWith(prefix)) { return new Response("", { status: 404 }); }
+        const rel = decodeURIComponent(request.url.slice(prefix.length).split(/[?#]/)[0]);
+        const type = rel.endsWith(".js") ? "application/javascript" : rel.endsWith(".css") ? "text/css" : "text/html";
+        const headers = { "Content-Type": type };
+        if ((opts.blocked || []).includes(rel)) { return new Response("", { headers }); }
+        if (opts.override && Object.prototype.hasOwnProperty.call(opts.override, rel)) {
+          return new Response(opts.override[rel], { headers });
+        }
+        return new Response(fs.readFileSync(path.join(SITE, rel)), { headers });
+      }),
+    ],
+  };
 }
+
+// Pages opened by the running async case. Script errors raised AFTER load
+// (an exception in a click or key handler) are recorded here and checked
+// when the case returns, so a handler that throws cannot leave the run green.
+let openedPages = [];
 
 async function openPage(rel, opts = {}) {
   const file = path.join(SITE, rel);
@@ -1390,7 +1439,7 @@ async function openPage(rel, opts = {}) {
   const dom = new JSDOM(fs.readFileSync(file, "utf8"), {
     url: BASE + (opts.mount || "") + rel + (opts.hash || ""),
     runScripts: "dangerously",
-    resources: new SiteLoader(opts.blocked, opts.mount),
+    resources: siteResources(opts),
     pretendToBeVisual: true,
     virtualConsole,
     beforeParse(window) {
@@ -1401,10 +1450,12 @@ async function openPage(rel, opts = {}) {
         window.Storage.prototype.setItem = deny;
       }
       if (opts.storedTheme) { window.localStorage.setItem("okf-theme", opts.storedTheme); }
+      if (opts.beforeParse) { opts.beforeParse(window); }
     },
   });
+  openedPages.push({ window: dom.window, errors });
   await new Promise((resolve) => dom.window.addEventListener("load", resolve));
-  if (errors.length > 0) { throw new Error(`page script error: ${errors[0].message}`); }
+  if (errors.length > 0) { throw new Error(`page script error during load: ${errors[0].message}`); }
   return dom.window;
 }
 
@@ -1504,14 +1555,21 @@ checkAsync("the generated index executes with hostile ids as plain values", asyn
 
 async function runAsyncChecks() {
   for (const { name, fn } of asyncChecks) {
+    openedPages = [];
     try {
       await fn();
+      // Errors raised by handlers after load fail the case too.
+      for (const page of openedPages) {
+        if (page.errors.length > 0) { throw new Error(`page script error: ${page.errors[0].message}`); }
+      }
       passed++;
       console.log(`  ok  - ${name}`);
     } catch (err) {
       failures++;
       console.log(`FAIL  - ${name}`);
       console.log(`        ${err.message}`);
+    } finally {
+      for (const page of openedPages) { page.window.close(); }
     }
   }
 }
@@ -1807,12 +1865,28 @@ checkAsync("theme: a stored choice applies from <head>; denied storage degrades 
   toggle2.click();
   assert(denied.document.documentElement.getAttribute("data-theme") === "dark", "the toggle is broken when storage is denied");
 });
+
+checkAsync("theme: the announced state follows a system preference change while nothing is forced", async () => {
+  let query = null;
+  const window = await openPage("index.html", {
+    beforeParse(w) {
+      query = new w.EventTarget();
+      query.matches = false;
+      w.matchMedia = () => query;
+    },
+  });
+  const toggle = window.document.getElementById("okf-theme-toggle");
+  assert(toggle.getAttribute("aria-pressed") === "false", "a light system preference is announced as dark");
+  query.matches = true;
+  query.dispatchEvent(new window.Event("change"));
+  assert(toggle.getAttribute("aria-pressed") === "true", "a change of the system preference was not re-announced");
+});
 ```
 
 - [ ] **Step 2: Run the harness to verify they fail**
 
 Run: `cd tools/viewer-security-check && npm test`
-Expected: the seven new cases FAIL (`the explorer stayed hidden`, `Cannot read properties of null`, `the stored theme was not applied`); exit code 1.
+Expected: the nine new cases FAIL (`the explorer stayed hidden`, `Cannot read properties of null`, `the stored theme was not applied`); exit code 1.
 
 - [ ] **Step 3: Write `okf-theme.js`**
 
@@ -1871,6 +1945,16 @@ Replace `src/OKF4net.Viewer/Assets/okf-theme.js` with:
       store(next);
       sync();
     });
+    // While no theme is forced, the pressed state follows the system
+    // preference: re-announce it when that preference changes.
+    if (typeof window.matchMedia === "function") {
+      var query = window.matchMedia("(prefers-color-scheme: dark)");
+      if (query && typeof query.addEventListener === "function") {
+        query.addEventListener("change", sync);
+      } else if (query && typeof query.addListener === "function") {
+        query.addListener(sync);
+      }
+    }
     sync();
     tools.appendChild(button);
   }
@@ -2138,6 +2222,18 @@ git add src/OKF4net.Viewer/Assets/okf-explorer.js src/OKF4net.Viewer/Assets/okf-
 git commit -m "feat(viewer): tree explorer, staleness badges and theme toggle"
 ```
 
+- [ ] **Step 8: Prove the harness catches an exception raised in a handler**
+
+A guard that only checks errors during load stays green when a click handler throws. Mutate on purpose: in `src/OKF4net.Viewer/Assets/okf-theme.js`, replace the body of `store` with `window.localStorage.setItem(KEY, value);` (no `try`), then run `cd tools/viewer-security-check && npm test`.
+Expected: the case `theme: a stored choice applies from <head>; denied storage degrades without errors` FAILS with `page script error: …SecurityError…`. Then restore the committed file:
+
+```bash
+git checkout -- src/OKF4net.Viewer/Assets/okf-theme.js
+cd tools/viewer-security-check && npm test
+```
+
+Expected: `… passed, 0 failed`. If the mutated run was green, the error check in `runAsyncChecks` is broken: fix it before going on.
+
 ---
 
 ### Task 7: "Jump to" palette
@@ -2236,12 +2332,65 @@ checkAsync("palette: ids naming Object.prototype members are found as concepts",
   type(window, window.document.getElementById("okf-palette-input"), "constructor");
   assert(optionId(paletteOptions(window)[0]) === "constructor", "constructor is not the first result");
 });
+
+checkAsync("palette: keys typed during IME composition never act on the open palette", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  doc.querySelector(".okf-palette-open").click();
+  const input = doc.getElementById("okf-palette-input");
+  type(window, input, "o");
+  let navigated = false;
+  doc.addEventListener("okf:navigate", (e) => { navigated = true; e.preventDefault(); });
+  key(window, input, { key: "ArrowDown", isComposing: true });
+  assert(paletteOptions(window)[0].getAttribute("aria-selected") === "true", "ArrowDown moved during composition");
+  key(window, input, { key: "Enter", isComposing: true });
+  assert(!navigated, "Enter navigated during composition");
+  key(window, input, { key: "Escape", isComposing: true });
+  assert(!doc.querySelector(".okf-palette-backdrop").hidden, "Escape closed the palette during composition");
+});
+
+checkAsync("palette: the active option is scrolled into view", async () => {
+  const window = await openPage("index.html");
+  // jsdom has no scrollIntoView: a probe records the calls. The visual
+  // result is checked in ACCEPTANCE.md.
+  const calls = [];
+  window.Element.prototype.scrollIntoView = function (options) {
+    calls.push({ id: this.id, block: options && options.block });
+  };
+  const doc = window.document;
+  doc.querySelector(".okf-palette-open").click();
+  const input = doc.getElementById("okf-palette-input");
+  type(window, input, "o");
+  key(window, input, { key: "ArrowDown" });
+  const last = calls[calls.length - 1];
+  assert(last && last.id === "okf-palette-opt-1" && last.block === "nearest", `last scroll: ${JSON.stringify(last)}`);
+});
+
+checkAsync("palette: every match is listed and reachable, with no cap", async () => {
+  const concepts = [];
+  for (let k = 0; k < 60; k++) {
+    const id = `item-${String(k).padStart(2, "0")}`;
+    concepts.push({ id, title: `Item ${k}`, type: "Note", tags: [], path: `${id}.html`, trust: "unverified", staleAfterMs: null, staleAfterDate: null });
+  }
+  const source = `window.OKF_INDEX = ${JSON.stringify({ version: 1, concepts, ghosts: [], edges: [], tree: [] })};`;
+  const window = await openPage("index.html", { override: { "assets/okf-index.js": source } });
+  const doc = window.document;
+  doc.querySelector(".okf-palette-open").click();
+  const input = doc.getElementById("okf-palette-input");
+  type(window, input, "item");
+  assert(paletteOptions(window).length === 60, `listed ${paletteOptions(window).length} of 60`);
+  const status = doc.getElementById("okf-palette-status").textContent;
+  assert(status === "60 matching concepts", `status: ${status}`);
+  key(window, input, { key: "ArrowUp" });
+  const last = paletteOptions(window)[59];
+  assert(optionId(last) === "item-59" && last.getAttribute("aria-selected") === "true", "the 60th match is not reachable");
+});
 ```
 
 - [ ] **Step 2: Run the harness to verify they fail**
 
 Run: `cd tools/viewer-security-check && npm test`
-Expected: the four new cases FAIL (`Cannot read properties of null (reading 'hidden')`); exit code 1.
+Expected: the seven new cases FAIL (`Cannot read properties of null (reading 'hidden')` or `… 'click'`); exit code 1.
 
 - [ ] **Step 3: Write `okf-palette.js`**
 
@@ -2263,7 +2412,6 @@ Replace `src/OKF4net.Viewer/Assets/okf-palette.js` with:
   var index = site.readIndex(window);
   if (!index) { return; }
   var root = site.rootOf(document);
-  var LIMIT = 50;
 
   function el(tag, className, text) {
     return site.element(document, tag, className, text);
@@ -2329,6 +2477,12 @@ Replace `src/OKF4net.Viewer/Assets/okf-palette.js` with:
     }
     if (active >= 0) {
       input.setAttribute("aria-activedescendant", "okf-palette-opt-" + active);
+      // aria-activedescendant does not move DOM focus, so nothing scrolls
+      // the list by itself: keep the active option visible.
+      var activeOption = list.children[active];
+      if (activeOption && typeof activeOption.scrollIntoView === "function") {
+        activeOption.scrollIntoView({ block: "nearest" });
+      }
     } else {
       input.removeAttribute("aria-activedescendant");
     }
@@ -2336,8 +2490,8 @@ Replace `src/OKF4net.Viewer/Assets/okf-palette.js` with:
 
   function update() {
     var previous = active >= 0 ? shown[active] : -1;
-    var all = site.rank(index, input.value);
-    shown = all.slice(0, LIMIT);
+    // Every match is listed and reachable: no cap (owner decision, 2026-10-06).
+    shown = site.rank(index, input.value);
     // Keep the active concept when it survives the new query, else the first
     // option becomes active (spec §8).
     active = shown.indexOf(previous);
@@ -2345,11 +2499,10 @@ Replace `src/OKF4net.Viewer/Assets/okf-palette.js` with:
     render();
     if (site.normalize(input.value) === "") {
       status.textContent = "";
-    } else if (all.length === 0) {
+    } else if (shown.length === 0) {
       status.textContent = "No matching concept";
     } else {
-      status.textContent = all.length + (all.length === 1 ? " matching concept" : " matching concepts")
-        + (all.length > LIMIT ? ", first " + LIMIT + " shown" : "");
+      status.textContent = shown.length + (shown.length === 1 ? " matching concept" : " matching concepts");
     }
   }
 
@@ -2391,6 +2544,9 @@ Replace `src/OKF4net.Viewer/Assets/okf-palette.js` with:
   input.addEventListener("input", update);
 
   dialog.addEventListener("keydown", function (e) {
+    // Keys that confirm or cancel an IME composition belong to the IME, not
+    // to the palette (Enter would navigate, Escape would close).
+    if (e.isComposing || e.keyCode === 229) { return; }
     if (e.key === "Escape") {
       e.preventDefault();
       closePalette();
@@ -2501,17 +2657,25 @@ checkAsync("headings get generated ids only, the contents list them, no content 
   assert(toc.querySelector("a").getAttribute("href") === "#okf-h-usage", "the first contents link is wrong");
 });
 
-checkAsync("an author fragment resolves to the generated heading, on load and on click", async () => {
+checkAsync("an author fragment resolves to the generated heading, on load and on click, as a real navigation", async () => {
   const opened = await openPage("foo/bar.html", { hash: "#usage" });
   const focused = opened.document.activeElement;
   assert(focused && focused.id === "okf-h-usage", `focus on load: ${focused && focused.id}`);
   const window = await openPage("foo.html");
   const link = Array.from(window.document.querySelectorAll("#okf-body a")).find((a) => a.getAttribute("href") === "#usage");
   assert(link, "the fixture lost its #usage link");
-  const event = new window.MouseEvent("click", { bubbles: true, cancelable: true });
+  const before = window.history.length;
+  const changed = new Promise((resolve) => window.addEventListener("hashchange", resolve, { once: true }));
+  const event = new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
   link.dispatchEvent(event);
   assert(event.defaultPrevented, "the click was left to the browser, which finds no element 'usage'");
+  await changed;
+  assert(window.location.hash === "#okf-h-usage", `URL fragment after click: ${window.location.hash}`);
+  assert(window.history.length === before + 1, `history length ${window.history.length}, expected ${before + 1}`);
   assert(window.document.activeElement.id === "okf-h-usage", `focus after click: ${window.document.activeElement.id}`);
+  const modified = new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0, ctrlKey: true });
+  link.dispatchEvent(modified);
+  assert(!modified.defaultPrevented, "a Ctrl+click was taken over instead of left to the browser");
 });
 
 checkAsync("without okf-index.js the page renders, the explorer stays hidden and nothing is clobbered", async () => {
@@ -2596,30 +2760,45 @@ Replace `src/OKF4net.Viewer/Assets/okf-toc.js` with:
     }
   }
 
-  // Moves reading focus to the generated heading a fragment designates.
-  // Only elements inside #okf-body qualify.
-  function go(hash) {
+  // The generated heading a fragment designates, or null. Only elements
+  // inside #okf-body qualify.
+  function targetOf(hash) {
     var candidates = site.fragmentCandidates(hash);
     for (var c = 0; c < candidates.length; c++) {
       var target = document.getElementById(candidates[c]);
-      if (target && body.contains(target)) {
-        if (typeof target.scrollIntoView === "function") { target.scrollIntoView(); }
-        target.focus();
-        return true;
-      }
+      if (target && body.contains(target)) { return target; }
     }
-    return false;
+    return null;
+  }
+
+  // Moves reading focus to that heading.
+  function go(hash) {
+    var target = targetOf(hash);
+    if (!target) { return false; }
+    if (typeof target.scrollIntoView === "function") { target.scrollIntoView(); }
+    target.focus();
+    return true;
   }
 
   // Author links written against the heading text ("#usage") predate the
-  // generated ids: resolve them instead of letting the browser look for an
-  // element "usage" that does not exist.
+  // generated ids. A plain click becomes a real fragment navigation to the
+  // generated id -- URL, history entry and Back/Forward stay native -- and
+  // hashchange then moves the focus. Modified clicks (new tab, new window)
+  // are left to the browser: the new page resolves the fragment on load.
   body.addEventListener("click", function (e) {
+    if (e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) { return; }
     var a = e.target && typeof e.target.closest === "function" ? e.target.closest("a") : null;
     if (!a || !body.contains(a)) { return; }
     var href = a.getAttribute("href");
     if (!href || href.charAt(0) !== "#") { return; }
-    if (go(href)) { e.preventDefault(); }
+    var target = targetOf(href);
+    if (!target) { return; }
+    e.preventDefault();
+    if (window.location.hash === "#" + target.id) {
+      go(window.location.hash);
+    } else {
+      window.location.hash = target.id;
+    }
   });
   window.addEventListener("hashchange", function () { go(window.location.hash); });
   if (window.location.hash) { go(window.location.hash); }
@@ -2666,14 +2845,54 @@ git commit -m "feat(viewer): generated heading anchors, contents list and author
 - Modify: `CLAUDE.md`, `README.md`, `ROADMAP.md`, `CHANGELOG.md`
 - Modify: `tools/viewer-security-check/README.md`
 - Create: `tools/viewer-security-check/ACCEPTANCE.md`
+- Create: `tools/viewer-security-check/check-index.js`
 
 **Interfaces:**
 - Consumes: everything above.
 - Produces: the written acceptance checklist (spec §7, A14) and the documentation the spec requires with P1 (§9: `CLAUDE.md` exception A2 and "no full-text search", README, ROADMAP A4).
 
-- [ ] **Step 1: Extend the AOT smoke check**
+- [ ] **Step 1: Check that the index the NATIVE binary writes executes**
 
-In `.github/workflows/ci.yml`, step `Run published okf-render`, replace
+The jsdom harness only runs a site generated by a regular `dotnet run` build; the spec (§2.1) asks the AOT smoke test for presence **and loading** of the index. A prefix check alone would pass a truncated file, so the file is executed.
+
+Create `tools/viewer-security-check/check-index.js`:
+
+```js
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// Executes an okf-index.js written by okf-render and checks that it defines
+// a usable site index. CI runs it on the file the NATIVE AOT binary writes:
+// the jsdom harness (run.js) only exercises a site from a regular build.
+"use strict";
+const path = require("path");
+
+const file = path.resolve(process.argv[2] || "");
+global.window = {};
+require(file);
+const index = global.window.OKF_INDEX;
+const ok = Boolean(index)
+  && Array.isArray(index.concepts) && index.concepts.length > 0
+  && Array.isArray(index.ghosts) && Array.isArray(index.edges)
+  && Array.isArray(index.tree) && index.tree.length > 0
+  && index.concepts.every((c) => typeof c.id === "string" && c.path === `${c.id}.html`);
+if (!ok) {
+  console.error(`${file}: not a usable site index`);
+  process.exit(1);
+}
+console.log(`${file}: ${index.concepts.length} concepts, ${index.edges.length} edges`);
+```
+
+In `.github/workflows/ci.yml`, job `aot-publish`, insert right after that job's `actions/setup-dotnet@v6` step:
+
+```yaml
+      # check-index.js executes the okf-index.js the native okf-render writes.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+```
+
+and in its step `Run published okf-render`, replace
 
 ```powershell
           Write-Host "OK: okf-render wrote $outDir/index.html"
@@ -2684,9 +2903,19 @@ with
 ```powershell
           $indexScript = "$outDir/assets/okf-index.js"
           if (-not (Test-Path $indexScript)) { throw "okf-render did not write $indexScript" }
-          if (-not (Get-Content -Raw $indexScript).StartsWith('window.OKF_INDEX = {"version":1,')) { throw "$indexScript does not assign the site index" }
-          Write-Host "OK: okf-render wrote $outDir/index.html and $indexScript"
+          node tools/viewer-security-check/check-index.js $indexScript
+          if ($LASTEXITCODE -ne 0) { throw "$indexScript does not execute as a usable site index" }
+          Write-Host "OK: okf-render wrote $outDir/index.html and an executable $indexScript"
 ```
+
+Check it locally on a regular build before committing:
+
+```bash
+dotnet run --project src/OKF4net.Render -c Release -- tests/fixtures/appendix_a --out "$TEMP/okf-appendix-site"
+node tools/viewer-security-check/check-index.js "$TEMP/okf-appendix-site/assets/okf-index.js"
+```
+
+Expected: one line `…okf-index.js: N concepts, E edges` with N > 0, exit code 0. Then truncate a copy (`head -c 200 "$TEMP/okf-appendix-site/assets/okf-index.js" > "$TEMP/truncated.js"`) and run the check on it: expected a non-zero exit code.
 
 - [ ] **Step 2: Write the acceptance checklist**
 
@@ -2712,7 +2941,9 @@ Record the date, browser versions and any failure in the pull request.
 - [ ] Explorer: the current page is highlighted and its ancestors are open; a folder that is also a page opens on its name and expands on its arrow; the filter keeps ancestors of matches.
 - [ ] Links from a page three levels deep land on the right pages.
 - [ ] Palette: the "Jump to..." button opens it; Ctrl+K and `/` open it from the page body (note what each browser does with these keys when the page has focus and when the address bar has it); Tab stays inside; Escape closes and focus returns; arrows and Enter navigate.
-- [ ] A screen reader (NVDA or Narrator) announces the palette as a dialog, the active option and the result count, and the theme button's pressed state.
+- [ ] Palette with many results (query `o` on the OKF4net site): arrowing past the bottom of the list keeps the active option visible; every result is reachable.
+- [ ] Palette with an IME (e.g. Windows Japanese input): confirming a composition with Enter does not navigate, cancelling it with Escape does not close the palette.
+- [ ] A screen reader (NVDA or Narrator) announces the palette as a dialog, the active option and the result count, and the theme button's pressed state, including after the system theme changes.
 - [ ] Theme: the toggle switches; reloading and opening another page keeps the choice where the browser shares storage between `file://` pages, and never flashes the other theme on load.
 - [ ] Contrast is readable in both themes (text, badges, the active palette option).
 - [ ] Contents list: clicking an entry lands on the heading; Back and Forward return through the visited headings.
@@ -2741,6 +2972,10 @@ needs the .NET SDK. Page cases are async and are awaited before the summary.
 
 What the harness cannot check (layout, browser shortcuts, focus rings,
 contrast, absence of a theme flash) is in `ACCEPTANCE.md`.
+
+`check-index.js` executes one `okf-index.js` and checks it defines a usable
+index. CI's `aot-publish` job runs it on the file the **native** `okf-render`
+writes, which the harness above never sees.
 ```
 
 - [ ] **Step 4: Update `CLAUDE.md`**
@@ -2837,6 +3072,6 @@ Walk `tools/viewer-security-check/ACCEPTANCE.md` § P1 in Chrome, Edge and Firef
 - [ ] **Step 8: Commit**
 
 ```bash
-git add .github/workflows/ci.yml CLAUDE.md README.md ROADMAP.md CHANGELOG.md tools/viewer-security-check/README.md tools/viewer-security-check/ACCEPTANCE.md
+git add .github/workflows/ci.yml CLAUDE.md README.md ROADMAP.md CHANGELOG.md tools/viewer-security-check/README.md tools/viewer-security-check/ACCEPTANCE.md tools/viewer-security-check/check-index.js
 git commit -m "docs(viewer): P1 interactive viewer in CLAUDE.md, README, ROADMAP, CHANGELOG; AOT index check; acceptance checklist"
 ```
