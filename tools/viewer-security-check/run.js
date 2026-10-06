@@ -971,11 +971,18 @@ async function openPage(rel, opts = {}) {
     throw new Error(`${file} is missing: run "npm test", whose pretest step regenerates the site with okf-render`);
   }
   const errors = [];
+  const page = { window: null, errors, navigations: 0 };
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (err) => {
     // jsdom does not implement navigation; location.assign() lands here
-    // when a case does not veto the palette's okf:navigate event.
-    if (!/Not implemented: navigation/.test(err.message)) { errors.push(err); }
+    // when a case does not veto the palette's okf:navigate event. Not an
+    // error, but counted, so a case can tell a vetoed navigation from one
+    // that happened (see navigations()).
+    if (/Not implemented: navigation/.test(err.message)) {
+      page.navigations++;
+    } else {
+      errors.push(err);
+    }
   });
   const dom = new JSDOM(fs.readFileSync(file, "utf8"), {
     url: BASE + (opts.mount || "") + rel + (opts.hash || ""),
@@ -994,10 +1001,20 @@ async function openPage(rel, opts = {}) {
       if (opts.beforeParse) { opts.beforeParse(window); }
     },
   });
-  openedPages.push({ window: dom.window, errors });
+  page.window = dom.window;
+  openedPages.push(page);
   await new Promise((resolve) => dom.window.addEventListener("load", resolve));
   if (errors.length > 0) { throw new Error(`page script error during load: ${errors[0].message}`); }
   return dom.window;
+}
+
+// How many cross-document navigations (location.assign and the like) a page
+// opened by the running case has attempted. Fragment-only changes are not
+// counted: jsdom implements those.
+function navigations(window) {
+  const page = openedPages.find((p) => p.window === window);
+  if (!page) { throw new Error("navigations(): this window was not opened by openPage in the running case"); }
+  return page.navigations;
 }
 
 function key(window, target, init) {
@@ -1436,6 +1453,21 @@ checkAsync("palette: from a nested page, the target resolves up to the site root
     key(window, input, { key: "Enter" });
     assert(navigated === "../edge.html", `navigated to ${navigated} (${JSON.stringify(opts)})`);
   }
+});
+
+checkAsync("palette: a vetoed okf:navigate does not navigate, an unvetoed one does", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  doc.querySelector(".okf-palette-open").click();
+  const input = doc.getElementById("okf-palette-input");
+  type(window, input, "edge");
+  const veto = (e) => e.preventDefault();
+  doc.addEventListener("okf:navigate", veto);
+  key(window, input, { key: "Enter" });
+  assert(navigations(window) === 0, `a vetoed okf:navigate still navigated (${navigations(window)} navigations)`);
+  doc.removeEventListener("okf:navigate", veto);
+  key(window, input, { key: "Enter" });
+  assert(navigations(window) === 1, `an unvetoed okf:navigate made ${navigations(window)} navigations, expected 1`);
 });
 
 checkAsync("headings get generated ids only, the contents list them, no content id survives", async () => {
