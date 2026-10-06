@@ -1526,8 +1526,16 @@ checkAsync("clicking an accented fragment link a second time still moves the rea
 checkAsync("without okf-index.js the page renders, the explorer stays hidden and nothing is clobbered", async () => {
   const window = await openPage("foo.html", { blocked: ["assets/okf-index.js"] });
   const doc = window.document;
+  assert(window.OKF_INDEX === undefined, "this case needs okf-index.js blocked");
   assert(doc.getElementById("okf-explorer").hidden, "the explorer rendered without an index");
+  assert(doc.getElementById("okf-tree-filter") === null, "the explorer built its filter without an index");
   assert(doc.querySelector(".okf-palette-open") === null, "the palette rendered without an index");
+  // No palette, so its shortcuts are not taken: the browser keeps "/" and Ctrl+K.
+  for (const init of [{ key: "/" }, { key: "k", ctrlKey: true }]) {
+    const event = key(window, doc.body, init);
+    assert(!event.defaultPrevented, `${JSON.stringify(init)} was prevented although there is no palette`);
+  }
+  assert(doc.querySelector(".okf-palette-backdrop") === null, "a shortcut built the palette without an index");
   assert(window.OkfSite.readIndex(window) === null, "readIndex accepted something that is not the index");
   assert(doc.getElementById("OKF_INDEX") === null, "bundle content created an element named OKF_INDEX");
   assert(doc.getElementById("okf-body").textContent.includes("first"), "the body did not render");
