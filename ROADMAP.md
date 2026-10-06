@@ -2,17 +2,16 @@
 
 OKF4net implements the [Open Knowledge Format (OKF) v0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
 on the .NET base class library with zero third-party runtime dependencies.
-This roadmap shows where the project is heading. It is a living document —
-issues labelled [`good first issue`](https://github.com/jchable/okf4net/labels/good%20first%20issue)
+This file keeps the context behind shipped work and settled decisions. Planned
+work — features, bugs, design lots and open questions — is tracked as GitHub
+issues, grouped by milestone: [`v0.7.0`](https://github.com/jchable/okf4net/milestone/1)
+for the next release and [`v-next`](https://github.com/jchable/okf4net/milestone/2)
+for everything not yet scheduled. Issues labelled
+[`good first issue`](https://github.com/jchable/okf4net/labels/good%20first%20issue)
 and [`help wanted`](https://github.com/jchable/okf4net/labels/help%20wanted)
 are the concrete entry points.
 
-## Now (in progress)
-
-- Broaden test coverage and worked examples for the CLI verbs and the agents layer.
-- Documentation: end-to-end tutorials for both audiences (library users, agent builders).
-
-## Next
+## Shipped, with notes
 
 - **`okf audit` shipped** — a corpus-level query over a bundle's trust (§5.3),
   lifecycle (§5.4) and staleness (§5.5) signals: counts plus a filterable
@@ -35,84 +34,6 @@ are the concrete entry points.
   Backed by the new `BundleConceptWriter.RecordVerifications` — the single
   governed writer of `verified` — and exposed to agents as `okf_verify`. See
   [its design spec](docs/superpowers/specs/2026-08-28-okf-verify-design.md).
-  - **Next, highest-value follow-up: a time-aware audit.** A `verified`
-    stamp today attests a moment, not a version — `Trust.DeriveTier` derives
-    `human-reviewed` from an actor's presence alone, so a five-year-old human
-    stamp counts the same as one from this morning, and nothing currently
-    flags that the concept's content moved after the review. Exposing the
-    stamps' timestamps on `AuditFinding` would let `okf audit` ask "reviewed,
-    but as of when, and has the file changed since?" — answered outside the
-    library, by comparing `max(verified[].at)` against
-    `git log -1 --format=%cI -- <path>` (the folder is canonical; its
-    history is git's, not the frontmatter's). Deliberately out of `okf
-    verify`'s scope: it needs no new write path, only turns an existing
-    field from a permanent alibi into a signal that decays. No schema
-    extension (`digest`, `scope`, `note` on the stamp) is planned to
-    recreate this information inside the bundle instead — that question is
-    answered by git, on purpose.
-- **Atomic write-then-rename in `BundleConceptWriter`: its own design lot.**
-  Every write path in the class funnels through the single
-  `WriteValidatedContentLocked`, whose `File.WriteAllText` truncates the target
-  and writes in place, so a failure mid-write (full disk, device error) can
-  leave a concept truncated or half-written. `RecordVerifications` reports the
-  concepts whose write returned, and that file is not among them, so the
-  report is not wrong, but "exactly what landed" is stronger than the
-  primitive supports. Writing a temporary beside the target and renaming it
-  over is the obvious shape; an external review of the first design (kept out
-  of the write-path hardening lot for that reason) found that the obvious
-  shape is not safe as sketched, and the design starts from these findings:
-  - **The commit protocol must separate failures that happened before the
-    commit from indeterminate ones.** Windows `ReplaceFile` can fail with
-    `ERROR_UNABLE_TO_MOVE_REPLACEMENT` (1176) and, when no backup file is
-    given, leave no file at the target and the replacement under its temporary
-    name. Deleting the temporary on every exception would then lose both
-    versions, so a pre-commit failure may clean up, an indeterminate one must
-    keep the recoverable artifacts.
-  - **The temporary must be created with restrictive permissions before any
-    content is written.** A POSIX create at `0644` under umask 022 exposed the
-    content of a `0600` target, and a `chmod` by path afterwards can follow a
-    link substituted in the meantime. On Windows, the ACL the temporary
-    inherits at creation has to be considered too, not assumed to match the
-    target's.
-  - **`File.Move(overwrite: false)` is not a no-clobber primitive on Unix.**
-    It is an `lstat` followed by a `rename`, so it is not race-proof, and it
-    can fall back to copying.
-  - **The durability promise has to be stated:** surviving a process crash is
-    not surviving power loss, and the latter needs the file flushed and, on
-    POSIX, the directory fsynced.
-  - **Orphaned temporaries are ignored as concepts but not harmless.** They
-    can block the producer's `RequireEmpty` and its pruning.
-
-  Still to be done beside the commit protocol: tests for the path-safety guard
-  holding against the *temporary* name, and for the per-bundle lock, since the
-  write sits immediately after the late reparse-point re-check inside it — a
-  security-sensitive seam that must not be swapped in passing. Pre-existing and
-  shared by every write path; not introduced by verification.
-- **`YamlValue.GetHashCode` (and likely `Equals`) recurse without a bound.**
-  The parser caps a parsed value's nesting at 1000, but a value built in code
-  is not capped: one deeper than 1000 overflowed the test host's stack when
-  hashed. The depth rule now shared by the parser and the emitter does not
-  reach these two members; they need the same bound, or an iterative walk.
-- **A cancelled computation can leave its container behind
-  ([#110](https://github.com/jchable/okf4net/issues/110)).** Cancelling or
-  timing out while Docker is still creating the container leaves it in
-  `Created` state: `kill` on an unstarted container is a no-op and `--rm` only
-  fires for one that ran. The issue's suggested `docker rm -f` is the obvious
-  half; the other half is the container's lifecycle (what owns the name, who
-  tears down when the client process is killed first), which needs a design
-  before the fix — and it is the likely cause of the flaky
-  `Cancellation_kills_the_container_and_propagates_as_OperationCanceledException`
-  integration test.
-- More `OKF4net.Agents` samples with Microsoft Agent Framework — the first,
-  `samples/acme-retail-agent`, shipped in 0.4.0, and
-  `samples/agents-quickstart` (no model or API key needed) followed; more
-  welcome.
-- `OKF4net.Catalog` samples: `samples/catalog-explorer` (multi-source
-  search, ranking strategies, per-caller visibility, the `role: memory`
-  tier) shipped. A natural next one: a read-write "second brain"
-  personal-notes sample over `OKF4net.Mcp` in Claude Desktop — the current
-  MCP story is read-only-focused; this would exercise write/append and
-  `IndexGenerator`/`ChangeLog` (§8/§9) updating live as notes are added.
 - Performance baselines for large bundle loads: **a `Bundle.Load` baseline
   exists** (`BundleLoadPerformanceTests`, a 2,001-concept synthetic bundle,
   [#6](https://github.com/jchable/okf4net/issues/6)) — it prints its timings
@@ -122,19 +43,18 @@ are the concrete entry points.
   itself so the CI-facing validator does not carry the viewer's JavaScript.
   The live-server half of [#40](https://github.com/jchable/okf4net/issues/40)
   was **dropped, and the issue closed** — the interactive, always-fresh
-  viewing it was meant to provide is being pursued as the VS Code extension
-  below instead, which reaches the same goal from inside the editor without
+  viewing it was meant to provide is being pursued as a VS Code extension
+  ([#163](https://github.com/jchable/okf4net/issues/163)) instead, which reaches the same goal from inside the editor without
   a local HTTP server, and reaches full-text search by the same route (an
   extension host is a process, so it can have the .NET side run
   `ConceptSearch` rather than mirroring its weights in JavaScript). What the
   server would have added over `okf-render` alone was one saved command
   invocation per edit; search was the only capability that genuinely
   required it, and the extension gets that too.
-  Interactive navigation is being brought into `okf-render` itself
-  (design `docs/superpowers/specs/2026-10-06-okf-viewer-interactive-design.md`):
-  P1 — explorer, palette, contents — has landed; P2 (local link graph) and P3
-  (global link graph with facets) follow, which replaces the separate
-  "interactive cross-link graph explorer" project this roadmap used to list.
+  P1 of the interactive viewer — tree explorer, "Jump to" palette, page
+  contents (design `docs/superpowers/specs/2026-10-06-okf-viewer-interactive-design.md`)
+  — has landed in `okf-render` itself; the global link graph continues under
+  [#162](https://github.com/jchable/okf4net/issues/162).
   - **The client-side XSS defense is guarded by a JS harness, not by xunit.**
     xunit runs on .NET and cannot execute JavaScript, so
     `tests/OKF4net.Tests/Viewer/ViewerAssetsTests.cs` only smoke-checks for
@@ -148,93 +68,8 @@ are the concrete entry points.
 
 - Ecosystem integrations driven by user demand.
 - Tracking upstream OKF spec evolution beyond v0.2.
-- **Zero-dependency bundle linter for CI.** A small AOT tool built on just
-  `BundleValidator`/`LinkScanner` (no `OKF4net.Cli` dependencies beyond
-  what's already zero-dep), packaged for GitHub Actions/pre-commit — a
-  docs/DevOps-facing entry point distinct from the agent-builder-facing
-  samples, showcasing the zero-dependency story to a different audience.
-- **A Visual Studio Code extension viewer.** Browse the bundle open in the
-  workspace from the editor itself — a tree view over the concepts, a
-  rendered preview of the selected one, re-rendered on save — instead of
-  generating a static site and switching to a browser. Its own project
-  (TypeScript, its own repo and marketplace listing), not a `samples/` entry.
-  - **`OKF4net.Viewer` already carries the client half.** `Assets/viewer.js`
-    is a self-contained IIFE with no framework dependency: it reads a
-    `{ body, links }` JSON payload, renders the markdown with the vendored
-    marked, sanitizes the *parsed DOM*, then rewires inter-concept links. A
-    webview can run it as-is, and `tools/viewer-security-check/` keeps
-    guarding it — which is the point of reusing it rather than writing a
-    second renderer, since the sanitizer is the security-critical part and
-    took several rounds to get right (see that file's header comment). Two
-    adaptations are unavoidable: a VS Code webview's CSP needs a per-load
-    nonce on the `<script>` tags and webview asset URIs for the three files,
-    and `viewer.css` hard-codes its palette where an extension should read
-    the `--vscode-*` theme variables.
-  - **It does not carry the C# half across.** An extension host is Node, so
-    `SiteModel`/`HtmlWriter` are reachable only by shelling out. Cheapest
-    path: run `okf render --out <tmp>` and point the webview at the generated
-    page. Better fit: `SiteModel.Build` is a pure `Bundle` → model projection
-    with no I/O, so a JSON output mode emitting exactly the `{ body, links }`
-    payload for one concept would let the extension re-render a single page
-    per save. That JSON payload mode is now the *only* consumer of this
-    plumbing, since the live-server half of #40 was dropped in favour of
-    this extension.
-    `HtmlWriter` and `HtmlSafeJson` do not transfer at all: output layout and
-    write-containment guards are static-site concerns, and a webview receives
-    the payload by `postMessage` as a real object rather than escaping it
-    into an HTML `<script>` element.
-  - **Search is reachable here, unlike in the static site.** The extension
-    host is a process, so it can have the .NET side run `ConceptSearch`
-    instead of mirroring its weights in JavaScript. There is no `okf search`
-    verb today though — the scorer is exposed only as `okf_search` in
-    `OKF4net.Agents` (hence over `okf-mcp`), so this means either driving the
-    MCP server or adding that verb.
-  - **Licence obligations travel with the files.** `viewer.js`/`viewer.css`
-    are LGPL-3.0-or-later and the vendored `marked.min.js` is MIT with a
-    `NOTICE` credit; copying them into a separate extension repo carries both.
-- **Dogfooding on a real third-party OSS project's docs.** Convert an
-  existing open-source project's markdown docs into an OKF bundle via
-  `okf fmt`/`index`/`validate`, as a concrete "here's how you'd actually
-  adopt this" walkthrough rather than a synthetic sample bundle.
-- **Attested Computation (§10): wire `acme_retail` itself to the container
-  runtime.** The runtime this item used to call for now exists —
-  `src/OKF4net.Attestation.Containers/` runs a bundle's sanctioned script or SQL,
-  and its attester, inside a real container, and
-  `samples/attestation-containers-demo/` drives one end to end against
-  `bundles/attestation_containers_demo/`.
 
-  What has not been done is pointing it at `bundles/acme_retail`.
-  `samples/acme-retail-agent` stays read-only for `Attested Computation`
-  concepts — it inspects (`okf_get_computation`) but never runs
-  (`okf_run_computation`) — and a faithful run there needs more than wiring: those
-  computations target BigQuery, so they need a BigQuery executor and a receipt
-  carrying a real `job_id`, not the Postgres/script pair the demo bundle uses.
-  That `job_id` is also what would make the provenance check meaningful, since the
-  demo's `executed_sql` is echoed back by this host's own wrapper and so proves
-  only what the wrapper sent.
-- **Open question upstream: concept id character set.** The spec (§2) does not
-  restrict which characters a concept id may contain; `ConceptId.ValidateSegment`
-  currently restricts to ASCII regardless. Whether to allow full Unicode (any
-  alphabet, no transliteration) is an open, deliberately deferred decision —
-  raised upstream, see
-  [docs/outreach/upstream-issues/2026-07-31-concept-id-character-set-clarification.md](docs/outreach/upstream-issues/2026-07-31-concept-id-character-set-clarification.md).
-  Blocks nothing today (the new `ConceptId.Slugify` helper folds non-ASCII to
-  `'-'` in the meantime), but revisit once upstream responds — a decision to
-  broaden `ValidateSegment` needs its own design pass (cross-platform Unicode
-  normalization, golden-fixture impact).
-- **Open question upstream: what a relative path-valued field resolves
-  against (§6.2).** §6.2 accepts "a relative path" for fields such as
-  `attester.resource` but never says relative to what. We read a bare path
-  (`references/attesters/revenue.py`) as bundle-root-relative and `./`/`../` as
-  relative to the concept's directory — the only reading under which the spec's
-  own §6.3, §10.2 and Appendix A examples resolve — and recorded it as
-  **S6.2-1** in `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md`.
-  Raised upstream as
-  [GoogleCloudPlatform/knowledge-catalog#408](https://github.com/GoogleCloudPlatform/knowledge-catalog/issues/408)
-  on 2026-09-11 (open, no reply as of 2026-09-14). If the answer contradicts that
-  reading, `FrontmatterResourceClassifier.KindOf` (`src/OKF4net/FrontmatterResource.cs`)
-  and the S6.2-1 entry change with it — and bundles written with bare paths would
-  resolve differently.
+## `producers/OkfProducer`
 
 - **`producers/OkfProducer` shipped** (repo scanner → OKF v0.2 bundle generator, `generate`/
   `validate` commands, npm/NuGet/README detection, and a C# code-graph stage: one concept per
@@ -253,30 +88,7 @@ are the concrete entry points.
   - **Documented.** [`producers/README.md`](producers/README.md) carries the flag surface, the
     verification command, the packaging step and the project layout.
 
-  Open follow-ups, still open:
-  - **The pruning guard compares scope FLAGS, not the scope RULE.** `BundleWriter` refuses to prune
-    when the previous run covered a wider scope, and it decides that by comparing the flags recorded
-    in the manifest — so it is blind to a run whose flags are identical but whose *rule* narrowed.
-    Measured on exactly that: a bundle generated before scope moved to effective visibility, then
-    regenerated with the same flags, lost five concepts and the guard stayed silent, because nothing
-    in the manifest said the rule had changed. The producer now prints a note when it caps a public
-    member at an internal container, which covers the one case that exists today; the general fix is
-    to record a scope-rule identifier beside `scope` in the manifest so the existing guard fires on a
-    rule change as it does on a flag change. Deliberately not done in the fix round that found it:
-    it changes the manifest format, which is a compatibility decision of its own.
-  - **More ecosystems.** Package detection is npm and NuGet only, and the code stage is C# only.
-    The architecture is multi-language by construction (one `LanguageProfile` per language, one
-    `ISymbolResolver` per precision level); a second profile would test the generality of that
-    seam rather than chase coverage.
-  - **Per-RID package weight.** A RID-specific `dotnet tool` package measures 80.7–87.6 MB
-    installed (11.5–13.3 MB to download). Most of it is tree-sitter grammars this producer never
-    loads — `verilog` 17.3 MB, `razor` 10.5 MB, `cpp` 5.1 MB — which cannot be removed one file
-    at a time, because `deps.json` is what feeds `NATIVE_DLL_SEARCH_DIRECTORIES`. Getting the
-    installed size below ~40 MB is a follow-up, not a v1 promise.
-  - **No test covers `--rev`'s branch auto-detection happy path.** Every CLI fixture repository is
-    deliberately outside git (so the suite stays at ~16 s and spawns no MSBuild), and the detached
-    -HEAD case is covered by the one test that does build a git repository. The auto-detected
-    branch name is verified by manual run only.
+  Fixed:
   - **`LiftedMarkdown`'s escaping rules are a copy of a scanner that has since been rewritten.**
     Fixed (#111): `LiftedMarkdown` still *prefers* its own rendering of lifted text, but it now
     asks `LinkScanner.ExtractLinks` on what it is about to emit and falls back to an encoded form
@@ -320,38 +132,6 @@ are the concrete entry points.
   had) and falls back to the hosting install only when `PATH` has none. Reproduced and verified
   2026-10-05 on Windows with a runtime-only second install as the host (SDK 8 itself was not
   installed); see `producers/README.md`.
-- **Measured and dropped: parallel `dotnet msbuild` queries.** Measured (2026-09-15) on a 20-core
-  host with SDK 10.0.204, against a throwaway prototype querying each dependency wave with
-  `MaxDegreeOfParallelism = Math.Min(ProcessorCount, 4)` (4 here), 5 warm runs per configuration
-  interleaved with the serial build. It is faster: on this repository (19 projects detected, 1 wave
-  — every detected project is a query root, so nothing is left to discover transitively) the median
-  `okfgen generate` went from 40.2 s to 25.0 s (−15.1 s, −37.7 %); on a synthetic 40-project,
-  5-level repository (also 1 wave) from 77.8 s to 46.5 s (−31.3 s, −40.2 %). It was dropped anyway,
-  because it is not safe on a tree that has not been built yet: 2 of 3 parallel runs over a cleaned
-  synthetic tree lost 1–2 projects to `MSB3491` write collisions in the `obj/` of a *shared
-  referenced* project, and each loss silently degraded the bundle — the affected projects' exact
-  `## Calls` links fell back to name matching — while the run still exited `0`. Warm trees hid it
-  entirely: all 10 warm parallel runs wrote a bundle byte-identical to the serial one. Those
-  collisions exist because the query builds the projects it references at all, so the precondition
-  for revisiting parallelism is removing that: the query must stop building referenced projects and
-  writing into the scanned repository's `obj/` (lane task E13).
-  **That precondition is now met.** E13 added `-p:BuildProjectReferences=false` and redirected
-  `IntermediateOutputPath` into a producer-owned scratch directory, so a query no longer builds
-  anything and writes no file into the scanned repository — pinned by an acceptance test that
-  snapshots the tree (files with sizes and mtimes, and directories) around a whole resolver stage.
-  What it still creates there is an empty `bin/<Configuration>/<TFM>/` per never-built project,
-  from `PrepareForBuild`'s `MakeDir $(OutDir)`. That is not a new collision source for a parallel
-  query: `MakeDir` creates only what is missing (Learn's `MakeDir` task reference) and
-  `PrepareForBuild` calls it with `ContinueOnError="true"`. Redirecting `OutDir` would move
-  referenced projects' `ReferencePath` into the scratch (measured), so the directory is left. The
-  `obj/` write
-  collisions the prototype hit have no source left. What has **not** been redone is the measurement:
-  the timings above were taken against a query that built its whole reference closure, which is most
-  of what each query cost, so the 37–40 % saving is a number for code that no longer exists and
-  revisiting parallelism starts by measuring again. Two obstacles also still stand, neither about
-  `obj/`: `StageDeadline` is not thread-safe and is consulted per project *inside* the query loop
-  (E13 pinned that too), and nothing has established that a repository's own MSBuild logic — which a
-  query evaluates, and which can write wherever it likes — is safe to run several copies of at once.
 
 ## Out of scope
 
