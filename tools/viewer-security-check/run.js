@@ -1597,6 +1597,54 @@ checkAsync("explorer, palette and contents render hostile titles as inert text",
   assert(window.__pwned === undefined, "a hostile title executed");
 });
 
+// The sanitizer keeps `class` on <code>, so body content can wear any chrome
+// class. Every chrome rule is anchored to a chrome container: inside
+// #okf-body such a class must change nothing (no overlay faking a dialog, no
+// fake trust badge, no text hidden from sighted readers).
+checkAsync("chrome classes worn by body content change none of its styles", async () => {
+  const window = await openPage("chrome-classes.html");
+  const doc = window.document;
+  const body = doc.getElementById("okf-body");
+  const reference = body.querySelector("code:not([class])");
+  assert(reference, "the fixture lost its unclassed reference <code>");
+  const worn = Array.from(body.querySelectorAll("code[class]"));
+  assert(worn.length >= 6, `the fixture lost its classed <code> elements (${worn.length})`);
+  assert(worn[0].classList.contains("okf-palette-backdrop") && worn[0].classList.contains("okf-sr"), "the sanitizer dropped the class attribute: this case no longer tests anything");
+  for (const el of body.querySelectorAll("*")) {
+    const style = window.getComputedStyle(el);
+    const where = `<${el.tagName.toLowerCase()} class="${el.getAttribute("class") || ""}">`;
+    assert(style.position !== "fixed" && style.position !== "absolute", `${where} inside #okf-body is position: ${style.position}`);
+    assert(!/rect\(/.test(style.clip) && style.width !== "1px" && style.height !== "1px", `${where} inside #okf-body is clipped or 1px (screen-reader-only styling)`);
+  }
+  // jsdom neither expands shorthands nor resolves var() in them, so both the
+  // shorthands and their longhands are compared, as declared.
+  const props = ["position", "display", "width", "height", "clip", "clip-path", "overflow", "z-index", "inset", "top",
+    "background", "background-color", "border", "border-left", "border-left-color", "border-radius", "border-width",
+    "padding", "margin", "white-space", "max-width", "min-height", "cursor", "flex", "list-style", "font-family",
+    "font-size", "color", "text-transform", "outline"];
+  // The anchored rules still style the real chrome (a selector the engine
+  // cannot match would pass the checks above by styling nothing at all).
+  const chrome = [
+    [doc.querySelector("body > .okf-palette-backdrop"), "position", "fixed"],
+    [doc.querySelector("#okf-explorer .okf-tree-toggle .okf-sr"), "position", "absolute"],
+    [doc.querySelector("#okf-explorer .okf-badge.okf-trust-human"), "width", "8px"],
+    [doc.querySelector("#okf-tools .okf-tool"), "min-height", "36px"],
+  ];
+  for (const [el, prop, value] of chrome) {
+    assert(el, `a chrome element this case needs is missing (${prop}: ${value})`);
+    const got = window.getComputedStyle(el).getPropertyValue(prop);
+    assert(got === value, `the real <${el.tagName.toLowerCase()} class="${el.getAttribute("class")}"> lost its ${prop}: ${value} (got ${got})`);
+  }
+  const expected = window.getComputedStyle(reference);
+  for (const el of worn) {
+    const style = window.getComputedStyle(el);
+    for (const prop of props) {
+      assert(style.getPropertyValue(prop) === expected.getPropertyValue(prop),
+        `<code class="${el.getAttribute("class")}"> ${prop}: ${style.getPropertyValue(prop)} (an unclassed <code> has ${expected.getPropertyValue(prop)})`);
+    }
+  }
+});
+
 // --- end of async checks ---
 
 // A pending Promise does not keep Node alive: a case awaiting an event that
