@@ -1092,6 +1092,143 @@ checkAsync("the generated index executes with hostile ids as plain values", asyn
   assert(Object.getPrototypeOf(window.OKF_INDEX) === window.Object.prototype, "the index object's prototype was replaced");
 });
 
+console.log("\npalette:");
+
+function paletteOptions(window) {
+  return Array.from(window.document.querySelectorAll("#okf-palette-list [role=option]"));
+}
+
+function optionId(option) {
+  return option.querySelector(".okf-palette-id").textContent;
+}
+
+checkAsync("palette: shortcuts open it only outside editable fields and IME composition", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const backdrop = doc.querySelector(".okf-palette-backdrop");
+  key(window, doc.body, { key: "k", ctrlKey: true, isComposing: true });
+  assert(backdrop.hidden, "opened during IME composition");
+  // Self-contained: Task 6 owns #okf-tree-filter; any text field will do here.
+  const filter = doc.body.appendChild(doc.createElement("input"));
+  filter.focus();
+  key(window, filter, { key: "/" });
+  assert(backdrop.hidden, "'/' typed in the tree filter opened the palette");
+  key(window, filter, { key: "k", ctrlKey: true });
+  assert(backdrop.hidden, "Ctrl+K in an editable field opened the palette");
+  filter.blur();
+  key(window, doc.body, { key: "k", ctrlKey: true, altKey: true });
+  assert(backdrop.hidden, "Ctrl+Alt+K opened the palette");
+  const event = key(window, doc.body, { key: "k", ctrlKey: true });
+  assert(!backdrop.hidden && event.defaultPrevented, "Ctrl+K did not open the palette, or was not prevented");
+  assert(doc.activeElement === doc.getElementById("okf-palette-input"), "focus did not move into the field");
+});
+
+checkAsync("palette: modal focus, arrows, Enter, Escape and focus return", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const opener = doc.querySelector(".okf-palette-open");
+  opener.focus();
+  opener.click();
+  const input = doc.getElementById("okf-palette-input");
+  const close = doc.querySelector(".okf-palette-close");
+  assert(doc.activeElement === input, "focus is not in the field on open");
+  key(window, input, { key: "Tab" });
+  assert(doc.activeElement === close, "Tab did not move to Close");
+  key(window, close, { key: "Tab" });
+  assert(doc.activeElement === input, "Tab escaped the modal");
+  type(window, input, "o");
+  assert(paletteOptions(window).length > 1, "this case needs several results");
+  assert(paletteOptions(window)[0].getAttribute("aria-selected") === "true", "the first option is not active");
+  key(window, input, { key: "ArrowDown" });
+  const second = paletteOptions(window)[1];
+  assert(second.getAttribute("aria-selected") === "true", "ArrowDown did not move");
+  assert(input.getAttribute("aria-activedescendant") === second.id, "aria-activedescendant not updated");
+  assert(/matching concept/.test(doc.getElementById("okf-palette-status").textContent), "the result count is not announced");
+  let navigated = null;
+  doc.addEventListener("okf:navigate", (e) => { navigated = e.detail.href; e.preventDefault(); });
+  key(window, input, { key: "Enter" });
+  assert(navigated === `${optionId(second)}.html`, `navigated to ${navigated}`);
+  key(window, input, { key: "Escape" });
+  assert(doc.querySelector(".okf-palette-backdrop").hidden, "Escape did not close");
+  assert(doc.activeElement === opener, "focus did not return to the opener");
+});
+
+checkAsync("palette: the active concept survives a narrower query, else the first option is active", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  doc.querySelector(".okf-palette-open").click();
+  const input = doc.getElementById("okf-palette-input");
+  const selected = () => paletteOptions(window).find((o) => o.getAttribute("aria-selected") === "true");
+  type(window, input, "o");
+  const target = paletteOptions(window).map(optionId).indexOf("toString");
+  assert(target > 0, "this case needs toString after the first result");
+  for (let k = 0; k < target; k++) { key(window, input, { key: "ArrowDown" }); }
+  type(window, input, "to");
+  assert(optionId(selected()) === "toString", `active after narrowing: ${optionId(selected())}`);
+  type(window, input, "bro");
+  assert(selected() === paletteOptions(window)[0], "the first option is not active once the active one is filtered out");
+});
+
+checkAsync("palette: ids naming Object.prototype members are found as concepts", async () => {
+  const window = await openPage("index.html");
+  window.document.querySelector(".okf-palette-open").click();
+  type(window, window.document.getElementById("okf-palette-input"), "constructor");
+  assert(optionId(paletteOptions(window)[0]) === "constructor", "constructor is not the first result");
+});
+
+checkAsync("palette: keys typed during IME composition never act on the open palette", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  doc.querySelector(".okf-palette-open").click();
+  const input = doc.getElementById("okf-palette-input");
+  type(window, input, "o");
+  let navigated = false;
+  doc.addEventListener("okf:navigate", (e) => { navigated = true; e.preventDefault(); });
+  key(window, input, { key: "ArrowDown", isComposing: true });
+  assert(paletteOptions(window)[0].getAttribute("aria-selected") === "true", "ArrowDown moved during composition");
+  key(window, input, { key: "Enter", isComposing: true });
+  assert(!navigated, "Enter navigated during composition");
+  key(window, input, { key: "Escape", isComposing: true });
+  assert(!doc.querySelector(".okf-palette-backdrop").hidden, "Escape closed the palette during composition");
+});
+
+checkAsync("palette: the active option is scrolled into view", async () => {
+  const window = await openPage("index.html");
+  // jsdom has no scrollIntoView: a probe records the calls. The visual
+  // result is checked in ACCEPTANCE.md.
+  const calls = [];
+  window.Element.prototype.scrollIntoView = function (options) {
+    calls.push({ id: this.id, block: options && options.block });
+  };
+  const doc = window.document;
+  doc.querySelector(".okf-palette-open").click();
+  const input = doc.getElementById("okf-palette-input");
+  type(window, input, "o");
+  key(window, input, { key: "ArrowDown" });
+  const last = calls[calls.length - 1];
+  assert(last && last.id === "okf-palette-opt-1" && last.block === "nearest", `last scroll: ${JSON.stringify(last)}`);
+});
+
+checkAsync("palette: every match is listed and reachable, with no cap", async () => {
+  const concepts = [];
+  for (let k = 0; k < 60; k++) {
+    const id = `item-${String(k).padStart(2, "0")}`;
+    concepts.push({ id, title: `Item ${k}`, type: "Note", tags: [], path: `${id}.html`, trust: "unverified", staleAfterMs: null, staleAfterDate: null });
+  }
+  const source = `window.OKF_INDEX = ${JSON.stringify({ version: 1, concepts, ghosts: [], edges: [], tree: [] })};`;
+  const window = await openPage("index.html", { override: { "assets/okf-index.js": source } });
+  const doc = window.document;
+  doc.querySelector(".okf-palette-open").click();
+  const input = doc.getElementById("okf-palette-input");
+  type(window, input, "item");
+  assert(paletteOptions(window).length === 60, `listed ${paletteOptions(window).length} of 60`);
+  const status = doc.getElementById("okf-palette-status").textContent;
+  assert(status === "60 matching concepts", `status: ${status}`);
+  key(window, input, { key: "ArrowUp" });
+  const last = paletteOptions(window)[59];
+  assert(optionId(last) === "item-59" && last.getAttribute("aria-selected") === "true", "the 60th match is not reachable");
+});
+
 // --- end of async checks ---
 
 // A pending Promise does not keep Node alive: a case awaiting an event that
