@@ -67,24 +67,31 @@
   // generated id -- URL, history entry and Back/Forward stay native -- and
   // hashchange then moves the focus. Modified clicks (new tab, new window)
   // are left to the browser: the new page resolves the fragment on load.
-  body.addEventListener("click", function (e) {
-    if (e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) { return; }
-    var a = e.target && typeof e.target.closest === "function" ? e.target.closest("a") : null;
-    if (!a || !body.contains(a)) { return; }
-    var href = a.getAttribute("href");
-    if (!href || href.charAt(0) !== "#") { return; }
-    var target = targetOf(href);
-    if (!target) { return; }
-    e.preventDefault();
-    // Compare the resolved elements, not strings: location.hash is
-    // percent-encoded ("#okf-h-caf%C3%A9") while the id is not ("okf-h-café"),
-    // and re-assigning the same fragment fires no hashchange.
-    if (targetOf(window.location.hash) === target) {
-      go(window.location.hash);
-    } else {
-      window.location.hash = target.id;
-    }
-  });
+  // The contents list gets the same handling: its links already carry the
+  // generated id, but a second click on the current one fires no hashchange
+  // either, and must still move the focus to the heading.
+  function followFragments(container) {
+    container.addEventListener("click", function (e) {
+      if (e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) { return; }
+      var a = e.target && typeof e.target.closest === "function" ? e.target.closest("a") : null;
+      if (!a || !container.contains(a)) { return; }
+      var href = a.getAttribute("href");
+      if (!href || href.charAt(0) !== "#") { return; }
+      var target = targetOf(href);
+      if (!target) { return; }
+      e.preventDefault();
+      // Compare the resolved elements, not strings: location.hash is
+      // percent-encoded ("#okf-h-caf%C3%A9") while the id is not ("okf-h-café"),
+      // and re-assigning the same fragment fires no hashchange.
+      if (targetOf(window.location.hash) === target) {
+        go(window.location.hash);
+      } else {
+        window.location.hash = target.id;
+      }
+    });
+  }
+  followFragments(body);
+  if (toc) { followFragments(toc); }
   window.addEventListener("hashchange", function () { go(window.location.hash); });
   if (window.location.hash) { go(window.location.hash); }
 })();

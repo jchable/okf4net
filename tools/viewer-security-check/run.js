@@ -1523,6 +1523,24 @@ checkAsync("clicking an accented fragment link a second time still moves the rea
   assert(doc.activeElement.id === "okf-h-café", `focus after the second click stayed on: ${doc.activeElement.tagName} ${doc.activeElement.id}`);
 });
 
+checkAsync("clicking a contents link a second time still moves the reading focus", async () => {
+  const window = await openPage("foo.html");
+  const doc = window.document;
+  const link = doc.querySelector('#okf-toc a[href="#okf-h-usage-1"]');
+  assert(link, "the contents lost their second Usage entry");
+  const changed = new Promise((resolve) => window.addEventListener("hashchange", resolve, { once: true }));
+  link.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }));
+  await changed;
+  assert(doc.activeElement.id === "okf-h-usage-1", `focus after the first click: ${doc.activeElement.id}`);
+  // Same fragment again: no hashchange fires, so focus must be moved directly.
+  link.focus();
+  link.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }));
+  assert(doc.activeElement.id === "okf-h-usage-1", `focus after the second click stayed on: ${doc.activeElement.tagName} ${doc.activeElement.id}`);
+  const modified = new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0, ctrlKey: true });
+  link.dispatchEvent(modified);
+  assert(!modified.defaultPrevented, "a Ctrl+click on a contents link was taken over instead of left to the browser");
+});
+
 checkAsync("without okf-index.js the page renders, the explorer stays hidden and nothing is clobbered", async () => {
   const window = await openPage("foo.html", { blocked: ["assets/okf-index.js"] });
   const doc = window.document;
