@@ -55,6 +55,12 @@ public static class HtmlWriter
         WriteAsset(outDir, root, verifiedDirs, "viewer.css", ViewerAssets.Css, written);
         WriteAsset(outDir, root, verifiedDirs, "viewer.js", ViewerAssets.ViewerJs, written);
         WriteAsset(outDir, root, verifiedDirs, "marked.min.js", ViewerAssets.MarkedJs, written);
+        WriteAsset(outDir, root, verifiedDirs, "okf-theme.js", ViewerAssets.ThemeJs, written);
+        WriteAsset(outDir, root, verifiedDirs, "okf-site.js", ViewerAssets.SiteJs, written);
+        WriteAsset(outDir, root, verifiedDirs, "okf-explorer.js", ViewerAssets.ExplorerJs, written);
+        WriteAsset(outDir, root, verifiedDirs, "okf-palette.js", ViewerAssets.PaletteJs, written);
+        WriteAsset(outDir, root, verifiedDirs, "okf-toc.js", ViewerAssets.TocJs, written);
+        WriteAsset(outDir, root, verifiedDirs, "okf-index.js", IndexScript.Render(site.Index), written);
 
         WriteFile(outDir, root, verifiedDirs, "index.html", RenderIndex(site), written);
 
@@ -88,7 +94,8 @@ public static class HtmlWriter
     /// concept named <c>Index</c> on a case-sensitive bundle volume, and its
     /// page (<c>Index.html</c>) would overwrite -- or be overwritten by --
     /// this method's own generated <c>index.html</c> on a case-insensitive
-    /// output volume. The three asset files under <c>assets/</c> are left out
+    /// output volume. The asset files under <c>assets/</c> (the static scripts
+    /// and stylesheet, and the generated <c>okf-index.js</c>) are left out
     /// of the set: every generated page path ends in <c>.html</c> and every
     /// asset path ends in <c>.js</c> or <c>.css</c>, so no page can ever
     /// collide with an asset under any string comparer -- adding entries that
@@ -324,9 +331,8 @@ public static class HtmlWriter
         body.Append("<p class=\"meta\">").Append(HtmlEscape(page.Id.ToString())).Append("</p>\n");
         body.Append(RenderFrontmatter(page.Frontmatter));
         body.Append("<div id=\"okf-body\"></div>\n");
-        body.Append(RenderBacklinks(page.Backlinks));
 
-        return RenderShell(page.Title, prefix, body.ToString(), Payload(page));
+        return RenderShell(page.Title, prefix, page.Id.ToString(), body.ToString(), RenderBacklinks(page.Backlinks), Payload(page));
     }
 
     private static string RenderIndex(ViewerSite site)
@@ -355,7 +361,7 @@ public static class HtmlWriter
         // The index's links already point at generated .html paths, so its
         // rewiring table is deliberately empty.
         var payload = BuildPayload(site.IndexMarkdown, "{}");
-        return RenderShell("Bundle index", string.Empty, body.ToString(), payload);
+        return RenderShell("Bundle index", string.Empty, conceptId: null, body.ToString(), aside: string.Empty, payload);
     }
 
     private static string RenderFrontmatter(IReadOnlyList<ViewerFrontmatterEntry> entries)
@@ -382,14 +388,14 @@ public static class HtmlWriter
             return string.Empty;
         }
 
-        var sb = new StringBuilder("<h2>Referenced by</h2>\n<ul>\n");
+        var sb = new StringBuilder("<section class=\"okf-backlinks\" aria-labelledby=\"okf-backlinks-title\">\n<h2 id=\"okf-backlinks-title\">Referenced by</h2>\n<ul>\n");
         foreach (var link in backlinks)
         {
             sb.Append("<li><a href=\"").Append(HtmlEscape(link.Href)).Append("\">")
               .Append(HtmlEscape(link.RawTarget)).Append("</a></li>\n");
         }
 
-        return sb.Append("</ul>\n").ToString();
+        return sb.Append("</ul>\n</section>\n").ToString();
     }
 
     private static string Payload(ViewerPage page)
@@ -424,30 +430,59 @@ public static class HtmlWriter
     private static string BuildPayload(string body, string linksJson)
         => $"{{\"body\":{HtmlSafeJson.Quote(body)},\"links\":{linksJson}}}";
 
-    private static string RenderShell(string title, string rootPrefix, string body, string payload)
-        => $"""
+    /// <summary>
+    /// The page frame shared by concept pages and the index. Its ids and
+    /// attributes are the contract the interactive scripts rely on: the root
+    /// prefix and concept id on <c>&lt;html&gt;</c>, <c>okf-tools</c>,
+    /// <c>okf-explorer</c>, <c>okf-context</c> and <c>okf-toc</c>. The
+    /// interactive scripts run after <c>viewer.js</c>, whose contract does not
+    /// change; <c>okf-theme.js</c> runs in <c>&lt;head&gt;</c> so a stored theme
+    /// applies before the first paint.
+    /// </summary>
+    private static string RenderShell(string title, string rootPrefix, string? conceptId, string body, string aside, string payload)
+    {
+        var conceptAttribute = conceptId is null ? string.Empty : $" data-okf-concept=\"{HtmlEscape(conceptId)}\"";
+        var asideHidden = aside.Length == 0 ? " hidden" : string.Empty;
+        return $"""
         <!doctype html>
-        <html lang="en">
+        <html lang="en" data-okf-root="{rootPrefix}"{conceptAttribute}>
         <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>{HtmlEscape(title)}</title>
+        <script src="{rootPrefix}assets/okf-theme.js"></script>
         <link rel="stylesheet" href="{rootPrefix}assets/viewer.css">
         </head>
         <body>
         <div class="topline"></div>
         <header class="bar"><div class="bar-in">
         <a class="wordmark" href="{rootPrefix}index.html">OKF<sup>§</sup></a>
+        <div class="bar-tools" id="okf-tools"></div>
         </div></header>
+        <div class="okf-layout">
+        <nav class="okf-explorer" id="okf-explorer" aria-label="Explorer" hidden></nav>
         <main>
         {body}</main>
+        <aside class="okf-context" id="okf-context" aria-label="Page context"{asideHidden}>
+        <section class="okf-toc" id="okf-toc" aria-labelledby="okf-toc-title" hidden>
+        <h2 id="okf-toc-title">On this page</h2>
+        <ul></ul>
+        </section>
+        {aside}</aside>
+        </div>
         <script type="application/json" id="okf-payload">{payload}</script>
         <script src="{rootPrefix}assets/marked.min.js"></script>
         <script src="{rootPrefix}assets/viewer.js"></script>
+        <script src="{rootPrefix}assets/okf-index.js"></script>
+        <script src="{rootPrefix}assets/okf-site.js"></script>
+        <script src="{rootPrefix}assets/okf-explorer.js"></script>
+        <script src="{rootPrefix}assets/okf-palette.js"></script>
+        <script src="{rootPrefix}assets/okf-toc.js"></script>
         </body>
         </html>
 
         """;
+    }
 
     /// <summary>
     /// Escapes text interpolated into the generated markup. Bundle content is

@@ -22,6 +22,21 @@ public static class ViewerAssets
     /// <summary>The client bootstrap that renders a page's payload and rewires its links.</summary>
     public static string ViewerJs { get; } = Read("viewer.js");
 
+    /// <summary>Applies the stored theme before first paint and adds the theme toggle (loaded in <c>&lt;head&gt;</c>).</summary>
+    public static string ThemeJs { get; } = Read("okf-theme.js");
+
+    /// <summary>Side-effect-free helpers shared by the interactive scripts (<c>window.OkfSite</c>).</summary>
+    public static string SiteJs { get; } = Read("okf-site.js");
+
+    /// <summary>The tree explorer.</summary>
+    public static string ExplorerJs { get; } = Read("okf-explorer.js");
+
+    /// <summary>The "Jump to" palette.</summary>
+    public static string PaletteJs { get; } = Read("okf-palette.js");
+
+    /// <summary>Heading anchors, the contents list and fragment resolution.</summary>
+    public static string TocJs { get; } = Read("okf-toc.js");
+
     private static string Read(string name)
     {
         var assembly = typeof(ViewerAssets).Assembly;

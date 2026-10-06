@@ -580,12 +580,137 @@ public class HtmlWriterTests
         HtmlWriter.Write(site, dest.Path);
 
         var page = File.ReadAllText(Path.Combine(dest.Path, "evil.html"));
-        // RenderShell always emits exactly three <script> elements (the JSON
-        // payload, marked, viewer.js). A fourth </script> would mean the
-        // body's own literal "</script>" text broke out of the payload
-        // container instead of staying HTML-safe-JSON-escaped inside it.
-        Assert.Equal(3, CountOccurrences(page, "</script>"));
+        // RenderShell always emits exactly nine <script> elements: okf-theme.js
+        // in <head>, then the JSON payload, marked, viewer.js, okf-index.js,
+        // okf-site.js, okf-explorer.js, okf-palette.js and okf-toc.js. A tenth
+        // </script> would mean the body's own literal "</script>" text broke out
+        // of the payload container instead of staying HTML-safe-JSON-escaped
+        // inside it.
+        Assert.Equal(9, CountOccurrences(page, "</script>"));
         Assert.DoesNotContain("<img src=x", page);
+    }
+
+    private static readonly string[] InteractiveScripts =
+        ["okf-theme.js", "okf-site.js", "okf-explorer.js", "okf-palette.js", "okf-toc.js"];
+
+    [Fact]
+    public void Write_emits_the_site_index_script()
+    {
+        using var src = new TempDir();
+        using var dest = new TempDir();
+        var site = SiteModel.Build(SampleBundle(src));
+
+        var written = HtmlWriter.Write(site, dest.Path);
+
+        var script = File.ReadAllText(Path.Combine(dest.Path, "assets", "okf-index.js"));
+        Assert.StartsWith(IndexScript.Prefix, script);
+        Assert.Contains("\"id\":\"tables/users\"", script);
+        Assert.Contains("assets/okf-index.js", written);
+    }
+
+    [Fact]
+    public void Write_emits_the_interactive_scripts()
+    {
+        using var src = new TempDir();
+        using var dest = new TempDir();
+
+        HtmlWriter.Write(SiteModel.Build(SampleBundle(src)), dest.Path);
+
+        foreach (var name in InteractiveScripts)
+        {
+            Assert.True(File.Exists(Path.Combine(dest.Path, "assets", name)), name);
+        }
+    }
+
+    [Fact]
+    public void A_hand_built_site_without_an_index_writes_the_empty_one()
+    {
+        using var src = new TempDir();
+        using var dest = new TempDir();
+        var site = new ViewerSite(src.Path, [], string.Empty, []);
+
+        HtmlWriter.Write(site, dest.Path);
+
+        Assert.Equal(
+            IndexScript.Render(ViewerIndex.Empty),
+            File.ReadAllText(Path.Combine(dest.Path, "assets", "okf-index.js")));
+    }
+
+    [Fact]
+    public void Pages_declare_their_site_root_and_concept()
+    {
+        using var src = new TempDir();
+        using var dest = new TempDir();
+
+        HtmlWriter.Write(SiteModel.Build(SampleBundle(src)), dest.Path);
+
+        var nested = File.ReadAllText(Path.Combine(dest.Path, "tables", "users.html"));
+        Assert.Contains("<html lang=\"en\" data-okf-root=\"../\" data-okf-concept=\"tables/users\">", nested);
+        var root = File.ReadAllText(Path.Combine(dest.Path, "index.html"));
+        Assert.Contains("<html lang=\"en\" data-okf-root=\"\">", root);
+    }
+
+    [Fact]
+    public void A_deeply_nested_page_declares_one_parent_step_per_level()
+    {
+        using var src = new TempDir();
+        using var dest = new TempDir();
+        src.Write("a/b/c/d.md", "---\ntype: Note\ntitle: D\ndescription: d\n---\n");
+
+        HtmlWriter.Write(SiteModel.Build(Bundle.Load(src.Path)), dest.Path);
+
+        var page = File.ReadAllText(Path.Combine(dest.Path, "a", "b", "c", "d.html"));
+        Assert.Contains("data-okf-root=\"../../../\"", page);
+        Assert.Contains("src=\"../../../assets/okf-index.js\"", page);
+    }
+
+    [Fact]
+    public void The_theme_script_loads_in_head_before_the_stylesheet()
+    {
+        using var src = new TempDir();
+        using var dest = new TempDir();
+
+        HtmlWriter.Write(SiteModel.Build(SampleBundle(src)), dest.Path);
+
+        var page = File.ReadAllText(Path.Combine(dest.Path, "tables", "users.html"));
+        var theme = page.IndexOf("assets/okf-theme.js", StringComparison.Ordinal);
+        var css = page.IndexOf("assets/viewer.css", StringComparison.Ordinal);
+        var headEnd = page.IndexOf("</head>", StringComparison.Ordinal);
+        Assert.True(theme >= 0 && theme < css && css < headEnd, "okf-theme.js must run in <head>, before the stylesheet");
+    }
+
+    [Fact]
+    public void Interactive_scripts_run_after_viewer_js_in_a_fixed_order()
+    {
+        using var src = new TempDir();
+        using var dest = new TempDir();
+
+        HtmlWriter.Write(SiteModel.Build(SampleBundle(src)), dest.Path);
+
+        var page = File.ReadAllText(Path.Combine(dest.Path, "tables", "users.html"));
+        var order = new[] { "assets/viewer.js", "assets/okf-index.js", "assets/okf-site.js", "assets/okf-explorer.js", "assets/okf-palette.js", "assets/okf-toc.js" }
+            .Select(s => page.IndexOf(s, StringComparison.Ordinal))
+            .ToList();
+        Assert.DoesNotContain(-1, order);
+        Assert.Equal(order.OrderBy(i => i), order);
+    }
+
+    [Fact]
+    public void Backlinks_live_in_the_page_context_aside_which_is_hidden_without_them()
+    {
+        using var src = new TempDir();
+        using var dest = new TempDir();
+        src.Write("users.md", "---\ntype: Note\ntitle: Users\ndescription: d\n---\nSee [orders](orders.md).\n");
+        src.Write("orders.md", "---\ntype: Note\ntitle: Orders\ndescription: d\n---\nNo links.\n");
+
+        HtmlWriter.Write(SiteModel.Build(Bundle.Load(src.Path)), dest.Path);
+
+        var orders = File.ReadAllText(Path.Combine(dest.Path, "orders.html"));
+        var aside = orders.IndexOf("<aside class=\"okf-context\" id=\"okf-context\" aria-label=\"Page context\">", StringComparison.Ordinal);
+        var backlinks = orders.IndexOf("<h2 id=\"okf-backlinks-title\">Referenced by</h2>", StringComparison.Ordinal);
+        Assert.True(aside >= 0 && backlinks > aside, "backlinks must be rendered inside the visible aside");
+        var users = File.ReadAllText(Path.Combine(dest.Path, "users.html"));
+        Assert.Contains("aria-label=\"Page context\" hidden>", users);
     }
 
     private static int CountOccurrences(string haystack, string needle)
