@@ -65,4 +65,11 @@ public sealed record ViewerSite(
     string BundleRoot,
     IReadOnlyList<ViewerPage> Pages,
     string IndexMarkdown,
-    IReadOnlyList<ViewerParseError> ParseErrors);
+    IReadOnlyList<ViewerParseError> ParseErrors)
+{
+    /// <summary>
+    /// The site index written to <c>assets/okf-index.js</c>.
+    /// <see cref="ViewerIndex.Empty"/> for a site built by hand.
+    /// </summary>
+    public ViewerIndex Index { get; init; } = ViewerIndex.Empty;
+}

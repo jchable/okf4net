@@ -72,16 +72,17 @@ public static class SiteModel
             bundle.Root,
             pages,
             IndexGenerator.BuildIndexText(entries),
-            bundle.ParseErrors.Select(e => new ViewerParseError(e.Path, e.Error)).ToList());
+            bundle.ParseErrors.Select(e => new ViewerParseError(e.Path, e.Error)).ToList())
+        {
+            Index = SiteIndex.Build(bundle),
+        };
     }
 
     private static ViewerPage BuildPage(Bundle bundle, Concept concept)
     {
         var frontmatter = concept.Document.Frontmatter;
 
-        var title = string.IsNullOrWhiteSpace(frontmatter.Title)
-            ? concept.Id.ToString()
-            : frontmatter.Title;
+        var title = DisplayTitle(concept);
 
         var entries = frontmatter.AsMapping().Entries
             .Select(e => new ViewerFrontmatterEntry(
@@ -103,12 +104,22 @@ public static class SiteModel
         return new ViewerPage(
             concept.Id,
             title,
-            concept.Id.ToString() + ".html",
+            PagePath(concept.Id),
             entries,
             concept.Document.Body,
             links,
             backlinks);
     }
+
+    /// <summary>The display title: the frontmatter <c>title</c>, else the concept id.</summary>
+    internal static string DisplayTitle(Concept concept)
+    {
+        var title = concept.Document.Frontmatter.Title;
+        return string.IsNullOrWhiteSpace(title) ? concept.Id.ToString() : title;
+    }
+
+    /// <summary>The generated page's path relative to the site root.</summary>
+    internal static string PagePath(ConceptId id) => id + ".html";
 
     /// <summary>
     /// The <c>#fragment</c> suffix of a raw link target, including the
