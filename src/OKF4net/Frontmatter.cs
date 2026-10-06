@@ -20,10 +20,10 @@ public sealed class Frontmatter : IEquatable<Frontmatter>
     /// document is considered publishable. Note this is *stricter* than spec
     /// conformance (§11), which requires only <c>type</c>.
     /// </summary>
-    public static readonly string[] RequiredKeys = ["type", "title", "description"];
+    public static IReadOnlyList<string> RequiredKeys { get; } = Array.AsReadOnly(["type", "title", "description"]);
 
     /// <summary>The §4.1 recommended keys a well-formed concept is expected to carry, before <see cref="RecommendedFieldsFor"/>'s per-document carve-out.</summary>
-    public static readonly string[] RecommendedFields = ["title", "description", "resource", "tags"];
+    public static IReadOnlyList<string> RecommendedFields { get; } = Array.AsReadOnly(["title", "description", "resource", "tags"]);
 
     /// <summary>
     /// The §4.1 recommended keys <paramref name="frontmatter"/> is expected to
@@ -53,7 +53,7 @@ public sealed class Frontmatter : IEquatable<Frontmatter>
     /// <param name="frontmatter">The document's frontmatter.</param>
     public static IReadOnlyList<string> RecommendedFieldsFor(Frontmatter frontmatter) =>
         frontmatter.IsAttestedComputation && frontmatter.Get("resource") is null
-            ? RecommendedFields.Where(f => f != "resource").ToArray()
+            ? Array.AsReadOnly(RecommendedFields.Where(f => f != "resource").ToArray())
             : RecommendedFields;
 
     /// <summary>Well-known OKF fields excluded from <see cref="ExtensionKeys"/>.</summary>

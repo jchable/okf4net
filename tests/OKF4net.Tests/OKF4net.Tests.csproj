@@ -32,4 +32,14 @@
     <ProjectReference Include="..\..\src\OKF4net.Viewer\OKF4net.Viewer.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!--
+      Built, never referenced: Yaml/YamlHostileInputTests.cs runs it as a child
+      process (dotnet YamlHostileProbe.dll <case>), so a stack overflow in the
+      parser kills the probe and not the test host. This reference only makes
+      every build of the tests build the probe first, in the same configuration.
+    -->
+    <ProjectReference Include="..\YamlHostileProbe\YamlHostileProbe.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
 </Project>

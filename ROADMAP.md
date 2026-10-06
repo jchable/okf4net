@@ -50,82 +50,59 @@ are the concrete entry points.
     extension (`digest`, `scope`, `note` on the stamp) is planned to
     recreate this information inside the bundle instead — that question is
     answered by git, on purpose.
-- **Atomic write-then-rename in `BundleConceptWriter`.** Every write path
-  in the class ends at `File.WriteAllText`, which truncates the target and
-  writes in place, so a failure mid-write (full disk, device error) can
-  leave a concept truncated or half-written. `RecordVerifications` reports
-  the concepts whose write returned, and that file is not among them — so
-  the report is not wrong, but "exactly what landed" is a stronger claim
-  than the primitive supports, and the docs now say so. Closing it means
-  writing to a temporary file in the same directory and `File.Replace`-ing
-  it over the target. Deliberately its own pass rather than a footnote to
-  `okf verify`: the call sits immediately after the late reparse-point
-  re-check and inside the per-bundle lock, so a replacement needs tests for
-  `File.Replace` semantics (cross-volume, existing-file, permissions,
-  what happens to the backup), for the path-safety guard still holding
-  against the *temporary* name, and for the lock — a security-sensitive
-  seam that must not be swapped in passing. Pre-existing and shared by
-  every write path; not introduced by verification.
-  One thing in its favour, measured rather than assumed: every write path in
-  the class funnels through the single `WriteValidatedContentLocked`, whose
-  `File.WriteAllText` is the only line that touches disk. The change is
-  therefore contained to one method — it is the *interaction* with the late
-  reparse-point re-check and the lock that needs the tests, not a scattered
-  edit.
-- **Resolve the bundle root before keying the write lock.**
-  `BundleConceptWriter`'s process-wide lock registry is keyed by
-  `ReparsePoints.CanonicalizeRoot`, which is `Path.GetFullPath` plus a
-  trailing-separator trim — purely lexical. A junction or symlink
-  `alias` -> `actual` therefore yields two distinct locks over one set of
-  files, so two writers in the same process can interleave their
-  read-modify-write cycles and lose a stamp. Shown with `mklink /J`: the two
-  lock objects are not reference-equal. Fixing it means following reparse
-  points on the root, which touches the same seam `ValidateConceptTarget`
-  guards, so it needs its own tests (junction, symlink, a root whose parent
-  is a reparse point, and the cross-platform behaviour of
-  `Directory.ResolveLinkTarget`). Pre-existing and shared by every write
-  path, but verification raises the stakes: it is the first operation to hold
-  that lock across a batch of files. The lock is in-process only either way —
-  a second `okf` process was never serialized against, and that limit is
-  already documented on the class. Tracked as
-  [#86](https://github.com/jchable/okf4net/issues/86), which carries the
-  reproduction.
-  **The design question comes before the fix, and it is bigger than the title
-  suggests.** `CanonicalizeRoot` has thirteen call sites across three projects
-  — `OKF4net` (`Bundle`, `IndexGenerator`, `BundleConceptWriter` and
-  `ReparsePoints` itself), `OKF4net.Catalog` (`CatalogPathResolver`,
-  `FileMemoryStore`) and `OKF4net.Viewer` (`HtmlWriter`) — and three of
-  them are the path-safety guards themselves, `IsWithinBundleRoot` and the
-  2-arg `HasReparsePointAncestor` and its strict twin
-  `HasReparsePointOrUninspectableAncestor`. Making it resolve reparse points would therefore
-  change what "inside the bundle" means everywhere, which is a security change
-  with a repo-wide blast radius, not a lock fix. The narrower alternative is to
-  leave `CanonicalizeRoot` lexical and give the lock registry its own resolved
-  key, so only the serialization contract moves. Deciding between those two —
-  and saying what each does when resolution fails, or when the target does not
-  exist — is the actual work; the code after it is small.
-- **Reconcile the YAML depth counters between the parser and the emitter.**
-  `YamlParser` enforces its 1000-level cap with TWO independent counters (one
-  for block nesting, one for flow); `YamlEmitter` has a single counter covering
-  both. A frontmatter mixing the two — roughly 450 block levels with 900 flow
-  levels — therefore parses happily and then cannot be re-emitted, breaking the
-  invariant a format library owes its callers: whatever it can read, it can
-  write back. Only the *symptom* was addressed alongside `okf verify`: the
-  emitter now raises a catchable `YamlEmitException` instead of a bare
-  `InvalidOperationException`, so the failure is errors-as-data on every path
-  rather than a stack trace out of the CLI or a fault in an MCP host. The
-  asymmetry itself is untouched, deliberately: making the two agree changes what
-  the library ACCEPTS, on the read path, which is a compatibility decision with
-  its own tests (what a bundle in the wild may already contain) and not a
-  footnote to a write feature. Pre-existing; reachable from any caller that
-  parses a hostile-but-loadable document.
-- **A typed `OkfDocumentBuilder` method for the shared `usage_window`.** The
-  builder can now write a *per-entry* §5.1 override (`AddSource(…,
-  usageWindow:)`), but the shared, top-level `usage_window` — §5.1's normal
-  case, the one that frames every `usage_count` in a document — has no typed
-  setter: a producer must hand-build its `{ from, to }` mapping and pass it
-  through `Extension("usage_window", …)`. The builder currently makes the
-  exception easier to write than the rule.
+- **Atomic write-then-rename in `BundleConceptWriter`: its own design lot.**
+  Every write path in the class funnels through the single
+  `WriteValidatedContentLocked`, whose `File.WriteAllText` truncates the target
+  and writes in place, so a failure mid-write (full disk, device error) can
+  leave a concept truncated or half-written. `RecordVerifications` reports the
+  concepts whose write returned, and that file is not among them, so the
+  report is not wrong, but "exactly what landed" is stronger than the
+  primitive supports. Writing a temporary beside the target and renaming it
+  over is the obvious shape; an external review of the first design (kept out
+  of the write-path hardening lot for that reason) found that the obvious
+  shape is not safe as sketched, and the design starts from these findings:
+  - **The commit protocol must separate failures that happened before the
+    commit from indeterminate ones.** Windows `ReplaceFile` can fail with
+    `ERROR_UNABLE_TO_MOVE_REPLACEMENT` (1176) and, when no backup file is
+    given, leave no file at the target and the replacement under its temporary
+    name. Deleting the temporary on every exception would then lose both
+    versions, so a pre-commit failure may clean up, an indeterminate one must
+    keep the recoverable artifacts.
+  - **The temporary must be created with restrictive permissions before any
+    content is written.** A POSIX create at `0644` under umask 022 exposed the
+    content of a `0600` target, and a `chmod` by path afterwards can follow a
+    link substituted in the meantime. On Windows, the ACL the temporary
+    inherits at creation has to be considered too, not assumed to match the
+    target's.
+  - **`File.Move(overwrite: false)` is not a no-clobber primitive on Unix.**
+    It is an `lstat` followed by a `rename`, so it is not race-proof, and it
+    can fall back to copying.
+  - **The durability promise has to be stated:** surviving a process crash is
+    not surviving power loss, and the latter needs the file flushed and, on
+    POSIX, the directory fsynced.
+  - **Orphaned temporaries are ignored as concepts but not harmless.** They
+    can block the producer's `RequireEmpty` and its pruning.
+
+  Still to be done beside the commit protocol: tests for the path-safety guard
+  holding against the *temporary* name, and for the per-bundle lock, since the
+  write sits immediately after the late reparse-point re-check inside it — a
+  security-sensitive seam that must not be swapped in passing. Pre-existing and
+  shared by every write path; not introduced by verification.
+- **`YamlValue.GetHashCode` (and likely `Equals`) recurse without a bound.**
+  The parser caps a parsed value's nesting at 1000, but a value built in code
+  is not capped: one deeper than 1000 overflowed the test host's stack when
+  hashed. The depth rule now shared by the parser and the emitter does not
+  reach these two members; they need the same bound, or an iterative walk.
+- **A cancelled computation can leave its container behind
+  ([#110](https://github.com/jchable/okf4net/issues/110)).** Cancelling or
+  timing out while Docker is still creating the container leaves it in
+  `Created` state: `kill` on an unstarted container is a no-op and `--rm` only
+  fires for one that ran. The issue's suggested `docker rm -f` is the obvious
+  half; the other half is the container's lifecycle (what owns the name, who
+  tears down when the client process is killed first), which needs a design
+  before the fix — and it is the likely cause of the flaky
+  `Cancellation_kills_the_container_and_propagates_as_OperationCanceledException`
+  integration test.
 - More `OKF4net.Agents` samples with Microsoft Agent Framework — the first,
   `samples/acme-retail-agent`, shipped in 0.4.0, and
   `samples/agents-quickstart` (no model or API key needed) followed; more

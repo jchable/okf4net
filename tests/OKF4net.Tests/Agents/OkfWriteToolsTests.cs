@@ -834,7 +834,7 @@ public class OkfWriteToolsTests
 
     // Mirrors WriteConcept_late_reparse_recheck_catches_a_substitution_planted_after_the_early_check
     // for AppendLog's own late re-check (added for TOCTOU-guard parity with
-    // WriteConcept). AppendLog's early check runs before _bundleLock is
+    // WriteConcept). AppendLog's early check runs before the write lock is
     // acquired, and in this test log.md does not exist yet at that point, so
     // the early check has nothing to reject. The BeforeLateReparseCheckForTest
     // hook then plants a file symlink at log.md, pointing at an external
@@ -859,7 +859,7 @@ public class OkfWriteToolsTests
 
         tools.BeforeLateReparseCheckForTest = () =>
         {
-            // log.md did not exist when the early check (before _bundleLock)
+            // log.md did not exist when the early check (before the write lock)
             // ran, so it had nothing to reject. Plant a file symlink at
             // log.md right before the late re-check runs, simulating a
             // concurrent local substitution landing in that narrow window.
@@ -876,7 +876,7 @@ public class OkfWriteToolsTests
     [Fact]
     public void AppendLog_concurrent_calls_same_day_lose_no_entries()
     {
-        // Proves the _bundleLock serialization around AppendLog's
+        // Proves the write-lock serialization around AppendLog's
         // read-modify-write: without it, two threads could both read the
         // same "before" log.md, each append their own entry to their own
         // in-memory copy, and whichever writes last would silently clobber

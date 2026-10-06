@@ -71,9 +71,9 @@ public class OkfBundleToolsTests
     /// (without <see cref="Path.TrimEndingDirectorySeparator(string)"/>) would
     /// treat them as two different keys, silently defeating the per-path
     /// write lock the registry's own doc comment claims two such instances
-    /// share. Reflection is used only to read the private <c>_bundleLock</c>
-    /// instance field for the assertion -- the fix itself is a one-line
-    /// normalization in the constructor, not a public API change.
+    /// share. Reflection is used only to read the private <c>_writer</c>
+    /// instance field, whose <see cref="BundleConceptWriter.CurrentLockObjectForTest"/>
+    /// names the registry object the tool set's write lock resolves to.
     /// </summary>
     [Fact]
     public void Trailing_separator_spelling_of_the_same_bundle_root_shares_the_same_lock()
@@ -87,9 +87,9 @@ public class OkfBundleToolsTests
             : tmp.Path + Path.DirectorySeparatorChar;
         var toolsB = new OkfBundleTools(trailingSpelling);
 
-        var lockField = typeof(OkfBundleTools).GetField("_bundleLock", BindingFlags.NonPublic | BindingFlags.Instance)!;
-        var lockA = lockField.GetValue(toolsA);
-        var lockB = lockField.GetValue(toolsB);
+        var writerField = typeof(OkfBundleTools).GetField("_writer", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var lockA = ((BundleConceptWriter)writerField.GetValue(toolsA)!).CurrentLockObjectForTest();
+        var lockB = ((BundleConceptWriter)writerField.GetValue(toolsB)!).CurrentLockObjectForTest();
 
         Assert.NotNull(lockA);
         Assert.Same(lockA, lockB);

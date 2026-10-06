@@ -17,6 +17,16 @@ and this project adheres to
   a scripted `IChatClient` standing in for the model, so the Agent Framework's
   real tool-calling pipeline executes the tools. Standalone solution, not part
   of `OKF4net.sln`/CI; it never writes to the bundle.
+- **`OkfDocumentBuilder.SharedUsageWindow(UsageWindow)` (§5.1).** A typed setter
+  for the shared, top-level `usage_window` — the period every entry's
+  `usage_count` is counted over, written once as a sibling of `sources`. The
+  builder could already write a per-entry override (`AddSource(…, usageWindow:)`),
+  but the shared window, §5.1's normal case, had to be hand-built and passed
+  through `Extension("usage_window", …)`. It is written right after `sources`
+  (also when no source was added), a window with no bounds stays the empty
+  mapping `usage_window: {}`, and an `Extension("usage_window", …)` call still
+  wins as before. A per-entry override and the shared window now share one
+  internal serialization, so they cannot drift.
 
 ### Changed
 
@@ -33,10 +43,81 @@ and this project adheres to
   still fails, so a script passing an empty variable as the bundle is still
   caught. A script that relied on a bare `okf` failing must now check its own
   arguments.
+- **Breaking (0.x): `Frontmatter.RequiredKeys` and `Frontmatter.RecommendedFields`
+  are now read-only `IReadOnlyList<string>` properties (#113).** They were
+  mutable `public static readonly string[]` fields in 0.6.0, so any caller could
+  assign an element and change what every document validates against.
+  Binary-breaking (compiled field references do not bind to properties).
+  Source-breaking for `.Length` (use `.Count`), array-specific operations,
+  element assignment, passing them where a `string[]` is required, and
+  reflection on them as fields. `Frontmatter.RecommendedFieldsFor` keeps its
+  signature and now returns a read-only list on both of its branches.
+- **Breaking (0.x):** the YAML subset's nesting limit is one rule for block and
+  flow, reader and writer: at most 1000 nested collections, the root and empty
+  collections included. Block-only documents nested 501–1000 deep, which the
+  parser used to reject, are now accepted; documents mixing block and flow
+  deeper than 1000 in total, which used to load, are now rejected (they could
+  not be written back); values nested 1001 deep, which the emitter used to
+  write, are now refused. Real frontmatter is a handful of levels deep. On a
+  thread with too little stack left, a document or value within the limit is
+  refused with `nesting depth limit exceeded: not enough stack left on this
+  thread`, where it would otherwise have crashed the process.
 
 ### Fixed
 
-All five entries are in `okfgen` (`producers/OkfProducer`, not published, outside
+- **A junction or symlink to a bundle now shares the bundle's write lock
+  (#86).** `BundleConceptWriter` keyed its process-wide lock on the root's
+  lexical full path, so a writer over `alias` (a junction to `actual`) and a
+  writer over `actual` took two different locks over one set of files, and two
+  writers in one process could interleave their read-modify-write cycles
+  through the alias and lose an update. The key is now the root resolved
+  through every junction or symlink on its path, including one above the
+  bundle and one that only a first resolution reveals, with `\\?\C:\…` and
+  `\\?\UNC\…` spellings folded onto `C:\…` and `\\server\…`. It is resolved
+  each time the lock is taken for an operation, not when the writer is built,
+  so two writers built on opposite sides of a topology change (a missing
+  directory later replaced by a junction) still serialize. A nested
+  acquisition on the same thread keeps the object the operation started
+  with: a topology change during an operation is not followed. An additional
+  stable gate serializes operations over an identical namespace-normalized
+  lexical root even when its resolved key changes; a waiting alias releases
+  that gate before waiting for the resolved monitor, so the current owner
+  can re-enter through it. A thread that already holds a write lock never
+  waits for a gate, so a nested call through another alias cannot hang on
+  one: it only tries the gate and, if it is busy, takes the resolved
+  monitor alone. The gate does not cover every case: ordinary contention
+  on a root (no topology change needed) can make it busy, and such a nested
+  acquisition then holds no gate for its whole operation; if the root's
+  resolution changes while it runs, another writer on the same lexical root
+  can overlap it. Releasing the gate before the monitor, and retrying it
+  once (without blocking) after resolving, narrow this but do not close
+  it. Held-root lookup is case-sensitive: distinct aliases such as A and a
+  cannot substitute each other's resolved lock.
+  Different aliases may still diverge if topology changes while an operation
+  is active; the lock does not pin filesystem targets. Nested calls over
+  different resolved bundles need a consistent caller lock order over the
+  registry's case-folded keys (`Foo` and `foo` on a case-sensitive volume
+  count as one). A link on the path retargeted during an operation, even
+  one every alias follows, splits the bundle in two for that purpose:
+  aliases of it nested in opposite order can then deadlock between their
+  resolved monitors. When the
+  root cannot be resolved (an entry that cannot be inspected, a link target
+  that cannot be read), the key falls back to the lexical path, as before.
+  Still in-process only: a second process writing the same bundle is not
+  serialized against.
+
+- **A verification refusal no longer names an unchanged or the wrong key
+  (#115).** When the in-place `verified` edit fails its round-trip check,
+  `BundleConceptWriter` names a frontmatter key only when exactly one entry
+  differs and it is a value change; a changed count, two or more differences, or
+  an inserted key that shifts its neighbours now gives the unlocated "changed
+  outside the verified block" message instead of the first positional mismatch.
+  Duplicate `verified` entries, which the YAML mapping keeps, are compared in
+  order and with multiplicity, so adding, dropping or altering one is reported
+  as a `verified` divergence rather than a change outside it. A NaN used as a
+  mapping key now gets the NaN-specific message, as a NaN value already did.
+
+The five entries below are in `okfgen` (`producers/OkfProducer`, not published, outside
 CI): they came from the follow-up wave of the post-audit work and were verified by
 running `dotnet test producers/OkfProducer.sln` locally, on Windows and in a Linux
 container.

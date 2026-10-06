@@ -17,6 +17,7 @@ public sealed class OkfDocumentBuilder
     private string? _resource;
     private readonly List<string> _tags = [];
     private readonly List<Source> _sources = [];
+    private UsageWindow? _sharedUsageWindow;
     private readonly YamlMapping _extensions = new();
     private string? _body;
 
@@ -100,6 +101,19 @@ public sealed class OkfDocumentBuilder
     }
 
     /// <summary>
+    /// Sets (overwriting any previous value) the shared, top-level §5.1 <c>usage_window</c> — the
+    /// period every entry's <c>usage_count</c> is counted over, written once as a sibling of
+    /// <c>sources</c>. An entry's own <c>usageWindow</c> (see <see cref="AddSource"/>) overrides it.
+    /// A window with no bounds is kept as the empty mapping <c>usage_window: {}</c>, not dropped;
+    /// the window is written even when no source was added.
+    /// </summary>
+    public OkfDocumentBuilder SharedUsageWindow(UsageWindow window)
+    {
+        _sharedUsageWindow = window;
+        return this;
+    }
+
+    /// <summary>
     /// Sets an arbitrary frontmatter key — a producer-defined extension key, or (with no collision
     /// guard) one of the well-known keys also covered by a typed method above. See <see cref="Build"/>'s
     /// remarks for the resulting key order and what a collision resolves to.
@@ -125,11 +139,11 @@ public sealed class OkfDocumentBuilder
     /// may be called more than once on the same builder; each call returns a fresh document
     /// reflecting the builder's current state at that moment. Does not validate.
     ///
-    /// Key order is fixed, not call order: <c>type, title, description, resource, tags, sources</c>
+    /// Key order is fixed, not call order: <c>type, title, description, resource, tags, sources, usage_window</c>
     /// (the subset of <see cref="Frontmatter.KnownKeys"/>'s own order this builder covers — only
     /// present when the corresponding field was set, except <c>type</c> which is always present),
     /// followed by any <see cref="Extension"/> keys in their own call order. Because
-    /// <see cref="Extension"/> is always applied after the six well-known keys, an
+    /// <see cref="Extension"/> is always applied after the seven well-known keys, an
     /// <see cref="Extension"/> call targeting one of them (e.g. <c>Extension("tags", ...)</c>) always
     /// wins over the corresponding typed setter's value, regardless of the two calls' order in the
     /// fluent chain — a deliberate simplification (fixed application order, not call-order tracking),
@@ -174,6 +188,11 @@ public sealed class OkfDocumentBuilder
         if (_sources.Count > 0)
         {
             map.Insert("sources", Provenance.ToYaml(_sources));
+        }
+
+        if (_sharedUsageWindow is { } sharedWindow)
+        {
+            map.Insert("usage_window", Provenance.UsageWindowToYaml(sharedWindow));
         }
 
         foreach (var (key, value) in _extensions.Entries)

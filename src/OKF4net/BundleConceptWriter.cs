@@ -126,7 +126,7 @@ internal readonly record struct VerificationTargetProblem(VerificationTargetProb
 /// atomic read-modify-write append-to-concept, over a single bundle root.
 /// Promoted verbatim from <c>OKF4net.Agents.OkfBundleTools</c> so both that
 /// type and <c>OKF4net.Catalog.FileMemoryStore</c> share one write path and one
-/// process-wide per-path lock registry (no duplicate lock registry, no divergent
+/// process-wide per-bundle lock registry (no duplicate lock registry, no divergent
 /// second write path). Never throws for an expected error — I/O, YAML,
 /// validation, and reparse-point rejections are returned as an
 /// <c>Error: ...</c> result string.
@@ -134,68 +134,54 @@ internal readonly record struct VerificationTargetProblem(VerificationTargetProb
 public sealed class BundleConceptWriter
 {
     /// <summary>
-    /// Process-wide registry of one lock object per canonicalized bundle
-    /// root, keyed by <see cref="ReparsePoints.CanonicalizeRoot"/> of the
-    /// bundle root -- the SAME canonical form <see cref="ReparsePoints.IsWithinBundleRoot"/>
-    /// and <see cref="ReparsePoints.HasReparsePointAncestor(string, string)"/>
-    /// resolve to, so two different
-    /// spellings of the same directory (e.g. a trailing separator, or a
-    /// relative vs. absolute path) still share one lock. Those examples are
-    /// LEXICAL, and that is the exact bound: <see cref="ReparsePoints.CanonicalizeRoot"/>
-    /// does not follow a reparse point, so a junction or symlink pointing at
-    /// the same directory gets its OWN lock and is not serialized against --
-    /// see the constructor's comment and the ROADMAP entry. Every
-    /// <see cref="BundleConceptWriter"/> instance constructed over the same
-    /// bundle path -- not just the same instance -- ends up sharing the
-    /// same lock object via <see cref="ConcurrentDictionary{TKey,TValue}.GetOrAdd(TKey,Func{TKey,TValue})"/>
-    /// in the constructor: a per-INSTANCE lock (the previous design) left
-    /// two separate instances pointed at the
-    /// same bundle directory free to race each other's
-    /// <see cref="AppendToConceptAtomic"/>/<see cref="WriteConcept(string, string, string)"/> calls,
-    /// even though each instance's OWN calls were already serialized against
-    /// themselves. <see cref="StringComparer.OrdinalIgnoreCase"/> is
-    /// deliberate: two case-variant spellings of the same physical bundle
-    /// directory must coalesce onto one lock object, or each spelling gets
-    /// its own lock and two writers pointed at the same physical directory
-    /// could still race each other's writes -- the exact bug this registry
-    /// exists to prevent. The two failure directions are asymmetric:
-    /// over-coalescing (two spellings that happen to be genuinely different
-    /// directories on a case-sensitive volume sharing a lock anyway) only
-    /// costs them a little unnecessary serialization against each other,
-    /// while under-coalescing reopens the race -- <c>OrdinalIgnoreCase</c>
-    /// picks the harmless side. The registry grows by one small object
-    /// per distinct bundle path for the process's lifetime -- bounded in
-    /// practice by how many distinct bundle directories a process ever
-    /// opens, and never removed (there is no matching "last instance for
-    /// this path went away" signal to remove it on). Evicting correctly would
-    /// need reference counting, since a lock must never be evicted while it is
-    /// held -- disproportionate for one small object per root. That makes the
-    /// bound a HOST CONSTRAINT rather than an implementation detail: a service
-    /// that maps untrusted input to bundle roots (a multi-tenant server opening
-    /// a root per request, say) must bound the number of distinct roots
-    /// upstream, or the registry grows with the input.
+    /// One monitor per resolved bundle root, shared across writers and aliases.
+    /// Resolution happens at each outermost acquisition, through
+    /// <see cref="ReparsePoints.ResolveLockKey"/>; failures use the normalized
+    /// lexical path. Case-insensitive registry keys deliberately over-serialize
+    /// case-distinct paths rather than split ordinary case-variant spellings.
+    /// <see cref="LexicalLocks"/> additionally keeps operations on the same
+    /// lexical root serialized when resolution changes between acquisitions.
     /// </summary>
+    /// <remarks>
+    /// Both registries live for the process's lifetime: one entry per lexical
+    /// root and one per resolved key ever observed, including new targets of a
+    /// retargeted link. Hosts accepting untrusted bundle roots must bound those
+    /// distinct roots and targets upstream. Entries cannot simply be evicted
+    /// while writers may still be using their monitors.
+    /// </remarks>
     private static readonly ConcurrentDictionary<string, object> BundleLocks = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Guards every write this class performs to disk. Callers may invoke
-    /// write methods concurrently from multiple threads; the same lock also
-    /// lets a co-located caller (e.g. <c>OkfBundleTools.AppendLog</c>/
-    /// <c>RegenerateIndexes</c>/cache access) serialize its own
-    /// read-modify-write sequences against this writer's writes via
-    /// <see cref="WriteLock"/>.
-    ///
-    /// Obtained from the process-wide <see cref="BundleLocks"/> registry, so
-    /// this guarantee extends to every <see cref="BundleConceptWriter"/>
-    /// instance constructed over the same canonicalized bundle root -- not
-    /// just calls on THIS instance. It does NOT serialize writes across
-    /// separate processes (e.g. two CLI invocations, or two server processes
-    /// sharing a network path), and a C# lock cannot defend against a
-    /// concurrent external actor mutating the bundle's files directly on
-    /// disk -- see <see cref="ValidateConceptTarget"/>'s remarks for that
-    /// separate, residual TOCTOU limitation.
+    /// Stable gates for identical namespace-normalized lexical roots (ordinal).
+    /// Case-distinct aliases must not create extra dependencies between otherwise
+    /// independent resolved bundles. An operation normally holds
+    /// its gate and its resolved monitor together, preserving same-root
+    /// serialization across topology changes. A contended resolved monitor is
+    /// waited for WITHOUT this gate, so its owner can re-enter through an alias.
+    /// A thread already holding a write lock only TRIES a gate and, when it is
+    /// busy, holds the resolved monitor alone for its whole operation (see
+    /// <see cref="EnterWriteLock"/>'s remarks for what that costs).
     /// </summary>
-    private readonly object _bundleLock;
+    private static readonly ConcurrentDictionary<string, object> LexicalLocks = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The current thread's held locks, keyed ORDINALly by normalized lexical
+    /// root. Unlike registry over-coalescing, conflating two case-distinct
+    /// aliases here can substitute another bundle's resolved monitor. Each
+    /// nested acquisition of the same root re-enters what it holds (its gate
+    /// only if one was taken) without
+    /// following topology changes. Scopes are thread-affine.
+    /// </summary>
+    [ThreadStatic]
+    private static Dictionary<string, HeldLock>? t_heldLocks;
+
+    /// <summary>
+    /// <see cref="BundleRoot"/> through <see cref="ReparsePoints.CanonicalizeRoot"/>,
+    /// with Windows namespace forms normalized, computed once: the key of
+    /// <see cref="t_heldLocks"/>, and the starting
+    /// point <see cref="ReparsePoints.ResolveLockKey"/> resolves from.
+    /// </summary>
+    private readonly string _lexicalRoot;
 
     private readonly Action? _onWriteCommitted;
 
@@ -236,42 +222,293 @@ public sealed class BundleConceptWriter
         BundleRoot = bundleRoot;
         _onWriteCommitted = onWriteCommitted;
 
-        // Canonicalize BEFORE looking up the shared lock so two LEXICAL
-        // spellings of the same bundle directory (e.g. with/without a
-        // trailing separator) still resolve to the same registry entry --
-        // the same canonicalization ReparsePoints.IsWithinBundleRoot and
-        // ReparsePoints.HasReparsePointAncestor use for their own root (see
-        // ReparsePoints.CanonicalizeRoot's remarks); otherwise those two
-        // spellings would land in different registry entries and defeat the
-        // very serialization this lock exists to provide (F3).
-        //
-        // LEXICAL is the operative word, and an external review had to show it:
-        // CanonicalizeRoot is Path.GetFullPath plus a trailing-separator trim,
-        // so it does NOT follow a reparse point. A junction `alias` -> `actual`
-        // is exactly "two spellings of the same bundle directory", and it lands
-        // in two registry entries -- two writers, two locks, one set of files,
-        // no serialization at all. Demonstrated with mklink /J: the two lock
-        // objects are not reference-equal. Resolving the root properly means
-        // walking and following reparse points, which is the same
-        // security-sensitive seam ValidateConceptTarget guards and deserves its
-        // own pass (see ROADMAP). Until then the guarantee is: same lexical
-        // root, one lock; aliased root, none -- which is a narrower promise
-        // than this comment used to make, and the narrower one is the true one.
-        var canonicalRoot = ReparsePoints.CanonicalizeRoot(bundleRoot);
-        _bundleLock = BundleLocks.GetOrAdd(canonicalRoot, static _ => new object());
+        // Only the LEXICAL form is computed here (and an invalid path still
+        // throws here, as before). The write lock's registry key is NOT: it
+        // is resolved through reparse points each time a thread takes the
+        // lock (EnterWriteLock), because the topology can change after
+        // construction -- a writer built over `later/bundle` while `later` did
+        // not exist must still meet a writer over the junction target once
+        // `later` becomes a junction (#86).
+        _lexicalRoot = ReparsePoints.NormalizeNamespaceForLockKey(ReparsePoints.CanonicalizeRoot(bundleRoot));
     }
 
     /// <summary>The bundle root, as passed to the constructor.</summary>
     public string BundleRoot { get; }
 
     /// <summary>
-    /// The shared per-path lock object for this bundle root, obtained from the
-    /// process-wide registry keyed by the canonicalized root. Exposed so a
-    /// co-located caller (<c>OkfBundleTools.AppendLog</c>/<c>RegenerateIndexes</c>/
-    /// cache access) can serialize its own read-modify-write sequences against
+    /// Enters this bundle's write lock and returns a scope whose
+    /// <see cref="WriteLockScope.Dispose"/> exits it. Every write this class
+    /// performs runs inside one, and a co-located caller
+    /// (<c>OkfBundleTools.AppendLog</c>/<c>RegenerateIndexes</c>/cache access)
+    /// takes one to serialize its own read-modify-write sequences against
     /// this writer's writes.
     /// </summary>
-    internal object WriteLock => _bundleLock;
+    /// <remarks>
+    /// <para>
+    /// The guarantee, exactly: writers in one process serialize when, at the
+    /// moment they take the lock, their roots resolve to the same directory
+    /// (<see cref="ReparsePoints.ResolveLockKey"/>). A junction or symlink to
+    /// the bundle, or to one of its ancestors, is such an alias and shares the
+    /// lock. If resolution fails, the key falls back to the lexical root, so
+    /// the lock is then shared only by spellings of the same lexical path. A
+    /// topology change DURING an operation is not followed: the outermost
+    /// acquisition on a thread resolves the root, and every nested acquisition
+    /// on that thread for the same writer root re-enters the object it already
+    /// holds (<see cref="Monitor"/> is re-entrant) without resolving again, for
+    /// the whole operation. A stable lexical gate also prevents another thread
+    /// using the same lexical root from overlapping it, even if resolution
+    /// changes, with one exception: a thread that already holds a write lock
+    /// never waits for a gate (that wait could close a cycle with the gate's
+    /// owner, who may come to need a gate this thread holds). It only tries
+    /// the gate, retries it once (still without blocking) after resolving the
+    /// root, and, when the gate is still busy, takes the resolved monitor alone.
+    /// Ordinary contention on that root makes the gate busy, with no topology
+    /// change (an outermost writer between taking the gate and taking its
+    /// monitor, for instance). Such a NESTED acquisition then holds no gate
+    /// for its whole operation, and if the root's resolution changes while it
+    /// runs, another writer on the same lexical root resolves the new target,
+    /// takes a different monitor and overlaps it. A scope releases its gate
+    /// before its monitor, so a nested waiter woken by that release usually
+    /// finds the gate free, and the retry catches a gate released while the
+    /// root was being resolved; these narrow the case but do not close it.
+    /// Different aliases can still diverge if topology changes during an
+    /// active operation; no filesystem handles pin its target.
+    /// </para>
+    /// <para>
+    /// Deadlock: no wait cycle passes through a lexical gate, because only a
+    /// thread holding no write lock ever waits for one. Every other wait is
+    /// for a resolved monitor, made without that root's gate. Nested calls
+    /// over different resolved bundles therefore need a consistent caller lock
+    /// order, and that order is over the registry's keys, which are
+    /// CASE-FOLDED: two case-distinct bundles (<c>Foo</c> and <c>foo</c> on a
+    /// case-sensitive volume) share one monitor and count as one bundle for
+    /// ordering, so <c>Foo &lt; Bar &lt; foo</c> is not a consistent order.
+    /// Because an operation keeps the monitor it resolved first, a link on the
+    /// path retargeted during an operation -- even one that every alias
+    /// follows, so the aliases always agree with each other -- splits one
+    /// bundle into two for this purpose: aliases of it nested in opposite
+    /// order can then still deadlock between their resolved monitors (never
+    /// through a gate).
+    /// </para>
+    /// <para>
+    /// Contention: the root is resolved (filesystem I/O) while the gate is
+    /// held (except on the busy-gate nested path above), and a waiter through
+    /// an alias, woken when the resolved monitor is released, must take the
+    /// gate and resolve again before it can enter.
+    /// The retry loop is unbounded but never busy-spins (each iteration waits
+    /// for the monitor); under constant contention, or a topology that keeps
+    /// changing, an alias waiter can be starved.
+    /// </para>
+    /// <para>
+    /// Still in-process only: nothing here serializes a
+    /// second process writing the same bundle, and a C# lock cannot stop an
+    /// external actor mutating the bundle's files on disk -- see
+    /// <see cref="ValidateConceptTarget"/>'s remarks for that separate,
+    /// residual TOCTOU limitation.
+    /// </para>
+    /// <para>
+    /// The scope is thread-affine, like the monitor under it: dispose it on
+    /// the thread that entered it, and never hold it across an
+    /// <see langword="await"/>.
+    /// </para>
+    /// </remarks>
+    internal WriteLockScope EnterWriteLock()
+    {
+        // Case-distinct lexical aliases can resolve to DIFFERENT bundles.
+        // Reusing a held lock is therefore stricter than coalescing registry
+        // keys: an ordinal match is required here.
+        var held = t_heldLocks ??= new Dictionary<string, HeldLock>(StringComparer.Ordinal);
+        if (held.TryGetValue(_lexicalRoot, out var outer))
+        {
+            // Both are already owned by this thread: re-entry never blocks.
+            if (outer.LexicalLock is { } outerGate)
+            {
+                Monitor.Enter(outerGate);
+            }
+
+            Monitor.Enter(outer.LockObject);
+            outer.Depth++;
+            return new WriteLockScope(_lexicalRoot, outer.LockObject, outer.LexicalLock);
+        }
+
+        // A thread already holding any write lock never WAITS for a lexical
+        // gate: the gate's owner can come to need a gate this thread holds
+        // (two aliases nested in opposite order while a link on the path is
+        // retargeted), and a gate wait would close that cycle. Such a thread
+        // only tries the gate; when it is busy, it goes on with the resolved
+        // monitor alone.
+        var holdsAnotherWriteLock = held.Count > 0;
+        var lexicalLock = LexicalLocks.GetOrAdd(_lexicalRoot, static _ => new object());
+        while (true)
+        {
+            object? lockObject = null;
+            var lexicalTaken = false;
+            var resolvedTaken = false;
+            try
+            {
+                if (holdsAnotherWriteLock)
+                {
+                    Monitor.TryEnter(lexicalLock, ref lexicalTaken);
+                }
+                else
+                {
+                    Monitor.Enter(lexicalLock, ref lexicalTaken);
+                }
+
+                if (!lexicalTaken)
+                {
+                    GateBusyForTest?.Invoke();
+                }
+
+                // Resolve AFTER the gate attempt, including after each wait.
+                // An earlier operation may have changed the root.
+                lockObject = ResolveLockObject();
+
+                // A nested acquisition retries a busy gate once, still
+                // without blocking: its owner may have released it while
+                // this thread resolved (filesystem I/O). Taken here, it is
+                // recorded and released exactly like a gate taken above.
+                if (holdsAnotherWriteLock && !lexicalTaken)
+                {
+                    Monitor.TryEnter(lexicalLock, ref lexicalTaken);
+                }
+
+                // Never blocks. Succeeds re-entrantly when this thread
+                // already holds the resolved monitor through another root.
+                Monitor.TryEnter(lockObject, ref resolvedTaken);
+                if (resolvedTaken)
+                {
+                    // null: the gate was busy and is not part of this hold.
+                    var gate = lexicalTaken ? lexicalLock : null;
+                    held.Add(_lexicalRoot, new HeldLock(lockObject, gate));
+                    // Both holds now belong to the scope.
+                    lexicalTaken = false;
+                    resolvedTaken = false;
+                    return new WriteLockScope(_lexicalRoot, lockObject, gate);
+                }
+            }
+            finally
+            {
+                if (resolvedTaken)
+                {
+                    Monitor.Exit(lockObject!);
+                }
+
+                if (lexicalTaken)
+                {
+                    Monitor.Exit(lexicalLock);
+                }
+            }
+
+            // Never wait for another thread's resolved lock while holding
+            // the lexical gate. Its owner may need that gate to enter this
+            // alias recursively. Wait without the gate, then retry BOTH
+            // acquisition and resolution; this is not the operation's hold.
+            BeforeContendedWaitForTest?.Invoke();
+            lock (lockObject!)
+            {
+            }
+        }
+    }
+
+    /// <summary>
+    /// Test-only hook, invoked (if set) on the acquiring thread in
+    /// <see cref="EnterWriteLock"/> after it found the resolved monitor busy
+    /// and released the gate, immediately before it waits for that monitor.
+    /// </summary>
+    internal Action? BeforeContendedWaitForTest { get; set; }
+
+    /// <summary>
+    /// Test-only hook, invoked (if set) on the acquiring thread in
+    /// <see cref="EnterWriteLock"/> when a nested acquisition's first,
+    /// non-blocking attempt at the lexical gate failed, before it resolves
+    /// the root.
+    /// </summary>
+    internal Action? GateBusyForTest { get; set; }
+
+    /// <summary>
+    /// The registry object this writer's root resolves to NOW, without
+    /// entering it and without consulting what the current thread holds.
+    /// Test-only.
+    /// </summary>
+    internal object CurrentLockObjectForTest() => ResolveLockObject();
+
+    /// <summary>
+    /// This writer's lexical gate, so a test can hold it from another thread
+    /// and stand in for an outermost writer caught between taking the gate and
+    /// taking its resolved monitor. Test-only.
+    /// </summary>
+    internal object LexicalGateForTest() => LexicalLocks.GetOrAdd(_lexicalRoot, static _ => new object());
+
+    private object ResolveLockObject() =>
+        BundleLocks.GetOrAdd(ReparsePoints.ResolveLockKey(_lexicalRoot), static _ => new object());
+
+    /// <summary>
+    /// One entry of <see cref="t_heldLocks"/>: the objects held and how many
+    /// scopes hold them. <see cref="LexicalLock"/> is <see langword="null"/>
+    /// when a nested acquisition proceeded without its busy gate.
+    /// </summary>
+    private sealed class HeldLock(object lockObject, object? lexicalLock)
+    {
+        public object LockObject { get; } = lockObject;
+
+        public object? LexicalLock { get; } = lexicalLock;
+
+        public int Depth { get; set; } = 1;
+    }
+
+    /// <summary>
+    /// A hold of a bundle's write lock, from <see cref="EnterWriteLock"/>.
+    /// Dispose it exactly once, on the thread that entered it.
+    /// </summary>
+    internal readonly struct WriteLockScope : IDisposable
+    {
+        private readonly string _lexicalRoot;
+
+        private readonly object? _lexicalLock;
+
+        internal WriteLockScope(string lexicalRoot, object lockObject, object? lexicalLock)
+        {
+            _lexicalRoot = lexicalRoot;
+            LockObject = lockObject;
+            _lexicalLock = lexicalLock;
+        }
+
+        /// <summary>The registry object this scope entered.</summary>
+        internal object LockObject { get; }
+
+        /// <summary>
+        /// Whether this scope holds its root's lexical gate; <see langword="false"/>
+        /// for a nested acquisition that proceeded without a busy gate. Test-only.
+        /// </summary>
+        internal bool HoldsLexicalGateForTest => _lexicalLock is not null;
+
+        /// <summary>Exits the lock, and forgets it on this thread once the outermost scope ends.</summary>
+        public void Dispose()
+        {
+            if (LockObject is null)
+            {
+                return; // default(WriteLockScope): nothing was entered.
+            }
+
+            if (t_heldLocks is { } held && held.TryGetValue(_lexicalRoot, out var entry) && --entry.Depth == 0)
+            {
+                held.Remove(_lexicalRoot);
+            }
+
+            // The gate first, then the monitor. A nested waiter blocked on
+            // the monitor, woken by its release, then usually finds the gate
+            // free and keeps it, instead of retrying a gate still held for
+            // an instant and proceeding without it. Exits never block, so
+            // the order cannot add a wait; both objects are this scope's.
+            if (_lexicalLock is not null)
+            {
+                Monitor.Exit(_lexicalLock); // null: entered without its gate.
+            }
+
+            Monitor.Exit(LockObject);
+        }
+    }
 
     /// <summary>
     /// Test-only hook, invoked (if set) immediately before the late
@@ -345,14 +582,15 @@ public sealed class BundleConceptWriter
                 return buildError;
             }
 
-            // Serialized under _bundleLock (shared with AppendToConceptAtomic
-            // and, since _bundleLock is obtained from the process-wide
-            // BundleLocks registry, with every OTHER BundleConceptWriter
-            // instance pointed at this same canonicalized bundle root, not
-            // just this instance) so concurrent writers can't interleave an
+            // Serialized under the bundle's write lock (shared with
+            // AppendToConceptAtomic and, since EnterWriteLock takes it from
+            // the process-wide BundleLocks registry under the root's resolved
+            // key, with every OTHER BundleConceptWriter instance whose root
+            // resolves to this same directory, not just this instance) so
+            // concurrent writers can't interleave an
             // existence check with another writer's write, and so the
             // committed callback below is atomic with the write it follows.
-            lock (_bundleLock)
+            using (EnterWriteLock())
             {
                 return WriteValidatedContentLocked(target.Id, target.TargetPath, content!);
             }
@@ -417,7 +655,7 @@ public sealed class BundleConceptWriter
                 return buildError;
             }
 
-            lock (_bundleLock)
+            using (EnterWriteLock())
             {
                 return WriteValidatedContentLocked(target.Id, target.TargetPath, content!);
             }
@@ -457,14 +695,17 @@ public sealed class BundleConceptWriter
     /// a count divergence between the two.
     /// Here, the read of the concept's CURRENT on-disk body, the caller's
     /// <paramref name="buildBody"/> transform, and the validated write all
-    /// happen inside one unbroken hold of <see cref="_bundleLock"/>, so two
+    /// happen inside one unbroken hold of the bundle's write lock
+    /// (<see cref="EnterWriteLock"/>), so two
     /// concurrent calls for the same concept id can never interleave: the
     /// second call's read always observes the first call's completed write.
-    /// Because <see cref="_bundleLock"/> is obtained from the process-wide
-    /// <c>BundleLocks</c> registry (keyed by the canonicalized bundle root),
+    /// Because that lock comes from the process-wide
+    /// <c>BundleLocks</c> registry (keyed by the bundle root resolved through
+    /// reparse points when the lock is taken),
     /// this holds for two concurrent calls on the SAME <see cref="BundleConceptWriter"/>
     /// instance AND for two concurrent calls on two SEPARATE instances
-    /// constructed over the same bundle path -- but only within one process:
+    /// whose roots resolve to the same directory, a junction or symlink to it
+    /// included -- but only within one process:
     /// it does not serialize a second process writing the same bundle path,
     /// and a C# lock cannot stop a concurrent external actor from mutating
     /// the target file/its ancestor directories on disk out from under this
@@ -534,7 +775,7 @@ public sealed class BundleConceptWriter
             // never released and reacquired in between — which is what makes
             // the whole read-modify-write atomic against a concurrent
             // WriteConcept/AppendToConceptAtomic call for the same concept.
-            lock (_bundleLock)
+            using (EnterWriteLock())
             {
                 string frontmatterYaml;
                 string? currentBody;
@@ -719,7 +960,7 @@ public sealed class BundleConceptWriter
             // Target validation also reads the files. Keep it in the same
             // lock hold as prepare/write: otherwise a cooperating writer can
             // expose a sharing violation or a partially written document (#131).
-            lock (_bundleLock)
+            using (EnterWriteLock())
             {
                 // Checked FIRST for five of its six kinds, so THIS method's own
                 // refusal names the offender: before this call existed, an
@@ -996,10 +1237,10 @@ public sealed class BundleConceptWriter
     /// could not confirm the edit, instead of the generic message implying a
     /// real corruption.
     /// </summary>
-    private static bool ContainsNaN(YamlValue value) => value switch
+    internal static bool ContainsNaN(YamlValue value) => value switch
     {
         YamlFloat f => double.IsNaN(f.Value),
-        YamlMapping m => m.Entries.Any(e => ContainsNaN(e.Value)),
+        YamlMapping m => m.Entries.Any(e => ContainsNaN(e.Key) || ContainsNaN(e.Value)),
         YamlSequence s => s.Items.Any(ContainsNaN),
         _ => false,
     };
@@ -1019,41 +1260,51 @@ public sealed class BundleConceptWriter
     /// rather than guessing which key -- per the rule that a message should
     /// name a cause it actually checked, not one it merely suspects.
     /// </summary>
-    private static string DescribeFrontmatterDivergence(YamlMapping expected, YamlMapping actual)
+    internal static string DescribeFrontmatterDivergence(YamlMapping expected, YamlMapping actual)
     {
-        var expectedVerified = expected.Get("verified");
-        var actualVerified = actual.Get("verified");
-        var verifiedMatches = expectedVerified is null
-            ? actualVerified is null
-            : expectedVerified.Equals(actualVerified);
-        if (!verifiedMatches)
+        // A YamlMapping keeps duplicate keys (the parser pushes entries raw),
+        // and Get returns only the first, so compare EVERY verified entry, in
+        // order and with multiplicity: an edit that adds, drops or alters a
+        // second `verified` is a divergence of the verified block itself.
+        var expectedVerified = expected.Entries.Where(IsVerified).Select(e => e.Value).ToList();
+        var actualVerified = actual.Entries.Where(IsVerified).Select(e => e.Value).ToList();
+        if (expectedVerified.Count != actualVerified.Count
+            || !expectedVerified.SequenceEqual(actualVerified))
         {
             return "the verified block itself did not round-trip";
         }
 
-        var expectedOthers = expected.Entries.Where(NotVerified).ToList();
-        var actualOthers = actual.Entries.Where(NotVerified).ToList();
+        // Name a key only when exactly one position differs and both sides hold
+        // the same key there (a value change). Anything else -- a changed count,
+        // two or more differing positions, a key that moved or was inserted and
+        // so shifted its neighbours -- cannot be pinned to one key, and naming
+        // the first mismatch would name an unchanged or the wrong key.
+        var expectedOthers = expected.Entries.Where(e => !IsVerified(e)).ToList();
+        var actualOthers = actual.Entries.Where(e => !IsVerified(e)).ToList();
         if (expectedOthers.Count == actualOthers.Count)
         {
+            var differing = new List<int>();
             for (var i = 0; i < expectedOthers.Count; i++)
             {
-                var (expectedKey, expectedValue) = expectedOthers[i];
-                var (actualKey, actualValue) = actualOthers[i];
-                if (!expectedKey.Equals(actualKey) || !expectedValue.Equals(actualValue))
+                if (!expectedOthers[i].Key.Equals(actualOthers[i].Key)
+                    || !expectedOthers[i].Value.Equals(actualOthers[i].Value))
                 {
-                    var name = expectedKey.AsDisplayString() ?? expectedKey.AsString() ?? "<non-string key>";
-                    return $"the frontmatter key '{name}' changed";
+                    differing.Add(i);
                 }
+            }
+
+            if (differing.Count == 1 && expectedOthers[differing[0]].Key.Equals(actualOthers[differing[0]].Key))
+            {
+                var key = expectedOthers[differing[0]].Key;
+                var name = key.AsDisplayString() ?? key.AsString() ?? "<non-string key>";
+                return $"the frontmatter key '{name}' changed";
             }
         }
 
-        // verified matches and no single other key could be pinned (e.g. the
-        // key SETS differ in count/order beyond a simple positional swap) --
-        // say so honestly instead of naming a key that was never checked.
         return "the frontmatter changed outside the verified block";
 
-        static bool NotVerified((YamlValue Key, YamlValue Value) entry) =>
-            !string.Equals(entry.Key.AsString(), "verified", StringComparison.Ordinal);
+        static bool IsVerified((YamlValue Key, YamlValue Value) entry) =>
+            string.Equals(entry.Key.AsString(), "verified", StringComparison.Ordinal);
     }
 
     /// <summary>A validated concept id and the absolute path it resolves to, produced by <see cref="ValidateConceptTarget"/>.</summary>
@@ -1067,8 +1318,8 @@ public sealed class BundleConceptWriter
     /// target itself) — shared by <see cref="WriteConcept(string, string, string)"/>
     /// and <see cref="AppendToConceptAtomic"/> so the two can never diverge
     /// on what counts as a valid write target. Pure: performs no I/O beyond
-    /// the reparse-point/existence checks themselves, and does not touch
-    /// <see cref="_bundleLock"/>.
+    /// the reparse-point/existence checks themselves, and does not take the
+    /// write lock (<see cref="EnterWriteLock"/>).
     /// </summary>
     /// <remarks>
     /// <b>Scope of the reparse-point guarantee (read this before assuming
@@ -1079,8 +1330,8 @@ public sealed class BundleConceptWriter
     /// (after YAML parsing and producer validation in between), so this is a
     /// classic check-then-write (TOCTOU): a concurrent local actor able to
     /// replace a path component with a symlink/junction between this check
-    /// and that later write is not stopped by this method, and the <see cref="_bundleLock"/>
-    /// this class otherwise relies on for atomicity is a C# in-process lock —
+    /// and that later write is not stopped by this method, and the write lock
+    /// (<see cref="EnterWriteLock"/>) this class otherwise relies on for atomicity is a C# in-process lock —
     /// it has no effect on what a separate, unsynchronized filesystem
     /// mutation can do to the same paths. <see cref="WriteValidatedContentLocked"/>
     /// re-runs the same two checks immediately before its actual
@@ -1198,7 +1449,7 @@ public sealed class BundleConceptWriter
         // CLI/agent callers also use this preflight on its own. Serialize its
         // reads against writers; RecordVerifications keeps this reentrant
         // monitor held through the subsequent prepare/write as well.
-        lock (_bundleLock)
+        using (EnterWriteLock())
         {
             return CheckVerificationTargetsLocked(conceptIds);
         }
@@ -1475,7 +1726,7 @@ public sealed class BundleConceptWriter
     /// Late, best-effort reparse-point re-check used by
     /// <see cref="WriteValidatedContentLocked"/> immediately before its
     /// <see cref="File.WriteAllText(string, string, System.Text.Encoding)"/>
-    /// call, still inside the caller's hold of <see cref="_bundleLock"/>.
+    /// call, still inside the caller's hold of the write lock.
     /// Re-runs the same two checks <see cref="ValidateConceptTarget"/>
     /// already ran earlier: a reparse point among <paramref name="targetPath"/>'s
     /// directory ancestors (up to <see cref="BundleRoot"/>), or at
@@ -1507,14 +1758,14 @@ public sealed class BundleConceptWriter
     /// <summary>
     /// Writes already-validated <paramref name="content"/> to <paramref name="targetPath"/>
     /// and invokes <see cref="_onWriteCommitted"/>. CALLER MUST already hold
-    /// <see cref="_bundleLock"/> — this method does not acquire it itself,
+    /// the write lock (<see cref="EnterWriteLock"/>) — this method does not acquire it itself,
     /// so that <see cref="AppendToConceptAtomic"/> can enclose its own
     /// preceding read-and-transform in the SAME lock acquisition as this
     /// write (a nested/second acquisition here would either reintroduce the
-    /// exact gap this seam exists to close, or -- if <see cref="_bundleLock"/>
+    /// exact gap this seam exists to close, or -- if the write lock
     /// were ever changed to a non-reentrant primitive -- deadlock). Shared
     /// verbatim by <see cref="WriteConcept(string, string, string)"/> (which wraps a single call to
-    /// this in its own <c>lock (_bundleLock)</c>) and
+    /// this in its own <c>using (EnterWriteLock())</c>) and
     /// <see cref="AppendToConceptAtomic"/>.
     /// </summary>
     /// <remarks>
@@ -1525,7 +1776,7 @@ public sealed class BundleConceptWriter
     /// <see cref="ValidateConceptTarget"/> already ran earlier (a reparse
     /// point among <paramref name="targetPath"/>'s parent directories, or at
     /// <paramref name="targetPath"/> itself), still inside the caller's hold
-    /// of <see cref="_bundleLock"/>. This narrows the window a concurrent
+    /// of the write lock. This narrows the window a concurrent
     /// local filesystem substitution would need to land in — from "anywhere
     /// between validation and the write" down to "between this re-check and
     /// the write two lines later" — but does NOT close it: .NET has no
@@ -1541,7 +1792,7 @@ public sealed class BundleConceptWriter
     /// <param name="existedBefore">
     /// Whether <paramref name="targetPath"/> already existed, if the caller
     /// already knows this from a check performed earlier under the same
-    /// <see cref="_bundleLock"/> hold (<see cref="AppendToConceptAtomic"/>
+    /// write-lock hold (<see cref="AppendToConceptAtomic"/>
     /// passes its own earlier <see cref="File.Exists(string)"/> result here
     /// to avoid a redundant second stat of the same path). <see langword="null"/>
     /// (the default, used by <see cref="WriteConcept(string, string, string)"/>'s single-call site)

@@ -371,6 +371,9 @@ public class RecordVerificationTests
 
         Assert.False(outcome.Recorded);
         Assert.Contains("nesting depth limit exceeded", outcome.Message);
+        // Refused by the EMITTER (the stamp nests the value one level deeper),
+        // not by the parser: the document itself loads.
+        Assert.Contains("YAML emit error", outcome.Message);
         Assert.StartsWith("Error: ", outcome.Message);
         Assert.Empty(outcome.Records);
         // The earlier concept in the batch is untouched: the failure happened
@@ -615,7 +618,7 @@ public class RecordVerificationTests
         var settled = false;
         try
         {
-            lock (writer.WriteLock)
+            using (writer.EnterWriteLock())
             {
                 File.WriteAllText(path, "---\ntype: [\n");
                 // Close the handle in the partial-YAML case: ReadAllBytes's
@@ -876,10 +879,9 @@ public class RecordVerificationTests
 
     /// <summary>
     /// Minor finding #9: a pathologically deep value under an UNRELATED key
-    /// (the same shape <see cref="DeepYamlDocument"/> uses to make
-    /// <c>YamlEmitter</c> throw when the WHOLE frontmatter is re-emitted) is
-    /// now stampable at all -- <c>RecordVerifications</c> never hands it to
-    /// the emitter -- and survives completely byte-identical.
+    /// (<see cref="DeepYamlDocument"/>, nested at the YAML subset's limit) is
+    /// stampable -- <c>RecordVerifications</c> never hands it to the emitter
+    /// -- and survives completely byte-identical.
     /// </summary>
     [Fact]
     public void A_deep_value_under_an_unrelated_key_is_stampable_and_survives_byte_identical()

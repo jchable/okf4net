@@ -580,10 +580,29 @@ A few known v1 caveats:
 - **Concurrent same-day capture is safe only within one process, and only up
   to a residual filesystem-race caveat:** same-day capture is a
   read-modify-write on one concept file, done through
-  `OkfBundleTools.AppendToConceptAtomic` under a write lock that's shared by
-  every `OkfBundleTools` instance pointed at the same canonicalized bundle
-  path — not just one instance — via a process-wide registry keyed on the
-  resolved bundle root. So two (or more) truly concurrent
+  `OkfBundleTools.AppendToConceptAtomic` under a write lock that's shared —
+  not just by one instance — via a process-wide registry, by every
+  `OkfBundleTools` instance whose bundle root resolves, at the moment it
+  takes the lock, to the same directory (a junction or symlink to the bundle
+  shares its lock; if resolution fails, the lexical path is the key; a
+  topology change during an operation is not followed). Operations using an
+  identical namespace-normalized lexical root also remain serialized when
+  its resolved key changes, with one exception: a thread that already holds
+  a write lock never waits for that lexical gate. A nested acquisition that
+  finds the gate busy (which ordinary contention on that root causes, with
+  no topology change) takes the resolved monitor without the gate and holds
+  no gate for its whole operation; if the root's resolution changes while
+  it runs, another writer on the same lexical root can overlap it.
+  Releasing the gate before the monitor, and retrying it once (without
+  blocking) after resolving, narrow this but do not close it.
+  Different aliases can still diverge if the
+  topology changes during an active operation: no filesystem handle pins
+  their targets. Nested calls over different resolved bundles need a
+  consistent caller lock order over the registry's case-folded keys. A
+  link on the path retargeted during an operation, even one every alias
+  follows, splits the bundle in two for that purpose: aliases of it nested
+  in opposite order can then deadlock between their resolved monitors.
+  Within these limits, two (or more) truly concurrent
   `StoreAIContextAsync` calls, even across separate `OkfBundleTools`/
   `OkfContextProvider` instances sharing a session pool, never lose a
   same-day section as long as they're all in **the same process**. This

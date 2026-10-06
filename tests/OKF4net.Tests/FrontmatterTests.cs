@@ -289,4 +289,35 @@ public class FrontmatterTests
         Assert.False(a.Equals(different));
         Assert.False(a.Equals(null));
     }
+
+    [Fact]
+    public void Field_lists_are_not_arrays_a_caller_could_mutate()
+    {
+        Assert.False(Frontmatter.RequiredKeys is string[]);
+        Assert.False(Frontmatter.RecommendedFields is string[]);
+    }
+
+    [Fact]
+    public void Field_lists_reject_mutation_through_their_interfaces()
+    {
+        foreach (var list in new[] { Frontmatter.RequiredKeys, Frontmatter.RecommendedFields })
+        {
+            Assert.Throws<NotSupportedException>(() => ((IList<string>)list)[0] = "x");
+            Assert.Throws<NotSupportedException>(() => ((ICollection<string>)list).Add("x"));
+        }
+    }
+
+    [Fact]
+    public void RecommendedFieldsFor_returns_a_read_only_list_on_both_branches()
+    {
+        var ordinary = OkfDocument.Parse("---\ntype: Metric\n---\n").Frontmatter;
+        var carveOut = OkfDocument.Parse("---\ntype: Attested Computation\nruntime: python\n---\n").Frontmatter;
+        Assert.DoesNotContain("resource", Frontmatter.RecommendedFieldsFor(carveOut));
+        foreach (var list in new[] { Frontmatter.RecommendedFieldsFor(ordinary), Frontmatter.RecommendedFieldsFor(carveOut) })
+        {
+            Assert.False(list is string[]);
+            Assert.Throws<NotSupportedException>(() => ((IList<string>)list)[0] = "x");
+            Assert.Throws<NotSupportedException>(() => ((ICollection<string>)list).Add("x"));
+        }
+    }
 }

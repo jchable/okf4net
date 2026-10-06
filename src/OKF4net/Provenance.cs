@@ -107,23 +107,35 @@ public static class Provenance
 
             if (source.UsageWindow is { } window)
             {
-                var windowMap = new YamlMapping();
-                if (window.From is not null)
-                {
-                    windowMap.Insert("from", new YamlString(window.From));
-                }
-
-                if (window.To is not null)
-                {
-                    windowMap.Insert("to", new YamlString(window.To));
-                }
-
-                map.Insert("usage_window", windowMap);
+                map.Insert("usage_window", UsageWindowToYaml(window));
             }
 
             items.Add(map);
         }
 
         return new YamlSequence(items);
+    }
+
+    /// <summary>
+    /// Serializes one §5.1 <c>usage_window</c> to the mapping <see cref="ParseUsageWindow"/> reads
+    /// back: key order <c>from, to</c>, a <see langword="null"/> bound omitted, and a window with no
+    /// bounds kept as the empty mapping rather than collapsed. The one serialization of a window,
+    /// shared by a per-entry override (<see cref="ToYaml"/>) and the shared top-level window
+    /// (<see cref="OkfDocumentBuilder.SharedUsageWindow"/>).
+    /// </summary>
+    internal static YamlMapping UsageWindowToYaml(UsageWindow window)
+    {
+        var windowMap = new YamlMapping();
+        if (window.From is not null)
+        {
+            windowMap.Insert("from", new YamlString(window.From));
+        }
+
+        if (window.To is not null)
+        {
+            windowMap.Insert("to", new YamlString(window.To));
+        }
+
+        return windowMap;
     }
 }
