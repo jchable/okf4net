@@ -1541,6 +1541,17 @@ checkAsync("clicking a contents link a second time still moves the reading focus
   assert(!modified.defaultPrevented, "a Ctrl+click on a contents link was taken over instead of left to the browser");
 });
 
+checkAsync("a page with no h2/h3 and no backlinks keeps the side panel hidden", async () => {
+  // constructor.md: one paragraph, no heading, and no concept links to it.
+  const window = await openPage("constructor.html");
+  const doc = window.document;
+  assert(doc.getElementById("okf-body").textContent.includes("Plain"), "the body did not render");
+  assert(doc.querySelectorAll("#okf-body h2, #okf-body h3").length === 0, "this case needs a page without h2/h3");
+  assert(doc.querySelector("#okf-context .okf-backlinks") === null, "this case needs a page without backlinks");
+  assert(doc.getElementById("okf-toc").hidden, "an empty contents list was shown");
+  assert(doc.getElementById("okf-context").hidden, "an empty side panel was shown");
+});
+
 checkAsync("without okf-index.js the page renders, the explorer stays hidden and nothing is clobbered", async () => {
   const window = await openPage("foo.html", { blocked: ["assets/okf-index.js"] });
   const doc = window.document;
