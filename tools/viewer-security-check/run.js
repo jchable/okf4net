@@ -1072,6 +1072,29 @@ check("uniqueSlugs never lets a generated suffix collide with a real heading", (
   const { OkfSite } = okfSite();
   const got = JSON.stringify(Array.from(OkfSite.uniqueSlugs(["Usage", "Usage", "Usage 1", "!!!"])));
   assert(got === JSON.stringify(["usage", "usage-1", "usage-1-1", "section"]), `got ${got}`);
+  const same = JSON.stringify(Array.from(OkfSite.uniqueSlugs(["Usage", "Usage", "Usage"])));
+  assert(same === JSON.stringify(["usage", "usage-1", "usage-2"]), `three identical headings: ${same}`);
+  // The per-base counter starts past suffixes it handed out, but a real
+  // heading may already hold the next ones: the collision check must keep looping.
+  const taken = JSON.stringify(Array.from(OkfSite.uniqueSlugs(["Usage 1", "Usage 2", "Usage", "Usage"])));
+  assert(taken === JSON.stringify(["usage-1", "usage-2", "usage", "usage-3"]), `suffixes already taken: ${taken}`);
+});
+
+check("uniqueSlugs does linear work on many identical headings (counted, not timed)", () => {
+  const window = okfSite();
+  const n = 2000;
+  let lookups = 0;
+  const has = window.Set.prototype.has;
+  window.Set.prototype.has = function (value) { lookups++; return has.call(this, value); };
+  try {
+    const texts = new Array(n).fill("Usage");
+    const slugs = window.OkfSite.uniqueSlugs(texts);
+    assert(new Set(Array.from(slugs)).size === n, "the slugs are not unique");
+  } finally {
+    window.Set.prototype.has = has;
+  }
+  assert(lookups > 0, "the probe saw no lookup: it no longer measures uniqueSlugs");
+  assert(lookups <= 3 * n, `${lookups} set lookups for ${n} identical headings (quadratic would be ~${n * n / 2})`);
 });
 
 check("fragmentCandidates keeps a prefixed fragment and slugifies an author one", () => {
@@ -1081,6 +1104,10 @@ check("fragmentCandidates keeps a prefixed fragment and slugifies an author one"
   assert(json("#Usage") === JSON.stringify(["okf-h-Usage", "okf-h-usage"]), json("#Usage"));
   assert(json("#caf%C3%A9") === JSON.stringify(["okf-h-café"]), json("#caf%C3%A9"));
   assert(json("#") === "[]", json("#"));
+  // An all-punctuation fragment slugifies to nothing: it must not fall back
+  // to "section" and land on a heading titled "Section".
+  assert(json("#!!!") === JSON.stringify(["okf-h-!!!"]), json("#!!!"));
+  assert(json("#%") === JSON.stringify(["okf-h-%"]), json("#%"));
 });
 
 check("rootOf accepts only a chain of ../", () => {
@@ -1643,6 +1670,29 @@ checkAsync("chrome classes worn by body content change none of its styles", asyn
         `<code class="${el.getAttribute("class")}"> ${prop}: ${style.getPropertyValue(prop)} (an unclassed <code> has ${expected.getPropertyValue(prop)})`);
     }
   }
+});
+
+checkAsync("an all-punctuation fragment focuses nothing, even beside a heading titled Section", async () => {
+  // foo/bar.md has a "## Section" heading, whose generated id is okf-h-section.
+  const control = await openPage("foo/bar.html", { hash: "#section" });
+  assert(control.document.activeElement.id === "okf-h-section", `this case needs #section to land on the Section heading (focus: ${control.document.activeElement.id})`);
+  for (const hash of ["#!!!", "#%", "#%20"]) {
+    const window = await openPage("foo/bar.html", { hash });
+    const focused = window.document.activeElement;
+    assert(focused === window.document.body, `${hash} moved the focus to <${focused.tagName.toLowerCase()} id="${focused.id}">`);
+  }
+});
+
+checkAsync("an h3 is listed in the contents as a sub-entry", async () => {
+  const window = await openPage("foo/bar.html");
+  const doc = window.document;
+  const link = doc.querySelector('#okf-toc a[href="#okf-h-details"]');
+  assert(link, "the ### Details heading is not in the contents");
+  assert(link.parentElement.classList.contains("okf-toc-sub"), `the h3 entry has class "${link.parentElement.className}", expected okf-toc-sub`);
+  const h2 = doc.querySelector('#okf-toc a[href="#okf-h-section"]');
+  assert(h2 && !h2.parentElement.classList.contains("okf-toc-sub"), "an h2 entry is marked as a sub-entry");
+  const ids = Array.from(doc.querySelectorAll("#okf-body h2, #okf-body h3"), (h) => h.id);
+  assert(JSON.stringify(ids) === JSON.stringify(["okf-h-usage", "okf-h-section", "okf-h-details"]), `heading ids: ${ids}`);
 });
 
 checkAsync("long unbroken titles and ids may wrap in the palette and the contents", async () => {

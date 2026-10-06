@@ -80,23 +80,32 @@
     return root + path;
   }
 
-  // Heading slug (spec §5): letters, digits and hyphens only.
+  // Letters, digits and hyphens only; "" when nothing is left.
+  function slugText(text) {
+    return normalize(text).replace(/[^\p{L}\p{N} -]/gu, "").replace(/ /g, "-");
+  }
+
+  // Heading slug (spec §5): letters, digits and hyphens only. A heading with
+  // none of them still needs an id.
   function slugify(text) {
-    var slug = normalize(text).replace(/[^\p{L}\p{N} -]/gu, "").replace(/ /g, "-");
+    var slug = slugText(text);
     return slug === "" ? "section" : slug;
   }
 
   // Unique slugs in document order. A taken candidate keeps counting, so a
   // generated suffix never collides with a real heading: "Usage", "Usage",
-  // "Usage 1" -> usage, usage-1, usage-1-1.
+  // "Usage 1" -> usage, usage-1, usage-1-1. Each base remembers the next
+  // suffix to try, so n identical headings cost n lookups, not n squared.
   function uniqueSlugs(texts) {
     var used = new Set();
+    var next = new Map();
     var out = [];
     for (var k = 0; k < texts.length; k++) {
       var base = slugify(texts[k]);
-      var slug = base;
-      var n = 0;
+      var n = next.get(base) || 0;
+      var slug = n === 0 ? base : base + "-" + n;
       while (used.has(slug)) { n++; slug = base + "-" + n; }
+      next.set(base, n + 1);
       used.add(slug);
       out.push(slug);
     }
@@ -105,7 +114,9 @@
 
   // Generated ids a URL fragment may designate, best first: an already
   // prefixed fragment as is; an author fragment ("#usage", "#Usage") as
-  // written, then slugified.
+  // written, then slugified. A fragment that slugifies to nothing ("#!!!")
+  // gets no slug candidate: slugify's "section" fallback is for headings,
+  // and would send such a fragment to a heading titled "Section".
   function fragmentCandidates(hash) {
     var h = String(hash || "");
     if (h.charAt(0) === "#") { h = h.slice(1); }
@@ -113,8 +124,8 @@
     if (h === "") { return []; }
     if (h.indexOf(HEADING_PREFIX) === 0) { return [h]; }
     var candidates = [HEADING_PREFIX + h];
-    var slugged = HEADING_PREFIX + slugify(h);
-    if (slugged !== candidates[0]) { candidates.push(slugged); }
+    var slug = slugText(h);
+    if (slug !== "" && HEADING_PREFIX + slug !== candidates[0]) { candidates.push(HEADING_PREFIX + slug); }
     return candidates;
   }
 
