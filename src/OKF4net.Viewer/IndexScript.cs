@@ -9,9 +9,12 @@ namespace OKF4net.Viewer;
 /// <c>assets/okf-index.js</c>, which assigns <c>window.OKF_INDEX</c>.
 /// </summary>
 /// <remarks>
-/// Every bundle-derived string goes through <see cref="HtmlSafeJson.Quote"/>
-/// (hand-built rather than <c>System.Text.Json</c> by reflection, which
-/// would fail under Native AOT). The object has fixed keys only -- arrays and
+/// Hand-built so that every bundle-derived string goes through
+/// <see cref="HtmlSafeJson.Quote"/>: its escaping beyond plain JSON
+/// (<c>&lt;</c>, <c>&gt;</c>, <c>&amp;</c>, U+2028, U+2029) is the security
+/// requirement, not a formatting choice. (A reflection-based
+/// <c>System.Text.Json</c> would also fail under Native AOT, but that is
+/// not the reason.) The object has fixed keys only -- arrays and
 /// fixed-key records, never a dictionary keyed by an id or a title -- because
 /// <c>__proto__</c>, <c>constructor</c> and <c>toString</c> are valid concept
 /// ids, and an object literal keyed by one of them does not mean what
