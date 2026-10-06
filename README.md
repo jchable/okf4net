@@ -388,7 +388,7 @@ The generated site is self-contained and opens straight off the filesystem —
 no server needed. It is read-only, and has no full-text search: a static site
 has no server to run the shared `ConceptSearch` scorer, and mirroring its
 weights in JavaScript would fork it. Interactive browsing with search is
-planned as a VS Code extension instead (see `ROADMAP.md`), not as a local
+planned as a VS Code extension instead (see [#163](https://github.com/jchable/okf4net/issues/163)), not as a local
 server. `okf-render` has its own winget package,
 **`Coderise.OKF4net.Render`**, built and attached to each Release the same way
 as `okf`'s — but its *first* submission to `winget-pkgs` is a manual, one-time

@@ -39,7 +39,7 @@ public readonly record struct VerificationRecord(string ConceptId, string At, st
 /// a property of the write primitive shared by EVERY write path in this class,
 /// not something verification introduced; closing it needs write-then-rename,
 /// which has to be designed against the reparse-point guard and the bundle
-/// lock it sits between (see ROADMAP). Until then, the honest reading of a
+/// lock it sits between (issue #157). Until then, the honest reading of a
 /// failed batch is: the concepts listed are stamped, the ones after them were
 /// not written, and the one it stopped on is unknown — re-run it, or check
 /// that file.
