@@ -72,6 +72,12 @@ jobs:
           cache: npm
           cache-dependency-path: tools/viewer-security-check/package-lock.json
 
+      # `npm test`'s pretest step generates the site the interactive-viewer
+      # cases load, with the real okf-render.
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
       - name: Install harness dependencies
         working-directory: tools/viewer-security-check
         run: npm ci

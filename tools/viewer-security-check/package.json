@@ -5,6 +5,7 @@
   "description": "jsdom harness exercising OKF4net.Viewer's real vendored marked.min.js + viewer.js against hostile markdown payloads. Run in CI as the 'viewer sanitizer (JS)' job -- see README.md.",
   "main": "run.js",
   "scripts": {
+    "pretest": "dotnet run --project ../../src/OKF4net.Render -c Release -- fixtures/hostile-bundle --out .generated/hostile-site",
     "test": "node run.js"
   },
   "license": "LGPL-3.0-or-later",
