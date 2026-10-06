@@ -22,6 +22,9 @@
   - Task 9: the AOT check executes the native binary's `okf-index.js` with `check-index.js` instead of a prefix test.
   - Task 6: the theme button re-announces its state when the system preference changes.
   - Task 4: **no size threshold** (owner decision) — the measurement is recorded, the owner judges it.
+- **r3 (2026-10-06)** — second external review pass on r2 (92 JS and 124 .NET viewer/render tests green in a throwaway copy; verdict "executable after named corrections", no new owner decision):
+  - Task 5: every async case is bounded by a 10 s timer, and an `exit` hook fails the run when the summary was never printed — a case awaiting an event that never came used to end Node with code 0 and no summary (observed by mutation).
+  - Task 8: a second click on an already-current fragment compares the resolved elements, not `location.hash` (percent-encoded) with the id; the fixture gains a `## Café` heading and a `#café` link, with a second-click case.
 
 ## Global Constraints
 
@@ -1265,6 +1268,10 @@ third
 
 See [the usage section](#usage) and [bar usage](foo/bar.md#usage).
 
+## Café
+
+See [the café section](#café).
+
 <h2 id="OKF_INDEX" name="x">Clobber attempt</h2>
 ```
 
@@ -1553,11 +1560,31 @@ checkAsync("the generated index executes with hostile ids as plain values", asyn
 
 // --- end of async checks ---
 
+// A pending Promise does not keep Node alive: a case awaiting an event that
+// never comes would end the process with code 0 and no summary. Every case
+// is bounded by a timer (which does keep Node alive) that fails it instead.
+const CASE_TIMEOUT_MS = 10000;
+let summarized = false;
+process.on("exit", () => {
+  if (!summarized) {
+    console.log("FAIL  - the harness exited before printing its summary");
+    process.exitCode = 1;
+  }
+});
+
 async function runAsyncChecks() {
   for (const { name, fn } of asyncChecks) {
     openedPages = [];
+    let timer = null;
     try {
-      await fn();
+      await Promise.race([
+        fn(),
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`timed out after ${CASE_TIMEOUT_MS} ms (an awaited event never came)`)),
+            CASE_TIMEOUT_MS);
+        }),
+      ]);
       // Errors raised by handlers after load fail the case too.
       for (const page of openedPages) {
         if (page.errors.length > 0) { throw new Error(`page script error: ${page.errors[0].message}`); }
@@ -1569,6 +1596,7 @@ async function runAsyncChecks() {
       console.log(`FAIL  - ${name}`);
       console.log(`        ${err.message}`);
     } finally {
+      clearTimeout(timer);
       for (const page of openedPages) { page.window.close(); }
     }
   }
@@ -1576,6 +1604,7 @@ async function runAsyncChecks() {
 
 runAsyncChecks().then(
   () => {
+    summarized = true;
     console.log(`\n${passed} passed, ${failures} failed`);
     process.exit(failures === 0 ? 0 : 1);
   },
@@ -2678,6 +2707,21 @@ checkAsync("an author fragment resolves to the generated heading, on load and on
   assert(!modified.defaultPrevented, "a Ctrl+click was taken over instead of left to the browser");
 });
 
+checkAsync("clicking an accented fragment link a second time still moves the reading focus", async () => {
+  const window = await openPage("foo.html");
+  const doc = window.document;
+  // marked percent-encodes the destination: the href is "#caf%C3%A9".
+  const link = Array.from(doc.querySelectorAll("#okf-body a")).find((a) => decodeURIComponent(a.getAttribute("href")) === "#café");
+  assert(link, "the fixture lost its #café link");
+  const changed = new Promise((resolve) => window.addEventListener("hashchange", resolve, { once: true }));
+  link.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }));
+  await changed;
+  assert(doc.activeElement.id === "okf-h-café", `focus after the first click: ${doc.activeElement.id}`);
+  link.focus();
+  link.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }));
+  assert(doc.activeElement.id === "okf-h-café", `focus after the second click stayed on: ${doc.activeElement.tagName} ${doc.activeElement.id}`);
+});
+
 checkAsync("without okf-index.js the page renders, the explorer stays hidden and nothing is clobbered", async () => {
   const window = await openPage("foo.html", { blocked: ["assets/okf-index.js"] });
   const doc = window.document;
@@ -2709,7 +2753,7 @@ checkAsync("explorer, palette and contents render hostile titles as inert text",
 - [ ] **Step 2: Run the harness to verify they fail**
 
 Run: `cd tools/viewer-security-check && npm test`
-Expected: the first two new cases and the fourth FAIL (no generated ids, contents hidden); the third may already pass. Exit code 1.
+Expected: every new case except `without okf-index.js…` FAILS (no generated ids, contents hidden, focus not moved); that one may already pass. Exit code 1.
 
 - [ ] **Step 3: Write `okf-toc.js`**
 
@@ -2794,7 +2838,10 @@ Replace `src/OKF4net.Viewer/Assets/okf-toc.js` with:
     var target = targetOf(href);
     if (!target) { return; }
     e.preventDefault();
-    if (window.location.hash === "#" + target.id) {
+    // Compare the resolved elements, not strings: location.hash is
+    // percent-encoded ("#okf-h-caf%C3%A9") while the id is not ("okf-h-café"),
+    // and re-assigning the same fragment fires no hashchange.
+    if (targetOf(window.location.hash) === target) {
       go(window.location.hash);
     } else {
       window.location.hash = target.id;
