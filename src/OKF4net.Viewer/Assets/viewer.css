@@ -70,3 +70,4 @@ table.frontmatter th { font-family: var(--mono); font-weight: 400; color: var(--
 .okf-palette-id { font-family: var(--mono); font-size: 12px; color: var(--gray); }
 .okf-palette-status { margin: 0; padding: 8px 16px; font-size: 13px; color: var(--gray); }
 .okf-palette-close { margin: 0 16px 12px; }
+.okf-palette:focus { outline: none; }

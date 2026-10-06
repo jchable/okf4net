@@ -1112,7 +1112,7 @@ checkAsync("palette: shortcuts open it only outside editable fields and IME comp
   const filter = doc.body.appendChild(doc.createElement("input"));
   filter.focus();
   key(window, filter, { key: "/" });
-  assert(backdrop.hidden, "'/' typed in the tree filter opened the palette");
+  assert(backdrop.hidden, "'/' typed in a text field opened the palette");
   key(window, filter, { key: "k", ctrlKey: true });
   assert(backdrop.hidden, "Ctrl+K in an editable field opened the palette");
   filter.blur();
@@ -1160,11 +1160,15 @@ checkAsync("palette: the active concept survives a narrower query, else the firs
   const input = doc.getElementById("okf-palette-input");
   const selected = () => paletteOptions(window).find((o) => o.getAttribute("aria-selected") === "true");
   type(window, input, "o");
-  const target = paletteOptions(window).map(optionId).indexOf("toString");
-  assert(target > 0, "this case needs toString after the first result");
+  const target = paletteOptions(window).map(optionId).indexOf("foo/bar");
+  assert(target > 0, "this case needs foo/bar after the first result");
   for (let k = 0; k < target; k++) { key(window, input, { key: "ArrowDown" }); }
-  type(window, input, "to");
-  assert(optionId(selected()) === "toString", `active after narrowing: ${optionId(selected())}`);
+  assert(optionId(selected()) === "foo/bar", `active before narrowing: ${optionId(selected())}`);
+  type(window, input, "foo");
+  const ids = paletteOptions(window).map(optionId);
+  // The kept concept must NOT be first, or "keep it" and "reset to the first" look the same.
+  assert(ids[0] === "foo" && ids[1] === "foo/bar", `order under "foo": ${ids.join(",")}`);
+  assert(optionId(selected()) === "foo/bar", `active after narrowing: ${optionId(selected())}`);
   type(window, input, "bro");
   assert(selected() === paletteOptions(window)[0], "the first option is not active once the active one is filtered out");
 });
@@ -1227,6 +1231,97 @@ checkAsync("palette: every match is listed and reachable, with no cap", async ()
   key(window, input, { key: "ArrowUp" });
   const last = paletteOptions(window)[59];
   assert(optionId(last) === "item-59" && last.getAttribute("aria-selected") === "true", "the 60th match is not reachable");
+});
+
+checkAsync("palette: '/' outside an editable field opens it, and is prevented", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const event = key(window, doc.body, { key: "/" });
+  assert(!doc.querySelector(".okf-palette-backdrop").hidden && event.defaultPrevented, "'/' did not open the palette, or was not prevented");
+  assert(doc.activeElement === doc.getElementById("okf-palette-input"), "focus did not move into the field");
+});
+
+checkAsync("palette: keys keep working when focus has fallen to the page", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const backdrop = doc.querySelector(".okf-palette-backdrop");
+  const opener = doc.querySelector(".okf-palette-open");
+  const input = doc.getElementById("okf-palette-input");
+  opener.focus();
+  opener.click();
+  // A click on the dialog's own text moves focus off the input (to the dialog,
+  // or to <body> when nothing there is focusable).
+  const dialog = doc.querySelector(".okf-palette");
+  assert(dialog.getAttribute("tabindex") === "-1", "the dialog is not focusable, so a click inside it drops focus to <body>");
+  dialog.focus();
+  key(window, dialog, { key: "Tab" });
+  assert(doc.activeElement === input, "Tab from the dialog did not land on the field");
+  doc.activeElement.blur();
+  assert(doc.activeElement === doc.body, "this case needs focus on <body>");
+  key(window, doc.body, { key: "Tab" });
+  assert(backdrop.contains(doc.activeElement), "Tab from <body> left the modal");
+  doc.activeElement.blur();
+  type(window, input, "o");
+  key(window, doc.body, { key: "ArrowDown" });
+  assert(doc.getElementById("okf-palette-opt-1").getAttribute("aria-selected") === "true", "ArrowDown from <body> did not move");
+  let navigated = null;
+  doc.addEventListener("okf:navigate", (e) => { navigated = e.detail.href; e.preventDefault(); });
+  key(window, doc.body, { key: "Enter" });
+  assert(navigated !== null, "Enter from <body> did not navigate");
+  key(window, doc.body, { key: "Escape" });
+  assert(backdrop.hidden, "Escape from <body> did not close");
+  assert(doc.activeElement === opener, "focus did not return to the opener");
+});
+
+checkAsync("palette: focus returns to the element that had it when a shortcut opened the palette", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const link = doc.querySelector("a[href]");
+  link.focus();
+  assert(doc.activeElement === link, "this case needs a focusable link");
+  key(window, link, { key: "k", ctrlKey: true });
+  assert(!doc.querySelector(".okf-palette-backdrop").hidden, "Ctrl+K from a link did not open the palette");
+  key(window, doc.getElementById("okf-palette-input"), { key: "Escape" });
+  assert(doc.activeElement === link, "focus did not return to the link");
+});
+
+checkAsync("palette: arrow keys move the active option without rebuilding the list", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  doc.querySelector(".okf-palette-open").click();
+  const input = doc.getElementById("okf-palette-input");
+  type(window, input, "o");
+  const before = paletteOptions(window);
+  key(window, input, { key: "ArrowDown" });
+  const after = paletteOptions(window);
+  assert(before.length === after.length && before.every((o, k) => o === after[k]), "the option elements were replaced");
+  assert(after.filter((o) => o.getAttribute("aria-selected") === "true").length === 1, "not exactly one selected option");
+  assert(after[1].getAttribute("aria-selected") === "true" && after[0].getAttribute("aria-selected") === "false", "selection did not move");
+});
+
+checkAsync("palette: aria-expanded follows whether there are results", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  doc.querySelector(".okf-palette-open").click();
+  const input = doc.getElementById("okf-palette-input");
+  type(window, input, "o");
+  assert(input.getAttribute("aria-expanded") === "true", "not expanded with results");
+  type(window, input, "zzzz-no-such-concept");
+  assert(input.getAttribute("aria-expanded") === "false", "still expanded with no results");
+});
+
+checkAsync("palette: from a nested page, the target resolves up to the site root", async () => {
+  for (const opts of [{}, { mount: "moved/dir/" }]) {
+    const window = await openPage("foo/bar.html", opts);
+    const doc = window.document;
+    doc.querySelector(".okf-palette-open").click();
+    const input = doc.getElementById("okf-palette-input");
+    type(window, input, "edge");
+    let navigated = null;
+    doc.addEventListener("okf:navigate", (e) => { navigated = e.detail.href; e.preventDefault(); });
+    key(window, input, { key: "Enter" });
+    assert(navigated === "../edge.html", `navigated to ${navigated} (${JSON.stringify(opts)})`);
+  }
 });
 
 // --- end of async checks ---

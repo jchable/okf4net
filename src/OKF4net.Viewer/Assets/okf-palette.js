@@ -30,6 +30,9 @@
   dialog.setAttribute("role", "dialog");
   dialog.setAttribute("aria-modal", "true");
   dialog.setAttribute("aria-labelledby", "okf-palette-title");
+  // Focusable but not a tab stop: a click on the dialog's own text keeps
+  // focus inside it instead of dropping it to <body>.
+  dialog.tabIndex = -1;
   var title = el("h2", "okf-sr", "Jump to a concept");
   title.id = "okf-palette-title";
   var input = document.createElement("input");
@@ -63,6 +66,23 @@
   var active = -1;
   var returnFocus = null;
 
+  // Marks the active option and keeps it visible. Arrow keys call this alone:
+  // the list is not rebuilt (it can hold every concept of a large bundle).
+  function sync() {
+    if (active >= 0 && list.children[active]) {
+      var activeOption = list.children[active];
+      activeOption.setAttribute("aria-selected", "true");
+      input.setAttribute("aria-activedescendant", activeOption.id);
+      // aria-activedescendant does not move DOM focus, so nothing scrolls
+      // the list by itself: keep the active option visible.
+      if (typeof activeOption.scrollIntoView === "function") {
+        activeOption.scrollIntoView({ block: "nearest" });
+      }
+    } else {
+      input.removeAttribute("aria-activedescendant");
+    }
+  }
+
   function render() {
     while (list.firstChild) { list.removeChild(list.firstChild); }
     for (var k = 0; k < shown.length; k++) {
@@ -70,23 +90,14 @@
       var option = el("li", "okf-palette-option");
       option.id = "okf-palette-opt-" + k;
       option.setAttribute("role", "option");
-      option.setAttribute("aria-selected", k === active ? "true" : "false");
+      option.setAttribute("aria-selected", "false");
       option.appendChild(el("span", "okf-palette-title", concept.title));
       option.appendChild(el("span", "okf-palette-id", concept.id));
       option.addEventListener("click", activate.bind(null, k));
       list.appendChild(option);
     }
-    if (active >= 0) {
-      input.setAttribute("aria-activedescendant", "okf-palette-opt-" + active);
-      // aria-activedescendant does not move DOM focus, so nothing scrolls
-      // the list by itself: keep the active option visible.
-      var activeOption = list.children[active];
-      if (activeOption && typeof activeOption.scrollIntoView === "function") {
-        activeOption.scrollIntoView({ block: "nearest" });
-      }
-    } else {
-      input.removeAttribute("aria-activedescendant");
-    }
+    input.setAttribute("aria-expanded", shown.length > 0 ? "true" : "false");
+    sync();
   }
 
   function update() {
@@ -109,8 +120,9 @@
 
   function move(delta) {
     if (shown.length === 0) { return; }
+    list.children[active].setAttribute("aria-selected", "false");
     active = (active + delta + shown.length) % shown.length;
-    render();
+    sync();
   }
 
   function activate(k) {
@@ -144,41 +156,46 @@
   backdrop.addEventListener("click", function (e) { if (e.target === backdrop) { closePalette(); } });
   input.addEventListener("input", update);
 
-  dialog.addEventListener("keydown", function (e) {
-    // Keys that confirm or cancel an IME composition belong to the IME, not
-    // to the palette (Enter would navigate, Escape would close).
-    if (e.isComposing || e.keyCode === 229) { return; }
-    if (e.key === "Escape") {
-      e.preventDefault();
-      closePalette();
-    } else if (e.key === "ArrowDown") {
-      e.preventDefault();
-      move(1);
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      move(-1);
-    } else if (e.key === "Enter" && e.target === input) {
-      e.preventDefault();
-      activate(active);
-    } else if (e.key === "Tab") {
-      // Focus stays inside the modal: its only stops are the field and Close.
-      e.preventDefault();
-      (document.activeElement === input ? close : input).focus();
-    }
-  });
-
   function isEditable(target) {
     if (!target || target.nodeType !== 1) { return false; }
     var tag = target.tagName;
     return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable === true;
   }
 
-  // Ctrl+K and "/" are also browser shortcuts (Chrome, Firefox): they are
-  // taken only outside editable fields, without other modifiers and outside
-  // IME composition, and prevented only when taken (spec §8).
+  // One listener serves both states, on document, because a click inside the
+  // dialog on something unfocusable can leave focus on <body>: the open-state
+  // keys must not depend on where focus is.
+  //
+  // Closed: Ctrl+K and "/" are also browser shortcuts (Chrome, Firefox), so
+  // they are taken only outside editable fields, without other modifiers and
+  // outside IME composition, and prevented only when taken (spec §8).
   document.addEventListener("keydown", function (e) {
-    if (e.defaultPrevented || e.isComposing || e.keyCode === 229 || !backdrop.hidden) { return; }
-    if (isEditable(e.target)) { return; }
+    // Keys that confirm or cancel an IME composition belong to the IME, not
+    // to the palette (Enter would navigate, Escape would close).
+    if (e.isComposing || e.keyCode === 229) { return; }
+    if (!backdrop.hidden) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closePalette();
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        move(1);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        move(-1);
+      } else if (e.key === "Enter" && e.target !== close) {
+        // Enter on Close is that button's own click.
+        e.preventDefault();
+        activate(active);
+      } else if (e.key === "Tab") {
+        // Focus stays inside the modal: its only stops are the field and
+        // Close (from <body> or the dialog itself, Tab lands on the field).
+        e.preventDefault();
+        (document.activeElement === input ? close : input).focus();
+      }
+      return;
+    }
+    if (e.defaultPrevented || isEditable(e.target)) { return; }
     var ctrlK = e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && (e.key === "k" || e.key === "K");
     var slash = e.key === "/" && !e.ctrlKey && !e.altKey && !e.metaKey;
     if (ctrlK || slash) {
