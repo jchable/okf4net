@@ -122,6 +122,11 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      # check-index.js executes the okf-index.js the native okf-render writes.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
       - name: Derive declared version
         shell: pwsh
         run: |
@@ -203,7 +208,11 @@ jobs:
           & $env:OKF_RENDER_BIN tests/fixtures/appendix_a --out $outDir
           if ($LASTEXITCODE -ne 0) { throw "okf-render failed" }
           if (-not (Test-Path "$outDir/index.html")) { throw "okf-render did not write $outDir/index.html" }
-          Write-Host "OK: okf-render wrote $outDir/index.html"
+          $indexScript = "$outDir/assets/okf-index.js"
+          if (-not (Test-Path $indexScript)) { throw "okf-render did not write $indexScript" }
+          node tools/viewer-security-check/check-index.js $indexScript
+          if ($LASTEXITCODE -ne 0) { throw "$indexScript does not execute as a usable site index" }
+          Write-Host "OK: okf-render wrote $outDir/index.html and an executable $indexScript"
 
       # `okf --version` / `okf-render --version` each read
       # AssemblyInformationalVersionAttribute at runtime. The in-process

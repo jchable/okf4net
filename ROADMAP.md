@@ -130,6 +130,11 @@ are the concrete entry points.
   server would have added over `okf-render` alone was one saved command
   invocation per edit; search was the only capability that genuinely
   required it, and the extension gets that too.
+  Interactive navigation is being brought into `okf-render` itself
+  (design `docs/superpowers/specs/2026-10-06-okf-viewer-interactive-design.md`):
+  P1 — explorer, palette, contents — has landed; P2 (local link graph) and P3
+  (global link graph with facets) follow, which replaces the separate
+  "interactive cross-link graph explorer" project this roadmap used to list.
   - **The client-side XSS defense is guarded by a JS harness, not by xunit.**
     xunit runs on .NET and cannot execute JavaScript, so
     `tests/OKF4net.Tests/Viewer/ViewerAssetsTests.cs` only smoke-checks for
@@ -148,17 +153,11 @@ are the concrete entry points.
   what's already zero-dep), packaged for GitHub Actions/pre-commit — a
   docs/DevOps-facing entry point distinct from the agent-builder-facing
   samples, showcasing the zero-dependency story to a different audience.
-- **Interactive cross-link graph explorer.** A small web front-end over
-  `okf graph`/`IndexGenerator` output, visualizing a bundle's concept
-  cross-links — outreach-oriented (contributor/adoption funnel), likely
-  outside pure C#/.NET so scoped as its own project rather than a
-  `samples/` entry.
 - **A Visual Studio Code extension viewer.** Browse the bundle open in the
   workspace from the editor itself — a tree view over the concepts, a
   rendered preview of the selected one, re-rendered on save — instead of
   generating a static site and switching to a browser. Its own project
-  (TypeScript, its own repo and marketplace listing), like the graph explorer
-  above, not a `samples/` entry.
+  (TypeScript, its own repo and marketplace listing), not a `samples/` entry.
   - **`OKF4net.Viewer` already carries the client half.** `Assets/viewer.js`
     is a self-contained IIFE with no framework dependency: it reads a
     `{ body, links }` JSON payload, renders the markdown with the vendored
