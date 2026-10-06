@@ -385,10 +385,14 @@ okf-render bundles/ga4 --out /tmp/ga4-site
 ```
 
 The generated site is self-contained and opens straight off the filesystem —
-no server needed. It is read-only, and has no full-text search: a static site
-has no server to run the shared `ConceptSearch` scorer, and mirroring its
-weights in JavaScript would fork it. Interactive browsing with search is
-planned as a VS Code extension instead (see `ROADMAP.md`), not as a local
+no server needed. Every page carries a tree explorer of the bundle (concepts
+show a badge when they are machine-confirmed or human-reviewed, and when they
+are stale), a "Jump to" palette (Ctrl+K or `/`, matching titles, ids and
+tags) and a light/dark toggle; a side panel with the page's contents and
+backlinks appears where the page has contents (h2/h3 headings) or backlinks.
+It is read-only, and has no full-text search: a static site has no server
+to run the shared `ConceptSearch` scorer, and mirroring its weights in
+JavaScript would fork it. Interactive browsing with search is planned as a VS Code extension instead (see `ROADMAP.md`), not as a local
 server. `okf-render` has its own winget package,
 **`Coderise.OKF4net.Render`**, built and attached to each Release the same way
 as `okf`'s — but its *first* submission to `winget-pkgs` is a manual, one-time

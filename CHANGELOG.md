@@ -10,6 +10,17 @@ and this project adheres to
 
 ### Added
 
+- **Interactive `okf-render` pages (P1).** Every generated page now has a tree
+  explorer of the bundle (a concept that is also a folder opens and expands
+  separately; badges for the machine-confirmed and human-reviewed trust tiers
+  and for staleness, from `ConceptAudit`, staleness evaluated when the page is
+  read), a "Jump to" palette (Ctrl+K or `/`, fixed-tier matching on titles,
+  ids and tags — not full-text search) and a light/dark toggle; where a page
+  has contents or backlinks, a side panel lists them. Headings get generated
+  `okf-h-` anchors, so author links such as `#usage` now land. The data comes
+  from a new generated `assets/okf-index.js` (`SiteIndex`, `IndexScript`);
+  `viewer.js` and the OKF4net core API are unchanged. The jsdom harness now
+  loads a site generated from a hostile fixture bundle and needs the .NET SDK.
 - **`samples/agents-quickstart`**, an `OKF4net.Agents` sample that runs with
   `dotnet run` and needs no LLM endpoint, API key or network access (#5). Over
   `bundles/ga4`, it lists the read-only tools, calls `Search` and
