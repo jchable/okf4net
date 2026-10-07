@@ -1,6 +1,9 @@
 /* OKF4net bundle viewer — visual language copied from the project website
    ("The §Document" theme). Maintained independently of web/: the two are
    deliberately not coupled. */
+/* === @font-face (P1.1 Task 10 replaces the lines between these two markers) === */
+/* === end @font-face === */
+
 :root {
   --white: #ffffff;
   --ink: #101014;
@@ -140,6 +143,7 @@ body > .okf-layout > main { flex: 999 1 560px; min-width: 0; margin: 0; }
 #okf-explorer .okf-trust-human { background: var(--blue); }
 #okf-explorer .okf-trust-machine { border: 2px solid var(--blue); }
 #okf-explorer .okf-stale { border-radius: 0; width: 9px; background: #b4540a; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+/* (end of the P1 explorer rules: Task 13 removes the block above, Task 14 the one below; nobody edits this line) */
 body > .okf-palette-backdrop {
   position: fixed; inset: 0; z-index: 10; display: flex; align-items: flex-start; justify-content: center;
   padding: 96px 16px 16px; background: rgba(16, 16, 20, .4);
@@ -179,6 +183,7 @@ body > .okf-palette-backdrop .okf-palette-id { flex: 0 1 auto; max-width: 100%; 
 body > .okf-palette-backdrop .okf-palette-status { margin: 0; padding: 8px 16px; font-size: 13px; color: var(--gray); }
 body > .okf-palette-backdrop .okf-palette-close { margin: 0 16px 12px; }
 body > .okf-palette-backdrop .okf-palette:focus { outline: none; }
+/* (end of the P1 palette rules: Task 14 removes the block above; nobody edits this line) */
 #okf-context :is(.okf-toc, .okf-backlinks) h2 {
   font-family: var(--mono); font-size: 11px; font-weight: 400; letter-spacing: .06em;
   text-transform: uppercase; color: var(--gray); margin: 0 0 8px;
@@ -193,3 +198,26 @@ body > .okf-palette-backdrop .okf-palette:focus { outline: none; }
    (a sibling, outside it) or any chrome. */
 #okf-body table { display: block; overflow-x: auto; }
 #okf-body [tabindex="-1"]:focus { outline: 2px solid var(--blue); outline-offset: 4px; }
+
+/* === P1.1 chrome: one block per task; a task writes only under its own line === */
+/* --- Task 3: shared components (spec §12.6), shapes (§12.2), #okf-body content (C7) --- */
+
+/* --- Task 7: theme button (H11) --- */
+
+/* --- Task 8: contents (X3, X4) --- */
+
+/* --- Task 11: header (H1-H13) --- */
+
+/* --- Task 12: page head (C2-C6) and Referenced by (X10) --- */
+
+/* --- Task 13: explorer (E1-E13) and Filters (H8) --- */
+
+/* --- Task 14: palette (H7, J1-J6) --- */
+
+/* --- Task 15: Show all (C6) --- */
+
+/* === P2: local graph === */
+/* (P2 rules) */
+
+/* === P3: graph page === */
+/* (P3 rules) */

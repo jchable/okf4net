@@ -935,6 +935,17 @@ function okfSite() {
   return dom.window;
 }
 
+// A bare window with okf-site.js and okf-shapes.js (spec §12.7), for the
+// OkfShapes cases (control 10) and the slice case files. okf-shapes.js is read
+// when the helper is CALLED, not when run.js loads: it is created by a later
+// P1.1 task, and run.js must keep working before it exists.
+function okfShapes() {
+  const dom = new JSDOM("<!doctype html><html><body></body></html>", { runScripts: "outside-only" });
+  dom.window.eval(siteSource);
+  dom.window.eval(fs.readFileSync(path.join(ASSETS, "okf-shapes.js"), "utf8"));
+  return dom.window;
+}
+
 // jsdom 29 has no ResourceLoader any more: resources go through undici
 // interceptors. This one serves SITE under BASE + mount (so a case can
 // "move" the generated folder) and never lets a request reach the network.
@@ -1767,31 +1778,78 @@ checkAsync("explorer, palette and contents render hostile titles as inert text",
 // The sanitizer keeps `class` on <code>, so body content can wear any chrome
 // class. Every chrome rule is anchored to a chrome container: inside
 // #okf-body such a class must change nothing (no overlay faking a dialog, no
-// fake trust badge, no text hidden from sighted readers).
-checkAsync("chrome classes worn by body content change none of its styles", async () => {
+// fake trust badge, no text hidden from sighted readers). Each slice lists its
+// chrome classes in its own fixture page (spec §12.6): chrome-classes.md
+// (P1), p11-chrome-classes.md (P1.1), p2-chrome-classes.md (P2),
+// p3-chrome-classes.md (P3). This case runs on every such page the generated
+// site holds, so a slice's page is covered as soon as its fixture exists.
+const CHROME_PROPS = ["position", "display", "width", "height", "clip", "clip-path", "overflow", "z-index", "inset", "top",
+  "background", "background-color", "border", "border-left", "border-left-color", "border-radius", "border-width",
+  "padding", "margin", "white-space", "max-width", "min-height", "cursor", "flex", "list-style", "font-family",
+  "font-size", "color", "text-transform", "outline", "overflow-wrap", "min-width", "order", "align-items",
+  "flex-direction", "flex-basis", "flex-shrink", "flex-wrap", "margin-top", "overflow-x",
+  // Properties the P1.1 chrome sets as well.
+  "font-weight", "letter-spacing", "line-height", "text-decoration", "visibility", "text-overflow", "border-top",
+  "border-bottom", "border-color", "box-shadow", "opacity", "gap", "justify-content", "vertical-align", "text-align",
+  "max-height", "padding-left", "padding-top", "grid-template-columns", "flex-grow", "fill", "stroke", "left", "bottom"];
+
+function chromeClassPages() {
+  return fs.readdirSync(SITE).filter((name) => /(^|-)chrome-classes\.html$/.test(name)).sort();
+}
+
+checkAsync("chrome classes worn by body content change none of its styles, on every *chrome-classes page", async () => {
+  const pages = chromeClassPages();
+  for (const required of ["chrome-classes.html", "p11-chrome-classes.html"]) {
+    assert(pages.includes(required), `${required} is missing from the generated site (found: ${pages.join(", ")})`);
+  }
+  // jsdom applies no @media rule: a second pass loads a copy of the stylesheet
+  // with every @media wrapper removed, as if every query matched.
+  const unwrapped = unwrapMedia(fs.readFileSync(path.join(SITE, "assets", "viewer.css"), "utf8"));
+  for (const rel of pages) {
+    const window = await openPage(rel);
+    const doc = window.document;
+    const body = doc.getElementById("okf-body");
+    const reference = body.querySelector("code:not([class])");
+    assert(reference, `${rel}: the fixture lost its unclassed reference <code>`);
+    const worn = Array.from(body.querySelectorAll("code[class]"));
+    assert(worn.length >= 1 && worn[0].classList.length >= 2,
+      `${rel}: the first classed <code> carries ${worn.length ? worn[0].classList.length : 0} classes: the sanitizer dropped them, this case no longer tests anything`);
+    const assertInert = (when) => {
+      for (const el of body.querySelectorAll("*")) {
+        const style = window.getComputedStyle(el);
+        const where = `${when}: <${el.tagName.toLowerCase()} class="${el.getAttribute("class") || ""}">`;
+        assert(style.position !== "fixed" && style.position !== "absolute", `${where} inside #okf-body is position: ${style.position}`);
+        assert(!/rect\(/.test(style.clip) && style.width !== "1px" && style.height !== "1px", `${where} inside #okf-body is clipped or 1px (screen-reader-only styling)`);
+        assert(style.display !== "none" && style.visibility !== "hidden", `${where} inside #okf-body is hidden`);
+      }
+      // jsdom neither expands shorthands nor resolves var() in them, so both
+      // the shorthands and their longhands are compared, as declared.
+      const expected = window.getComputedStyle(reference);
+      for (const el of worn) {
+        const style = window.getComputedStyle(el);
+        for (const prop of CHROME_PROPS) {
+          assert(style.getPropertyValue(prop) === expected.getPropertyValue(prop),
+            `${when}: <code class="${el.getAttribute("class")}"> ${prop}: ${style.getPropertyValue(prop)} (an unclassed <code> has ${expected.getPropertyValue(prop)})`);
+        }
+      }
+    };
+    assertInert(`${rel} as loaded`);
+    const style = doc.createElement("style");
+    style.textContent = unwrapped;
+    doc.head.appendChild(style);
+    const realHead = doc.querySelector("#okf-explorer .okf-explorer-head");
+    assert(realHead && window.getComputedStyle(realHead).getPropertyValue("position") === "sticky",
+      `${rel}: the unwrapped stylesheet no longer makes the real explorer head sticky: this pass tests nothing`);
+    assertInert(`${rel} with every @media rule applied`);
+  }
+});
+
+// The anchored rules still style the real chrome: a selector the engine
+// cannot match would pass the case above by styling nothing at all. One probe
+// per P1 component; each P1.1 task adds its own probe case under its marker.
+checkAsync("the real P1 chrome keeps its anchored styles", async () => {
   const window = await openPage("chrome-classes.html");
   const doc = window.document;
-  const body = doc.getElementById("okf-body");
-  const reference = body.querySelector("code:not([class])");
-  assert(reference, "the fixture lost its unclassed reference <code>");
-  const worn = Array.from(body.querySelectorAll("code[class]"));
-  assert(worn.length >= 6, `the fixture lost its classed <code> elements (${worn.length})`);
-  assert(worn[0].classList.contains("okf-palette-backdrop") && worn[0].classList.contains("okf-sr"), "the sanitizer dropped the class attribute: this case no longer tests anything");
-  for (const el of body.querySelectorAll("*")) {
-    const style = window.getComputedStyle(el);
-    const where = `<${el.tagName.toLowerCase()} class="${el.getAttribute("class") || ""}">`;
-    assert(style.position !== "fixed" && style.position !== "absolute", `${where} inside #okf-body is position: ${style.position}`);
-    assert(!/rect\(/.test(style.clip) && style.width !== "1px" && style.height !== "1px", `${where} inside #okf-body is clipped or 1px (screen-reader-only styling)`);
-  }
-  // jsdom neither expands shorthands nor resolves var() in them, so both the
-  // shorthands and their longhands are compared, as declared.
-  const props = ["position", "display", "width", "height", "clip", "clip-path", "overflow", "z-index", "inset", "top",
-    "background", "background-color", "border", "border-left", "border-left-color", "border-radius", "border-width",
-    "padding", "margin", "white-space", "max-width", "min-height", "cursor", "flex", "list-style", "font-family",
-    "font-size", "color", "text-transform", "outline", "overflow-wrap", "min-width", "order", "align-items",
-    "flex-direction", "flex-basis", "flex-shrink", "flex-wrap", "margin-top", "overflow-x"];
-  // The anchored rules still style the real chrome (a selector the engine
-  // cannot match would pass the checks above by styling nothing at all).
   const chrome = [
     [doc.querySelector("body > .okf-palette-backdrop"), "position", "fixed"],
     [doc.querySelector("#okf-explorer .okf-tree-toggle .okf-sr"), "position", "absolute"],
@@ -1803,28 +1861,6 @@ checkAsync("chrome classes worn by body content change none of its styles", asyn
     const got = window.getComputedStyle(el).getPropertyValue(prop);
     assert(got === value, `the real <${el.tagName.toLowerCase()} class="${el.getAttribute("class")}"> lost its ${prop}: ${value} (got ${got})`);
   }
-  const assertWornLikeReference = (when) => {
-    const expected = window.getComputedStyle(reference);
-    for (const el of worn) {
-      const style = window.getComputedStyle(el);
-      for (const prop of props) {
-        assert(style.getPropertyValue(prop) === expected.getPropertyValue(prop),
-          `${when}: <code class="${el.getAttribute("class")}"> ${prop}: ${style.getPropertyValue(prop)} (an unclassed <code> has ${expected.getPropertyValue(prop)})`);
-      }
-    }
-  };
-  assertWornLikeReference("as loaded");
-  // jsdom applies no @media rule, so every rule inside one (the desktop
-  // explorer head, the stacked and narrow layouts) went unchecked above. Load
-  // a copy of the stylesheet with each @media wrapper removed, as if every
-  // query matched, and compare again.
-  const style = doc.createElement("style");
-  style.textContent = unwrapMedia(fs.readFileSync(path.join(SITE, "assets", "viewer.css"), "utf8"));
-  doc.head.appendChild(style);
-  const realHead = doc.querySelector("#okf-explorer .okf-explorer-head");
-  assert(realHead && window.getComputedStyle(realHead).getPropertyValue("position") === "sticky",
-    "the unwrapped stylesheet no longer makes the real explorer head sticky: this pass tests nothing");
-  assertWornLikeReference("with every @media rule applied");
 });
 
 // Drops each "@media ... {" header and its closing brace, keeping the rules
@@ -2079,6 +2115,76 @@ checkAsync("a GFM table in the body scrolls in its own box; the frontmatter tabl
     `the frontmatter table changed (display ${front.getPropertyValue("display")}, overflow-x ${front.getPropertyValue("overflow-x")})`);
 });
 
+// === P1.1 cases: one block per task; a task writes only under its own line ===
+// --- Task 3: CSS foundation ---
+
+// --- Task 4: index v2 ---
+
+// --- Task 6: OkfShapes (control 10) ---
+
+// --- Task 7: theme button ---
+
+// --- Task 8: contents, current section ---
+
+// --- Task 10: fonts ---
+
+// --- Task 11: shell and header ---
+
+// --- Task 12: page head ---
+
+// --- Task 13: explorer ---
+
+// --- Task 14: palette ---
+
+// --- Task 15: okf-page.js (control 11) ---
+
+// --- Task 16: fonts fallback (only if Task 10 found a browser blocking the fonts) ---
+
+// === end of P1.1 cases ===
+
+// --- slice case files (spec §12.7) ------------------------------------------
+//
+// P2 and P3 never edit this file: their cases live in cases/p2.js and
+// cases/p3.js, each exporting register(h). Every cases/*.js present is loaded
+// in ordinal order of its name and registered here, before the summary; an
+// absent folder or file is not an error. h is frozen, so a slice cannot
+// replace a helper another slice relies on. A slice registers synchronous
+// checks with h.check (they run at once) and page cases with h.checkAsync
+// (they are queued and awaited with every other page case).
+const SLICE_HELPERS = Object.freeze({
+  check, assert, checkAsync, okfSite, okfShapes, siteResources, openPage, navigations,
+  key, type, unwrapMedia, isShown, paletteOptions, treeLink,
+});
+const CASES_DIR = path.join(__dirname, "cases");
+let sliceCaseFiles = [];
+try {
+  sliceCaseFiles = fs.readdirSync(CASES_DIR).filter((name) => name.endsWith(".js")).sort();
+} catch (err) {
+  if (err.code !== "ENOENT") { throw err; }
+}
+for (const name of sliceCaseFiles) {
+  console.log(`\nSlice cases (cases/${name}):`);
+  let mod = null;
+  try {
+    mod = require(path.join(CASES_DIR, name));
+  } catch (err) {
+    failures++;
+    console.log(`FAIL  - cases/${name} does not load: ${err.message}`);
+    continue;
+  }
+  if (!mod || typeof mod.register !== "function") {
+    failures++;
+    console.log(`FAIL  - cases/${name} does not export register(h)`);
+    continue;
+  }
+  try {
+    mod.register(SLICE_HELPERS);
+  } catch (err) {
+    failures++;
+    console.log(`FAIL  - cases/${name}: register(h) threw: ${err.message}`);
+  }
+}
+
 // --- end of async checks ---
 
 // A pending Promise does not keep Node alive: a case awaiting an event that
@@ -2094,6 +2200,9 @@ process.on("exit", () => {
 });
 
 async function runAsyncChecks() {
+  // Synchronous output (helpers, OkfShapes, slice files) has all been printed
+  // by now; every queued page case reports under this header.
+  console.log("\nPage cases (queued above, awaited now):");
   for (const { name, fn } of asyncChecks) {
     openedPages = [];
     let timer = null;
