@@ -1555,9 +1555,9 @@ checkAsync("palette: every match is listed and reachable, with no cap", async ()
   const concepts = [];
   for (let k = 0; k < 60; k++) {
     const id = `item-${String(k).padStart(2, "0")}`;
-    concepts.push({ id, title: `Item ${k}`, type: "Note", tags: [], path: `${id}.html`, trust: "unverified", staleAfterMs: null, staleAfterDate: null });
+    concepts.push({ id, title: `Item ${k}`, type: "Note", tags: [], path: `${id}.html`, trust: "unverified", staleAfterMs: null, staleAfterDate: null, typeIndex: 0, description: "" });
   }
-  const source = `window.OKF_INDEX = ${JSON.stringify({ version: 1, concepts, ghosts: [], edges: [], tree: [] })};`;
+  const source = `window.OKF_INDEX = ${JSON.stringify({ version: 2, concepts, ghosts: [], edges: [], tree: [], types: [{ name: "Note", count: 60, slot: 0 }] })};`;
   const window = await openPage("index.html", { override: { "assets/okf-index.js": source } });
   const doc = window.document;
   doc.querySelector(".okf-palette-open").click();
@@ -2360,8 +2360,8 @@ checkAsync("explorer: the filter field is labelled by what it does", async () =>
 
 checkAsync("explorer: the stale badge shows staleAfterDate as written, never a date rebuilt from staleAfterMs", async () => {
   // The two fields disagree on purpose, so the case tells which one is shown.
-  const concepts = [{ id: "x", title: "X", type: "Note", tags: [], path: "x.html", trust: "unverified", staleAfterMs: 0, staleAfterDate: "2026-10-06" }];
-  const source = `window.OKF_INDEX = ${JSON.stringify({ version: 1, concepts, ghosts: [], edges: [], tree: [{ name: "x", concept: 0, children: [] }] })};`;
+  const concepts = [{ id: "x", title: "X", type: "Note", tags: [], path: "x.html", trust: "unverified", staleAfterMs: 0, staleAfterDate: "2026-10-06", typeIndex: 0, description: "" }];
+  const source = `window.OKF_INDEX = ${JSON.stringify({ version: 2, concepts, ghosts: [], edges: [], tree: [{ name: "x", concept: 0, children: [] }], types: [{ name: "Note", count: 1, slot: 0 }] })};`;
   const window = await openPage("index.html", { override: { "assets/okf-index.js": source }, now: () => Date.UTC(2026, 9, 7) });
   const stale = treeLink(window, "x").parentElement.querySelector(".okf-stale");
   assert(stale && !stale.hidden, "this case needs a shown stale badge");
@@ -2474,6 +2474,47 @@ checkAsync("a GFM table in the body scrolls in its own box; the frontmatter tabl
 // --- Task 3: CSS foundation ---
 
 // --- Task 4: index v2 ---
+console.log("\nP1.1 — index v2:");
+
+check("readIndex accepts only a version 2 index with a types array", () => {
+  const window = okfSite();
+  const base = () => ({ concepts: [], ghosts: [], edges: [], tree: [] });
+  window.OKF_INDEX = Object.assign(base(), { version: 2, types: [] });
+  assert(window.OkfSite.readIndex(window) !== null, "a v2 index was rejected");
+  window.OKF_INDEX = Object.assign(base(), { version: 1, types: [] });
+  assert(window.OkfSite.readIndex(window) === null, "a v1 index was accepted");
+  window.OKF_INDEX = Object.assign(base(), { version: 2 });
+  assert(window.OkfSite.readIndex(window) === null, "an index without types was accepted");
+});
+
+checkAsync("the generated v2 index ranks the types, points each concept at its type and bounds descriptions", async () => {
+  const window = await openPage("index.html");
+  const idx = window.OKF_INDEX;
+  assert(idx.version === 2, `version ${idx.version}`);
+  const types = Array.from(idx.types);
+  let rank = 0;
+  let total = 0;
+  types.forEach((t, k) => {
+    if (k > 0) {
+      const prev = types[k - 1];
+      assert(prev.count > t.count || (prev.count === t.count && prev.name < t.name), `types out of order at ${k}: ${prev.name}/${prev.count}, ${t.name}/${t.count}`);
+    }
+    const want = t.name !== "" && rank < 5 ? rank++ : 5;
+    assert(t.slot === want, `type "${t.name}" has slot ${t.slot}, expected ${want}`);
+    total += t.count;
+  });
+  assert(total === idx.concepts.length, `type counts add up to ${total}, not ${idx.concepts.length}`);
+  // The fixture exercises the empty type and the shared "other" slot.
+  assert(types.some((t) => t.name === "" && t.slot === 5), "the fixture lost its untyped concept");
+  assert(types.filter((t) => t.slot === 5).length >= 3, "the fixture no longer puts several types in the other slot");
+  for (const c of idx.concepts) {
+    assert(types[c.typeIndex] && types[c.typeIndex].name === c.type, `${c.id}: typeIndex ${c.typeIndex} does not name "${c.type}"`);
+    assert(typeof c.description === "string" && Array.from(c.description).length <= 200, `${c.id}: description of ${Array.from(c.description).length} code points`);
+  }
+  const long = idx.concepts.find((c) => c.id === "p11-types/m1");
+  assert(long && Array.from(long.description).length === 200 && long.description.endsWith(String.fromCharCode(0x2026)) && !/ {2}/.test(long.description),
+    `p11-types/m1 description: ${long && JSON.stringify(long.description)}`);
+});
 
 // --- Task 6: OkfShapes (control 10) ---
 

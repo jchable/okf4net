@@ -11,15 +11,17 @@
 
   var HEADING_PREFIX = "okf-h-";
 
-  // The site index, or null when okf-index.js did not run or window.OKF_INDEX
-  // is something else -- typically a DOM element reached through named
-  // access (DOM clobbering).
+  // The site index, or null when okf-index.js did not run, is not schema
+  // version 2 (spec §12.1), or window.OKF_INDEX is something else --
+  // typically a DOM element reached through named access (DOM clobbering).
   function readIndex(win) {
     var idx;
     try { idx = win.OKF_INDEX; } catch (e) { return null; }
     if (!idx || typeof idx !== "object" || "nodeType" in idx) { return null; }
+    if (idx.version !== 2) { return null; }
     if (!Array.isArray(idx.concepts) || !Array.isArray(idx.ghosts)
-        || !Array.isArray(idx.edges) || !Array.isArray(idx.tree)) { return null; }
+        || !Array.isArray(idx.edges) || !Array.isArray(idx.tree)
+        || !Array.isArray(idx.types)) { return null; }
     return idx;
   }
 
