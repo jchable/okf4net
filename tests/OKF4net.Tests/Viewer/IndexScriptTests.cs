@@ -44,7 +44,7 @@ public class IndexScriptTests
         var paragraphSeparator = ((char)0x2029).ToString();
         var hostile = "</script><img src=x onerror=alert(1)>" + lineSeparator + paragraphSeparator + "\"\\";
         var concept = new IndexConcept(ConceptId.Parse("a"), hostile, hostile, [hostile], "a.html", "unverified", null, null);
-        var index = new ViewerIndex([concept], [], [], [new IndexTreeNode(hostile, 0, [])]);
+        var index = new ViewerIndex([concept], [], [], [new IndexTreeNode(hostile, 0, [])]) { Types = [new IndexType(hostile, 1, 0)] };
 
         var script = IndexScript.Render(index);
 
@@ -65,7 +65,7 @@ public class IndexScriptTests
         var dated = new IndexConcept(ConceptId.Parse("a"), "A", "Note", [], "a.html", "unverified", 1791244800001L, "2026-10-06");
         var undated = new IndexConcept(ConceptId.Parse("b"), "B", "Note", [], "b.html", "unverified", null, null);
 
-        var script = IndexScript.Render(new ViewerIndex([dated, undated], [], [], []));
+        var script = IndexScript.Render(new ViewerIndex([dated, undated], [], [], []) { Types = [new IndexType("Note", 2, 0)] });
 
         Assert.Contains("\"staleAfterMs\":1791244800001,\"staleAfterDate\":\"2026-10-06\"", script);
         Assert.Contains("\"staleAfterMs\":null,\"staleAfterDate\":null", script);
@@ -80,7 +80,10 @@ public class IndexScriptTests
             [a, b],
             [new IndexGhost(ConceptId.Parse("gone"))],
             [new IndexEdge(0, 1, 2, false), new IndexEdge(0, 0, 1, true)],
-            []);
+            [])
+        {
+            Types = [new IndexType("Note", 2, 0)],
+        };
 
         var script = IndexScript.Render(index);
 
@@ -112,6 +115,18 @@ public class IndexScriptTests
         Assert.StartsWith("window.OKF_INDEX = {\"version\":2,\"concepts\":[", script);
         Assert.Contains("\"staleAfterMs\":null,\"staleAfterDate\":null,\"typeIndex\":0,\"description\":\"Gross margin.\"}", script);
         Assert.EndsWith(",\"types\":[{\"name\":\"Metric\",\"count\":1,\"slot\":0},{\"name\":\"\",\"count\":2,\"slot\":5}]};\n", script);
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(1)]
+    public void A_concept_whose_TypeIndex_is_outside_the_types_table_is_refused(int typeIndex)
+    {
+        var concept = new IndexConcept(ConceptId.Parse("a"), "A", "Metric", [], "a.html", "unverified", null, null) { TypeIndex = typeIndex };
+        var index = new ViewerIndex([concept], [], [], []) { Types = [new IndexType("Metric", 1, 0)] };
+
+        Assert.Throws<ArgumentException>(() => IndexScript.Render(index));
+        Assert.Throws<ArgumentException>(() => IndexScript.Render(new ViewerIndex([concept], [], [], [])));
     }
 
     [Fact]

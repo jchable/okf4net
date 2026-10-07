@@ -28,12 +28,16 @@ public sealed record IndexConcept(
     string? StaleAfterDate)
 {
     /// <summary>Position of this concept's type in <see cref="ViewerIndex.Types"/> (spec §12.1).</summary>
+    /// <remarks>
+    /// A hand-built index must fill this and <see cref="ViewerIndex.Types"/>
+    /// consistently; <c>SiteIndex.Build</c> is the only in-tree producer, and
+    /// <c>IndexScript.Render</c> rejects a position outside the table.
+    /// </remarks>
     public int TypeIndex { get; init; }
 
     /// <summary>
     /// The frontmatter <c>description</c>, whitespace runs collapsed and
-    /// truncated to <see cref="SiteIndex.DescriptionLimit"/> code points
-    /// (spec §12.1, A18); empty when absent.
+    /// truncated to 200 code points (spec §12.1, A18); empty when absent.
     /// </summary>
     public string Description { get; init; } = string.Empty;
 }
@@ -84,5 +88,11 @@ public sealed record ViewerIndex(
     /// concept points into it by <see cref="IndexConcept.TypeIndex"/>
     /// (spec §12.1). The JS reads the ranks here and never recomputes them.
     /// </summary>
+    /// <remarks>
+    /// A hand-built index must fill this and each concept's
+    /// <see cref="IndexConcept.TypeIndex"/> consistently
+    /// (<c>SiteIndex.Build</c> is the only in-tree producer); the empty
+    /// index has no concept and no type, which is valid.
+    /// </remarks>
     public IReadOnlyList<IndexType> Types { get; init; } = [];
 }

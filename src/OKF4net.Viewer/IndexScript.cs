@@ -31,8 +31,19 @@ public static class IndexScript
 
     /// <summary>Renders <paramref name="index"/> as a complete script, ending with <c>;\n</c>.</summary>
     /// <param name="index">The site index.</param>
+    /// <exception cref="ArgumentException">A concept's <see cref="IndexConcept.TypeIndex"/> is outside <see cref="ViewerIndex.Types"/>.</exception>
     public static string Render(ViewerIndex index)
     {
+        foreach (var concept in index.Concepts)
+        {
+            if ((uint)concept.TypeIndex >= (uint)index.Types.Count)
+            {
+                throw new ArgumentException(
+                    $"Concept '{concept.Id}' has TypeIndex {concept.TypeIndex}, outside the {index.Types.Count} types of the index.",
+                    nameof(index));
+            }
+        }
+
         var sb = new StringBuilder(Prefix);
         sb.Append("{\"version\":2,\"concepts\":[");
         for (var i = 0; i < index.Concepts.Count; i++)

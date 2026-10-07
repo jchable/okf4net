@@ -117,7 +117,8 @@ What the harness cannot check (layout, browser shortcuts, focus rings,
 contrast, absence of a theme flash) is in `ACCEPTANCE.md`.
 
 `check-index.js` executes one `okf-index.js` and checks that it is a
-well-formed index (version 1, and every concept — stale fields included —
+well-formed index (version 2, the types table with its counts and slots, and
+every concept — stale fields, `typeIndex` and the description bound included —
 every edge and every tree node in the shape `IndexScript.cs` writes; a smoke
 check on a non-empty bundle, not a validator for an empty one). CI's
 `aot-publish` job runs it on the file the **native** `okf-render` writes,

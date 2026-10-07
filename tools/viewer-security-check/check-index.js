@@ -60,6 +60,16 @@ index.types.forEach((type, i) => {
 });
 if (total !== n) fail(`the type counts add up to ${total}, not to the ${n} concepts`);
 
+// Each type's count is the number of concepts that point at it, not merely a
+// share of the total.
+const tally = new Array(t).fill(0);
+index.concepts.forEach((c) => {
+  if (isInt(c.typeIndex) && c.typeIndex >= 0 && c.typeIndex < t) tally[c.typeIndex]++;
+});
+index.types.forEach((type, i) => {
+  if (type.count !== tally[i]) fail(`types[${i}].count is ${type.count}, but ${tally[i]} concepts point at it`);
+});
+
 index.concepts.forEach((c, i) => {
   if (!c || typeof c !== "object") fail(`concepts[${i}] is not an object`);
   for (const k of ["id", "title", "type", "path", "trust", "description"]) {
