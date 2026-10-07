@@ -44,7 +44,9 @@
   }
 
   // X4: the current section is the last listed heading whose top is above a
-  // quarter of the window, else the first one.
+  // quarter of the window, else the first one; at the bottom of a scrollable
+  // page it is the last one, which a short tail could never lift that high.
+  var shown = null;
   function updateCurrent() {
     if (entries.length === 0) { return; }
     var line = window.innerHeight * 0.25;
@@ -52,6 +54,13 @@
     for (var e = 0; e < entries.length; e++) {
       if (entries[e].heading.getBoundingClientRect().top < line) { current = entries[e]; }
     }
+    var root = document.documentElement;
+    if (root.scrollHeight > window.innerHeight &&
+        window.scrollY + window.innerHeight >= root.scrollHeight - 1) {
+      current = entries[entries.length - 1];
+    }
+    if (current === shown) { return; }
+    shown = current;
     for (var f = 0; f < entries.length; f++) {
       if (entries[f] === current) {
         entries[f].link.setAttribute("aria-current", "location");
@@ -62,14 +71,11 @@
   }
 
   // At most one update per frame, however many scroll events arrive.
-  var frame = typeof window.requestAnimationFrame === "function"
-    ? function (callback) { window.requestAnimationFrame(callback); }
-    : function (callback) { window.setTimeout(callback, 16); };
   var scheduled = false;
   function scheduleUpdate() {
     if (scheduled) { return; }
     scheduled = true;
-    frame(function () {
+    window.requestAnimationFrame(function () {
       scheduled = false;
       updateCurrent();
     });
@@ -127,8 +133,13 @@
   followFragments(body);
   if (toc) { followFragments(toc); }
   window.addEventListener("hashchange", function () { go(window.location.hash); });
-  window.addEventListener("scroll", scheduleUpdate, { passive: true });
-  window.addEventListener("resize", scheduleUpdate);
+  if (entries.length > 0) {
+    window.addEventListener("scroll", scheduleUpdate, { passive: true });
+    window.addEventListener("resize", scheduleUpdate);
+    // Late fonts and images move the headings without a scroll or a resize.
+    window.addEventListener("load", scheduleUpdate);
+    if (document.fonts && document.fonts.ready) { document.fonts.ready.then(scheduleUpdate); }
+  }
   updateCurrent();
   if (window.location.hash) { go(window.location.hash); }
 })();

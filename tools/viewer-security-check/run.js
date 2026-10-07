@@ -2572,6 +2572,116 @@ checkAsync("contents: the current section is the last h2/h3 above a quarter of t
   assert(JSON.stringify(current()) === JSON.stringify(["#okf-h-section"]), `a heading exactly on the line: ${JSON.stringify(current())} (expected the one above it)`);
 });
 
+// X4 end of page: a short tail can never lift the last heading to the top
+// quarter, so at the bottom of a scrollable page the last entry is current.
+// jsdom does no layout: the probe supplies the rects, scrollHeight and scrollY.
+checkAsync("contents: at the bottom of a scrollable page the last entry is current, and a late load recomputes", async () => {
+  const tops = new Map();
+  const scroll = { y: 0, height: 0 };
+  const window = await openPage("foo/bar.html", {
+    beforeParse(w) {
+      const real = w.Element.prototype.getBoundingClientRect;
+      w.Element.prototype.getBoundingClientRect = function () {
+        if (/^H[23]$/.test(this.tagName) && this.closest("#okf-body")) {
+          const top = tops.has(this.textContent) ? tops.get(this.textContent) : 1000;
+          return { top, bottom: top + 20, left: 0, right: 0, width: 0, height: 20, x: 0, y: top };
+        }
+        return real.call(this);
+      };
+      Object.defineProperty(w.Element.prototype, "scrollHeight", {
+        configurable: true,
+        get() { return this === this.ownerDocument.documentElement ? scroll.height : 0; },
+      });
+      Object.defineProperty(w, "scrollY", { configurable: true, get() { return scroll.y; } });
+    },
+  });
+  const doc = window.document;
+  const current = () => Array.from(doc.querySelectorAll('#okf-toc a[aria-current="location"]'), (a) => a.getAttribute("href"));
+  const frame = () => new Promise((resolve) => window.requestAnimationFrame(resolve));
+  assert(JSON.stringify(current()) === JSON.stringify(["#okf-h-usage"]), `on load: ${JSON.stringify(current())}`);
+  // Section is the last heading above the line; Details (the last entry) is still below it.
+  tops.set("Usage", -400);
+  tops.set("Section", 10);
+  tops.set("Details", window.innerHeight - 50);
+  // A page that fits the window has no end to reach.
+  scroll.height = window.innerHeight;
+  window.dispatchEvent(new window.Event("scroll"));
+  await frame();
+  assert(JSON.stringify(current()) === JSON.stringify(["#okf-h-section"]), `a page that fits the window: ${JSON.stringify(current())}`);
+  // Scrollable, one pixel short of the end: not the end yet.
+  scroll.height = window.innerHeight + 500;
+  scroll.y = 500 - 2;
+  window.dispatchEvent(new window.Event("scroll"));
+  await frame();
+  assert(JSON.stringify(current()) === JSON.stringify(["#okf-h-section"]), `two pixels short of the end: ${JSON.stringify(current())}`);
+  // At the end.
+  scroll.y = 500;
+  window.dispatchEvent(new window.Event("scroll"));
+  await frame();
+  assert(JSON.stringify(current()) === JSON.stringify(["#okf-h-details"]), `at the end of the page: ${JSON.stringify(current())}`);
+  // Scrolling back up leaves the end.
+  scroll.y = 0;
+  window.dispatchEvent(new window.Event("scroll"));
+  await frame();
+  assert(JSON.stringify(current()) === JSON.stringify(["#okf-h-section"]), `back up: ${JSON.stringify(current())}`);
+  // A late font or image moves a heading without a scroll or a resize.
+  tops.set("Section", -100);
+  tops.set("Details", 20);
+  window.dispatchEvent(new window.Event("load"));
+  await frame();
+  assert(JSON.stringify(current()) === JSON.stringify(["#okf-h-details"]), `after a load event: ${JSON.stringify(current())}`);
+});
+
+checkAsync("contents: the scroll listener is passive, only a page with entries listens, and a hostile body cannot add a current mark", async () => {
+  const listened = async (rel, hook) => {
+    const seen = [];
+    const window = await openPage(rel, {
+      beforeParse(w) {
+        const add = w.addEventListener;
+        w.addEventListener = function (type, fn, options) {
+          seen.push({ type, options });
+          return add.apply(this, arguments);
+        };
+        if (hook) { hook(w); }
+      },
+    });
+    return { window, scrolls: seen.filter((x) => x.type === "scroll") };
+  };
+  const tops = new Map();
+  const probe = (w) => {
+    const real = w.Element.prototype.getBoundingClientRect;
+    w.Element.prototype.getBoundingClientRect = function () {
+      if (/^H[23]$/.test(this.tagName) && this.closest("#okf-body")) {
+        const top = tops.has(this.textContent) ? tops.get(this.textContent) : 1000;
+        return { top, bottom: top + 20, left: 0, right: 0, width: 0, height: 20, x: 0, y: top };
+      }
+      return real.call(this);
+    };
+  };
+  const bare = await listened("constructor.html");
+  const { window, scrolls } = await listened("foo/bar.html", probe);
+  assert(scrolls.length > bare.scrolls.length, `a page with contents entries registered ${scrolls.length} scroll listeners, a page without ${bare.scrolls.length}`);
+  const passive = scrolls.filter((x) => x.options && typeof x.options === "object" && x.options.passive === true);
+  assert(passive.length >= scrolls.length - bare.scrolls.length, "the contents' scroll listener is not passive");
+  const doc = window.document;
+  const code = doc.createElement("code");
+  code.setAttribute("class", "okf-toc okf-toc-sub okf-toc-current");
+  code.setAttribute("aria-current", "location");
+  doc.getElementById("okf-body").appendChild(code);
+  // The current entry moves while the hostile node is in the body: the old
+  // mark must still be cleared, whatever else carries aria-current.
+  tops.set("Usage", -400);
+  tops.set("Section", 10);
+  window.dispatchEvent(new window.Event("resize"));
+  await new Promise((resolve) => window.requestAnimationFrame(resolve));
+  tops.set("Section", -400);
+  tops.set("Details", 10);
+  window.dispatchEvent(new window.Event("resize"));
+  await new Promise((resolve) => window.requestAnimationFrame(resolve));
+  const marked = doc.querySelectorAll('#okf-toc [aria-current="location"]');
+  assert(marked.length === 1 && marked[0].tagName === "A" && marked[0].getAttribute("href") === "#okf-h-details", `${marked.length} marked entries in the contents after a hostile body node`);
+});
+
 // --- Task 10: fonts ---
 check("fonts: every @font-face of the written stylesheet points at a file written under assets/fonts", () => {
   const css = fs.readFileSync(path.join(SITE, "assets", "viewer.css"), "utf8");

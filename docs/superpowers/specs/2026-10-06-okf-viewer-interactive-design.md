@@ -1179,7 +1179,7 @@ contrôle ne prouve sa capacité à échouer que par la passe sans polices (éch
   `aria-current="location"` ; courante = dernier H2 ou H3 du corps dont le haut
   est au-dessus de 25 % de la hauteur de fenêtre, à défaut le premier ;
   recalculée au défilement (au plus une fois par frame) et après la résolution
-  d'un fragment. → P1.1 (`okf-toc.js`)
+  d'un fragment ; au bas de la page, la dernière entrée est courante. → P1.1 (`okf-toc.js`)
 - **X5** « Neighbourhood » + bascule « 1 hop » / « 2 hops » : boutons accolés,
   hauteur 24, padding 0 10, 12 ; pressé fond `--blue`, texte `--white` 600 ;
   non pressé fond `--white`, bord `--hair`, texte `--gray` ; 1 saut par défaut,
