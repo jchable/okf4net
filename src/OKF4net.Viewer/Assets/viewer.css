@@ -45,17 +45,6 @@ body {
   background: var(--white); color: var(--ink);
   font-family: var(--body); font-size: 16px; line-height: 1.6;
 }
-body > .topline { height: 6px; background: var(--blue); }
-header.bar { border-bottom: 1px solid var(--hair); }
-body > header.bar > .bar-in {
-  max-width: 1440px; margin: 0 auto; padding: 16px clamp(16px, 3.5vw, 48px);
-  display: flex; align-items: center; gap: 24px;
-}
-body > header.bar .wordmark {
-  font-family: var(--display); font-weight: 900; font-size: 20px;
-  letter-spacing: -.02em; color: var(--ink); text-decoration: none;
-}
-body > header.bar .wordmark sup { color: var(--blue); font-family: var(--mono); font-weight: 700; }
 /* The reading column (C1): padding 26 48 0 (16 on a phone), at most 720
    wide. break-word: a word longer than the line (a dotted member name, a
    path in inline code) wraps instead of widening the page at phone width.
@@ -124,12 +113,6 @@ body > .okf-layout > main > .errors h2 { color: var(--red); font-size: 18px; }
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
-#okf-tools { margin-left: auto; display: flex; flex-wrap: wrap; gap: 8px; }
-:is(#okf-tools, body > .okf-palette-backdrop) .okf-tool {
-  font: inherit; font-size: 14px; min-height: 36px; padding: 0 12px; cursor: pointer;
-  border: 1px solid var(--hair); background: var(--white); color: var(--ink);
-}
-#okf-tools .okf-tool[aria-pressed="true"] { border-color: var(--blue); color: var(--blue); }
 
 body > .okf-layout { display: flex; flex-wrap: wrap; align-items: flex-start; }
 body > .okf-layout > main { flex: 999 1 560px; min-width: 0; margin: 0; }
@@ -391,6 +374,53 @@ svg .okf-node.okf-selected > .okf-node-ring, svg .okf-node.okf-focused > .okf-no
 /* --- Task 8: contents (X3, X4) --- */
 
 /* --- Task 11: header (H1-H13) --- */
+
+/* H12: the first focusable element, shown only while it has the focus. */
+body > .okf-skip {
+  position: absolute; left: 8px; top: -60px; z-index: 20; padding: 8px 12px;
+  background: var(--blue); color: var(--white); font-size: 13.5px; font-weight: 600; text-decoration: none;
+}
+body > .okf-skip:focus { top: 8px; }
+/* H1: the 6 px blue band. */
+body > .topline { height: 6px; background: var(--blue); }
+/* H2: a 52 px full-width bar, 20 px gaps and side padding. */
+body > header.bar { border-bottom: 1px solid var(--hair); }
+body > header.bar .bar-in { display: flex; align-items: center; gap: 20px; height: 52px; padding: 0 20px; min-width: 0; }
+/* H3 */
+body > header.bar .wordmark {
+  flex: none; font-family: var(--display); font-weight: 900; font-size: 20px;
+  letter-spacing: -.02em; color: var(--ink); text-decoration: none;
+}
+body > header.bar .wordmark sup { color: var(--blue); font-family: var(--mono); font-weight: 700; font-size: 12px; }
+/* H4 */
+body > header.bar .bar-sep { flex: none; width: 1px; height: 20px; background: var(--hair); }
+/* H5: one line, cut with an ellipsis, so a long name never pushes the tools away. */
+body > header.bar .bar-bundle {
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--mono); font-size: 13px; color: var(--ink);
+}
+/* H6 */
+body > header.bar .bar-counts { flex: none; font-family: var(--mono); font-size: 13px; color: var(--gray); white-space: nowrap; }
+/* The tools, after the flexible space: palette (H7), Filters (H8), Reading
+   view (H10), Global graph (H9), theme (H11). */
+#okf-tools { margin-left: auto; display: flex; align-items: center; gap: 20px; min-width: 0; flex: 0 1 auto; }
+#okf-tools .okf-tool {
+  display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px; box-sizing: border-box;
+  font-family: var(--body); font-size: 13.5px; font-weight: 500; line-height: 1; white-space: nowrap;
+  border: 1px solid var(--hair); background: var(--white); color: var(--ink); text-decoration: none; cursor: pointer;
+}
+/* H9: blue on the reading pages; filled and current on the graph page. */
+#okf-tools .okf-tool-graph { border-color: var(--blue); background: var(--blue-soft); color: var(--blue); font-weight: 600; }
+#okf-tools .okf-tool-graph[aria-current="page"] { background: var(--blue); color: var(--white); }
+/* H13: under 900 px the bar takes two lines (brand, name, counts; then the
+   tools), the counts go at phone width, and nothing scrolls sideways. */
+@media (max-width: 899px) {
+  body > header.bar .bar-in { flex-wrap: wrap; height: auto; padding: 8px 16px; row-gap: 8px; }
+  #okf-tools { flex: 1 1 100%; flex-wrap: wrap; gap: 8px; margin-left: 0; }
+}
+@media (max-width: 520px) {
+  body > header.bar .bar-counts { display: none; }
+}
 
 /* --- Task 12: page head (C2-C6) and Referenced by (X10) --- */
 

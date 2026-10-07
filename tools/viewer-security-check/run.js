@@ -1793,7 +1793,10 @@ checkAsync("explorer, palette and contents render hostile titles as inert text",
   assert(input.getAttribute("aria-activedescendant") === "okf-palette-opt-1", "ArrowDown did not move the selection");
   for (const id of ["okf-explorer", "okf-palette-list", "okf-toc"]) {
     const root = doc.getElementById(id);
-    assert(root.querySelectorAll("img, script, svg, iframe, object").length === 0, `markup from bundle text became live in #${id}`);
+    // svg.okf-glyph is the chrome's own glyph (OkfShapes.icon, Tasks 13 and
+    // 14 draw one per explorer row and palette option); any other svg would
+    // still be markup that bundle text made live.
+    assert(root.querySelectorAll("img, script, iframe, object, svg:not(.okf-glyph)").length === 0, `markup from bundle text became live in #${id}`);
   }
   assert(doc.getElementById("okf-explorer").textContent.includes("<img"), "the hostile title was dropped instead of shown as text");
   assert(doc.getElementById("okf-palette-list").textContent.includes("<img"), "the palette dropped the hostile title");
@@ -2204,7 +2207,7 @@ checkAsync("the real P1 chrome keeps its anchored styles", async () => {
     [doc.querySelector("body > .okf-palette-backdrop"), "position", "fixed"],
     [doc.querySelector("#okf-explorer .okf-tree-toggle .okf-sr"), "position", "absolute"],
     [doc.querySelector("#okf-explorer .okf-badge.okf-trust-human"), "width", "8px"],
-    [doc.querySelector("#okf-tools .okf-tool"), "min-height", "36px"],
+    [doc.querySelector("#okf-tools .okf-tool"), "height", "34px"],
     // The old header and context-title rules, anchored by P1.1.
     [doc.querySelector("body > .topline"), "height", "6px"],
     [doc.querySelector("body > header.bar > .bar-in"), "display", "flex"],
@@ -3330,6 +3333,56 @@ check("fonts: every @font-face of the written stylesheet points at a file writte
 });
 
 // --- Task 11: shell and header ---
+
+checkAsync("header: Skip to content is the first focusable element and reaches main", async () => {
+  const window = await openPage("foo/bar.html");
+  const doc = window.document;
+  const focusable = doc.querySelectorAll("a[href], button, input, select, textarea, [tabindex]:not([tabindex='-1'])");
+  const first = focusable[0];
+  assert(first && first.matches("body > a.okf-skip") && first.getAttribute("href") === "#okf-main", `first focusable: <${first && first.tagName.toLowerCase()} class="${first && first.className}">`);
+  const main = doc.getElementById("okf-main");
+  assert(main && main === doc.querySelector("body > .okf-layout > main"), "#okf-main is not the layout's <main>");
+  assert(window.getComputedStyle(first).getPropertyValue("position") === "absolute", "the skip link is not taken out of the flow");
+});
+
+checkAsync("header: the tools keep their order, Global graph links this concept, and the bundle name and counts are text", async () => {
+  const window = await openPage("foo/bar.html");
+  const doc = window.document;
+  const tools = Array.from(doc.getElementById("okf-tools").children);
+  const graph = doc.getElementById("okf-global-graph");
+  assert(tools[0].classList.contains("okf-palette-open"), `first tool: ${tools[0].className}`);
+  assert(tools[tools.length - 1].id === "okf-theme-toggle", `last tool: ${tools[tools.length - 1].id}`);
+  const at = tools.indexOf(graph);
+  assert(at > 0 && at < tools.length - 1, `Global graph at ${at} of ${tools.length}`);
+  assert(graph.getAttribute("href") === "../graph.html#foo/bar" && !graph.hasAttribute("aria-current"), `Global graph: ${graph.getAttribute("href")}`);
+  const name = doc.getElementById("okf-bundle-name");
+  assert(name.textContent === "hostile-bundle" && name.children.length === 0 && name.getAttribute("title") === "hostile-bundle", `bundle name: ${name.outerHTML}`);
+  const idx = window.OKF_INDEX;
+  const n = idx.concepts.length;
+  const m = idx.edges.length;
+  const expected = `${n} ${n === 1 ? "concept" : "concepts"} · ${m} ${m === 1 ? "link" : "links"}`;
+  assert(doc.getElementById("okf-bundle-counts").textContent === expected, `counts: ${doc.getElementById("okf-bundle-counts").textContent}, expected ${expected}`);
+  const index = await openPage("index.html");
+  assert(index.document.getElementById("okf-global-graph").getAttribute("href") === "graph.html", "the index links the graph page with a fragment or a prefix");
+  assert(index.document.documentElement.getAttribute("data-okf-view") === "index" && window.document.documentElement.getAttribute("data-okf-view") === "page", "data-okf-view");
+});
+
+checkAsync("header: the real header keeps its anchored styles", async () => {
+  const window = await openPage("foo/bar.html");
+  const doc = window.document;
+  const chrome = [
+    [doc.querySelector("body > .topline"), "height", "6px"],
+    [doc.querySelector("body > header.bar .bar-in"), "height", "52px"],
+    [doc.querySelector("body > header.bar .bar-bundle"), "text-overflow", "ellipsis"],
+    [doc.querySelector("#okf-tools .okf-tool-graph"), "height", "34px"],
+    [doc.querySelector("#okf-tools .okf-tool-graph"), "font-weight", "600"],
+  ];
+  for (const [el, prop, value] of chrome) {
+    assert(el, `a header element this case needs is missing (${prop}: ${value})`);
+    const got = window.getComputedStyle(el).getPropertyValue(prop);
+    assert(got === value, `the real <${el.tagName.toLowerCase()} class="${el.getAttribute("class")}"> lost its ${prop}: ${value} (got ${got})`);
+  }
+});
 
 // --- Task 12: page head ---
 

@@ -580,13 +580,11 @@ public class HtmlWriterTests
         HtmlWriter.Write(site, dest.Path);
 
         var page = File.ReadAllText(Path.Combine(dest.Path, "evil.html"));
-        // RenderShell always emits exactly nine <script> elements: okf-theme.js
-        // in <head>, then the JSON payload, marked, viewer.js, okf-index.js,
-        // okf-site.js, okf-explorer.js, okf-palette.js and okf-toc.js. A tenth
-        // </script> would mean the body's own literal "</script>" text broke out
-        // of the payload container instead of staying HTML-safe-JSON-escaped
-        // inside it.
-        Assert.Equal(9, CountOccurrences(page, "</script>"));
+        // Every <script> the page opens is closed by its own </script>, however
+        // many scripts the page loads (spec §7): one closing tag more than the
+        // openings would mean the body's literal "</script>" broke out of the
+        // payload container instead of staying HTML-safe-JSON-escaped inside it.
+        Assert.Equal(CountOccurrences(page, "<script"), CountOccurrences(page, "</script>"));
         Assert.DoesNotContain("<img src=x", page);
     }
 
@@ -645,9 +643,9 @@ public class HtmlWriterTests
         HtmlWriter.Write(SiteModel.Build(SampleBundle(src)), dest.Path);
 
         var nested = File.ReadAllText(Path.Combine(dest.Path, "tables", "users.html"));
-        Assert.Contains("<html lang=\"en\" data-okf-root=\"../\" data-okf-concept=\"tables/users\">", nested);
+        Assert.Contains("<html lang=\"en\" data-okf-root=\"../\" data-okf-view=\"page\" data-okf-concept=\"tables/users\">", nested);
         var root = File.ReadAllText(Path.Combine(dest.Path, "index.html"));
-        Assert.Contains("<html lang=\"en\" data-okf-root=\"\">", root);
+        Assert.Contains("<html lang=\"en\" data-okf-root=\"\" data-okf-view=\"index\">", root);
     }
 
     [Fact]
