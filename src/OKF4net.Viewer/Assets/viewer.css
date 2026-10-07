@@ -97,6 +97,13 @@ body > .okf-layout > main { flex: 999 1 560px; min-width: 0; margin: 0; }
 #okf-context { flex: 1 1 260px; max-width: 320px; min-width: 0; padding: 24px 16px; }
 @media (min-width: 1100px) {
   #okf-explorer, #okf-context { position: sticky; top: 0; max-height: 100vh; overflow-y: auto; }
+  /* The label and the filter field stay at the top of the explorer's own
+     scroll area, so a far page (current entry deep in the tree) does not
+     scroll them out of view. Opaque, or tree rows would show through. */
+  #okf-explorer .okf-explorer-head {
+    position: sticky; top: 0; z-index: 1; background: var(--white);
+    margin-top: -8px; padding: 8px 0;
+  }
 }
 @media (max-width: 1099px) {
   #okf-explorer, #okf-context { max-width: none; flex-basis: 100%; border-right: 0; border-bottom: 1px solid var(--hair); }
@@ -122,7 +129,7 @@ body > .okf-layout > main { flex: 999 1 560px; min-width: 0; margin: 0; }
 #okf-explorer .okf-tree-toggle::before { content: "\25B8"; }
 #okf-explorer .okf-tree-toggle[aria-expanded="true"]::before { content: "\25BE"; }
 #okf-explorer .okf-tree-spacer { flex: none; width: 28px; }
-#okf-explorer .okf-tree-link { min-width: 0; color: var(--ink); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#okf-explorer .okf-tree-link { color: var(--ink); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #okf-explorer .okf-tree-link:hover { text-decoration: underline; }
 #okf-explorer .okf-tree-link[aria-current="page"] { color: var(--blue); font-weight: 600; }
 #okf-explorer .okf-tree-folder { color: var(--gray); }
@@ -144,21 +151,27 @@ body > .okf-palette-backdrop .okf-palette-input {
 body > .okf-palette-backdrop .okf-palette-list { list-style: none; margin: 0; padding: 0; max-height: 50vh; overflow-y: auto; }
 /* baseline, not stretch: a title is as tall as its own lines, not the id's. */
 body > .okf-palette-backdrop .okf-palette-option {
-  display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 12px 16px;
+  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 2px 12px; padding: 12px 16px;
   cursor: pointer; border-left: 3px solid transparent;
 }
 body > .okf-palette-backdrop .okf-palette-option[aria-selected="true"] { background: var(--blue-soft); border-left-color: var(--blue); }
 body > .okf-palette-backdrop .okf-palette-id { font-family: var(--mono); font-size: 12px; color: var(--gray); }
 /* A long unbroken title or id wraps instead of widening the palette (390 px).
    The title breaks only a word longer than its line (break-word leaves its
-   min-content size alone, where anywhere would let the row shrink it first)
-   and takes the room first; the id may break anywhere, within half the row. */
+   min-content size alone, where anywhere would let the row shrink it first).
+   The option wraps: the id shares the title's line only when both fit whole,
+   else it moves under the title and takes the full row, so a single-word
+   title is never squeezed by its id (a cap or a shrink factor on the id only
+   moves where the squeeze starts: with a 50% cap a 34-character title still
+   broke beside a long id). The id may break anywhere. */
 body > .okf-palette-backdrop .okf-palette-title { flex: 1 1 auto; min-width: 0; overflow-wrap: break-word; }
-body > .okf-palette-backdrop .okf-palette-id { flex: 0 1 auto; max-width: 50%; min-width: 0; overflow-wrap: anywhere; }
-/* Narrow: the id goes under the title. stretch: each takes the full width, so
-   a long unbroken word wraps instead of sizing its line to the word. */
+body > .okf-palette-backdrop .okf-palette-id { flex: 0 1 auto; max-width: 100%; min-width: 0; overflow-wrap: anywhere; }
+/* Narrow: the id goes under the title (a column that does not wrap: a wrapping
+   column sizes its line to its widest word, not to the palette). stretch: each
+   takes the full width, so a long unbroken word wraps instead of sizing its
+   line to the word. */
 @media (max-width: 480px) {
-  body > .okf-palette-backdrop .okf-palette-option { flex-direction: column; align-items: stretch; gap: 2px; }
+  body > .okf-palette-backdrop .okf-palette-option { flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 2px; }
   body > .okf-palette-backdrop .okf-palette-id { max-width: none; }
 }
 body > .okf-palette-backdrop .okf-palette-status { margin: 0; padding: 8px 16px; font-size: 13px; color: var(--gray); }
@@ -173,4 +186,8 @@ body > .okf-palette-backdrop .okf-palette:focus { outline: none; }
 #okf-context .okf-toc li.okf-toc-sub { padding-left: 22px; }
 #okf-context .okf-toc a { min-width: 0; overflow-wrap: anywhere; }
 #okf-context .okf-backlinks li { padding: 6px 0; border-bottom: 1px solid var(--hair); }
+/* A wide GFM table scrolls inside its own box instead of widening the page
+   (390 px). #okf-body is an id, so this cannot reach the frontmatter table
+   (a sibling, outside it) or any chrome. */
+#okf-body table { display: block; overflow-x: auto; }
 #okf-body [tabindex="-1"]:focus { outline: 2px solid var(--blue); outline-offset: 4px; }

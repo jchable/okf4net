@@ -1165,10 +1165,10 @@ checkAsync("explorer: a node is both a page and a folder, with separate open and
 
 // Recette R2. jsdom does no layout, so this probe gives #okf-explorer a
 // geometry: 800 px tall at 100 px from the top, 3000 px of content, the
-// current entry 2700 px down it, and the given computed overflow-y. It records
+// current entry `entryOffset` (default 2700) px down it, and the given computed overflow-y. It records
 // every scroll request: the explorer's own scrollTop, window scrolling and
 // scrollIntoView. That the entry is visible on screen is the recette's (C2).
-function explorerScrollProbe(overflowY, layout = true) {
+function explorerScrollProbe(overflowY, layout = true, entryOffset = 2700) {
   const probe = { requests: [], navTop: 0 };
   probe.beforeParse = (w) => {
     const isNav = (el) => el.id === "okf-explorer";
@@ -1178,7 +1178,7 @@ function explorerScrollProbe(overflowY, layout = true) {
       Object.defineProperty(proto, "clientHeight", { configurable: true, get() { return isNav(this) ? 800 : 0; } });
       proto.getBoundingClientRect = function () {
         const current = this.getAttribute("aria-current") === "page";
-        const top = isNav(this) ? 100 : current ? 100 + 2700 - probe.navTop : 0;
+        const top = isNav(this) ? 100 : current ? 100 + entryOffset - probe.navTop : 0;
         const height = isNav(this) ? 800 : current ? 20 : 0;
         return { top, bottom: top + height, left: 0, right: 0, width: 0, height, x: 0, y: top };
       };
@@ -1214,6 +1214,16 @@ checkAsync("explorer: on the desktop layout the current entry is scrolled into t
   const visibleBottom = Math.min(view.bottom, window.innerHeight);
   assert(current.top >= view.top && current.bottom <= visibleBottom,
     `the current entry sits at ${current.top}-${current.bottom}, outside the explorer's visible ${view.top}-${visibleBottom}`);
+});
+
+// The explorer scrolls only when the entry is out of view: an entry already
+// inside the visible part (here 300 px down an 800 px explorer that is itself
+// cut by the 768 px window) is left where it is, so reloading a page near the
+// top does not move the tree under the reader.
+checkAsync("explorer: a current entry already inside the visible part causes no scroll request", async () => {
+  const probe = explorerScrollProbe("auto", true, 300);
+  await openPage("foo/bar.html", { beforeParse: probe.beforeParse });
+  assert(probe.requests.length === 0, `scroll requests: ${JSON.stringify(probe.requests)} (the entry was already visible)`);
 });
 
 checkAsync("explorer: without its own scroll container (stacked layout, no layout at all) nothing scrolls", async () => {
@@ -1778,7 +1788,8 @@ checkAsync("chrome classes worn by body content change none of its styles", asyn
   const props = ["position", "display", "width", "height", "clip", "clip-path", "overflow", "z-index", "inset", "top",
     "background", "background-color", "border", "border-left", "border-left-color", "border-radius", "border-width",
     "padding", "margin", "white-space", "max-width", "min-height", "cursor", "flex", "list-style", "font-family",
-    "font-size", "color", "text-transform", "outline"];
+    "font-size", "color", "text-transform", "outline", "overflow-wrap", "min-width", "order", "align-items",
+    "flex-direction", "flex-basis", "flex-shrink", "flex-wrap", "margin-top", "overflow-x"];
   // The anchored rules still style the real chrome (a selector the engine
   // cannot match would pass the checks above by styling nothing at all).
   const chrome = [
@@ -1792,15 +1803,51 @@ checkAsync("chrome classes worn by body content change none of its styles", asyn
     const got = window.getComputedStyle(el).getPropertyValue(prop);
     assert(got === value, `the real <${el.tagName.toLowerCase()} class="${el.getAttribute("class")}"> lost its ${prop}: ${value} (got ${got})`);
   }
-  const expected = window.getComputedStyle(reference);
-  for (const el of worn) {
-    const style = window.getComputedStyle(el);
-    for (const prop of props) {
-      assert(style.getPropertyValue(prop) === expected.getPropertyValue(prop),
-        `<code class="${el.getAttribute("class")}"> ${prop}: ${style.getPropertyValue(prop)} (an unclassed <code> has ${expected.getPropertyValue(prop)})`);
+  const assertWornLikeReference = (when) => {
+    const expected = window.getComputedStyle(reference);
+    for (const el of worn) {
+      const style = window.getComputedStyle(el);
+      for (const prop of props) {
+        assert(style.getPropertyValue(prop) === expected.getPropertyValue(prop),
+          `${when}: <code class="${el.getAttribute("class")}"> ${prop}: ${style.getPropertyValue(prop)} (an unclassed <code> has ${expected.getPropertyValue(prop)})`);
+      }
+    }
+  };
+  assertWornLikeReference("as loaded");
+  // jsdom applies no @media rule, so every rule inside one (the desktop
+  // explorer head, the stacked and narrow layouts) went unchecked above. Load
+  // a copy of the stylesheet with each @media wrapper removed, as if every
+  // query matched, and compare again.
+  const style = doc.createElement("style");
+  style.textContent = unwrapMedia(fs.readFileSync(path.join(SITE, "assets", "viewer.css"), "utf8"));
+  doc.head.appendChild(style);
+  const realHead = doc.querySelector("#okf-explorer .okf-explorer-head");
+  assert(realHead && window.getComputedStyle(realHead).getPropertyValue("position") === "sticky",
+    "the unwrapped stylesheet no longer makes the real explorer head sticky: this pass tests nothing");
+  assertWornLikeReference("with every @media rule applied");
+});
+
+// Drops each "@media ... {" header and its closing brace, keeping the rules
+// inside. Comments go first (they may hold braces or the word @media).
+function unwrapMedia(css) {
+  css = css.replace(/[/][*][^]*?[*][/]/g, "");
+  let out = "";
+  const stack = [];
+  for (let i = 0; i < css.length; i++) {
+    if (css.startsWith("@media", i)) {
+      stack.push(true);
+      i = css.indexOf("{", i);
+    } else if (css[i] === "{") {
+      stack.push(false);
+      out += "{";
+    } else if (css[i] === "}") {
+      if (!stack.pop()) { out += "}"; }
+    } else {
+      out += css[i];
     }
   }
-});
+  return out;
+}
 
 checkAsync("palette: Shift+Tab also stays inside the modal", async () => {
   const window = await openPage("index.html");
@@ -1965,7 +2012,7 @@ checkAsync("long unbroken titles and ids may wrap in the palette and the content
   // The title wraps only a word longer than its line (break-word): anywhere
   // would lower its min-content size and let the row break a short title
   // mid-word while the id kept its room (recette R4). The id may break
-  // anywhere, within a bounded share of the row.
+  // anywhere.
   const targets = [
     [option.querySelector(".okf-palette-title"), "break-word"],
     [option.querySelector(".okf-palette-id"), "anywhere"],
@@ -1978,15 +2025,24 @@ checkAsync("long unbroken titles and ids may wrap in the palette and the content
     assert(style.getPropertyValue("overflow-wrap") === wrap, `${where} overflow-wrap: ${style.getPropertyValue("overflow-wrap")}, expected ${wrap}`);
     assert(style.getPropertyValue("min-width") === "0px" || style.getPropertyValue("min-width") === "0", `${where} min-width: ${style.getPropertyValue("min-width")}`);
   }
-  const id = window.getComputedStyle(option.querySelector(".okf-palette-id")).getPropertyValue("max-width");
-  assert(id === "50%", `the palette id's share of the row is not bounded (max-width: ${id})`);
+  const idStyle = window.getComputedStyle(option.querySelector(".okf-palette-id"));
+  const id = idStyle.getPropertyValue("max-width");
+  assert(id === "100%", `the palette id is not bounded by the row (max-width: ${id})`);
+  // The option wraps: the id shares the title's line only when both fit whole,
+  // else it goes under the title. No cap or shrink factor on the id can promise
+  // that (a title just under its line still broke when the id's cap bound it).
+  const wrap = window.getComputedStyle(option).getPropertyValue("flex-wrap");
+  assert(wrap === "wrap", `the palette option does not wrap its id under a title that leaves it no room (flex-wrap: ${wrap})`);
 });
 
 checkAsync("nothing long and unbroken widens the page: panels and tree entries shrink, page text wraps", async () => {
   // Declarations only (jsdom does no layout); the recette measures the page
   // at 390 px (R1, C10). A flex item's automatic minimum is its min-content
   // width: without min-width: 0, a long nowrap tree entry widens the stacked
-  // explorer, and the entry's ellipsis never applies. In the page itself a
+  // explorer (and the context panel), so those two panels never shrink to the
+  // phone's width. The tree entry itself needs no min-width: it has
+  // overflow: hidden, which already makes its automatic minimum size 0, so its
+  // ellipsis applies; that overflow is what is asserted for it. In the page itself a
   // dotted member name or a path in inline code wraps (break-word), and a
   // frontmatter value may break anywhere, since a table cell is as wide as
   // its min-content.
@@ -1995,7 +2051,7 @@ checkAsync("nothing long and unbroken widens the page: panels and tree entries s
   const expected = [
     [doc.getElementById("okf-explorer"), "min-width", "0px"],
     [doc.getElementById("okf-context"), "min-width", "0px"],
-    [doc.querySelector("#okf-explorer .okf-tree-link"), "min-width", "0px"],
+    [doc.querySelector("#okf-explorer .okf-tree-link"), "overflow", "hidden"],
     [doc.querySelector("main"), "overflow-wrap", "break-word"],
     [doc.querySelector("#okf-body p"), "overflow-wrap", "break-word"],
     [doc.querySelector("main table.frontmatter td"), "overflow-wrap", "anywhere"],
@@ -2005,6 +2061,22 @@ checkAsync("nothing long and unbroken widens the page: panels and tree entries s
     const got = window.getComputedStyle(el).getPropertyValue(prop);
     assert(got === value || (value === "0px" && got === "0"), `<${el.tagName.toLowerCase()} id="${el.id}" class="${el.getAttribute("class") || ""}"> ${prop}: ${got}, expected ${value}`);
   }
+});
+
+// A wide GFM table in the page scrolls inside its own box (the page does not
+// widen at 390 px); the frontmatter table, outside #okf-body, stays a table.
+// Declarations only: the recette measures the page's width.
+checkAsync("a GFM table in the body scrolls in its own box; the frontmatter table is left alone", async () => {
+  const window = await openPage("chrome-classes.html");
+  const doc = window.document;
+  const table = doc.querySelector("#okf-body table");
+  assert(table, "the fixture lost its GFM table");
+  const style = window.getComputedStyle(table);
+  assert(style.getPropertyValue("display") === "block" && style.getPropertyValue("overflow-x") === "auto",
+    `#okf-body table: display ${style.getPropertyValue("display")}, overflow-x ${style.getPropertyValue("overflow-x")}`);
+  const front = window.getComputedStyle(doc.querySelector("main table.frontmatter"));
+  assert(front.getPropertyValue("display") === "table" && front.getPropertyValue("overflow-x") !== "auto",
+    `the frontmatter table changed (display ${front.getPropertyValue("display")}, overflow-x ${front.getPropertyValue("overflow-x")})`);
 });
 
 // --- end of async checks ---

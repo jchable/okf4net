@@ -24,5 +24,5 @@ Record the date, browser versions and any failure in the pull request.
 - [ ] Contrast is readable in both themes (text, badges, the active palette option).
 - [ ] Contents list: clicking an entry lands on the heading; Back and Forward return through the visited headings.
 - [ ] Opening `<page>.html#<heading text>` (an author fragment) lands on that heading.
-- [ ] At 390 px wide, the zones stack without horizontal scrolling and the palette fits.
+- [ ] At 390 px wide, the zones stack without horizontal scrolling and the palette fits; a wide GFM table in a page (e.g. acme `tables/orders.html`) scrolls inside its own box instead of widening the page.
 - [ ] At 390 px wide, a concept with a long unbroken id and title (e.g. `a-very-long-identifier-without-any-space-at-all-repeated-until-it-overflows`) wraps inside its palette option, and a long unbroken heading wraps inside its contents entry, instead of widening the palette or the page.
