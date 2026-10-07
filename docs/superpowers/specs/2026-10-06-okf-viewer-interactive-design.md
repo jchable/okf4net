@@ -1,9 +1,22 @@
 # Viewer interactif (`okf-render`) — design
 
 Date : 2026-10-06
-Statut : révision 6 (2026-10-07) : P1 livré et recetté ; arbitrages A15–A30
-rendus ; revue critique de la révision 5 intégrée ; aucun point ouvert (§13) ;
-prêt pour les plans de P1.1, P2 et P3, rédigés en parallèle
+Statut : révision 7 (2026-10-07) : P1 livré et recetté ; arbitrages A15–A30
+rendus ; plans de P1.1, P2 et P3 rédigés en parallèle depuis la révision 6,
+leurs lacunes de spec tranchées ici ; aucun point ouvert (§13)
+
+**Révision 7 (alignement sur les trois plans, 2026-10-07)** : les plans de
+P1.1, P2 et P3 ont relevé des trous de la révision 6 et les ont comblés par
+une lecture prudente ; la spec dit désormais ce qu'ils supposent. Plafond du
+graphe local : centre compris, ordre concepts puis fantômes en position
+d'index, texte des relations de la liste (§3.1, §4.3, §12.4). Contrats de
+P1.1 nommés tels que son plan les livre : `HtmlWriter.ViewKind`, sortie de
+`ScriptTag`, ligne de P3 dans `Write` (§12.0, §12.5), classes d'état des
+puces (§12.6), `ctx` de la recette (§12.8). Précisions de dessin : « +N »
+de la puce de confiance (C5), dernier filet, séquence vide et passage à une
+colonne du frontmatter (C6), seuils étroits de l'en-tête (H13). Ordre des
+premières tâches de P1.1 (§3.6, §11.0, §12.7). Propriété : README racine,
+la spec elle-même, `tools/viewer-fonts/`, documentation de P2 (§12.0).
 
 **Révision 6 (revue de la révision 5 et arbitrages, 2026-10-07)** : chaque
 fichier et chaque méthode a désormais **une seule tranche propriétaire**
@@ -183,8 +196,11 @@ Un seul comparateur pour tout ce qui est ordonné : **`ConceptId.CompareTo`**
 (segment par segment, comparaison ordinale, préfixe d'abord). Il s'applique aux
 concepts, aux fantômes, aux départages de la palette et au plafond du graphe
 local. L'index est trié côté C# ; le JS départage par **position dans l'index**
-et ne réimplémente pas le comparateur. (`a/b` précède `a-b` avec ce
-comparateur, pas avec une comparaison des chaînes complètes.)
+et ne réimplémente pas le comparateur. Concepts et fantômes sont deux tableaux
+triés séparément : aucune position ne compare un concept à un fantôme, et un
+ordre qui mêle les deux prend les concepts puis les fantômes (§4.3, §12.5).
+(`a/b` précède `a-b` avec ce comparateur, pas avec une comparaison des
+chaînes complètes.)
 
 ### 3.2 Arbre
 
@@ -280,7 +296,10 @@ generate --repo . --no-msbuild`, reprise dans `ACCEPTANCE.md`), le rend par
 `okf-render`, et consigne ici la taille en octets d'`assets/okf-index.js`, avec
 le nombre de concepts, d'arêtes et de fantômes, et celle d'`acme_retail`. Au-delà
 de **600 000 octets** pour OKF4net, la troncature descend à 120 points de code
-(§12.1) et la mesure est refaite ; sinon 200 reste. Optimisation possible plus
+(§12.1) et la mesure est refaite ; sinon 200 reste. « Avant le code JS » se
+lit sur la branche : aucune tâche qui lit `typeIndex`, `types` ou
+`description` en JS (à commencer par `OkfShapes.slotOf`) ne démarre avant que
+la mesure consignée ici soit fusionnée. Optimisation possible plus
 tard, non retenue (A23) : porter les descriptions, que seul le tiroir de
 `graph.html` lit, dans un script distinct chargé par cette seule page.
 
@@ -356,12 +375,16 @@ sous V8, pas l'égalité entre moteurs, qui repose sur les contraintes ci-dessus
   l'index (la table de liens de la page n'a ni liens entrants ni second saut).
   L'appartenance au voisinage est **non orientée** (liens sortants et entrants),
   les arêtes sont dessinées **orientées** (la relation OKF l'est). **Plafond
-  (A11) : 40 nœuds** ; au-delà, voisins directs d'abord, puis ordre
-  `ConceptId.CompareTo`, avec « +N omis » et un lien vers la liste complète
-  accessible. Les cibles absentes voisines apparaissent comme fantômes (non
-  navigables, comptés dans le plafond) ; le second saut ne part jamais d'un
-  fantôme. Arêtes dessinées : **toutes** les arêtes de l'index dont les deux
-  extrémités sont montrées (pas seulement celles du parcours) ; deux arêtes
+  (A11) : 40 nœuds, centre compris** (au plus 39 voisins dessinés) ; au-delà,
+  voisins directs d'abord, puis ceux du second saut ; dans chaque saut, les
+  concepts en ordre de l'index, puis les fantômes en ordre de l'index (§3.1 :
+  c'est l'ordre `ConceptId.CompareTo` à l'intérieur de chaque tableau, et
+  l'ordre des nœuds de §12.5) ; « +N omis » compte les voisins non dessinés,
+  avec un lien vers la liste complète accessible. Un lien d'un concept vers
+  lui-même n'en fait pas un voisin. Les cibles absentes voisines apparaissent
+  comme fantômes (non navigables, comptés dans le plafond) ; le second saut ne
+  part jamais d'un fantôme. Arêtes dessinées : **toutes** les arêtes de
+  l'index dont les deux extrémités sont montrées (pas seulement celles du parcours) ; deux arêtes
   opposées A → B et B → A sont décalées de ± 3 perpendiculairement, comme
   G12. La disposition en anneaux peut utiliser `Math.cos`/`Math.sin` : la
   contrainte de déterminisme entre moteurs (§4.2) ne vaut que pour la
@@ -763,7 +786,8 @@ Rendus le 2026-10-07, après la révision 5 et sa revue :
 - **A25 — Nom de la page du graphe** : `graph.html`, sinon `graph-1.html`,
   `graph-2.html`… en cas de collision ; jamais de refus de rendu ; le lien
   « Global graph » porte le nom réel (§12.3).
-- **A26 — Polices en `file://`** : vérifiées en premier par P1.1, dans Chrome,
+- **A26 — Polices en `file://`** : vérifiées par P1.1 avant toute tâche CSS
+  (§11.0), dans Chrome,
   Edge et Firefox, à **chaque** profondeur de page (procédure §11.0) ; si un
   seul navigateur les bloque, elles sont servies en URI `data:` dans
   `assets/okf-fonts.css`.
@@ -879,8 +903,11 @@ ici par P1.1, avec la croissance du binaire `okf-render` AOT ; au-delà, retour
 au propriétaire. `okf` n'est pas concerné (il ne référence pas
 `OKF4net.Viewer`).
 
-**Vérification en `file://` (A26) — première tâche de P1.1**, avant toute
-autre tâche CSS, sur le seul `@font-face` relatif ci-dessus. Depuis Firefox 68,
+**Vérification en `file://` (A26) — première tâche CSS de P1.1** : la
+première tâche du plan est le chargeur des cas (§12.7), qui ne pose que des
+repères en commentaire dans `viewer.css` ; le verdict des polices, lui, est
+fusionné avant toute tâche qui ajoute une règle CSS. Il porte sur le seul
+`@font-face` relatif ci-dessus. Depuis Firefox 68,
 chaque document `file://` est une origine unique et une police web se charge
 en mode CORS : l'échec peut toucher une page racine comme une page profonde, et
 le comportement de Chromium se vérifie au lieu de se supposer. Procédure : sites
@@ -946,8 +973,8 @@ vérification est refaite.
 - **H12** Lien « Skip to content » (hors maquette, recette P1) : premier
   élément focalisable, visible seulement au focus, vers `#okf-main`. → P1.1
 - **H13** Étroit : sous 900, la barre passe sur deux lignes (marque, nom,
-  comptes ; puis outils) ; à 390, comptes masqués ; jamais de défilement
-  horizontal. → P1.1
+  comptes ; puis outils) ; à 520 et moins, comptes masqués (donc à 390) ;
+  jamais de défilement horizontal. → P1.1
 
 ### 11.2 Explorateur (A)
 
@@ -1060,7 +1087,8 @@ vérification est refaite.
     Vérificateur = `Actor.Id` d'un acteur `human:` bien formé, sinon
     `Actor.Raw` ; date = les dix premiers caractères de `At` s'ils ont la forme
     `AAAA-MM-JJ`, sinon `At` tel quel, omise si absente ; « +N » = nombre des
-    **autres** entrées du même ensemble, omis à 0 ;
+    **autres** entrées du même ensemble, omis à 0, ajouté après « · » comme
+    les autres parties (`human-reviewed · alice · 2026-09-30 · +2`) ;
   - **péremption** : seulement si `Lifecycle.StaleAfterDate` existe ; écrite
     en C# « stale after AAAA-MM-JJ » (bord `--hair`, texte `--gray`) ;
     `okf-page.js` la bascule d'après l'index, aux instants de §4.4, en « stale
@@ -1075,7 +1103,10 @@ vérification est refaite.
   `aria-controls`), ajouté par `okf-page.js` seulement s'il y a des entrées
   repliées. Corps : grille de deux colonnes `minmax(0, 1fr)`, 13,5 ; cellule
   en ligne flexible, `gap: 12px`, padding 8 14, filet bas sauf dernière
-  rangée ; clé Space Mono 12 `--gray` sur 92 ; valeur 13,5, coupure
+  rangée — résultat visible : un seul trait sous la dernière rangée, le bord
+  de la boîte, jamais un filet doublé, quel que soit le nombre d'entrées
+  repliées ou montrées ; à 600 de large et moins, une seule colonne ; clé
+  Space Mono 12 `--gray` sur 92 ; valeur 13,5, coupure
   `anywhere` ; valeur structurée (émission YAML compacte) en Space Mono 12,5.
   Repliée (A27) : les quatre premières entrées en ordre du document hors
   `type`, `title`, `status`, `verified`, `stale_after` (déjà montrées par le
@@ -1087,8 +1118,9 @@ vérification est refaite.
   ne porte pas `data-okf-expanded` (posé par « Show all ») ; si `okf-page.js`
   manquait, ces entrées resteraient masquées : il est chargé avec les autres
   assets et le harnais vérifie qu'il s'exécute sans erreur. Une séquence de
-  scalaires s'affiche jointe par « , » (maquette : `finance, margin,
-  attested`) ; les autres structures gardent l'émission YAML compacte de P1.
+  scalaires non vide s'affiche jointe par « , » (maquette : `finance, margin,
+  attested`) ; une séquence vide s'affiche `[]` (émission compacte, valeur
+  structurée) ; les autres structures gardent l'émission YAML compacte de P1.
   Écart : la maquette tronque `{ resource: …, … }` ; on ne tronque pas (aucune
   perte d'information). Remplace `table.frontmatter`. → P1.1
 - **C7** Corps : H2 21 marge 0 0 8 ; paragraphe 15,5 / 1,65, marge 0 0 20 ;
@@ -1134,9 +1166,15 @@ vérification est refaite.
 - **X8** Pied 12 `--gray` : « solid = links to · dashed = referenced by » ; à
   droite « Open in graph » 600 `--blue` sans soulignement. → P2
 - **X9** Plafond et liste (hors maquette, exigés par §6 et A11) : « +N
-  omitted » dans le cadre au-delà de 40 nœuds ; sous le cadre, « List · N
-  neighbours » repliable, tous les voisins en lignes `.okf-row` (X10) :
-  glyphe (contexte `icon`), id et relation. → P2
+  omitted » dans le cadre au-delà de 40 nœuds (centre compris, §4.3) ; sous
+  le cadre, « List · N neighbours » repliable, tous les voisins en lignes
+  `.okf-row` (X10) : glyphe (contexte `icon`), id et relation. Relation, du
+  point de vue du centre et dans les mots de X8 : voisin direct « links to »,
+  « referenced by » ou « links to · referenced by » ; voisin du second saut
+  « 2 hops via `<id>` », `<id>` = le premier voisin direct (ordre de l'index)
+  par lequel il est atteint ; fantôme : id écrit « absent: `<id>` », texte
+  sans lien. Les arêtes entre deux voisins sont dessinées, pas énoncées dans
+  la liste (elles figurent sur la page de chacun). → P2
 - **X10** « Referenced by · N » : compte écrit en C# ; lignes (classe
   partagée `.okf-row`, §12.6) : lien en ligne flexible, 13,5, sans
   soulignement, padding 6 0, filet bas `--hair`, `gap: 9px`, glyphe de type
@@ -1309,13 +1347,13 @@ créé vide d'avance, aucune page ne charge un script qui n'existe pas encore.
 | `ViewerAssets.cs` : lecture générique, interne, d'une ressource embarquée par son chemin (`Text`, `Bytes`) ; les propriétés publiques de P1 restent | P1.1 | P2 et P3 n'y ajoutent rien |
 | `OKF4net.Viewer.csproj` : `LogicalName` qui garde le chemin relatif sous `Assets/` (séparateurs normalisés en `/` à la lecture), exclusion de `fonts/README.md` | P1.1 | — |
 | `HtmlWriter.WriteAssets` : écrit sous `assets/` **toutes** les ressources embarquées, en ordre ordinal de leur chemin, puis `okf-index.js` (et `okf-fonts.css` si A26 l'exige) | P1.1 | P2, P3 : un fichier ajouté sous `Assets/` est embarqué et écrit sans autre changement |
-| `HtmlWriter.Write` | P1.1 ; P3 insère, sous le repère `// P3: graph page (§12.5)`, la seule ligne qui écrit la page du graphe | — |
+| `HtmlWriter.Write` | P1.1, qui y calcule la variable locale `graphPage = GraphPagePathOf(site)` (celle du garde et de l'en-tête) ; P3 insère, sous le repère `// P3: graph page (§12.5)`, la seule ligne qui écrit la page du graphe, exactement `WriteFile(outDir, root, verifiedDirs, graphPage, RenderGraph(site), written);` | — |
 | `HtmlWriter.PageScripts` : table des scripts de fin de `<body>` des pages de concept et de l'index (§12.6) | P1.1 ; P2 insère `"okf-local.js"` sous le repère `// P2: local graph`, en fin de table | P3 ne la lit pas |
-| `HtmlWriter.RenderDocumentStart(site, vue, titre, préfixe, idConcept?)` (du `<!doctype>` à la fin de l'en-tête, `<head>` compris), `RenderHeader(site, vue, préfixe, idConcept?)` pour les vues `page`, `index` **et** `graph`, `ScriptTag(préfixe, nom)`, `HtmlEscape`, `RootPrefix` | P1.1, tests xunit des trois vues compris | P3 (appel) |
+| `HtmlWriter.ViewKind` (`internal enum { Page, Index, Graph }`, écrit `page`, `index`, `graph` dans `data-okf-view`) ; `RenderDocumentStart(ViewerSite site, ViewKind view, string title, string rootPrefix, string? conceptId)` (du `<!doctype>` à la fin de l'en-tête, `<head>` compris), `RenderHeader(site, view, rootPrefix, conceptId)` pour les trois vues ; `ScriptTag(string rootPrefix, string name)`, qui rend une ligne entière `<script src="{préfixe}assets/{nom}"></script>` suivie de `\n` (préfixe et nom passés par `HtmlEscape`) pour un fichier écrit sous `assets/` ; `GraphPagePathOf(site)` (valeur explicite validée, sinon `SiteModel.FreeGraphPagePath`) ; `HtmlEscape`, `RootPrefix` — tous `internal static` | P1.1, tests xunit des trois vues compris | P3 (appel) |
 | `HtmlWriter.RenderShell`, `RenderPage`, `RenderIndex`, tête de page, « Referenced by » | P1.1 | — |
 | `HtmlWriter.GuardNoCaseCollisions`, amorcé avec `index.html` et le nom de la page du graphe | P1.1 | — |
 | `HtmlWriter.RenderGraph`, sous le repère `// P3: RenderGraph (§12.5)` placé juste avant `HtmlEscape` | P3 (création) : la **seule** méthode qui écrit `graph.html` et y charge `okf-sim.js` et `okf-graph.js` | — |
-| `Assets/okf-shapes.js`, `okf-page.js`, `fonts/` ; révisions d'`okf-site.js`, `okf-theme.js`, `okf-explorer.js`, `okf-palette.js`, `okf-toc.js` | P1.1 | P2, P3 (API de §12.2, `OkfSite`) |
+| `Assets/okf-shapes.js`, `okf-page.js`, `fonts/` (et son outil de vendorisation `tools/viewer-fonts/vendor-fonts.js`) ; révisions d'`okf-site.js`, `okf-theme.js`, `okf-explorer.js`, `okf-palette.js`, `okf-toc.js` | P1.1 | P2, P3 (API de §12.2, `OkfSite`) |
 | `Assets/okf-local.js` | P2 (création) | — |
 | `Assets/okf-sim.js`, `Assets/okf-graph.js` | P3 (création) | — |
 | `viewer.css` | chaque tranche dans sa section (§12.6) | — |
@@ -1326,8 +1364,10 @@ créé vide d'avance, aucune page ne charge un script qui n'existe pas encore.
 | section `## P2` d'`ACCEPTANCE.md` et `recette/p2.js` ; section `## P3` et `recette/p3.js` | P2 ; P3 | — |
 | tests xunit | chaque tranche dans ses classes (§7) | — |
 | `ci.yml` (smoke test AOT) | P1.1 (assets, polices), puis P3 (`graph.html`) après la fusion de P1.1 | — |
-| `CLAUDE.md`, README du viewer, `NOTICE` | P1.1, puis P3 après la fusion de P1.1 (§12.8) | — |
-| `CHANGELOG.md` | P1.1 écrit l'entrée entière, une ligne par tranche ; un écart de livraison de P2 ou P3 se corrige avant de sortir la PR #176 du brouillon | — |
+| `CLAUDE.md`, README du viewer, `NOTICE` | P1.1, puis P3 après la fusion de P1.1 (§12.8) | P2 n'y écrit pas : il remet dans son rapport final (dernière tâche) le texte exact de ce qui manque sur `okf-local.js`, que le contrôleur applique après la fusion de P2 et de P3, hors de leurs worktrees |
+| `README.md` racine (paragraphe `okf-render`, paragraphe de licence) | P1.1, pour les trois tranches comme le `CHANGELOG` : polices embarquées (SIL OFL 1.1) à côté de `marked` dans le paragraphe de licence, graphe local et page du graphe dans la description du site | P2, P3 n'y écrivent pas ; un écart de livraison se corrige comme le `CHANGELOG` |
+| `CHANGELOG.md` | P1.1 écrit l'entrée entière, une ligne par tranche (P2 et P3 compris) ; un écart de livraison de P2 ou P3 se corrige avant de sortir la PR #176 du brouillon | P2, P3 la lisent ; P3 ne corrige que sa ligne, et seulement si sa livraison s'en écarte |
+| cette spec | le contrôleur ; P1.1 y consigne la mesure de §3.6 et le verdict des polices de §11.0 (deux paragraphes nommés) | P2, P3 (lecture ; une valeur par défaut de §12.5 recalibrée par P3 est consignée par le contrôleur) |
 
 ### 12.1 Schéma de l'index v2 (propriétaire : P1.1)
 
@@ -1585,8 +1625,8 @@ window.OkfShapes = Object.freeze({
 ### 12.4 Graphe local (propriétaire : P2)
 
 Créé par `okf-local.js` dans `#okf-context`, **juste après `#okf-toc`** et avant
-`.okf-backlinks` ; caché s'il n'y a aucun voisin ; il révèle `#okf-context` si
-celui-ci était caché.
+`.okf-backlinks` ; pas créé du tout s'il n'y a aucun voisin (un lien vers
+soi-même n'en est pas un) ; il révèle `#okf-context` si celui-ci était caché.
 
 ```html
 <section class="okf-local" id="okf-local-graph" aria-labelledby="okf-local-title">
@@ -1605,7 +1645,10 @@ celui-ci était caché.
 ```
 
 - Données : l'index seul (arêtes sortantes et entrantes, fantômes), structures
-  construites à la demande (§3.6). Ordre angulaire = position dans l'index.
+  construites à la demande (§3.6). Ordre des nœuds, pour le plafond comme pour
+  les angles : §4.3 (par saut, concepts puis fantômes, en position d'index) ;
+  le JS ne compare jamais deux ids. Plafond : 40 nœuds, centre compris.
+- Liste : relations écrites comme X9.
 - Arêtes : §4.3 (toutes celles entre nœuds montrés, opposées décalées de
   ± 3) ; formes : `OkfShapes.node` aux contextes `local` et `localCenter`
   (§12.2), centre marqué `okf-selected` ; libellés : X7.
@@ -1620,11 +1663,12 @@ celui-ci était caché.
 ### 12.5 `graph.html` (propriétaire : P3)
 
 - Écrite par `HtmlWriter.RenderGraph(site)` (P3, seule méthode qui l'écrit,
-  §12.0) au chemin de la page du graphe (§12.3), racine, préfixe `""` :
-  `RenderDocumentStart(site, graph, "Global graph", "", null)` (P1.1, appelé
-  sans modification), puis le squelette ci-dessous, puis ses propres balises
-  `ScriptTag` — `okf-index.js`, `okf-site.js`, `okf-shapes.js`,
-  `okf-palette.js`, `okf-sim.js`, `okf-graph.js` ; sans payload, sans
+  §12.0) au chemin de la page du graphe (§12.3 : la variable `graphPage` de
+  `Write`, jamais recalculée par P3), racine, préfixe `""` :
+  `RenderDocumentStart(site, HtmlWriter.ViewKind.Graph, "Global graph", "",
+  null)` (P1.1, appelé sans modification), puis le squelette ci-dessous, puis
+  ses propres balises `ScriptTag("", nom)` — `okf-index.js`, `okf-site.js`,
+  `okf-shapes.js`, `okf-palette.js`, `okf-sim.js`, `okf-graph.js` ; sans payload, sans
   `marked`, `viewer.js`, `okf-toc.js`, `okf-explorer.js`, `okf-page.js`,
   `okf-local.js`.
 - Squelette :
@@ -1734,7 +1778,15 @@ window.OkfSim = Object.freeze({
   (§11.0) ; puces `.okf-chip` et variantes `.okf-chip-type` (fond `--ink`,
   glyphe `--white`), `.okf-chip-trust`, `.okf-chip-status`,
   `.okf-chip-stale` (C5), puces bascules `button.okf-chip[aria-pressed]` (E4,
-  G6) ; lignes de liste `.okf-row` (X10) ; légende `.okf-legend` (§12.2) ;
+  G6) ; états de C5 portés par ces mêmes classes : palier vérifié
+  `okf-chip okf-chip-trust` (bord et texte `--blue`), `unverified`
+  `okf-chip okf-chip-trust okf-chip-unverified` (bord `--hair`, texte
+  `--gray`), « stale after » `okf-chip okf-chip-stale` (bord `--hair`, texte
+  `--gray`), « stale since » la même puce plus l'attribut
+  `data-okf-stale-now` (bord et texte `--stale`, sablier) ; texte de puce
+  `.okf-chip-text`, emplacement de glyphe `.okf-chip-glyph` (masqué vide). Le
+  tiroir de P3 emploie ces états, il n'en définit pas d'autres ; lignes de
+  liste `.okf-row` (X10) ; légende `.okf-legend` (§12.2) ;
   formes SVG (§12.2) ; texte visuellement masqué `.okf-sr` (P1, ancrage
   étendu). Leurs règles sont écrites une fois, ancrées à **tous**
   leurs conteneurs, présents et futurs : `#okf-explorer`, `#okf-context` (y
@@ -1804,16 +1856,29 @@ window.OkfSim = Object.freeze({
 ### 12.8 Recette outillée (hors CI)
 
 - Emplacement : `tools/viewer-security-check/recette/` — `recette.js` (pilote :
-  `--site <dir> --acme <dir> --out <dir> [--browsers chrome,edge,firefox,webkit]
-  [--slices p1,p1.1,p2,p3]`), `lib.js` (lancement, contrastes, sondes de styles
+  `--site <dir> --acme <dir> [--out <dir>] [--browsers chrome,edge,firefox,webkit]
+  [--slices p1,p1.1,p2,p3] [--only id,id]` ; un fichier de tranche absent est
+  compté « ignoré »), `lib.js` (lancement, contrastes, sondes de styles
   calculés, captures), et **un fichier par tranche** : `p1.js` (portage par
   P1.1 des contrôles de la recette de P1, numérotés C1–C11 dans `RECETTE.md`
   et renommés **RC1–RC11** ici, pour ne pas les confondre avec C1–C8 de
   §11.3), `p1-1.js`, `p2.js`, `p3.js`, chacun exportant
-  `async function run(ctx)` qui rend ses résultats indexés par identifiant de
-  §11 (H1…L6, RC1…RC11) et par ligne d'`ACCEPTANCE.md`. `p1-1.js` porte aussi
+  `async function run(ctx)` qui rend `{ [id]: { pass, … } }`, résultats
+  indexés par identifiant de §11 (H1…L6, RC1…RC11), par contrôle nommé
+  (`fonts`…) et par ligne d'`ACCEPTANCE.md`. `p1-1.js` porte aussi
   le contrôle `fonts` (procédure de §11.0) ; `p3.js` vérifie H9 et H10 sur la
   page du graphe.
+- **`ctx`**, construit par `lib.context` pour un navigateur et une tranche,
+  est le seul argument : `browserName` (`chrome`, `edge`, `firefox`,
+  `webkit`) ; `site`, `acme` (URL `file://` des deux sites, terminées par
+  `/`) ; `siteDir`, `acmeDir` (leurs dossiers) ; `wanted(id)` (faux si
+  `--only` exclut `id`) ; `newPage({ viewport, colorScheme })` (une page
+  Playwright neuve, 1 440 × 900 et thème clair par défaut, dont
+  `okfTracked` liste `errors`, `outside`, `failed`) ; `shot(page, id)`
+  (capture sous `--out`, rangée par navigateur et tranche) ; `close()`
+  (appelé par le pilote) ; `lib` (le module `lib.js`). Il n'y a ni page
+  partagée ni dossier `--out` exposé : une tranche ouvre ses pages par
+  `newPage` et écrit ses captures par `shot`.
 - Playwright **n'est pas une dépendance du dépôt** : résolu à l'exécution par
   `OKF_PLAYWRIGHT` (chemin d'un module `playwright-core`, par exemple le cache
   `npx` de l'utilisateur), sinon `require("playwright-core")`, avec un message
@@ -1831,12 +1896,15 @@ window.OkfSim = Object.freeze({
   `marked`, `okf-shapes.js` source unique des formes de type, de confiance, de
   péremption et de fantôme), `NOTICE`, le README du viewer et celui du harnais
   (section « recette ») ; P3, après la fusion de P1.1, met à jour `CLAUDE.md`
-  (`graph.html`, règle de déterminisme de `okf-sim.js`) et le README ; le
-  `CHANGELOG` suit §12.0.
+  (`graph.html`, règle de déterminisme de `okf-sim.js`) et le README du
+  viewer ; le README racine et le `CHANGELOG` suivent §12.0 (P1.1, pour les
+  trois tranches) ; P2 n'édite aucune documentation et remet son texte au
+  contrôleur (§12.0).
 
 ## 13. Points ouverts pour le propriétaire
 
-Aucun à la révision 6 : les six points de la révision 5 sont tranchés par
+Aucun à la révision 7 (les lacunes relevées par les plans y sont tranchées) ;
+les six points de la révision 5 sont tranchés par
 A22 (libellé des lignes), A25 (nom de la page du graphe), A26 (polices en
 `file://`), A24 (symbole de péremption), A23 (taille de l'index) et A27 (repli
 du frontmatter).
