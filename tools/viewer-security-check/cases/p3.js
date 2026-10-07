@@ -35,7 +35,14 @@ const REMOVED_GLOBALS = ["Date", "eval", "Function", "WeakRef", "FinalizationReg
 // Math.sqrt.constructor), makes it the global Math, poisons every function
 // constructor reachable from a function value (Function, async, generator
 // and async generator), then deletes the clock/random/dynamic-code globals.
-// It returns the objects the module is given.
+// It returns the objects the module is given, and `adopt`: the module's
+// public object re-exported so that every argument of create() is first
+// copied into THIS realm. Without it the host's graph, edge arrays and options
+// would reach the module, and graph['con'+'structor']['con'+'structor'] is the
+// host's own, unpoisoned Function constructor. A value already built in the
+// context (a plain Array or Object of this realm, e.g. from inCtx) passes
+// through untouched, so a case can still hand over a getter or a huge sparse
+// array that must not be cloned.
 const PRELUDE = "(function () {\n"
   + "  var allowed = " + JSON.stringify(ALLOWED_MATH) + ";\n"
   + "  var removed = " + JSON.stringify(REMOVED_GLOBALS) + ";\n"
@@ -51,7 +58,28 @@ const PRELUDE = "(function () {\n"
   + "  }\n"
   + "  Object.defineProperty(globalThis, 'Math', { value: restricted, writable: false, configurable: false });\n"
   + "  for (var r = 0; r < removed.length; r++) { try { delete globalThis[removed[r]]; } catch (e) { /* none */ } }\n"
-  + "  return { win: {}, math: restricted };\n"
+  + "  function cloneIn(v) {\n"
+  + "    if (v === null || (typeof v !== 'object' && typeof v !== 'function')) { return v; }\n"
+  + "    if (typeof v === 'function') { throw new TypeError('sandbox: a function cannot cross into the sandbox'); }\n"
+  + "    var proto = Object.getPrototypeOf(v);\n"
+  + "    if (Array.isArray(v)) {\n"
+  + "      if (proto === Array.prototype) { return v; }\n"
+  + "      var a = [];\n"
+  + "      for (var i2 = 0; i2 < v.length; i2++) { a.push(cloneIn(v[i2])); }\n"
+  + "      return a;\n"
+  + "    }\n"
+  + "    if (proto === Object.prototype) { return v; }\n"
+  + "    var o = {};\n"
+  + "    var keys = Object.keys(v);\n"
+  + "    for (var j2 = 0; j2 < keys.length; j2++) { o[keys[j2]] = cloneIn(v[keys[j2]]); }\n"
+  + "    return o;\n"
+  + "  }\n"
+  + "  function adopt(real) {\n"
+  + "    if (real === null || typeof real !== 'object' || typeof real.create !== 'function') { return real; }\n"
+  + "    var create = function (graph, options) { return real.create(cloneIn(graph), cloneIn(options)); };\n"
+  + "    return Object.freeze({ NODE_LIMIT: real.NODE_LIMIT, create: create });\n"
+  + "  }\n"
+  + "  return { win: {}, math: restricted, adopt: adopt };\n"
   + "})()";
 
 // The ONE way this file runs okf-sim.js (or a variant of it): a fresh V8
@@ -61,8 +89,12 @@ const PRELUDE = "(function () {\n"
 // document, Date, performance, requestAnimationFrame, setTimeout, self and
 // globalThis are undefined; `this` is undefined at the module's top level.
 // The module still sees its own `window`, created inside the context.
-// Returns the window the module wrote to (window.OkfSim, and whatever a
-// fault-injection variant records on it).
+// Returns the window the module wrote to (window.OkfSim -- adopted, see
+// PRELUDE -- and whatever a fault-injection variant records on it). Every
+// OkfSim returned is remembered with its context so inCtx() can build inputs,
+// and run probes, INSIDE that same realm.
+const CONTEXT_OF = new WeakMap();
+
 function sandboxLoad(source) {
   const context = vm.createContext({});
   const env = vm.runInContext(PRELUDE, context, { filename: "okf-sim-sandbox-prelude.js" });
@@ -72,7 +104,20 @@ function sandboxLoad(source) {
     context,
     { filename: SIM_FILE });
   wrapper(env.win, env.math);
+  if (env.win.OkfSim !== undefined) {
+    env.win.OkfSim = env.adopt(env.win.OkfSim);
+    if (env.win.OkfSim !== null && typeof env.win.OkfSim === "object") { CONTEXT_OF.set(env.win.OkfSim, context); }
+  }
   return env.win;
+}
+
+// Evaluates `source` inside the realm an OkfSim (from sandboxLoad/loadSim)
+// lives in, and returns the result. It refuses an object that did not come out
+// of sandboxLoad, so a loader that bypassed the sandbox cannot use it.
+function inCtx(OkfSim, source) {
+  const context = CONTEXT_OF.get(OkfSim);
+  if (context === undefined) { throw new Error("inCtx: this OkfSim was not loaded through sandboxLoad()"); }
+  return vm.runInContext(source, context, { filename: "okf-sim-case-input.js" });
 }
 
 function loadSim() {
@@ -266,6 +311,9 @@ function registerSim(h) {
 
   h.check("sim: malformed input is a TypeError, never a silent layout", () => {
     const OkfSim = loadSim();
+    // Built INSIDE the sandbox's realm (a host copy would be cloned element by element).
+    const sparseHuge = inCtx(OkfSim, "new Array(4294967295)");
+    const sparseBig = inCtx(OkfSim, "new Array(1000000000)");
     const bad = [
       [null, undefined], [{ nodeCount: -1, edges: [] }, undefined], [{ nodeCount: 1.5, edges: [] }, undefined],
       [{ nodeCount: "3", edges: [] }, undefined], [{ nodeCount: 3 }, undefined],
@@ -279,21 +327,23 @@ function registerSim(h) {
       // An unknown option key is a mistake (a typo would silently keep the default).
       [{ nodeCount: 3, edges: [] }, { maxIteration: 5 }], [{ nodeCount: 3, edges: [] }, { sliceWork: 10, cellcap: 4 }],
       // A huge sparse edge list must be refused by its first hole, not allocated for.
-      [{ nodeCount: 3, edges: new Array(4294967295) }, undefined],
-      [{ nodeCount: 3, edges: new Array(1000000000) }, undefined],
+      [{ nodeCount: 3, edges: sparseHuge }, undefined],
+      [{ nodeCount: 3, edges: sparseBig }, undefined],
     ];
     for (const [graph, options] of bad) {
       let threw = null;
-      let shown;
-      try { shown = `${JSON.stringify(graph)}, ${JSON.stringify(options)}`; } catch (e) { shown = "(unprintable)"; }
       try { OkfSim.create(graph, options); } catch (e) { threw = e; }
+      let shown = "";
+      if (!threw || threw.name !== "TypeError") {
+        try { shown = `${JSON.stringify(graph)}, ${JSON.stringify(options)}`; } catch (e) { shown = "(unprintable)"; }
+      }
       h.assert(threw && threw.name === "TypeError", `create(${shown}) did not throw a TypeError (${threw && threw.name})`);
     }
     // Documented order: graph, nodeCount, edges array and options are checked
     // first; above NODE_LIMIT the call then returns null without examining
     // the edge entries.
     h.assert(OkfSim.create({ nodeCount: 5000, edges: [[0, 9999], null] }) === null, "above NODE_LIMIT the edge entries were examined");
-    h.assert(OkfSim.create({ nodeCount: 5000, edges: new Array(4294967295) }) === null, "a 5000-node graph with a sparse edge list was not refused with null");
+    h.assert(OkfSim.create({ nodeCount: 5000, edges: sparseHuge }) === null, "a 5000-node graph with a sparse edge list was not refused with null");
     let threw = null;
     try { OkfSim.create({ nodeCount: 5000, edges: [] }, { sliceWork: 0 }); } catch (e) { threw = e; }
     h.assert(threw && threw.name === "TypeError", "bad options were not rejected above NODE_LIMIT");
@@ -301,15 +351,15 @@ function registerSim(h) {
 
   h.check("sim: an edge is read once -- a getter that changes its answer cannot smuggle in an out-of-range node", () => {
     const OkfSim = loadSim();
-    const edge = [];
-    let reads = 0;
-    Object.defineProperty(edge, "0", { get() { reads++; return reads === 1 ? 0 : 7; }, enumerable: true });
-    edge[1] = 1;
-    const s = OkfSim.create({ nodeCount: 3, edges: [edge] }, { maxIterations: 4 });
+    // The edge (and its counting getter) is built inside the sandbox's realm.
+    const probe = inCtx(OkfSim, "(function () { var e = []; var reads = 0;"
+      + " Object.defineProperty(e, '0', { get: function () { reads++; return reads === 1 ? 0 : 7; }, enumerable: true });"
+      + " e[1] = 1; return { edge: e, reads: function () { return reads; } }; })()");
+    const s = OkfSim.create({ nodeCount: 3, edges: [probe.edge] }, { maxIterations: 4 });
     h.assert(s !== null, "a valid edge (as first read) was refused");
     runToEnd(h, s, 100000, "toctou");
     assertFiniteAndBounded(h, s.positions(), 3, "toctou");
-    h.assert(reads === 1, `the edge's first field was read ${reads} times`);
+    h.assert(probe.reads() === 1, `the edge's first field was read ${probe.reads()} times`);
   });
 
   h.check("sim: empty and single-node graphs are done without iterating", () => {
@@ -640,8 +690,20 @@ function registerSim(h) {
 // string holding two slashes does not start a comment) nor look like code
 // (a string reading Math.sin is not a call). `findings` lists constructs the
 // static check refuses outright, because it cannot see through them: template
-// literals, regular-expression literals, and any backslash-u or backslash-x
-// escape (inside a string or an identifier).
+// literals; HTML-like comments (the characters <!-- and -->, which V8 reads as
+// single-line comments and which would hide a block-comment opener from this
+// scanner); any backslash-u or backslash-x escape (inside a string or an
+// identifier); and a slash that opens a regular-expression literal, which is
+// recognised only (a) right after one of the characters ( , = : [ ! & | ? { } ;
+// + - * % < > ~ ^ or at the start, and (b) right after one of the keywords in
+// REGEX_KEYWORDS. A slash after any other operand (an identifier, a number, a
+// closing parenthesis or bracket) is read as division, so a regular-expression
+// literal after the closing parenthesis of an if/while/for head is NOT
+// recognised: okf-sim.js has none, and what such a literal holds is still
+// scanned as code (so a forbidden name inside it is still found).
+const REGEX_KEYWORDS = ["return", "typeof", "void", "case", "in", "of", "delete", "new", "else", "do", "yield",
+  "await", "instanceof", "throw"];
+
 function scanSource(source) {
   let code = "";
   const findings = [];
@@ -687,10 +749,16 @@ function scanSource(source) {
       previous = c;
       continue;
     }
+    if ((c === "<" && source.startsWith("<!--", i)) || (c === "-" && source.startsWith("-->", i))) {
+      findings.push(`an HTML-like comment (${source.slice(i, i + (c === "<" ? 4 : 3))})`);
+    }
     if (c === "/") {
       // After an operand it is division; anywhere else it opens a regular
       // expression literal, which this check does not parse.
-      if (previous === "" || "(,=:[!&|?{};+-*%<>~^".includes(previous)) { findings.push("a regular-expression literal"); }
+      const word = /([A-Za-z_$][\w$]*)$/.exec(code.trimEnd());
+      if (previous === "" || "(,=:[!&|?{};+-*%<>~^".includes(previous) || (word !== null && REGEX_KEYWORDS.includes(word[1]))) {
+        findings.push("a regular-expression literal");
+      }
       code += c;
       i++;
       previous = c;
@@ -746,16 +814,20 @@ function registerPurity(h) {
   // SMOKE CHECK, not proof: it reads okf-sim.js's source text. It catches a
   // forbidden Math function, the ** operator, a clock, the DOM, `this`, a
   // constructor chain or another global written anywhere in the file,
-  // executed or not, and refuses what it cannot see through (template and
-  // regular-expression literals, backslash-u and backslash-x escapes). It does
-  // NOT prove the module is pure: an alias assembled at run time by a
+  // executed or not, and refuses what it cannot see through: template
+  // literals, HTML-like comments, backslash-u and backslash-x escapes, and a
+  // regular-expression literal opened after an operator, an opening bracket or
+  // a listed keyword (a regular-expression literal after the closing
+  // parenthesis of an if/while/for head is not recognised; see scanSource). It
+  // does NOT prove the module is pure: an alias assembled at run time by a
   // construct it does not parse would pass. The sandbox is the executable
   // half, and proves only what the cases actually EXECUTE: sandboxLoad()
   // gives the module a Math rebuilt inside a fresh context from that
   // context's own Math (allowed functions only), poisons the Function
-  // constructors, deletes the clock/random/dynamic-code globals, and runs it
-  // strict with `this` undefined, so a forbidden call on an executed path
-  // throws.
+  // constructors, deletes the clock/random/dynamic-code globals, copies every
+  // argument of create() into that context so no host-realm object reaches the
+  // module, and runs it strict with `this` undefined, so a forbidden call on an
+  // executed path throws.
   h.check("sim purity: okf-sim.js calls no Math function outside §4.2 and no clock, DOM or other global (smoke check)", () => {
     const findings = purityFindings(fs.readFileSync(SIM_FILE, "utf8"));
     h.assert(findings.length === 0, `okf-sim.js uses: ${findings.join(", ")}`);
@@ -784,6 +856,17 @@ function registerPurity(h) {
       ["var a = `x`;", "template literal"], ["var a = /x/.test('x');", "regular-expression literal"],
       ["var a = Math." + BS + "u0073in(0);", "escape"], ["var a = M" + BS + "u0061th.sin(0);", "escape"],
       ["var a = 'Ma" + BS + "x74h';", "escape"],
+      // HTML-like comments are single-line comments to V8 and hide a `/*` from
+      // a scanner that does not know them; a regular-expression literal after
+      // a keyword is not division, and its quote would start a string.
+      ["var q = 0; <!-- /*\nvar a = Math.sin(0) + 2 ** 3;\n--> */", "HTML-like comment"],
+      ["var q = 0;\n--> var a = Math.sin(0);", "HTML-like comment"],
+      ["var a = [void /'/, Math.sin(0), 2 ** 3, void /'/][1];", "regular-expression literal"],
+      ["function g() { return /'/.source + Math.sin(0) + /'/.source; }", "regular-expression literal"],
+      ["var a = typeof /x/;", "regular-expression literal"],
+      ["switch (1) { case /x/.test('x'): break; }", "regular-expression literal"],
+      ["var a = 'x' in /y/;", "regular-expression literal"],
+      ["var a = new /x/.constructor();", "regular-expression literal"],
     ];
     for (const [line, expected] of dirty) {
       const source = clean.replace("window.OkfSim", `${line} window.OkfSim`);
@@ -794,45 +877,78 @@ function registerPurity(h) {
     // Comments, and text inside strings, are not code.
     h.assert(purityFindings(clean + "\n// Math.sin and ** in a comment are not code\n").length === 0, "a comment was flagged");
     h.assert(purityFindings(clean + "\n/* Math.sin ** `x` */\n").length === 0, "a block comment was flagged");
-    const quiet = "(function () { var u = 'http://x/*y*/ Math.sin ** this'; var d = (4 + 2) / 3 / 1; window.OkfSim = u + d; })();";
+    const quiet = "(function () { var u = 'http://x/*y*/ Math.sin ** this <!-- -->'; var d = (4 + 2) / 3 / 1; var total = d / 2; window.OkfSim = u + total; })();";
     h.assert(purityFindings(quiet).length === 0, `strings or divisions were flagged: ${purityFindings(quiet).join(", ")}`);
     h.assert(codeOf("var s = 'a//b'; // c").includes("var s ="), "codeOf dropped code after a string holding //");
   });
 
-  h.check("sim purity: the sandbox refuses every route to a real clock, random or forbidden Math function", () => {
+  h.check("sim purity: the sandbox refuses every route to a real clock, random or forbidden Math function, and no host-realm object reaches the module", () => {
     // Positive control: the sandbox runs a module that only uses what it may.
     const ok = sandboxLoad("window.r = Math.sqrt(16) + Math.max(1, 2) + Math.imul(2, 3);");
     h.assert(ok.r === 12, `the sandbox failed to run an allowed module: ${ok.r}`);
+    const blocked = "sandbox: dynamic code construction is blocked";
+    // [what is attempted, module source, expected error name, expected message fragment]. Each must
+    // throw THAT error: an unrelated failure (a typo in the source, say) cannot pass.
     const hostile = [
-      ["Math.sin", "window.r = Math.sin(1);"],
-      ["Math.random", "window.r = Math.random();"],
-      ["assigning into Math", "Math.sin = function () { return 0; };"],
-      ["Math.sqrt.constructor (the Function constructor via an allowed function)", "window.r = Math.sqrt.constructor('return Ma' + 'th.sin(0)')();"],
-      ["[].constructor.constructor", "window.r = [].constructor.constructor('return Ma' + 'th.sin(0)')();"],
-      ["new Map().constructor.constructor reaching Date.now", "window.r = new Map().constructor.constructor('return Da' + 'te.now()')();"],
-      ["a function value's constructor", "window.r = (function () {}).constructor('return 1')();"],
-      ["the async function constructor", "window.r = (async function () {}).constructor('return 1');"],
-      ["the generator function constructor", "window.r = (function* () {}).constructor('return 1');"],
-      ["the async generator function constructor", "window.r = (async function* () {}).constructor('return 1');"],
-      ["this['Ma'+'th'].sin at the top level", "window.r = this['Ma' + 'th'].sin(0);"],
-      ["Date.now()", "window.r = Date.now();"],
-      ["new Date()", "window.r = new Date();"],
-      ["eval", "window.r = eval('1');"],
-      ["the Function global", "window.r = Function('return 1')();"],
-      ["Intl", "window.r = new Intl.DateTimeFormat().format();"],
-      ["WeakRef", "window.r = new WeakRef({});"],
-      ["FinalizationRegistry", "window.r = new FinalizationRegistry(function () {});"],
-      ["performance.now()", "window.r = performance.now();"],
-      ["setTimeout", "window.r = setTimeout(function () {}, 0);"],
-      ["document", "window.r = document.body;"],
+      ["Math.sin", "window.r = Math.sin(1);", "TypeError", "Math.sin is not a function"],
+      ["Math.random", "window.r = Math.random();", "TypeError", "Math.random is not a function"],
+      ["assigning into Math", "Math.sin = function () { return 0; };", "TypeError", "object is not extensible"],
+      ["Math.sqrt.constructor (the Function constructor via an allowed function)", "window.r = Math.sqrt.constructor('return Ma' + 'th.sin(0)')();", "TypeError", blocked],
+      ["[].constructor.constructor", "window.r = [].constructor.constructor('return Ma' + 'th.sin(0)')();", "TypeError", blocked],
+      ["new Map().constructor.constructor reaching Date.now", "window.r = new Map().constructor.constructor('return Da' + 'te.now()')();", "TypeError", blocked],
+      ["a function value's constructor", "window.r = (function () {}).constructor('return 1')();", "TypeError", blocked],
+      ["the async function constructor", "window.r = (async function () {}).constructor('return 1');", "TypeError", blocked],
+      ["the generator function constructor", "window.r = (function* () {}).constructor('return 1');", "TypeError", blocked],
+      ["the async generator function constructor", "window.r = (async function* () {}).constructor('return 1');", "TypeError", blocked],
+      ["this['Ma'+'th'].sin at the top level", "window.r = this['Ma' + 'th'].sin(0);", "TypeError", "Cannot read properties of undefined (reading 'Math')"],
+      ["Date.now()", "window.r = Date.now();", "TypeError", "Cannot read properties of undefined (reading 'now')"],
+      ["new Date()", "window.r = new Date();", "TypeError", "Date is not a constructor"],
+      ["eval", "window.r = eval('1');", "ReferenceError", "eval is not defined"],
+      ["the Function global", "window.r = Function('return 1')();", "ReferenceError", "Function is not defined"],
+      ["Intl", "window.r = new Intl.DateTimeFormat().format();", "ReferenceError", "Intl is not defined"],
+      ["WeakRef", "window.r = new WeakRef({});", "ReferenceError", "WeakRef is not defined"],
+      ["FinalizationRegistry", "window.r = new FinalizationRegistry(function () {});", "ReferenceError", "FinalizationRegistry is not defined"],
+      ["performance.now()", "window.r = performance.now();", "TypeError", "Cannot read properties of undefined (reading 'now')"],
+      ["setTimeout", "window.r = setTimeout(function () {}, 0);", "TypeError", "setTimeout is not a function"],
+      ["document", "window.r = document.body;", "TypeError", "Cannot read properties of undefined (reading 'body')"],
     ];
-    for (const [name, code] of hostile) {
+    for (const [name, code, errorName, fragment] of hostile) {
       let threw = null;
       try { sandboxLoad(code); } catch (e) { threw = e; }
       h.assert(threw !== null, `the sandbox let this through: ${name}`);
+      h.assert(threw.name === errorName && String(threw.message).includes(fragment),
+        `${name}: threw ${threw.name}: ${threw.message}, expected ${errorName} containing "${fragment}"`);
     }
-    // The module's own loader runs through the same function.
-    h.assert(typeof loadSim().create === "function", "loadSim() does not go through sandboxLoad()");
+    // Host-realm objects: create() receives the host's graph, edge arrays and
+    // options. A module that climbs from one of them to a Function constructor
+    // would get the HOST's, unpoisoned. The sandbox copies every argument into
+    // its own realm first, so the climb ends at the poisoned one.
+    const climb = "['con' + 'structor']['con' + 'structor']";
+    const viaArgs = [
+      ["the graph", `graph${climb}('return Ma' + 'th.sin(1)')()`, { nodeCount: 2, edges: [[0, 1]] }, undefined],
+      ["the graph, reaching Date.now", `graph${climb}('return Da' + 'te.now()')()`, { nodeCount: 2, edges: [[0, 1]] }, undefined],
+      ["the graph, reaching process", `graph${climb}('return pro' + 'cess')()`, { nodeCount: 2, edges: [[0, 1]] }, undefined],
+      ["an edge entry, reaching Math.random", `graph.edges[0]${climb}('return Ma' + 'th.random()')()`, { nodeCount: 2, edges: [[0, 1]] }, undefined],
+      ["the edge list", `graph.edges${climb}('return Ma' + 'th.sin(1)')()`, { nodeCount: 2, edges: [[0, 1]] }, undefined],
+      ["the options", `options${climb}('return Ma' + 'th.sin(1)')()`, { nodeCount: 2, edges: [] }, { maxIterations: 3 }],
+    ];
+    for (const [name, expression, graph, options] of viaArgs) {
+      const win = sandboxLoad(`window.OkfSim = Object.freeze({ NODE_LIMIT: 1500, create: function (graph, options) { return ${expression}; } });`);
+      let threw = null;
+      try { win.OkfSim.create(graph, options); } catch (e) { threw = e; }
+      h.assert(threw !== null, `a host-realm object reached the module through ${name}`);
+      h.assert(threw.name === "TypeError" && String(threw.message).includes(blocked),
+        `${name}: threw ${threw.name}: ${threw.message}, expected the sandbox's blocked constructor`);
+    }
+    // The module's own loader runs through the same function: a function
+    // evaluated in the OkfSim's realm sees the poisoned constructors, the
+    // restricted Math and the deleted globals (inCtx refuses an OkfSim that
+    // sandboxLoad did not produce).
+    const realm = inCtx(loadSim(), "(function () { var r = []; try { (function () {}).constructor('return 1'); r.push('ctor ran'); } catch (e) { r.push('ctor blocked'); }"
+      + " r.push(typeof Date, typeof eval, typeof Function, typeof Math.sin, typeof Math.sqrt, Object.isFrozen(Math), typeof WeakRef, typeof Intl);"
+      + " return r.join(); })()");
+    h.assert(realm === "ctor blocked,undefined,undefined,undefined,undefined,function,true,undefined,undefined",
+      `loadSim()'s realm is not the sandbox: ${realm}`);
   });
 }
 
