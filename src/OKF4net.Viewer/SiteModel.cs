@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Text;
+using OKF4net.Internal;
 using OKF4net.Yaml;
 
 namespace OKF4net.Viewer;
@@ -47,6 +49,15 @@ public static class SiteModel
     /// <param name="bundle">The loaded bundle to project.</param>
     public static ViewerSite Build(Bundle bundle)
     {
+        // The index first: the page head reads the trust tier and the stale
+        // date from it and never re-derives them (spec §11.3, C5).
+        var index = SiteIndex.Build(bundle);
+        var indexed = new Dictionary<string, IndexConcept>(StringComparer.Ordinal);
+        foreach (var concept in index.Concepts)
+        {
+            indexed[concept.Id.ToString()] = concept;
+        }
+
         var concepts = bundle.Concepts;
         var pages = new List<ViewerPage>(concepts.Count);
         var entries = new List<IndexEntry>(concepts.Count);
@@ -59,7 +70,7 @@ public static class SiteModel
             // load-bearing: IndexGenerator groups an empty `type` under
             // "Other", so they must match the old TypeOf/DescriptionOf
             // behaviour exactly.
-            var page = BuildPage(bundle, concept);
+            var page = BuildPage(bundle, concept, indexed[concept.Id.ToString()]);
             pages.Add(page);
             entries.Add(new IndexEntry(
                 Type: concept.Document.Frontmatter.Type ?? string.Empty,
@@ -74,21 +85,17 @@ public static class SiteModel
             IndexGenerator.BuildIndexText(entries),
             bundle.ParseErrors.Select(e => new ViewerParseError(e.Path, e.Error)).ToList())
         {
-            Index = SiteIndex.Build(bundle),
+            Index = index,
+            BundleName = BundleNameOf(bundle.Root),
+            GraphPagePath = FreeGraphPagePath(pages),
         };
     }
 
-    private static ViewerPage BuildPage(Bundle bundle, Concept concept)
+    private static ViewerPage BuildPage(Bundle bundle, Concept concept, IndexConcept indexed)
     {
         var frontmatter = concept.Document.Frontmatter;
 
         var title = DisplayTitle(concept);
-
-        var entries = frontmatter.AsMapping().Entries
-            .Select(e => new ViewerFrontmatterEntry(
-                e.Key.AsDisplayString() ?? e.Key.ToYamlString().TrimEnd('\n'),
-                DisplayValue(e.Value)))
-            .ToList();
 
         var links = bundle.LinksFrom(concept.Id)
             .Select(l => new ViewerLink(l.Raw, RelativeHref(concept.Id, l.Target) + FragmentOf(l.Raw), l.Exists))
@@ -105,10 +112,14 @@ public static class SiteModel
             concept.Id,
             title,
             PagePath(concept.Id),
-            entries,
+            FrontmatterEntries(frontmatter),
             concept.Document.Body,
             links,
-            backlinks);
+            backlinks)
+        {
+            DisplayBody = StripDuplicateTitle(concept.Document.Body, title),
+            Head = BuildHead(frontmatter, indexed),
+        };
     }
 
     /// <summary>The display title: the frontmatter <c>title</c>, else the concept id.</summary>
@@ -144,13 +155,272 @@ public static class SiteModel
     }
 
     /// <summary>
-    /// A frontmatter value as a single display string.
-    /// <see cref="YamlValue.AsDisplayString"/> returns <c>null</c> for
-    /// sequences and mappings, so those fall back to a compact YAML emit --
-    /// dropping them would silently hide `tags`, `sources`, and every
-    /// structured producer key.
+    /// A frontmatter value as one display string, and whether it is a
+    /// structure (spec §11.3, C6). A scalar is shown as written; a non-empty
+    /// sequence of scalars is joined by <c>", "</c> (the mockup's
+    /// <c>finance, margin, attested</c>); anything else keeps P1's compact YAML
+    /// emission -- dropping it would silently hide <c>sources</c> and every
+    /// structured producer key -- and is never truncated.
     /// </summary>
-    private static string DisplayValue(YamlValue value)
-        => value.AsDisplayString()
-           ?? value.ToYamlString().TrimEnd('\n').Replace("\n", " ");
+    private static (string Text, bool Structured) DisplayValue(YamlValue value)
+    {
+        if (value.AsDisplayString() is { } scalar)
+        {
+            return (scalar, false);
+        }
+
+        if (value.AsSequence() is { Count: > 0 } items)
+        {
+            var parts = new List<string>(items.Count);
+            foreach (var item in items)
+            {
+                if (item.AsDisplayString() is not { } part)
+                {
+                    parts = null;
+                    break;
+                }
+
+                parts.Add(part);
+            }
+
+            if (parts is not null)
+            {
+                return (string.Join(", ", parts), false);
+            }
+        }
+
+        return (value.ToYamlString().TrimEnd('\n').Replace("\n", " "), value is YamlSequence or YamlMapping);
+    }
+
+    /// <summary>The keys the title and the chips already show: never among the four unfolded entries (A27).</summary>
+    private static readonly HashSet<string> ShownAbove = new(StringComparer.Ordinal) { "type", "title", "status", "verified", "stale_after" };
+
+    /// <summary>How many entries the folded frontmatter box shows (A27).</summary>
+    internal const int FoldedEntries = 4;
+
+    private static List<ViewerFrontmatterEntry> FrontmatterEntries(Frontmatter frontmatter)
+    {
+        var entries = new List<ViewerFrontmatterEntry>();
+        var unfolded = 0;
+        foreach (var e in frontmatter.AsMapping().Entries)
+        {
+            var key = e.Key.AsDisplayString() ?? e.Key.ToYamlString().TrimEnd('\n');
+            var (text, structured) = DisplayValue(e.Value);
+            var extra = true;
+            if (!ShownAbove.Contains(key) && unfolded < FoldedEntries)
+            {
+                unfolded++;
+                extra = false;
+            }
+
+            entries.Add(new ViewerFrontmatterEntry(key, text) { Structured = structured, Extra = extra });
+        }
+
+        return entries;
+    }
+
+    /// <summary>
+    /// The chips' data (spec §11.3, C5). The tier and the stale date come from
+    /// the index. Retained verifications are those with a <c>by</c>; the
+    /// tier's set is the retained human ones for the human tier, all retained
+    /// ones for the machine tier, none otherwise; the last of the set, in
+    /// document order, is shown.
+    /// </summary>
+    private static ViewerPageHead BuildHead(Frontmatter frontmatter, IndexConcept indexed)
+    {
+        var status = frontmatter.Get("status")?.AsDisplayString();
+        if (status is { Length: 0 })
+        {
+            status = null;
+        }
+
+        var retained = frontmatter.Verified.Where(s => s.By is not null).ToList();
+        var set = indexed.Trust == AuditVocabulary.Name(TrustTier.HumanReviewed)
+            ? retained.Where(s => s.By!.Value.IsHuman).ToList()
+            : indexed.Trust == AuditVocabulary.Name(TrustTier.MachineConfirmed)
+                ? retained
+                : new List<Stamp>();
+
+        string? verifier = null;
+        string? date = null;
+        if (set.Count > 0)
+        {
+            var last = set[^1];
+            var by = last.By!.Value;
+            verifier = by.IsHuman && by.IsWellFormed ? by.Id! : by.Raw;
+            date = DateOf(last.At);
+        }
+
+        return new ViewerPageHead(
+            frontmatter.Type ?? string.Empty,
+            status,
+            indexed.Trust,
+            verifier,
+            date,
+            Math.Max(0, set.Count - 1),
+            indexed.StaleAfterDate);
+    }
+
+    /// <summary>A verification date for display: <c>YYYY-MM-DD</c> when <paramref name="at"/> starts so, else as written; null when absent.</summary>
+    private static string? DateOf(string? at)
+    {
+        if (string.IsNullOrEmpty(at))
+        {
+            return null;
+        }
+
+        if (at.Length >= 10)
+        {
+            var d = at.AsSpan(0, 10);
+            var iso = d[4] == '-' && d[7] == '-'
+                && char.IsAsciiDigit(d[0]) && char.IsAsciiDigit(d[1]) && char.IsAsciiDigit(d[2]) && char.IsAsciiDigit(d[3])
+                && char.IsAsciiDigit(d[5]) && char.IsAsciiDigit(d[6]) && char.IsAsciiDigit(d[8]) && char.IsAsciiDigit(d[9]);
+            if (iso)
+            {
+                return at[..10];
+            }
+        }
+
+        return at;
+    }
+
+    /// <summary>
+    /// <paramref name="body"/> without its first non-blank line when that line
+    /// is a level-1 ATX heading at column 0 whose text equals
+    /// <paramref name="title"/> (ordinal, after both are normalized), and
+    /// without the blank lines before it (spec §11.3, C4). Lines are split by
+    /// <see cref="LfLines"/> (a final <c>\r</c> stripped); a blank line is
+    /// empty or made of spaces and tabs. Anything else -- setext, inline
+    /// markup, a heading inside a fence, another text -- is left alone: a kept
+    /// duplicate costs nothing, a wrong removal would delete content.
+    /// </summary>
+    /// <param name="body">The raw markdown body.</param>
+    /// <param name="title">The display title.</param>
+    internal static string StripDuplicateTitle(string body, string title)
+    {
+        var wanted = NormalizeSpaces(title);
+        foreach (var line in LfLines.SplitSpans(body))
+        {
+            var text = body.AsSpan(line.Start, line.ContentEnd - line.Start);
+            if (IsBlank(text))
+            {
+                continue;
+            }
+
+            return AtxH1Text(text) is { } heading && string.Equals(NormalizeSpaces(heading), wanted, StringComparison.Ordinal)
+                ? body[line.TerminatorEnd..]
+                : body;
+        }
+
+        return body;
+    }
+
+    private static bool IsBlank(ReadOnlySpan<char> line)
+    {
+        foreach (var ch in line)
+        {
+            if (ch != ' ' && ch != '\t')
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// The text of a level-1 ATX heading at column 0 (<c>#</c> then a space or
+    /// a tab, or <c>#</c> alone), or null. The closing sequence of <c>#</c> is
+    /// removed only when a space or a tab precedes it or it is the whole
+    /// content (CommonMark §4.2: <c># C#</c> keeps "C#").
+    /// </summary>
+    private static string? AtxH1Text(ReadOnlySpan<char> line)
+    {
+        if (line.Length == 0 || line[0] != '#')
+        {
+            return null;
+        }
+
+        if (line.Length > 1 && line[1] != ' ' && line[1] != '\t')
+        {
+            return null;
+        }
+
+        var content = line[1..].TrimEnd(" \t");
+        var k = content.Length;
+        while (k > 0 && content[k - 1] == '#')
+        {
+            k--;
+        }
+
+        if (k < content.Length && (k == 0 || content[k - 1] == ' ' || content[k - 1] == '\t'))
+        {
+            content = content[..k];
+        }
+
+        return content.ToString();
+    }
+
+    /// <summary>Spaces and tabs at the ends removed, inner runs of them collapsed to one space.</summary>
+    private static string NormalizeSpaces(string text)
+    {
+        var sb = new StringBuilder(text.Length);
+        var pending = false;
+        foreach (var ch in text)
+        {
+            if (ch == ' ' || ch == '\t')
+            {
+                pending = sb.Length > 0;
+                continue;
+            }
+
+            if (pending)
+            {
+                sb.Append(' ');
+                pending = false;
+            }
+
+            sb.Append(ch);
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>The bundle's name: the root folder's name, <c>bundle</c> when it has none (spec §12.3).</summary>
+    /// <param name="root">The bundle root, absolute or relative, with or without a trailing separator.</param>
+    internal static string BundleNameOf(string root)
+    {
+        var name = Path.GetFileName(Path.TrimEndingDirectorySeparator(Path.GetFullPath(root)));
+        return string.IsNullOrEmpty(name) ? "bundle" : name;
+    }
+
+    /// <summary>
+    /// The graph page's file name (spec §12.3, A25): the first of
+    /// <c>graph.html</c>, <c>graph-1.html</c>, <c>graph-2.html</c>… equal,
+    /// ignoring case, to none of: a page's path, <c>index.html</c>, the first
+    /// segment of a page's path (a folder). Never a refusal to render.
+    /// </summary>
+    /// <param name="pages">The site's pages.</param>
+    internal static string FreeGraphPagePath(IReadOnlyList<ViewerPage> pages)
+    {
+        var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "index.html" };
+        foreach (var page in pages)
+        {
+            taken.Add(page.RelativeHtmlPath);
+            var slash = page.RelativeHtmlPath.IndexOf('/');
+            if (slash > 0)
+            {
+                taken.Add(page.RelativeHtmlPath[..slash]);
+            }
+        }
+
+        for (var n = 0; ; n++)
+        {
+            var name = n == 0 ? "graph.html" : $"graph-{n}.html";
+            if (!taken.Contains(name))
+            {
+                return name;
+            }
+        }
+    }
 }
