@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 //
-// Heading anchors, the "On this page" list and fragment resolution (spec §5).
-// Runs after viewer.js has rendered and sanitized #okf-body, and does not
-// need the site index. Ids are GENERATED here, after sanitization: always
-// "okf-h-" + a slug of letters, digits and hyphens. No id or name from bundle
-// content is ever admitted (the sanitizer strips them), so content cannot
-// clobber a global such as window.OKF_INDEX.
+// Heading anchors, the "On this page" list, its current section and fragment
+// resolution (spec §5, §11.4 X4). Runs after viewer.js has rendered and
+// sanitized #okf-body, and does not need the site index. Ids are GENERATED
+// here, after sanitization: always "okf-h-" + a slug of letters, digits and
+// hyphens. No id or name from bundle content is ever admitted (the sanitizer
+// strips them), so content cannot clobber a global such as window.OKF_INDEX.
 (function () {
   "use strict";
   var site = window.OkfSite;
@@ -21,10 +21,11 @@
     headings[j].setAttribute("tabindex", "-1");
   }
 
+  // The listed entries, in document order: { link, heading }.
+  var entries = [];
   var toc = document.getElementById("okf-toc");
   var list = toc ? toc.querySelector("ul") : null;
   if (list) {
-    var count = 0;
     for (var k = 0; k < headings.length; k++) {
       var level = headings[k].tagName;
       if (level !== "H2" && level !== "H3") { continue; }
@@ -33,13 +34,45 @@
       link.setAttribute("href", "#" + headings[k].id);
       item.appendChild(link);
       list.appendChild(item);
-      count++;
+      entries.push({ link: link, heading: headings[k] });
     }
-    if (count > 0) {
+    if (entries.length > 0) {
       toc.hidden = false;
       var context = document.getElementById("okf-context");
       if (context) { context.hidden = false; }
     }
+  }
+
+  // X4: the current section is the last listed heading whose top is above a
+  // quarter of the window, else the first one.
+  function updateCurrent() {
+    if (entries.length === 0) { return; }
+    var line = window.innerHeight * 0.25;
+    var current = entries[0];
+    for (var e = 0; e < entries.length; e++) {
+      if (entries[e].heading.getBoundingClientRect().top < line) { current = entries[e]; }
+    }
+    for (var f = 0; f < entries.length; f++) {
+      if (entries[f] === current) {
+        entries[f].link.setAttribute("aria-current", "location");
+      } else {
+        entries[f].link.removeAttribute("aria-current");
+      }
+    }
+  }
+
+  // At most one update per frame, however many scroll events arrive.
+  var frame = typeof window.requestAnimationFrame === "function"
+    ? function (callback) { window.requestAnimationFrame(callback); }
+    : function (callback) { window.setTimeout(callback, 16); };
+  var scheduled = false;
+  function scheduleUpdate() {
+    if (scheduled) { return; }
+    scheduled = true;
+    frame(function () {
+      scheduled = false;
+      updateCurrent();
+    });
   }
 
   // The generated heading a fragment designates, or null. Only elements
@@ -53,12 +86,13 @@
     return null;
   }
 
-  // Moves reading focus to that heading.
+  // Moves reading focus to that heading, then recomputes the current section.
   function go(hash) {
     var target = targetOf(hash);
     if (!target) { return false; }
     if (typeof target.scrollIntoView === "function") { target.scrollIntoView(); }
     target.focus();
+    updateCurrent();
     return true;
   }
 
@@ -93,5 +127,8 @@
   followFragments(body);
   if (toc) { followFragments(toc); }
   window.addEventListener("hashchange", function () { go(window.location.hash); });
+  window.addEventListener("scroll", scheduleUpdate, { passive: true });
+  window.addEventListener("resize", scheduleUpdate);
+  updateCurrent();
   if (window.location.hash) { go(window.location.hash); }
 })();

@@ -2522,6 +2522,56 @@ checkAsync("the generated v2 index ranks the types, points each concept at its t
 
 // --- Task 8: contents, current section ---
 
+// jsdom does no layout: this probe gives every h2/h3 of #okf-body the top the
+// case sets (by heading text), counts the reads, and lets the case move them.
+checkAsync("contents: the current section is the last h2/h3 above a quarter of the window, once per frame and after a fragment", async () => {
+  const tops = new Map();
+  let reads = 0;
+  const window = await openPage("foo/bar.html", {
+    beforeParse(w) {
+      const real = w.Element.prototype.getBoundingClientRect;
+      w.Element.prototype.getBoundingClientRect = function () {
+        if (/^H[23]$/.test(this.tagName) && this.closest("#okf-body")) {
+          reads++;
+          const top = tops.has(this.textContent) ? tops.get(this.textContent) : 1000;
+          return { top, bottom: top + 20, left: 0, right: 0, width: 0, height: 20, x: 0, y: top };
+        }
+        return real.call(this);
+      };
+    },
+  });
+  const doc = window.document;
+  const current = () => Array.from(doc.querySelectorAll('#okf-toc a[aria-current="location"]'), (a) => a.getAttribute("href"));
+  assert(JSON.stringify(current()) === JSON.stringify(["#okf-h-usage"]), `on load, with every heading below the line: ${JSON.stringify(current())} (expected the first)`);
+  const line = window.innerHeight * 0.25;
+  tops.set("Usage", -400);
+  tops.set("Section", line - 1);
+  tops.set("Details", line + 1);
+  reads = 0;
+  for (let k = 0; k < 5; k++) { window.dispatchEvent(new window.Event("scroll")); }
+  await new Promise((resolve) => window.requestAnimationFrame(resolve));
+  assert(JSON.stringify(current()) === JSON.stringify(["#okf-h-section"]), `after scrolling: ${JSON.stringify(current())}`);
+  assert(reads === 3, `five scroll events in one frame read the headings ${reads} times, expected 3 (one update)`);
+  // A fragment moves no scroll event in jsdom: the update must follow the
+  // fragment resolution itself.
+  tops.set("Usage", -800);
+  tops.set("Section", -400);
+  tops.set("Details", 0);
+  const changed = new Promise((resolve) => window.addEventListener("hashchange", resolve, { once: true }));
+  window.location.hash = "okf-h-details";
+  await changed;
+  assert(JSON.stringify(current()) === JSON.stringify(["#okf-h-details"]), `after the fragment: ${JSON.stringify(current())}`);
+  const style = window.getComputedStyle(doc.querySelector('#okf-toc a[aria-current="location"]'));
+  assert(style.getPropertyValue("font-weight") === "600", `the current entry's font-weight: ${style.getPropertyValue("font-weight")}`);
+  // "Strictly above": a heading whose top is exactly on the line is not yet current.
+  tops.set("Usage", -800);
+  tops.set("Section", line - 1);
+  tops.set("Details", line);
+  window.dispatchEvent(new window.Event("resize"));
+  await new Promise((resolve) => window.requestAnimationFrame(resolve));
+  assert(JSON.stringify(current()) === JSON.stringify(["#okf-h-section"]), `a heading exactly on the line: ${JSON.stringify(current())} (expected the one above it)`);
+});
+
 // --- Task 10: fonts ---
 check("fonts: every @font-face of the written stylesheet points at a file written under assets/fonts", () => {
   const css = fs.readFileSync(path.join(SITE, "assets", "viewer.css"), "utf8");

@@ -197,10 +197,17 @@ body > .okf-palette-backdrop .okf-palette:focus { outline: none; }
   font-family: var(--mono); font-size: 11px; font-weight: 400; letter-spacing: .06em;
   text-transform: uppercase; color: var(--gray); margin: 0 0 8px;
 }
-#okf-context :is(.okf-toc, .okf-backlinks) ul { list-style: none; margin: 0 0 24px; padding: 0; font-size: 14px; }
-#okf-context .okf-toc li { padding: 4px 0 4px 10px; border-left: 2px solid var(--hair); }
-#okf-context .okf-toc li.okf-toc-sub { padding-left: 22px; }
-#okf-context .okf-toc a { min-width: 0; overflow-wrap: anywhere; }
+/* Sections are spaced by #okf-context's gap (X1). */
+#okf-context :is(.okf-toc, .okf-backlinks) ul { list-style: none; margin: 0; padding: 0; font-size: 13.5px; }
+/* X3: each entry is a link on a 2 px rule, an h3 indented; X4 marks the
+   current section blue and semibold. */
+#okf-context .okf-toc a {
+  display: block; padding: 5px 0 5px 10px; border-left: 2px solid var(--hair);
+  color: var(--ink); text-decoration: none; min-width: 0; overflow-wrap: anywhere;
+}
+#okf-context .okf-toc li.okf-toc-sub a { padding-left: 22px; }
+#okf-context .okf-toc a:hover { color: var(--blue); }
+#okf-context .okf-toc a[aria-current="location"] { border-left-color: var(--blue); color: var(--blue); font-weight: 600; }
 #okf-context .okf-backlinks li { padding: 6px 0; border-bottom: 1px solid var(--hair); }
 /* A wide GFM table scrolls inside its own box instead of widening the page
    (390 px). #okf-body is an id, so this cannot reach the frontmatter table
