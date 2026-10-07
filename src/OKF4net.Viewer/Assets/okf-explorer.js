@@ -26,7 +26,7 @@
   var staleMarks = [];
   var pressed = new Set();   // slots of the pressed type chips
   var filterCount = null;    // the Filters button's visible count
-  var filterSpoken = null;   // its visually hidden ", N active"
+  var filtersButton = null;  // the header's Filters button
 
   function el(tag, className, text) {
     return site.element(document, tag, className, text);
@@ -161,7 +161,9 @@
     var n = pressed.size + (q !== "" ? 1 : 0);
     filterCount.textContent = String(n);
     filterCount.hidden = n === 0;
-    filterSpoken.textContent = n === 0 ? "" : ", " + n + " active";
+    // The accessible name: an aria-label, since an absolutely positioned
+    // visually hidden span makes a reader say "Filters , 1 active".
+    if (n === 0) { filtersButton.removeAttribute("aria-label"); } else { filtersButton.setAttribute("aria-label", "Filters, " + n + " active"); }
   }
 
   function refilter() {
@@ -239,12 +241,10 @@
   // layout included).
   var tools = document.getElementById("okf-tools");
   if (tools) {
-    var filtersButton = el("button", "okf-tool");
+    filtersButton = el("button", "okf-tool");
     filtersButton.type = "button";
     filtersButton.id = "okf-filters-toggle";
     filtersButton.appendChild(document.createTextNode("Filters"));
-    filterSpoken = el("span", "okf-sr", "");
-    filtersButton.appendChild(filterSpoken);
     filterCount = el("span", "okf-filters-count", "0");
     filterCount.setAttribute("aria-hidden", "true");
     filterCount.hidden = true;
@@ -255,9 +255,10 @@
   }
 
   // On the desktop layout the explorer is its own scroll container (sticky,
-  // overflow-y: auto): bring the current entry into its view, about a third
-  // from the top, by scrolling the explorer alone. Never the page: in the
-  // stacked layout the explorer is not a scroll container and nothing moves.
+  // overflow-y: auto) with a sticky head and a sticky foot (E12, E13): bring
+  // the current entry into the band between them, about a third from its top,
+  // by scrolling the explorer alone. Never the page: in the stacked layout
+  // the explorer is not a scroll container and nothing moves.
   function revealCurrent() {
     var link = nav.querySelector('a.okf-tree-link[aria-current="page"]');
     if (!link || nav.scrollHeight <= nav.clientHeight) { return; }
@@ -268,11 +269,26 @@
     // The part of the explorer on screen: it may run past the window bottom.
     var visible = Math.min(nav.clientHeight, window.innerHeight - Math.max(0, view.top));
     if (!(visible > 0)) { visible = nav.clientHeight; }
+    // The usable band: under the sticky head, above the sticky foot.
+    var bandTop = Math.max(0, head.getBoundingClientRect().bottom - view.top);
+    var bandBottom = visible;
+    var footTop = foot.getBoundingClientRect().top - view.top;
+    if (footTop > bandTop) { bandBottom = Math.min(bandBottom, footTop); }
+    var band = bandBottom - bandTop;
+    if (!(band > 0)) { return; }
     var top = entry.top - view.top;
-    if (top >= 0 && top + entry.height <= visible) { return; }
-    nav.scrollTop = Math.max(0, nav.scrollTop + top - Math.round(visible / 3));
+    if (top >= bandTop && top + entry.height <= bandBottom) { return; }
+    nav.scrollTop = Math.max(0, nav.scrollTop + top - bandTop - Math.round(band / 3));
   }
   revealCurrent();
+  // The web fonts change the head's height (the chips wrap differently): once
+  // they are ready, place the entry again, unless the reader has scrolled.
+  var revealedAt = nav.scrollTop;
+  if (document.fonts && document.fonts.ready && typeof document.fonts.ready.then === "function") {
+    document.fonts.ready.then(function () {
+      if (nav.scrollTop === revealedAt) { revealCurrent(); }
+    });
+  }
 
   filter.addEventListener("input", refilter);
 

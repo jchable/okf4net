@@ -1209,9 +1209,18 @@ checkAsync("explorer: a node is both a page and a folder, with separate open and
 // current entry `entryOffset` (default 2700) px down it, and the given computed overflow-y. It records
 // every scroll request: the explorer's own scrollTop, window scrolling and
 // scrollIntoView. That the entry is visible on screen is the recette's (C2).
-function explorerScrollProbe(overflowY, layout = true, entryOffset = 2700) {
-  const probe = { requests: [], navTop: 0 };
+// `head` and `foot` (in px, mutable through probe.head / probe.foot) give the
+// sticky head and foot of the explorer (E12, E13) a height: the head sits at
+// the explorer's top, the foot at the bottom of its visible part. `fonts`
+// installs a document.fonts.ready that probe.resolveFonts() settles; `navTop`
+// is the explorer's initial scrollTop.
+function explorerScrollProbe(overflowY, layout = true, entryOffset = 2700, bars = {}) {
+  const probe = { requests: [], navTop: bars.navTop || 0, head: bars.head || 0, foot: bars.foot || 0, resolveFonts: null };
   probe.beforeParse = (w) => {
+    if (bars.fonts) {
+      const ready = new Promise((resolve) => { probe.resolveFonts = resolve; });
+      Object.defineProperty(w.document, "fonts", { configurable: true, value: { ready } });
+    }
     const isNav = (el) => el.id === "okf-explorer";
     const proto = w.Element.prototype;
     if (layout) {
@@ -1219,8 +1228,10 @@ function explorerScrollProbe(overflowY, layout = true, entryOffset = 2700) {
       Object.defineProperty(proto, "clientHeight", { configurable: true, get() { return isNav(this) ? 800 : 0; } });
       proto.getBoundingClientRect = function () {
         const current = this.getAttribute("aria-current") === "page";
-        const top = isNav(this) ? 100 : current ? 100 + entryOffset - probe.navTop : 0;
-        const height = isNav(this) ? 800 : current ? 20 : 0;
+        const visibleHeight = Math.min(800, w.innerHeight - 100);
+        const isHead = this.classList.contains("okf-explorer-head"), isFoot = this.classList.contains("okf-explorer-foot");
+        const top = isNav(this) ? 100 : isHead ? 100 : isFoot ? 100 + visibleHeight - probe.foot : current ? 100 + entryOffset - probe.navTop : 0;
+        const height = isNav(this) ? 800 : isHead ? probe.head : isFoot ? probe.foot : current ? 20 : 0;
         return { top, bottom: top + height, left: 0, right: 0, width: 0, height, x: 0, y: top };
       };
       const computed = w.getComputedStyle.bind(w);
@@ -1272,6 +1283,61 @@ checkAsync("explorer: without its own scroll container (stacked layout, no layou
     await openPage("foo/bar.html", { beforeParse: probe.beforeParse });
     assert(probe.requests.length === 0, `${label}: scroll requests ${JSON.stringify(probe.requests)}`);
   }
+});
+
+// P1.1 (E12, E13): the head and the foot of the explorer are sticky, so the
+// entry must land between them. The explorer is 800 px at 100 px from the top
+// of a 768 px window: its visible part is 668 px; with a 243 px head and a
+// 90 px foot the band is 243 to 578 from its top.
+function entryInBand(window, probe) {
+  const nav = window.document.getElementById("okf-explorer");
+  const entry = nav.querySelector('a[aria-current="page"]').getBoundingClientRect();
+  const bandTop = 100 + probe.head, bandBottom = 100 + Math.min(800, window.innerHeight - 100) - probe.foot;
+  return { ok: entry.top >= bandTop && entry.bottom <= bandBottom, text: `the entry sits at ${entry.top}-${entry.bottom}, outside the band ${bandTop}-${bandBottom}` };
+}
+
+checkAsync("explorer: a far entry lands between the sticky head and the sticky foot, not at a third of the whole", async () => {
+  const probe = explorerScrollProbe("auto", true, 2700, { head: 243, foot: 90 });
+  const window = await openPage("foo/bar.html", { beforeParse: probe.beforeParse });
+  const band = entryInBand(window, probe);
+  assert(probe.requests.length === 1 && band.ok, `${band.text}; requests ${JSON.stringify(probe.requests)}`);
+});
+
+checkAsync("explorer: an entry hidden under the sticky head is brought out from under it", async () => {
+  const probe = explorerScrollProbe("auto", true, 700, { head: 243, foot: 90, navTop: 500 });
+  const window = await openPage("foo/bar.html", { beforeParse: probe.beforeParse });
+  const band = entryInBand(window, probe);
+  assert(probe.requests.length === 1 && band.ok, `${band.text}; requests ${JSON.stringify(probe.requests)}`);
+});
+
+checkAsync("explorer: an entry just above the sticky foot stays, one under it is brought out", async () => {
+  const inside = explorerScrollProbe("auto", true, 556, { head: 243, foot: 90 });
+  await openPage("foo/bar.html", { beforeParse: inside.beforeParse });
+  assert(inside.requests.length === 0, `an entry fully above the foot (556-576 of 578) was moved: ${JSON.stringify(inside.requests)}`);
+  const under = explorerScrollProbe("auto", true, 560, { head: 243, foot: 90 });
+  const window = await openPage("foo/bar.html", { beforeParse: under.beforeParse });
+  const band = entryInBand(window, under);
+  assert(under.requests.length === 1 && band.ok, `${band.text}; requests ${JSON.stringify(under.requests)}`);
+});
+
+checkAsync("explorer: when the web fonts are ready the entry is placed again, unless the reader has scrolled", async () => {
+  const probe = explorerScrollProbe("auto", true, 2700, { head: 100, foot: 90, fonts: true });
+  const window = await openPage("foo/bar.html", { beforeParse: probe.beforeParse });
+  assert(probe.requests.length === 1 && entryInBand(window, probe).ok, "the first reveal did not place the entry");
+  probe.head = 400;
+  assert(!entryInBand(window, probe).ok, "this case needs the taller head to cover the entry");
+  probe.resolveFonts();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const band = entryInBand(window, probe);
+  assert(probe.requests.length === 2 && band.ok, `after the fonts: ${band.text}; requests ${JSON.stringify(probe.requests)}`);
+
+  const scrolled = explorerScrollProbe("auto", true, 2700, { head: 100, foot: 90, fonts: true });
+  await openPage("foo/bar.html", { beforeParse: scrolled.beforeParse });
+  scrolled.navTop += 500;
+  scrolled.head = 400;
+  scrolled.resolveFonts();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert(scrolled.requests.length === 1, `the reveal ran again after the reader scrolled: ${JSON.stringify(scrolled.requests)}`);
 });
 
 checkAsync("explorer links resolve from the site root wherever the generated folder is moved", async () => {
@@ -3523,6 +3589,7 @@ checkAsync("explorer: type chips filter by rank (OR), with the name filter (AND)
   for (const chip of chips) {
     const title = chip.querySelector("svg.okf-glyph > title");
     assert(title && title.textContent === chip.querySelector(".okf-chip-text").textContent, "a chip glyph lacks its <title> (X11)");
+    assert(chip.querySelector('svg.okf-glyph[width="12"]'), "a chip glyph is not the 12 px icon (E4)");
     assert(chip.getAttribute("aria-pressed") === "false", "a chip starts pressed");
   }
   const links = Array.from(doc.querySelectorAll("#okf-explorer a.okf-tree-link"));
@@ -3565,11 +3632,15 @@ checkAsync("explorer: Filters counts pressed chips and a non-empty filter, names
   const button = doc.getElementById("okf-filters-toggle");
   assert(button && button.parentElement.id === "okf-tools" && button.nextElementSibling === doc.getElementById("okf-global-graph"), "Filters is not right before Global graph");
   const badge = button.querySelector(".okf-filters-count");
-  const spoken = () => Array.from(button.childNodes).filter((n) => !(n.nodeType === 1 && n.getAttribute("aria-hidden") === "true")).map((n) => n.textContent).join("");
+  // The accessible name: the aria-label when there is one (a visually hidden
+  // span would be read "Filters , 1 active"), else the visible text without
+  // the aria-hidden count.
+  const spoken = () => button.getAttribute("aria-label") || Array.from(button.childNodes).filter((n) => !(n.nodeType === 1 && n.getAttribute("aria-hidden") === "true")).map((n) => n.textContent).join("");
   assert(badge.getAttribute("aria-hidden") === "true" && badge.hidden && spoken() === "Filters", `at rest: badge hidden ${badge.hidden}, name "${spoken()}"`);
   const chip = doc.querySelector("#okf-explorer .okf-type-chips button.okf-chip");
   chip.click();
   assert(!badge.hidden && badge.textContent === "1" && spoken() === "Filters, 1 active", `one chip: "${badge.textContent}", "${spoken()}"`);
+  assert(button.querySelector(".okf-sr") === null, "the Filters button still carries a visually hidden span in its name");
   type(window, doc.getElementById("okf-tree-filter"), "x");
   assert(badge.textContent === "2" && spoken() === "Filters, 2 active", `chip and field: "${badge.textContent}"`);
   type(window, doc.getElementById("okf-tree-filter"), "  ");
@@ -3606,6 +3677,18 @@ checkAsync("explorer: the real explorer keeps its anchored styles", async () => 
     const got = window.getComputedStyle(el).getPropertyValue(prop);
     assert(got === value, `the real <${el.tagName.toLowerCase()} class="${el.getAttribute("class")}"> lost its ${prop}: ${value} (got ${got})`);
   }
+});
+
+checkAsync("explorer: a folder counts every destination below it, not only its direct children (E9)", async () => {
+  const mk = (id, title, path) => ({ id, title, type: "Note", tags: [], path, trust: "unverified", typeIndex: 0, description: "" });
+  const concepts = [mk("zeta/b", "B", "zeta/b.html"), mk("zeta/b/c", "C", "zeta/b/c.html"), mk("zeta/b/d/e", "E", "zeta/b/d/e.html")];
+  const tree = [{ name: "zeta", concept: -1, children: [{ name: "b", concept: 0, children: [{ name: "c", concept: 1, children: [] }, { name: "d", concept: -1, children: [{ name: "e", concept: 2, children: [] }] }] }] }];
+  const source = `window.OKF_INDEX = ${JSON.stringify({ version: 2, concepts, ghosts: [], edges: [], tree, types: [{ name: "Note", count: 3, slot: 0 }] })};`;
+  const window = await openPage("index.html", { override: { "assets/okf-index.js": source } });
+  const count = (id) => treeLink(window, id).parentElement.querySelector(".okf-tree-count").textContent;
+  const zeta = Array.from(window.document.querySelectorAll("#okf-explorer .okf-tree-folder")).find((s) => s.textContent === "zeta");
+  assert(zeta.parentElement.querySelector(".okf-tree-count").textContent === "3", `zeta counts ${zeta.parentElement.querySelector(".okf-tree-count").textContent}, expected 3 (b, c and e)`);
+  assert(count("zeta/b") === "2", `b counts ${count("zeta/b")}, expected 2 (c and e)`);
 });
 
 checkAsync("explorer: a folder matches the name filter only while no chip is pressed", async () => {

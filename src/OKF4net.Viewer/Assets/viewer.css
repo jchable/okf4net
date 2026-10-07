@@ -452,14 +452,12 @@ body > header.bar .bar-counts { flex: none; font-family: var(--mono); font-size:
 #okf-explorer .okf-tree-count { flex: none; font-family: var(--mono); font-size: 11px; color: var(--gray); }
 /* E10: flags drawn by OkfShapes (flag context, 10 px box). */
 #okf-explorer .okf-flag { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 10px; height: 10px; }
-#okf-explorer .okf-flag[hidden] { display: none; }
 /* E12: the legend, under a rule (sticky at the bottom from 1100 px, Task 3). */
 #okf-explorer .okf-explorer-foot { border-top: 1px solid var(--hair); padding: 12px 16px; }
 /* H8: the count badge, hidden at zero. */
 #okf-tools #okf-filters-toggle .okf-filters-count {
   font-family: var(--mono); font-size: 11px; line-height: 1.4; padding: 1px 6px; background: var(--blue); color: var(--white);
 }
-#okf-tools #okf-filters-toggle .okf-filters-count[hidden] { display: none; }
 
 /* --- Task 14: palette (H7, J1-J6) --- */
 
