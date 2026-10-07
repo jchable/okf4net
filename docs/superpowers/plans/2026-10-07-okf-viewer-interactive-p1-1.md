@@ -8,7 +8,20 @@
 
 **Tech Stack:** C# 14 / .NET 10, xunit, BCL only (`OKF4net.Viewer`); plain ES2018 classic scripts; Node 22 + jsdom 29 (`tools/viewer-security-check/`); Playwright resolved at run time for the recette only (never a repo dependency).
 
-**Spec:** `docs/superpowers/specs/2026-10-06-okf-viewer-interactive-design.md`, revision 6 (commit `3f34890`). This plan implements slice **P1.1** (§9): everything §11 marks "P1.1", §12.0–§12.3 and §12.6–§12.8 as owned by P1.1, the P1.1 parts of §3 (§3.3 types, §3.4 collisions, §3.6 measurement), §4.1, §4.5, §6, §7 (controls 10, 11, 14 and the xunit list), §8 (explorer chips, Filters, theme) and arbitrations A15–A30. P2 (local graph) and P3 (global graph) are separate plans written in parallel from the same spec; this plan creates **no** P2 or P3 file and only lays their merge markers.
+**Spec:** `docs/superpowers/specs/2026-10-06-okf-viewer-interactive-design.md`, revision 6 (commit `3f34890`), brought in line with revision 7 (commit `f84c990`) by this plan's r2. This plan implements slice **P1.1** (§9): everything §11 marks "P1.1", §12.0–§12.3 and §12.6–§12.8 as owned by P1.1, the P1.1 parts of §3 (§3.3 types, §3.4 collisions, §3.6 measurement), §4.1, §4.5, §6, §7 (controls 10, 11, 14 and the xunit list), §8 (explorer chips, Filters, theme) and arbitrations A15–A30. P2 (local graph) and P3 (global graph) are separate plans written in parallel from the same spec; this plan creates **no** P2 or P3 file and only lays their merge markers.
+
+## Revision history
+
+- **r1 (2026-10-07)** — first version, written in parallel with the P2 and P3 plans from spec revision 6.
+- **Revision r2 (2026-10-07): applied pre-flight findings F1, F2, F3, X11, X22, X23 and the cosmetic ones; aligned with spec revision 7 (`f84c990`).**
+  - F1: Task 1 is already implemented on `p11/t01-loader` (status note added to Task 1, including what the executor added beyond the plan: the static anchor scan and its `CHROME_ANCHORS` list, the injected probe tree, the async-`register` refusal, duplicate case names, the four new probe rows); Task 3 Step 4 and Task 11 Step 4 now start from the anchored rules commit `84588e4` left; Task 3 and Task 12 add the two anchors their new selectors need to `CHROME_ANCHORS`, and Task 3 anchors its `.okf-chip-type svg` rules.
+  - F2: Task 11 changes the P1 hostile-title case's selector to `img, script, iframe, object, svg:not(.okf-glyph)`; Tasks 13 and 14 do not touch that line.
+  - F3: Task 13 no longer calls `expectVisible(new Set(), "")`.
+  - X11: the recette driver (Task 9) reports `pass: null` as "n/a", printed and not counted; Step 5 proves it.
+  - X22: Task 17 updates the root `README.md` (fonts next to `marked`, local graph and graph page).
+  - X23: Task 16 also updates Task 2's asset-order test.
+  - X20: Task 0 gains the controller step that applies P2's documentation hand-off after P2 and P3 merge.
+  - Cosmetic: test counts (Task 4: 12 `SiteIndexTypesTests`; Task 11: 27 `HtmlWriterHeaderTests`), Task 11's `GuardNoCaseCollisions` instruction ("the whole method"), `ViewerFontsTests`' order check now asserts something.
 
 ## Global Constraints
 
@@ -22,8 +35,8 @@
 - No object keyed by a bundle string in the index or in JS: arrays, fixed-key records, `Map`, `Object.create(null)` (§3.4).
 - Every SVG element is created by `createElementNS("http://www.w3.org/2000/svg", name)` from the fixed vocabulary of §12.2; colours are never attributes, only fixed classes read by `viewer.css` (§12.2).
 - **Ownership (§12.0)**: a P1.1 task writes only the files its **Files** block lists; inside a shared file (`run.js`, `viewer.css`, `HtmlWriter.cs`) it writes only under its own marker line or in the line ranges its block names. Never edit a P2 or P3 marker except to create it (Task 1, Task 11).
-- **Anchoring (§12.6)**: every new CSS selector of chrome starts from `#okf-tools`, `#okf-explorer`, `#okf-context`, `body > .okf-palette-backdrop`, `body > .okf-layout > main > .okf-page-head`, `body > .okf-layout > main > :is(.meta, .errors)`, `body > header.bar`, `body > .okf-skip`, `body > .topline`, `body > .okf-graph-layout`, or an `svg` ancestor. Every `querySelector(All)` in `okf-page.js` starts from a container obtained by `getElementById` or a `body > …` selector, and a class selection also requires the expected `data-okf-*` attribute.
-- **Fonts first (§11.0, A26)**: no task that adds a CSS rule to `viewer.css` starts before Task 10 (the `file://` font verdict) is merged. Task 1 only adds comment markers.
+- **Anchoring (§12.6)**: every new CSS selector of chrome starts from `#okf-tools`, `#okf-explorer`, `#okf-context`, `body > .okf-palette-backdrop`, `body > .okf-layout > main > .okf-page-head`, `body > .okf-layout > main > :is(.meta, .errors)`, `body > header.bar`, `body > .okf-skip`, `body > .topline`, `body > .okf-graph-layout`, or an `svg` ancestor. The harness checks this statically: Task 1's `CHROME_ANCHORS` list in `run.js` names every accepted anchor, and a class-naming selector that starts with none of them fails the run; a task whose new selector starts with an anchor kind not yet in that list (Task 3's `body > .okf-layout > main > *`, Task 12's `html[data-okf-js] body > .okf-layout > main > .okf-page-head …`) adds that exact anchor to the list in the same commit. Every `querySelector(All)` in `okf-page.js` starts from a container obtained by `getElementById` or a `body > …` selector, and a class selection also requires the expected `data-okf-*` attribute.
+- **Fonts first (§11.0, A26)**: no task that adds a CSS rule to `viewer.css` starts before Task 10 (the `file://` font verdict) is merged. Task 1 only adds comment markers and anchors five existing P1 rules (no new rule; see its status note).
 - Never type a `\u` escape sequence into a file through an editor tool: it is decoded on write. Build such characters at run time (`(char)0x2026` in C#, `String.fromCharCode(0x2026)` in JS, `char.ConvertFromUtf32(0x1F600)` for a surrogate pair).
 - Never run `node run.js` alone: `npm test` (from `tools/viewer-security-check/`) regenerates the hostile site first (`pretest`).
 - Every async harness case is bounded (the runner's 10 s timer) and every page it opens is checked for script errors when it returns (P1 runner, unchanged).
@@ -79,14 +92,16 @@ Shared files and who writes where inside them. A "marker" is a comment line crea
 | `tools/viewer-security-check/run.js` | `okfShapes()` helper after `okfSite()`; generalized chrome case; markers; loader; runner header | 1 |
 | | under `// --- Task N: … ---` | N (3, 4, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16) |
 | | the two P1 override indexes (`version: 1`) | 4 |
-| | `treeLink`, P1 explorer/stale/filter-label/hostile-title cases, chrome probe line 3 | 13 |
+| | `CHROME_ANCHORS` (Task 1's static anchor scan): one added line each | 3 (wave 2), 12 (wave 4) |
+| | `treeLink`, P1 explorer/stale/filter-label/hostile-title cases (except the hostile-title selector line), chrome probe line 3 | 13 |
 | | P1 "long unbroken titles" case | 14 |
-| | chrome probe line 4 (`.okf-tool`) | 11 |
+| | chrome probe line 4 (`.okf-tool`); the hostile-title case's `img, script, svg, iframe, object` selector line (F2) | 11 |
 | | P1 "nothing long and unbroken" and "GFM table" cases (frontmatter lines) | 12 |
 | `src/OKF4net.Viewer/Assets/viewer.css` | `@font-face` markers (top), a separator line after the P1 explorer rules and one after the P1 palette rules (so Tasks 12, 13, 14 delete non-adjacent blocks in parallel), per-task markers and the `P2`/`P3` sections (end) | 1 |
 | | between the `@font-face` markers | 10 (16 empties it if needed) |
-| | `:root`, base, `main`, `.meta`/`.errors`, dark blocks, `.okf-sr`, layout block, under `--- Task 3` | 3 |
-| | P1 header and `.okf-tool` rules (removed), under `--- Task 11` | 11 |
+| | the five P1 rules `.topline`, `.bar-in`, `.wordmark`, `.wordmark sup`, `.meta`/`.errors` anchored (commit `84588e4`, done) | 1 |
+| | `:root`, base, `main`, the comment above the anchored `.meta`/`.errors` rules, dark blocks, `.okf-sr`, layout block, under `--- Task 3` | 3 |
+| | P1 header rules (as Task 1 anchored them) and `.okf-tool` rules (removed), under `--- Task 11` | 11 |
 | | P1 `table.frontmatter` rules and the context `h2` rule (removed), backlinks rule, under `--- Task 12` | 12 |
 | | P1 explorer rules (removed), under `--- Task 13` | 13 |
 | | P1 palette rules (removed), under `--- Task 14` | 14 |
@@ -100,6 +115,7 @@ Shared files and who writes where inside them. A "marker" is a comment line crea
 | | one line in `PageScripts` (`"okf-page.js"`) | 15 |
 | | `RenderDocumentStart` font link, `WriteAssets` font inlining | 16 |
 | `HtmlWriterHeaderTests` (new) | whole class | 11; Task 15 edits the script-order test; Task 16 the head test |
+| `HtmlWriterAssetsTests` (new) | whole class | 2; Task 16 edits `Every_embedded_asset…` and `Assets_come_first…` |
 | `tools/viewer-security-check/ACCEPTANCE.md` | `## P1.1`, `## P2`, `## P3` sections | 1 creates; 18 fills `## P1.1` |
 | `fixtures/hostile-bundle/` | `p11-chrome-classes.md` | 1 |
 | | `p11-types/` | 4 |
@@ -213,10 +229,28 @@ Expected: all green. Then remove the wave's worktrees (`git worktree remove ../p
 
 After wave 1, read the verdict Task 10 recorded in spec §11.0. "loaded everywhere" → skip Task 16. "blocked in at least one browser" → run Task 16 in wave 4.
 
+- [ ] **Step 5: Wave 0 is already done**
+
+Task 1 has been executed on `p11/t01-loader` (commits `acdb039`, `84588e4`, `15a31df`; see its status note). Review and merge that branch into `feat/viewer-interactive-p1` (Step 3's merge and checks) instead of re-running Task 1, then start wave 1 from the new head.
+
+- [ ] **Step 6: After P2 and P3 merge — apply P2's documentation hand-off (controller, spec §12.0)**
+
+P2 edits no documentation (§12.0, §12.8): its last task (P2 plan, Task 7 Step 5) hands the controller the exact wording of what `CLAUDE.md`, the viewer README and `CHANGELOG.md` lack about `okf-local.js`. Once **both** `feat/viewer-p2` and `feat/viewer-p3` are merged into `feat/viewer-interactive-p1` (P3's Task 11 edits `CLAUDE.md` and the viewer README after P1.1, so apply P2's text on top of P3's), the controller applies that wording in a worktree of its own branched from the branch head, outside the P2 and P3 worktrees, runs `dotnet build OKF4net.sln` and `dotnet format OKF4net.sln --verify-no-changes`, and commits it alone (`docs(viewer): local graph (P2) in CLAUDE.md, the viewer README and the changelog`, trailer `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`) before PR #176 leaves draft.
+
 ---
 ### Task 1: Merge markers, slice-case loader and the generalized chrome-class guard
 
 Wave 0, alone. Lays the markers every later task (and P2, P3) writes under, so parallel worktrees never edit the same hunk; delivers the loader §12.7 requires as P1.1's first task; generalizes the chrome-class guard (§12.6) so every later P1.1 selector is checked the moment it lands.
+
+> **Status: already implemented — do not redo.** Its commits are on branch `p11/t01-loader`: `acdb039` (Steps 1–11 as written below), `84588e4` (anchoring of five P1 rules) and `15a31df` (a stronger guard). The steps below are kept as the record of what `acdb039` did; the controller reviews and merges the branch (Task 0, Step 5). Later tasks start from the state those three commits leave, which differs from the steps below in these ways:
+>
+> - **Five P1 rules are anchored (`84588e4`)**, because Step 1's fixture wears `topline bar-in wordmark meta errors` and the generalized guard failed on the still-unanchored P1 rules. In `viewer.css`, `.topline` became `body > .topline`; `.bar-in` became `body > header.bar > .bar-in` (still `max-width: 1440px; margin: 0 auto; padding: 16px clamp(16px, 3.5vw, 48px); display: flex; align-items: center; gap: 24px;`); `.wordmark` and `.wordmark sup` became `body > header.bar .wordmark` and `body > header.bar .wordmark sup`; `.meta`, `.errors` and `.errors h2` became `body > .okf-layout > main > .meta`, `body > .okf-layout > main > .errors` and `body > .okf-layout > main > .errors h2`. `header.bar { border-bottom: 1px solid var(--hair); }` is unchanged (its subject is a `header`, which body content cannot be). Task 3 Step 4 and Task 11 Step 4 start from these anchored forms.
+> - **Three independent layers in the chrome-class guard (`15a31df`)**, each documented in `run.js` above `CHROME_PROPS`:
+>   1. A **static anchor scan**, the case `every selector naming a class starts from a §12.6 chrome anchor (static smoke check of viewer.css, @media included)`: it walks every style rule of `document.styleSheets` (into `@media` and every grouping rule; it requires at least 50 rules), expands `:is()`/`:where()`, and fails on any class-naming selector that starts from none of the regular expressions of `CHROME_ANCHORS` — `#okf-tools`, `#okf-explorer`, `#okf-context`, `body > .okf-palette-backdrop`, `body > .okf-layout > main > .okf-page-head`, `body > .okf-layout > main > .meta|.errors`, `body > header.bar`, `body > .okf-skip`, `body > .okf-graph-layout`, `body > .topline`, `svg`, and the layout shell itself (`/^body > \.okf-layout(?: > main)?$/`) — unless its subject is an explicit tag other than `code`. **A later task (or P2, P3) whose selector starts with an anchor kind not in that list must add the exact anchor to `CHROME_ANCHORS` in the same commit**; Task 3 and Task 12 do (their steps give the line).
+>   2. A **selector-matching differential**: no class-naming rule (pseudo-elements stripped) may match a classed `<code>` of `#okf-body`.
+>   3. A **computed-style comparison over every property the stylesheet declares** (`declaredProperties`, on top of `CHROME_PROPS`, which gained `transform`, `background-image`, `content`, `filter`, `pointer-events`), done on every `*chrome-classes` page as loaded and with every `@media` unwrapped, against a **nested chrome-class tree injected at run time**: a `<code>` wearing every class the page lists, holding two such `<code>` children and `<sup>`, `<h2>`, `<ul><li>`, `<a>` descendants, compared element by element with the same tree unclassed.
+> - **Loader hardening (`15a31df`)**: `register(h)` returning a promise is refused (`FAIL  - cases/<name>: register(h) must be synchronous (it returned a promise)`), `checkAsync` called after the page cases started fails the run, and a **duplicate case name** fails the run (`FAIL  - duplicate case name: …`): every case name of every slice must be unique.
+> - **Four more probe rows** in `the real P1 chrome keeps its anchored styles`: `body > .topline` `height: 6px`, `body > header.bar > .bar-in` `display: flex`, `body > header.bar .wordmark` `font-size: 20px`, `body > .okf-layout > main > .meta` `font-size: 13px`. Task 11 keeps them true (its header markup keeps `.bar-in` a flex child of `header.bar`).
 
 **Files:**
 - Modify: `tools/viewer-security-check/run.js` (helper `okfShapes`, generalized chrome case, P1.1 markers, loader, runner header)
@@ -951,18 +985,18 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 
 ### Task 3: CSS foundation — tokens, typography base, layout (L6), shared components, shapes
 
-Wave 2 (after Task 10's font verdict is merged). §11.0 tokens in light and in both dark blocks (with `--red` redefined in dark), the reading column (C1), content rules under `#okf-body` (C7), the three-column layout without wrapping from 1 100 px (L6, E1, X1), the anchoring of the legacy `.meta`/`.errors` rules (C8), the shared components of §12.6 and the shape colours of §12.2 — everything P2 and P3 use without rewriting.
+Wave 2 (after Task 10's font verdict is merged). §11.0 tokens in light and in both dark blocks (with `--red` redefined in dark), the reading column (C1), content rules under `#okf-body` (C7), the three-column layout without wrapping from 1 100 px (L6, E1, X1), a comment on the legacy `.meta`/`.errors` rules (C8; Task 1 already anchored them), the shared components of §12.6 and the shape colours of §12.2 — everything P2 and P3 use without rewriting.
 
 **Files:**
-- Modify: `src/OKF4net.Viewer/Assets/viewer.css` — `:root` block; the `main` rule and its comment; the `.meta`/`.errors` rules; the two dark blocks and their comment; the "Interactive viewer" comment and the `.okf-sr` rule; the layout block from `body > .okf-layout {` to the end of the `@media (max-width: 1099px)` block; under `/* --- Task 3: … --- */`. Nothing else.
-- Modify: `tools/viewer-security-check/run.js` (under `// --- Task 3: CSS foundation ---` only)
+- Modify: `src/OKF4net.Viewer/Assets/viewer.css` — `:root` block; the `main` rule and its comment; one comment line above the `.meta`/`.errors` rules (already anchored by Task 1); the two dark blocks and their comment; the "Interactive viewer" comment and the `.okf-sr` rule; the layout block from `body > .okf-layout {` to the end of the `@media (max-width: 1099px)` block; under `/* --- Task 3: … --- */`. Nothing else.
+- Modify: `tools/viewer-security-check/run.js` (under `// --- Task 3: CSS foundation ---`; one line of `CHROME_ANCHORS`, Step 4)
 
 **Interfaces:**
 - Consumes: Task 1's markers.
 - Produces (CSS contract later tasks and P2/P3 rely on):
   - tokens `--white --ink --blue --blue-hover --blue-soft --gray --hair --red --ghost --edge --stale --okf-type-0 … --okf-type-5 --backdrop --shadow` with the §11.0 values;
   - shared component classes, anchored to `#okf-explorer`, `#okf-context`, `body > .okf-layout > main > .okf-page-head`, `body > .okf-graph-layout`, `body > .okf-palette-backdrop`: `.okf-section-title`, `.okf-chip` (+ `.okf-chip-type`, `.okf-chip-status`, `.okf-chip-trust`, `.okf-chip-unverified`, `.okf-chip-stale[data-okf-stale-now]`, `button.okf-chip[aria-pressed]`, `.okf-chip-glyph:empty`), `.okf-row`, `.okf-legend` (+ `.okf-legend-count`, `.okf-legend-mono`), `.okf-glyph`, `.okf-glyph-blank`, `.okf-count`;
-  - shape classes under an `svg` ancestor: `.okf-shape-0`…`.okf-shape-5`, `.okf-trust-human`, `.okf-trust-machine`, `.okf-stale-mark`, `.okf-ghost-mark`, `.okf-node-ring`, `.okf-node-focus`, `.okf-node.okf-selected`, `.okf-node.okf-focused`, `.okf-chip-type svg …`;
+  - shape classes under an `svg` ancestor: `.okf-shape-0`…`.okf-shape-5`, `.okf-trust-human`, `.okf-trust-machine`, `.okf-stale-mark`, `.okf-ghost-mark`, `.okf-node-ring`, `.okf-node-focus`, `.okf-node.okf-selected`, `.okf-node.okf-focused`; and `.okf-chip-type svg …` under the chip containers;
   - `.okf-sr` anchored to every chrome container;
   - layout: `#okf-explorer` 290 and `#okf-context` 340 wide from 1 100 px, `main` `flex: 1 1 0`, `flex-wrap: nowrap`; `#okf-context` a flex column with `gap: 22px`; `[hidden]` honoured on both side panels; sticky explorer head and foot (`.okf-explorer-head`, `.okf-explorer-foot`) from 1 100 px.
 
@@ -1144,7 +1178,7 @@ In `src/OKF4net.Viewer/Assets/viewer.css`, replace the whole `:root { … }` blo
 }
 ```
 
-- [ ] **Step 4: Replace the reading column and anchor `.meta`/`.errors`**
+- [ ] **Step 4: Replace the reading column; comment the anchored `.meta`/`.errors`**
 
 Replace
 
@@ -1165,21 +1199,30 @@ body > .okf-layout > main { padding: 26px clamp(16px, 3.5vw, 48px) 0; overflow-w
 body > .okf-layout > main > * { max-width: 720px; }
 ```
 
-Replace
+`body > .okf-layout > main > *` names a class and its subject is `*`, so Task 1's static anchor scan would report it although it can never reach `#okf-body` content (whose `<code>` elements are never children of `main`). In `tools/viewer-security-check/run.js`, in `CHROME_ANCHORS`, replace the line
 
-```css
-.meta { font-family: var(--mono); font-size: 13px; color: var(--gray); }
-.errors { border-left: 3px solid var(--red); padding-left: 16px; margin-bottom: 32px; }
-.errors h2 { color: var(--red); font-size: 18px; }
+```js
+  /^body > \.okf-layout(?: > main)?$/,
 ```
 
 with
 
+```js
+  /^body > \.okf-layout(?: > main(?: > \*)?)?$/,
+```
+
+The `.meta`/`.errors` rules are already anchored (Task 1, commit `84588e4`); the file holds exactly:
+
 ```css
-/* The index page's count and parse errors (C8), anchored like all chrome. */
 body > .okf-layout > main > .meta { font-family: var(--mono); font-size: 13px; color: var(--gray); }
 body > .okf-layout > main > .errors { border-left: 3px solid var(--red); padding-left: 16px; margin-bottom: 32px; }
 body > .okf-layout > main > .errors h2 { color: var(--red); font-size: 18px; }
+```
+
+Leave those three lines unchanged and insert directly above the first of them:
+
+```css
+/* The index page's count and parse errors (C8), anchored like all chrome. */
 ```
 
 - [ ] **Step 5: Replace the two dark blocks**
@@ -1366,9 +1409,11 @@ svg .okf-node-ring, svg .okf-node-focus { fill: none; visibility: hidden; }
 svg .okf-node-ring { stroke: var(--blue); }
 svg .okf-node-focus { stroke: var(--ink); }
 svg .okf-node.okf-selected > .okf-node-ring, svg .okf-node.okf-focused > .okf-node-focus { visibility: visible; }
-/* In a type chip (white text on ink) the shape is white, filled or stroked. */
-.okf-chip-type svg :is(.okf-shape-0, .okf-shape-1, .okf-shape-2, .okf-shape-3) { fill: var(--white); }
-.okf-chip-type svg :is(.okf-shape-4, .okf-shape-5) { stroke: var(--white); }
+/* In a type chip (white text on ink) the shape is white, filled or stroked.
+   Anchored to the chip containers too: the static anchor scan (Task 1)
+   accepts an svg ancestor only at the start of a selector. */
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-chip-type svg :is(.okf-shape-0, .okf-shape-1, .okf-shape-2, .okf-shape-3) { fill: var(--white); }
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-chip-type svg :is(.okf-shape-4, .okf-shape-5) { stroke: var(--white); }
 
 /* Body content (C7): rules for the markdown viewer.js renders, under the
    #okf-body id, never chrome. Same rules for every element of a kind, with or
@@ -1393,7 +1438,7 @@ svg .okf-node.okf-selected > .okf-node-ring, svg .okf-node.okf-focused > .okf-no
 cd tools/viewer-security-check && npm test
 ```
 
-Expected: the four Task 3 cases `ok`; the P1 cases still `ok` — in particular `nothing long and unbroken widens the page…` (`main` `overflow-wrap: break-word`, panels `min-width: 0px`), `the real P1 chrome keeps its anchored styles` and the chrome-class case on both fixture pages; `N passed, 0 failed`.
+Expected: the four Task 3 cases `ok`; the P1 cases still `ok` — in particular `nothing long and unbroken widens the page…` (`main` `overflow-wrap: break-word`, panels `min-width: 0px`), `the real P1 chrome keeps its anchored styles`, `every selector naming a class starts from a §12.6 chrome anchor …` (Task 1's static scan, which would name `body > .okf-layout > main > *` without Step 4's `CHROME_ANCHORS` line) and the chrome-class case on both fixture pages; `N passed, 0 failed`.
 
 - [ ] **Step 10: Run the .NET suites (the CSS is an embedded asset)**
 
@@ -1884,7 +1929,7 @@ with
 - [ ] **Step 6: Run the xunit tests**
 
 Run: `dotnet test OKF4net.sln --filter "FullyQualifiedName~OKF4net.Tests.Viewer"`
-Expected: all pass (the 11 `SiteIndexTypesTests`, the updated `IndexScriptTests`, P1's `SiteIndexTests` and `HtmlWriterTests`).
+Expected: all pass (the 12 `SiteIndexTypesTests`, the updated `IndexScriptTests`, P1's `SiteIndexTests` and `HtmlWriterTests`).
 
 - [ ] **Step 7: Require v2 in the browser and in `check-index.js`**
 
@@ -4057,8 +4102,8 @@ Wave 1, chain F (second). §12.8: a recette tracked in the repo and run by hand,
 **Interfaces:**
 - Consumes: nothing in the repo (Playwright through `OKF_PLAYWRIGHT` or `require("playwright-core")`).
 - Produces:
-  - CLI: `node tools/viewer-security-check/recette/recette.js --site <okf4net-site> --acme <acme-site> [--out <dir>] [--browsers chrome,edge,firefox,webkit] [--slices p1,p1.1,p2,p3] [--only id,id]`; default browsers `chrome,edge,firefox`, slices `p1,p1.1`, out `<tmp>/okf-recette-<timestamp>`; writes `<out>/results.json` and `<out>/shots/<browser>/<slice>/<id>.png`; exit 0 when every check passed, 1 otherwise, 2 on a crash. A slice file that does not exist yet (`p2.js`, `p3.js`) is reported as skipped.
-  - A slice module exports `async function run(ctx)` returning `{ [id]: { pass: boolean, … } }`, ids from §11 (`H1`…`L6`), `RC1`…`RC11`, or a named control (`fonts`, `tokens`, `requests`).
+  - CLI: `node tools/viewer-security-check/recette/recette.js --site <okf4net-site> --acme <acme-site> [--out <dir>] [--browsers chrome,edge,firefox,webkit] [--slices p1,p1.1,p2,p3] [--only id,id]`; default browsers `chrome,edge,firefox`, slices `p1,p1.1`, out `<tmp>/okf-recette-<timestamp>`; writes `<out>/results.json` and `<out>/shots/<browser>/<slice>/<id>.png`; exit 0 when no check failed, 1 otherwise, 2 on a crash. A slice file that does not exist yet (`p2.js`, `p3.js`) is reported as skipped.
+  - A slice module exports `async function run(ctx)` returning `{ [id]: { pass: true | false | null, … } }`, ids from §11 (`H1`…`L6`), `RC1`…`RC11`, or a named control (`fonts`, `tokens`, `requests`). `pass: null` means "not applicable here" (with a `note` saying why, for instance P2's checks that need P3's page, or a check done by hand): the driver prints it `n/a`, counts it apart, and never counts it as a failure.
   - `ctx` (built by `lib.context`): `browserName`, `site` / `acme` (file URLs ending `/`), `siteDir` / `acmeDir`, `wanted(id)`, `newPage({ viewport, colorScheme })` (a Playwright page whose `okfTracked` holds `errors`, `outside` and `failed` requests), `shot(page, id)`, `close()`, `lib`.
   - `lib`: `loadPlaywright()`, `launch(pw, name)`, `siteUrl(dir)`, `readIndex(dir)`, `pagesByDepth(dir)`, `parseColor(css)`, `rgb(hex)`, `contrast(a, b)`, `context(...)`, `guard(fn)`.
 
@@ -4268,6 +4313,9 @@ function parseArgs(argv) {
   fs.mkdirSync(opts.out, { recursive: true });
   const report = { date: new Date().toISOString(), site: path.resolve(opts.site), acme: path.resolve(opts.acme), browsers: [] };
   let failed = 0;
+  // pass: null = not applicable (a check that needs a later slice, or one
+  // done by hand): printed "n/a" with its note, never counted as a failure.
+  let notApplicable = 0;
   for (const name of opts.browsers) {
     const entry = { browser: name, slices: {} };
     let browser;
@@ -4293,16 +4341,20 @@ function parseArgs(argv) {
       await ctx.close();
       entry.slices[slice] = results;
       for (const [id, r] of Object.entries(results)) {
-        if (!r.pass) { failed++; }
-        console.log(`${name} ${entry.version} ${slice} ${id}: ${r.pass ? "ok" : "FAIL"}${r.error ? " -- " + r.error : ""}`);
+        const verdict = r.pass === true ? "ok" : r.pass === null ? "n/a" : "FAIL";
+        if (verdict === "FAIL") { failed++; }
+        if (verdict === "n/a") { notApplicable++; }
+        const detail = r.error ? " -- " + r.error : verdict === "n/a" && r.note ? " -- " + r.note : "";
+        console.log(`${name} ${entry.version} ${slice} ${id}: ${verdict}${detail}`);
       }
     }
     await browser.close();
     report.browsers.push(entry);
   }
   const file = path.join(opts.out, "results.json");
+  report.notApplicable = notApplicable;
   fs.writeFileSync(file, JSON.stringify(report, null, 2));
-  console.log(`\n${failed === 0 ? "every check passed" : `${failed} check(s) failed`}; report: ${file}; captures: ${path.join(opts.out, "shots")}`);
+  console.log(`\n${failed === 0 ? "no check failed" : `${failed} check(s) failed`}, ${notApplicable} not applicable; report: ${file}; captures: ${path.join(opts.out, "shots")}`);
   process.exit(failed === 0 ? 0 : 1);
 })().catch((e) => {
   console.error(e && e.message ? e.message : e);
@@ -4389,7 +4441,13 @@ a clear message when neither exists. `npm test` and CI never run the
 recette. Each slice has its own file (`p1.js`, `p1-1.js`, `p2.js`, `p3.js`)
 exporting `async function run(ctx)`, whose results are keyed by the ids of
 spec §11 (`H1`…`L6`), by the ported P1 checks `RC1`…`RC11`, or by a named
-control (`fonts`, `tokens`, `requests`). Results and captures (1 440 × 900,
+control (`fonts`, `tokens`, `requests`). A result is `pass: true`, `false`,
+or `null` for "not applicable here" (with a `note`: a check that needs a
+later slice, or one done by hand), which is printed `n/a` and never counted
+as a failure; the exit code is 1 only when a check failed. `run(ctx)` gets
+its pages from `ctx.newPage()` and writes its captures with
+`ctx.shot(page, id)`; `ctx.lib` is `recette/lib.js` (contrast, colours,
+pages by depth). Results and captures (1 440 × 900,
 named by id) go to `--out`, by default a folder of the system's temporary
 directory; a slice's report goes into the pull request, never into the
 repository.
@@ -4408,6 +4466,15 @@ node tools/viewer-security-check/recette/recette.js --site "$R/okf4net-site" --a
 ```
 
 Expected: `chrome … p1.1 fonts: FAIL` (no face is declared yet, so `document.fonts.load` returns an empty list), `chrome p2: skipped (p2.js does not exist yet)`, exit code 1, and `$R/out-nofonts/results.json` listing every page with `faces` of 0. Then run once with `OKF_PLAYWRIGHT=/nowhere`: expected exit code 2 and the message `Playwright not found (/nowhere). The recette needs playwright-core, …`.
+
+Then prove that `pass: null` is "n/a", not a failure (not committed). Create `tools/viewer-security-check/recette/p3.js` containing:
+
+```js
+"use strict";
+module.exports = { run: async () => ({ probe: { pass: null, note: "deliberately not applicable" } }) };
+```
+
+and run `node tools/viewer-security-check/recette/recette.js --site "$R/okf4net-site" --acme "$R/acme-site" --browsers chrome --slices p3 --out "$R/out-na"; echo $?`. Expected: the line `chrome … p3 probe: n/a -- deliberately not applicable`, the summary `no check failed, 1 not applicable; …`, and `0`. Change `pass: null` to `pass: false` and run again: `p3 probe: FAIL`, `1 check(s) failed, 0 not applicable; …`, and `1`. Delete `recette/p3.js` (it belongs to P3).
 
 - [ ] **Step 6: Check the harness is untouched**
 
@@ -4497,9 +4564,13 @@ public class ViewerFontsTests
         var css = ViewerAssets.Css;
 
         Assert.Equal(Faces, DeclaredFaces(css).Select(f => (f.Family, f.Weight)));
+        // "@font-face {" (with its brace), not "@font-face": the marker comment
+        // above the block also holds "@font-face" and would make this vacuous.
+        // The LAST rule must come before the :root tokens, so every face does.
+        var lastFace = css.LastIndexOf("@font-face {", StringComparison.Ordinal);
         Assert.True(
-            css.IndexOf("@font-face", StringComparison.Ordinal) < css.IndexOf(":root", StringComparison.Ordinal),
-            "the @font-face rules must open the stylesheet (spec §12.6)");
+            lastFace >= 0 && lastFace < css.IndexOf(":root {", StringComparison.Ordinal),
+            "the @font-face rules must open the stylesheet, every one before the :root tokens (spec §12.6)");
     }
 
     [Fact]
@@ -4841,10 +4912,10 @@ Wave 3, alone. One method writes everything before `.okf-layout` for the page, i
 
 **Files:**
 - Modify: `src/OKF4net.Viewer/HtmlWriter.cs` — `Write` (doc comment, graph page, guard call, P3 write marker, `RenderPage(site, page)`), `GuardNoCaseCollisions` (signature, graph page, remarks), `RenderPage`, `RenderIndex`, `RenderShell`, `HtmlEscape` and `RootPrefix` (made `internal`); new `ViewKind`, `PageScripts`, `GraphPagePathOf`, `IsGraphPageName`, `RenderDocumentStart`, `ViewName`, `RenderHeader`, `Counts`, `ScriptTag`; marker `// P3: RenderGraph (§12.5)` before `HtmlEscape`
-- Modify: `src/OKF4net.Viewer/Assets/viewer.css` — remove the P1 header rules (`.topline` … `.wordmark sup`) and the P1 tool rules (`#okf-tools { … }`, `:is(#okf-tools, body > .okf-palette-backdrop) .okf-tool { … }`, `#okf-tools .okf-tool[aria-pressed="true"] { … }`); under `/* --- Task 11: header (H1-H13) --- */`
+- Modify: `src/OKF4net.Viewer/Assets/viewer.css` — remove the P1 header rules as Task 1 anchored them (`body > .topline` … `body > header.bar .wordmark sup`) and the P1 tool rules (`#okf-tools { … }`, `:is(#okf-tools, body > .okf-palette-backdrop) .okf-tool { … }`, `#okf-tools .okf-tool[aria-pressed="true"] { … }`); under `/* --- Task 11: header (H1-H13) --- */`
 - Modify: `tests/OKF4net.Tests/Viewer/HtmlWriterTests.cs` (`Pages_declare_their_site_root_and_concept`, `Write_keeps_a_script_closing_tag_in_a_body_inside_the_payload`)
 - Test: `tests/OKF4net.Tests/Viewer/HtmlWriterHeaderTests.cs` (new)
-- Modify: `tools/viewer-security-check/run.js` (under `// --- Task 11: shell and header ---`; line 4 of the P1 chrome probes)
+- Modify: `tools/viewer-security-check/run.js` (under `// --- Task 11: shell and header ---`; line 4 of the P1 chrome probes; the `img, script, svg, iframe, object` selector line of the P1 case `explorer, palette and contents render hostile titles as inert text`, F2)
 
 **Interfaces:**
 - Consumes: Task 2 (`WriteAssets`), Task 5 (`ViewerSite.BundleName`, `ViewerSite.GraphPagePath`, `SiteModel.BundleNameOf`, `SiteModel.FreeGraphPagePath`), Task 6 (`okf-shapes.js` exists), Task 7 (theme button), Task 3 (tokens, `.okf-section-title`).
@@ -5232,7 +5303,7 @@ Replace the start and the end of `Write`'s body — from `GuardNoCaseCollisions(
     }
 ```
 
-Replace the signature line and the dictionary initializer of `GuardNoCaseCollisions` — from `private static void GuardNoCaseCollisions(ViewerSite site)` to the closing `}` of its `foreach` — with:
+Replace the whole `GuardNoCaseCollisions` method — from its signature line `private static void GuardNoCaseCollisions(ViewerSite site)` through the method's own closing `}` (the block below ends with that brace; its doc comment and `<remarks>` above the signature stay) — with:
 
 ```csharp
     private static void GuardNoCaseCollisions(ViewerSite site, string graphPage)
@@ -5542,27 +5613,29 @@ with
 - [ ] **Step 3: Run the tests**
 
 Run: `dotnet build OKF4net.sln` then `dotnet test OKF4net.sln --filter "FullyQualifiedName~OKF4net.Tests.Viewer|FullyQualifiedName~OKF4net.Tests.Render"`
-Expected: no warning; all pass, including the 22 `HtmlWriterHeaderTests` and every P1 `HtmlWriterTests`.
+Expected: no warning; all pass, including the 27 `HtmlWriterHeaderTests` (as the test runner counts them) and every P1 `HtmlWriterTests`.
 
 - [ ] **Step 4: Write the header CSS**
 
-In `src/OKF4net.Viewer/Assets/viewer.css`, delete the P1 rules
+In `src/OKF4net.Viewer/Assets/viewer.css`, delete the P1 header rules **as Task 1 anchored them** (commit `84588e4`; the file holds exactly these lines, between the `body { … }` rule and the `/* break-word: …` comment):
 
 ```css
-.topline { height: 6px; background: var(--blue); }
+body > .topline { height: 6px; background: var(--blue); }
 header.bar { border-bottom: 1px solid var(--hair); }
-.bar-in {
+body > header.bar > .bar-in {
   max-width: 1440px; margin: 0 auto; padding: 16px clamp(16px, 3.5vw, 48px);
   display: flex; align-items: center; gap: 24px;
 }
-.wordmark {
+body > header.bar .wordmark {
   font-family: var(--display); font-weight: 900; font-size: 20px;
   letter-spacing: -.02em; color: var(--ink); text-decoration: none;
 }
-.wordmark sup { color: var(--blue); font-family: var(--mono); font-weight: 700; }
+body > header.bar .wordmark sup { color: var(--blue); font-family: var(--mono); font-weight: 700; }
 ```
 
-and
+All five rules go, `body > header.bar > .bar-in { max-width: 1440px; margin: 0 auto; … }` included: the new `body > header.bar .bar-in` rule below has exactly the same specificity (0,2,2), so a kept `body > header.bar > .bar-in` would go on applying its `max-width: 1440px` and `margin: 0 auto` (H2 wants the bar full width) and its `padding`/`gap` wherever the new rule did not restate them. Deleting it is the change, not an override. The rules under the Task 11 marker restate `body > .topline`, `body > header.bar`, `.wordmark` and `.wordmark sup` with H1–H3's values.
+
+Then delete
 
 ```css
 #okf-tools { margin-left: auto; display: flex; flex-wrap: wrap; gap: 8px; }
@@ -5638,6 +5711,23 @@ with
     [doc.querySelector("#okf-tools .okf-tool"), "height", "34px"],
 ```
 
+In the P1 case `explorer, palette and contents render hostile titles as inert text` (F2), replace the line
+
+```js
+    assert(root.querySelectorAll("img, script, svg, iframe, object").length === 0, `markup from bundle text became live in #${id}`);
+```
+
+with
+
+```js
+    // svg.okf-glyph is the chrome's own glyph (OkfShapes.icon, Tasks 13 and
+    // 14 draw one per explorer row and palette option); any other svg would
+    // still be markup that bundle text made live.
+    assert(root.querySelectorAll("img, script, iframe, object, svg:not(.okf-glyph)").length === 0, `markup from bundle text became live in #${id}`);
+```
+
+This line is Task 11's alone (wave 3): Tasks 13 and 14, which add the glyphs in parallel in wave 4, leave it as it is, so neither goes red for the other's glyphs and they never edit the same line.
+
 Under `// --- Task 11: shell and header ---`, insert:
 
 ```js
@@ -5698,7 +5788,7 @@ checkAsync("header: the real header keeps its anchored styles", async () => {
 cd tools/viewer-security-check && npm test
 ```
 
-Expected: the three Task 11 cases `ok`; P1's cases still `ok` (the palette opener is still inserted first, the theme toggle appended last, `#okf-explorer` and `#okf-context` unchanged); the chrome-class case `ok` on both fixture pages; `N passed, 0 failed`.
+Expected: the three Task 11 cases `ok`; P1's cases still `ok` (the palette opener is still inserted first, the theme toggle appended last, `#okf-explorer` and `#okf-context` unchanged, the hostile-title case with its new selector); `the real P1 chrome keeps its anchored styles` `ok` (its `body > header.bar > .bar-in` row still reads `display: flex` from the new descendant rule); the static anchor scan and the chrome-class case `ok` on both fixture pages; `N passed, 0 failed`.
 
 - [ ] **Step 7: Format and commit**
 
@@ -5706,6 +5796,10 @@ Expected: the three Task 11 cases `ok`; P1's cases still `ok` (the palette opene
 dotnet format OKF4net.sln --verify-no-changes
 git add src/OKF4net.Viewer/HtmlWriter.cs src/OKF4net.Viewer/Assets/viewer.css tests/OKF4net.Tests/Viewer/HtmlWriterHeaderTests.cs tests/OKF4net.Tests/Viewer/HtmlWriterTests.cs tools/viewer-security-check/run.js
 git commit -m "feat(viewer): one header for the page, index and graph views, the script table, the graph page name, merge markers for P2 and P3
+
+The P1 hostile-title case now rejects any svg but the chrome's own
+svg.okf-glyph (img, script, iframe, object, svg:not(.okf-glyph)), so the
+explorer and palette glyphs of the next wave do not trip it.
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 ```
@@ -5722,7 +5816,7 @@ Wave 4. The centre column's head, written in C#: breadcrumb, one `<h1>`, the chi
 - Modify: `tests/OKF4net.Tests/Viewer/HtmlWriterTests.cs` (`Backlinks_live_in_the_page_context_aside_which_is_hidden_without_them`)
 - Test: `tests/OKF4net.Tests/Viewer/PageHeadTests.cs` (new)
 - Create: `tools/viewer-security-check/fixtures/hostile-bundle/p11-page.md`, `p11-page-ref.md`
-- Modify: `tools/viewer-security-check/run.js` (under `// --- Task 12: page head ---`; the P1 cases `nothing long and unbroken widens the page…` and `a GFM table in the body scrolls…`)
+- Modify: `tools/viewer-security-check/run.js` (under `// --- Task 12: page head ---`; the P1 cases `nothing long and unbroken widens the page…` and `a GFM table in the body scrolls…`; one line of `CHROME_ANCHORS`, Step 4)
 
 **Interfaces:**
 - Consumes: Task 5 (`ViewerPage.Head`, `DisplayBody`, `ViewerFrontmatterEntry.Extra/Structured`, `SiteModel.BundleNameOf`), Task 4 (`ViewerIndex.Types`, `IndexConcept.TypeIndex`, `SiteIndex.OtherSlot`), Task 11 (`RenderShell`, `ViewKind`, `HtmlEscape`, `RootPrefix`).
@@ -6250,6 +6344,20 @@ html[data-okf-js] body > .okf-layout > main > .okf-page-head .okf-fm:not([data-o
 #okf-context .okf-backlinks li { list-style: none; }
 ```
 
+The fold rule starts with `html[data-okf-js]`, an anchor kind Task 1's static scan does not know: it would be reported although its real anchor is the page head. In `tools/viewer-security-check/run.js`, in `CHROME_ANCHORS`, directly after the line
+
+```js
+  /^body > \.okf-layout > main > \.okf-page-head(?![\w-])/,
+```
+
+insert
+
+```js
+  // The fold of the frontmatter box (Task 12): the page head, under the mark
+  // okf-theme.js puts on <html> while JavaScript runs.
+  /^html\[data-okf-js\] body > \.okf-layout > main > \.okf-page-head(?![\w-])/,
+```
+
 - [ ] **Step 5: Fixtures and harness cases**
 
 Create `tools/viewer-security-check/fixtures/hostile-bundle/p11-page.md`:
@@ -6415,7 +6523,7 @@ Wave 4. Rows labelled by the last id segment (A22) with the title as tooltip, a 
 **Files:**
 - Modify: `src/OKF4net.Viewer/Assets/okf-explorer.js` (whole file)
 - Modify: `src/OKF4net.Viewer/Assets/viewer.css` — remove the P1 explorer rules, from `#okf-explorer .okf-explorer-label {` to `#okf-explorer .okf-stale { … }`; under `/* --- Task 13: explorer (E1-E13) and Filters (H8) --- */`
-- Modify: `tools/viewer-security-check/run.js` — `treeLink`; the P1 cases `explorer: a node is both a page and a folder…`, `staleness is evaluated at reading time…`, `a sub-millisecond deadline…`, `explorer: the filter field is labelled by what it does` (replaced), `explorer: the stale badge shows staleAfterDate…`, `explorer, palette and contents render hostile titles as inert text` (one line); line 3 of `the real P1 chrome keeps its anchored styles`; under `// --- Task 13: explorer ---`
+- Modify: `tools/viewer-security-check/run.js` — `treeLink`; the P1 cases `explorer: a node is both a page and a folder…`, `staleness is evaluated at reading time…`, `a sub-millisecond deadline…`, `explorer: the filter field is labelled by what it does` (replaced), `explorer: the stale badge shows staleAfterDate…`, `explorer, palette and contents render hostile titles as inert text` (one line: the explorer's `<img` text line; its `img, script, iframe, object, svg:not(.okf-glyph)` selector line was set by Task 11 (F2) and is not edited here); line 3 of `the real P1 chrome keeps its anchored styles`; under `// --- Task 13: explorer ---`
 
 **Interfaces:**
 - Consumes: `OkfSite` (P1), `OkfShapes` (Task 6: `icon`, `slotOf`, `KINDS`, `typeLabel`, `trustKind`, `typeLegendEntries`, `legend`), index v2 (Task 4), `#okf-global-graph` in `#okf-tools` (Task 11), Task 3's sticky head/foot and shared chip CSS.
@@ -6593,7 +6701,7 @@ checkAsync("explorer: type chips filter by rank (OR), with the name filter (AND)
   metric.click();
   other.click();
   type(window, filter, "");
-  expectVisible(new Set(), "");
+  // No expectVisible(new Set(), "") here (F3): with every filter cleared the tree is collapsed by default, so "matches but is hidden" would fail on folded rows; the next assertion checks the cleared state instead.
   assert(links.every((a) => isShown(a) || a.closest("ul.okf-tree-children[hidden]")), "clearing every filter left a concept hidden");
 });
 
@@ -7029,7 +7137,7 @@ Wave 4. The opener becomes C's wide button with its shortcut hint; the dialog ge
 **Files:**
 - Modify: `src/OKF4net.Viewer/Assets/okf-palette.js` (whole file)
 - Modify: `src/OKF4net.Viewer/Assets/viewer.css` — remove the P1 palette rules, from `body > .okf-palette-backdrop {` through `body > .okf-palette-backdrop .okf-palette:focus { outline: none; }`; under `/* --- Task 14: palette (H7, J1-J6) --- */`
-- Modify: `tools/viewer-security-check/run.js` — the end of the P1 case `long unbroken titles and ids may wrap in the palette and the contents`; under `// --- Task 14: palette ---`
+- Modify: `tools/viewer-security-check/run.js` — the end of the P1 case `long unbroken titles and ids may wrap in the palette and the contents`; under `// --- Task 14: palette ---`. Not the P1 case `explorer, palette and contents render hostile titles as inert text`: Task 11 already made its selector accept the options' `svg.okf-glyph` (`img, script, iframe, object, svg:not(.okf-glyph)`, F2), so this task leaves that case untouched.
 
 **Interfaces:**
 - Consumes: `OkfSite` (`rank`, `normalize`, `resolve`, `rootOf`, `readIndex`, `element`), `OkfShapes` (`icon`, `kindOf`, `typeLabel`), index v2, `#okf-tools`.
@@ -7846,7 +7954,7 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 - Modify: `src/OKF4net.Viewer/Assets/viewer.css` (between the `@font-face` markers only)
 - Modify: `tools/viewer-fonts/vendor-fonts.js` (target file)
 - Modify: `src/OKF4net.Viewer/HtmlWriter.cs` — `WriteAssets`, `RenderDocumentStart`; new `InlineFonts`
-- Modify: `tests/OKF4net.Tests/Viewer/ViewerFontsTests.cs`, `HtmlWriterAssetsTests.cs` (`Every_embedded_asset_is_written_byte_for_byte_under_assets`), `HtmlWriterHeaderTests.cs` (`The_head_loads_the_theme_script_then_the_stylesheet_and_nothing_else`)
+- Modify: `tests/OKF4net.Tests/Viewer/ViewerFontsTests.cs`, `HtmlWriterAssetsTests.cs` (`Every_embedded_asset_is_written_byte_for_byte_under_assets` and `Assets_come_first_in_ordinal_order_then_the_index_script_then_index_html_then_the_pages`), `HtmlWriterHeaderTests.cs` (`The_head_loads_the_theme_script_then_the_stylesheet_and_nothing_else`)
 - Modify: `tools/viewer-security-check/run.js` (Task 10's case; under `// --- Task 16: fonts fallback … ---`)
 - Modify: `docs/superpowers/specs/2026-10-06-okf-viewer-interactive-design.md` (§11.0, one paragraph)
 
@@ -7923,6 +8031,24 @@ In `HtmlWriterAssetsTests.Every_embedded_asset_is_written_byte_for_byte_under_as
             }
 ```
 
+In `HtmlWriterAssetsTests.Assets_come_first_in_ordinal_order_then_the_index_script_then_index_html_then_the_pages` (Task 2), which compares the first written files with **every** embedded path and so fails once the woff2 are no longer written (X23), replace
+
+```csharp
+        var assets = ViewerAssets.Paths.Select(p => "assets/" + p).ToList();
+```
+
+with
+
+```csharp
+        // A26 fallback: the woff2 fonts travel inside okf-fonts.css and are
+        // never written apart; every other embedded path still comes first,
+        // in ordinal order (okf-fonts.css among them).
+        var assets = ViewerAssets.Paths
+            .Where(p => !(p.StartsWith("fonts/", StringComparison.Ordinal) && p.EndsWith(".woff2", StringComparison.Ordinal)))
+            .Select(p => "assets/" + p)
+            .ToList();
+```
+
 In `HtmlWriterHeaderTests.The_head_loads_the_theme_script_then_the_stylesheet_and_nothing_else`, replace
 
 ```csharp
@@ -7936,7 +8062,7 @@ with
 ```
 
 Run: `dotnet test OKF4net.sln --filter "FullyQualifiedName~ViewerFontsTests|FullyQualifiedName~HtmlWriterAssetsTests|FullyQualifiedName~HtmlWriterHeaderTests"`
-Expected: FAIL (`okf-fonts.css` written with relative URLs, woff2 written apart, no `<link>`).
+Expected: FAIL (`okf-fonts.css` written with relative URLs, woff2 written apart — which also fails `Assets_come_first…` —, no `<link>`).
 
 - [ ] **Step 3: Inline the fonts and link the file**
 
@@ -8042,7 +8168,7 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 
 ### Task 17: Documentation, CI smoke test and changelog
 
-Wave 6, in parallel with Task 18. `CLAUDE.md` (the viewer paragraph), the viewer README, the harness README, the AOT smoke test (assets and fonts), and the whole `CHANGELOG` entry of the interactive viewer, one line per slice (§12.0, §12.8).
+Wave 6, in parallel with Task 18. `CLAUDE.md` (the viewer paragraph), the viewer README, the root README (site description and licence paragraph, for the three slices), the harness README, the AOT smoke test (assets and fonts), and the whole `CHANGELOG` entry of the interactive viewer, one line per slice (§12.0, §12.8).
 
 **Files:**
 - Modify: `CLAUDE.md` (the `src/OKF4net.Viewer/` paragraph of Architecture)
@@ -8050,6 +8176,7 @@ Wave 6, in parallel with Task 18. `CLAUDE.md` (the viewer paragraph), the viewer
 - Modify: `tools/viewer-security-check/README.md` (section "Interactive viewer cases")
 - Modify: `.github/workflows/ci.yml` (step "Run published okf-render")
 - Modify: `CHANGELOG.md` (the "Interactive `okf-render` pages (P1)" entry)
+- Modify: `README.md` (root: the site paragraph of the `okf-render` section, and the licence paragraph naming `marked`) — P1.1's for all three slices (spec r7 §12.0)
 
 **Interfaces:**
 - Consumes: everything above.
@@ -8125,7 +8252,64 @@ written out by hand.
 
 and replace `well-formed index (version 1, and every concept` with `well-formed index (version 2, the ranked types table, and every concept`.
 
-- [ ] **Step 5: Write the changelog entry, one line per slice**
+- [ ] **Step 5: Update the root `README.md` (spec r7 §12.0: P1.1 writes it for the three slices)**
+
+In `README.md`, in the section whose heading reads "`okf-render` — generate a static HTML site", replace the paragraph
+
+```markdown
+The generated site is self-contained and opens straight off the filesystem —
+no server needed. Every page carries a tree explorer of the bundle (concepts
+show a badge when they are machine-confirmed or human-reviewed, and when they
+are stale), a "Jump to" palette (Ctrl+K or `/`, matching titles, ids and
+tags) and a light/dark toggle; a side panel with the page's contents and
+backlinks appears where the page has contents (h2/h3 headings) or backlinks.
+```
+
+with
+
+```markdown
+The generated site is self-contained and opens straight off the filesystem —
+no server needed. Every page carries one header (the bundle's name, its
+concept and link counts, a "Jump to" palette — Ctrl+K or `/`, matching
+titles, ids and tags —, "Global graph" and a light/dark toggle) and a tree
+explorer of the bundle with type shapes, type filters and trust and
+staleness flags. A concept page shows a breadcrumb, its title, chips for
+type, `status`, trust and staleness, and a folding frontmatter box; its side
+panel holds the page's contents, its local graph (the concept's neighbours at
+one or two hops, with an equivalent list) and the pages that reference it.
+A graph page (`graph.html`, or `graph-1.html`… when a concept already takes
+that name) draws the whole bundle, with facets, a detail drawer, keyboard
+navigation and an equivalent list. The Inter, Inter Tight and Space Mono
+fonts are embedded.
+```
+
+Further down, in the licence section, replace
+
+```markdown
+The one exception anywhere in the build is `OKF4net.Viewer` (not itself
+published to NuGet): it vendors a copy of
+[marked](https://github.com/markedjs/marked) (MIT) for client-side markdown
+rendering, embedded in that library and shipped inside the `okf-render`
+binary it backs; `okf` itself never references it. See [`NOTICE`](NOTICE)
+for the full accounting, including that vendored copy and the two kinds of
+```
+
+with
+
+```markdown
+The one exception anywhere in the build is `OKF4net.Viewer` (not itself
+published to NuGet): it vendors a copy of
+[marked](https://github.com/markedjs/marked) (MIT) for client-side markdown
+rendering, and the Inter, Inter Tight and Space Mono fonts (SIL Open Font
+License 1.1, their licence texts written beside them under `assets/fonts/`),
+all embedded in that library and shipped inside the `okf-render` binary it
+backs; `okf` itself never references them. See [`NOTICE`](NOTICE)
+for the full accounting, including those vendored copies and the two kinds of
+```
+
+If Task 16 ran, the fonts travel inside `assets/okf-fonts.css`: write "their licence texts written under `assets/fonts/`" instead of "written beside them under `assets/fonts/`".
+
+- [ ] **Step 6: Write the changelog entry, one line per slice**
 
 In `CHANGELOG.md`, replace the whole entry that starts `- **Interactive \`okf-render\` pages (P1).**` (through `loads a site generated from a hostile fixture bundle and needs the .NET SDK.`) with:
 
@@ -8160,13 +8344,13 @@ In `CHANGELOG.md`, replace the whole entry that starts `- **Interactive \`okf-re
     drawer and keyboard navigation, linked from every page's "Global graph".
 ```
 
-- [ ] **Step 6: Check and commit**
+- [ ] **Step 7: Check and commit**
 
 ```bash
 dotnet build OKF4net.sln
 dotnet test OKF4net.sln --filter "FullyQualifiedName~OKF4net.Tests.Viewer|FullyQualifiedName~OKF4net.Tests.Render"
 dotnet format OKF4net.sln --verify-no-changes
-git add CLAUDE.md src/OKF4net.Viewer/README.md tools/viewer-security-check/README.md .github/workflows/ci.yml CHANGELOG.md
+git add CLAUDE.md README.md src/OKF4net.Viewer/README.md tools/viewer-security-check/README.md .github/workflows/ci.yml CHANGELOG.md
 git commit -m "docs(viewer): P1.1 in CLAUDE.md, the READMEs and the changelog; AOT smoke test checks the new assets and fonts
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
@@ -8901,7 +9085,7 @@ dotnet run --project src/OKF4net.Render -c Release -- bundles/acme_retail --out 
 node tools/viewer-security-check/recette/recette.js --site "$R/okf4net-site" --acme "$R/acme-site" --browsers chrome,edge,firefox,webkit --slices p1,p1.1,p2,p3 --out "$R/out"
 ```
 
-Expected: for Chrome, Edge and Firefox every line `ok` and the last line `every check passed` (WebKit is best effort: note its failures, do not block on them); `p2` and `p3` reported `skipped`. A failure is a defect of the task that owns the element (the Fidélité maquette table names it): fix it in that task's files, rerun `npm test` and this step, and commit the fix on its own with a message naming the §11 id (e.g. `fix(viewer): E6 rows are 30 px in Firefox`). Then do the hand checks of Step 4 and record the date, the browser versions and the result in the pull request description — never in the repository (§12.8).
+Expected: for Chrome, Edge and Firefox every line `ok` (or `n/a` with its note) and the last line starting `no check failed` (WebKit is best effort: note its failures, do not block on them); `p2` and `p3` reported `skipped`. A failure is a defect of the task that owns the element (the Fidélité maquette table names it): fix it in that task's files, rerun `npm test` and this step, and commit the fix on its own with a message naming the §11 id (e.g. `fix(viewer): E6 rows are 30 px in Firefox`). Then do the hand checks of Step 4 and record the date, the browser versions and the result in the pull request description — never in the repository (§12.8).
 
 - [ ] **Step 6: Final verification of the slice**
 

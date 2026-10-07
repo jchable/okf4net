@@ -8,11 +8,17 @@
 
 **Tech Stack:** C# 14 / .NET 10, xunit, BCL only (`OKF4net.Viewer`); plain ES2018 classic scripts; Node 22 + jsdom 29 (existing `tools/viewer-security-check/`); Playwright (`playwright-core`, resolved at run time by P1.1's `recette.js`, never a repo dependency) for the recette only.
 
-**Spec:** `docs/superpowers/specs/2026-10-06-okf-viewer-interactive-design.md` (revision 6). This plan implements slice **P2** (§9): §4.3 (local graph), §4.5 (application SVG), §6 (equivalent list), §7 control 12 plus controls 3 and 7 for the local graph, §8 (local graph keyboard contract), §11.4 X5–X9, §12.4, and P2's rows of §12.0. It **consumes** P1.1's contracts (§12.0–§12.3, §12.6–§12.8) without changing them; P1.1 is not implemented when this plan is written, so every task names the exact §12 item it codes against.
+**Spec:** `docs/superpowers/specs/2026-10-06-okf-viewer-interactive-design.md` (revision 6; brought in line with revision 7, `f84c990`, by this plan's r2). This plan implements slice **P2** (§9): §4.3 (local graph), §4.5 (application SVG), §6 (equivalent list), §7 control 12 plus controls 3 and 7 for the local graph, §8 (local graph keyboard contract), §11.4 X5–X9, §12.4, and P2's rows of §12.0. It **consumes** P1.1's contracts (§12.0–§12.3, §12.6–§12.8) without changing them; P1.1 is not implemented when this plan is written, so every task names the exact §12 item it codes against.
 
 ## Revision history
 
 - **r1 (2026-10-07)** — first version, written in parallel with the P1.1 and P3 plans from spec revision 6.
+- **Revision r2 (2026-10-07): applied pre-flight findings X10, X11, X14, X16, X17, X20; aligned with spec revision 7 (`f84c990`).**
+  - X16 (T3): the "old drawing" check counts only `#okf-local-graph .okf-local-canvas > svg`, so T4's list glyphs (`svg.okf-glyph`) no longer turn it red.
+  - X17 (T5): the hop buttons use `font-family: inherit` (plus `font-weight`/`line-height: inherit`), not the font shorthand set to inherit, after which jsdom drops `font-size: 12px` (the probe read 16px); the probe's expected 12px is unchanged.
+  - X10, X11 (T6, rulings 11): `recette/p2.js` uses P1.1's `ctx` as spec §12.8 r7 fixes it — `ctx.newPage()`, `ctx.browserName`, `ctx.shot(page, id)`, `ctx.wanted(id)`, `ctx.lib.rgb` and `ctx.lib.contrast` (no local copies) — and its `pass: null` results are reported "n/a" by P1.1's driver, so T6 Step 4's expected outcome holds.
+  - X20 (T7, ruling 10): spec r7 §12.0 settles it — P2 edits no documentation; T7 Step 5 hands the controller the exact wording for `CLAUDE.md`, the viewer README and `CHANGELOG.md`, which the controller applies after P2 and P3 are merged (P1.1 plan, Task 0 Step 6).
+  - X14: the fixture-naming rule P1.1 Task 4 states is now a Global Constraint here too (P2's fixtures already follow it).
 
 ## Task dependency graph
 
@@ -56,7 +62,7 @@ Not P2's (spec §12.0): `run.js`, `check-index.js`, the harness README, `recette
 | §12.3 | `<html data-okf-view="page" data-okf-concept="<id>" data-okf-root="../…">`; `#okf-tools` holding `a#okf-global-graph` whose `href` is the graph page + `#<id>` (the only source of the graph page's name). |
 | §12.0, §12.6 | `HtmlWriter.PageScripts` with the marker `// P2: local graph` at its end; `HtmlWriter.WriteAssets` writing every embedded `Assets/` resource (so `okf-local.js` needs no other C# change); `viewer.css` section `/* === P2: local graph === */` with `/* (P2 rules) */`; shared components `.okf-section-title` and `.okf-row` already styled under `#okf-context`; `#okf-context` laid out as sections 22 apart (X1); tokens `--edge`, `--ghost`, `--blue-hover` (§11.0) — P2 adds no token. |
 | §12.7 | The case loader in `run.js` calls `require("cases/p2.js").register(h)`; `h` carries `check`, `assert`, `checkAsync`, `openPage` (options `blocked`, `override`, `beforeParse`, `hash`, `now`), `navigations`, `unwrapMedia`, …; `ACCEPTANCE.md` has `## P2` with `*(P2 checks)*`. |
-| §12.8 | `recette/recette.js --slices p2` loads `recette/p2.js` and awaits `run(ctx)`. |
+| §12.8 | `recette/recette.js --slices p2` loads `recette/p2.js` and awaits `run(ctx)`; `ctx` (P1.1's `lib.context`, spec r7): `browserName`, `site`, `acme` (`file://` URLs ending `/`), `siteDir`, `acmeDir`, `wanted(id)`, `newPage({ viewport, colorScheme })` (1 440 × 900, light by default; `page.okfTracked` holds `errors`, `outside`, `failed`), `shot(page, id)`, `close()` (called by the driver), `lib` (`recette/lib.js`: `rgb(hex)`, `contrast(a, b)`, `parseColor`, `readIndex`, `pagesByDepth`, `siteUrl`, `guard`, …). A result `pass: null` is printed "n/a" and never counted as a failure. |
 
 ## Global Constraints
 
@@ -71,6 +77,7 @@ Not P2's (spec §12.0): `run.js`, `check-index.js`, the harness README, `recette
 - New source files start with `// SPDX-License-Identifier: LGPL-3.0-or-later`; C#: file-scoped namespace, nullable, `TreatWarningsAsErrors`; `dotnet format OKF4net.sln --verify-no-changes` must pass.
 - **Never type a `\uXXXX` escape** into a file through an editor tool: it is decoded on write. Build such characters at run time: the middle dot of "List · N" and of the legend is `String.fromCharCode(0xb7)` in every JS file of this plan.
 - **Harness**: run it with `npm test` (its `pretest` regenerates `.generated/hostile-site/`); `node run.js` alone skips `pretest` and reuses a stale site. Async cases are bounded by `run.js`'s 10 s timer and fail on any page script error raised after load: never await an event that may not come; jsdom provides `requestAnimationFrame` under `pretendToBeVisual`, but `okf-local.js` draws synchronously and needs none. A case never hard-codes a count, a type rank or a fixture size: it reads `window.OKF_INDEX` or the synthetic index it builds (§12.7).
+- **Fixture names** (pre-flight X14, the rule P1.1 Task 4 states for its own fixtures): no fixture title or id starts with `t`, or contains `foo`, `bar` or `edge`, and no id sorts between `foo` and `foo/bar` — P1's palette and explorer cases rely on those queries (a P3 fixture titled "Twin A" took the palette's first tier for "t" and turned a P1 case red). Every case name is unique across all slices (P1.1's loader fails the run on a duplicate).
 - Commit messages end with `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`.
 
 ## Rulings taken (spec ambiguities, most conservative reading — reported to the controller)
@@ -84,8 +91,8 @@ Not P2's (spec §12.0): `run.js`, `check-index.js`, the harness README, `recette
 7. **"+N omitted"** (§4.3 "« +N omis » et un lien vers la liste complète") is one `<button>` in the frame, bottom right, that opens the list and focuses its summary; it is HTML, not SVG text (the SVG is an image, §8).
 8. **Geometry not fixed by the spec**: the mockup's `viewBox="0 0 298 248"`, centre (149, 118), one ring rx 94 / ry 70, two rings rx 52 / ry 40 and rx 118 / ry 88; angle of the j-th of m nodes `−π/2 + π/m + 2πj/m` (four neighbours land on the diagonals as in A); an edge is trimmed by `size / 2 + 1` at each end (`+ 7` for the centre, to clear its selection square), untrimmed when the two reaches overlap. Labels are always under the shape (X7), where A puts the top row's labels above — écart, X7 wins.
 9. **Arrow marker** = the mockup's (`viewBox 0 0 10 10`, `refX 9`, `refY 5`, `markerWidth 7`, `markerHeight 7`); "flèche 7" read as `markerWidth 7`. `markerUnits` is outside the fixed vocabulary, so it renders at 7 × 1.4. `orient="auto"` (A's `auto-start-reverse` is identical on `marker-end`). `okf-local-arrow` and `okf-local-arrow-in` are the same arrow; the second exists for dashed edges (§12.4).
-10. **Documentation**: the dispatch brief asks P2 for `CLAUDE.md` / README / `CHANGELOG` touch-ups, but §12.0 gives `CLAUDE.md`, the viewer README and `NOTICE` to P1.1 then P3, and the whole `CHANGELOG` entry to P1.1 (one line per slice). Ruling: §12.0 wins; P2 edits none of them; T7 checks what the owners wrote against P2's delivery and hands the exact wording of any missing line to the controller. **Controller decision requested.**
-11. **Recette `ctx`**: §12.8 does not fix its shape. `recette/p2.js` reads only `ctx.page` (a Playwright `Page`), `ctx.site` and `ctx.acme` (`file://` URLs of the two sites, ending in `/`), `ctx.out` (the `--out` directory) and `ctx.browser` (its name); T6 Step 1 checks those names against P1.1's `recette.js` and adapts only the destructuring line. **Spec precision requested** (§12.8 should list `ctx`).
+10. **Documentation**: the dispatch brief asks P2 for `CLAUDE.md` / README / `CHANGELOG` touch-ups, but §12.0 gives `CLAUDE.md`, the viewer README and `NOTICE` to P1.1 then P3, and the whole `CHANGELOG` entry to P1.1 (one line per slice). Ruling: §12.0 wins; P2 edits none of them; T7 checks what the owners wrote against P2's delivery and hands the exact wording of any missing line to the controller. **Settled by spec r7 §12.0 and §12.8**: P2 hands its text over in its final report (T7 Step 5); the controller applies it after P2 and P3 are merged, outside their worktrees (P1.1 plan, Task 0 Step 6).
+11. **Recette `ctx`** — **settled by spec r7 §12.8**, which adopts P1.1's `lib.context`: `recette/p2.js` opens its pages with `ctx.newPage({ viewport, colorScheme })`, names the browser by `ctx.browserName`, writes captures with `ctx.shot(page, id)` (under `--out/shots/<browser>/p2/<id>.png`, 1 440 × 900), honours `ctx.wanted(id)`, and takes `rgb` and `contrast` from `ctx.lib` (no local copies). There is no shared page and no `--out` directory in `ctx`. A `pass: null` result (not applicable, with a `note`) is printed "n/a" by P1.1's driver and never counted as a failure.
 12. **Load-time cost**: §3.6 builds graph structures on demand; the local graph is visible on load, so the first ring is computed on load by scanning the edges (no adjacency structure is kept); the second hop is computed when "2 hops" is pressed.
 
 ## Fidélité maquette (§11 elements owned by P2)
@@ -1014,9 +1021,11 @@ function registerPage(h) {
     two.click();
     assert(one.getAttribute("aria-pressed") === "false" && two.getAttribute("aria-pressed") === "true", "2 hops is not announced as pressed");
     assert(nodes() === 1 + deep.total, `2 hops: ${nodes()} nodes for ${deep.total} neighbours`);
-    assert(doc.querySelectorAll("#okf-local-graph svg").length === 1, "the old drawing was kept beside the new one");
+    // Only the drawing's own <svg>: T4's list rows add svg.okf-glyph icons
+    // to the section, which are not drawings.
+    assert(doc.querySelectorAll("#okf-local-graph .okf-local-canvas > svg").length === 1, "the old drawing was kept beside the new one");
     assert(doc.querySelectorAll("#okf-local-arrow, #okf-local-arrow-in").length === 2, "the arrow markers are duplicated");
-    assertFixedSvg(assert, doc.querySelector("#okf-local-graph svg"));
+    assertFixedSvg(assert, doc.querySelector("#okf-local-graph .okf-local-canvas > svg"));
     one.click();
     assert(nodes() === 1 + shallow.total, "back to 1 hop did not redraw the first ring only");
   });
@@ -1852,8 +1861,10 @@ with
 #okf-context .okf-local-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 #okf-context .okf-local-head .okf-section-title { margin: 0; }
 #okf-context .okf-hops { display: flex; flex: none; }
+/* Longhands, not the font shorthand: jsdom drops every declaration that
+   follows the shorthand set to inherit, so the harness would read 16px. */
 #okf-context .okf-hops button {
-  height: 24px; padding: 0 10px; font: inherit; font-size: 12px; cursor: pointer;
+  height: 24px; padding: 0 10px; font-family: inherit; font-weight: inherit; line-height: inherit; font-size: 12px; cursor: pointer;
   border: 1px solid var(--hair); background: var(--white); color: var(--gray);
 }
 #okf-context .okf-hops button + button { border-left-width: 0; }
@@ -1916,16 +1927,17 @@ EOF
 - Modify: `tools/viewer-security-check/ACCEPTANCE.md` (replace `*(P2 checks)*`)
 
 **Interfaces:**
-- Consumes: §12.8 `recette/recette.js --slices p2` calling `run(ctx)`; ruling 11's `ctx` (`page`, `site`, `acme`, `out`, `browser`); the DOM contract of T3/T4 (**Produces**); `window.OkfShapes.SIZES`, `kindOf`; the acme_retail page `computations/gross-margin-period.html` (type Attested Computation, rank 1 → square, §12.1).
-- Produces: `module.exports = { run }`, `run(ctx)` → `{ X5, X6, X7, X8, X9, "P2-1" … "P2-8" }`, each `{ pass: true | false | null, … }` (`null` = not applicable, with a `note`); captures `p2-<browser>-<id>.png` under `ctx.out`; `ACCEPTANCE.md` lines `P2-1` … `P2-8`.
+- Consumes: §12.8 (spec r7) `recette/recette.js --slices p2` calling `run(ctx)` with P1.1's `ctx` (ruling 11): `ctx.newPage({ viewport, colorScheme })`, `ctx.browserName`, `ctx.site`, `ctx.acme`, `ctx.wanted(id)`, `ctx.shot(page, id)`, `ctx.lib.rgb`, `ctx.lib.contrast`, `page.okfTracked.outside`; the driver's "n/a" for `pass: null`; the DOM contract of T3/T4 (**Produces**); `window.OkfShapes.SIZES`, `kindOf`; the acme_retail page `computations/gross-margin-period.html` (type Attested Computation, rank 1 → square, §12.1).
+- Produces: `module.exports = { run }`, `run(ctx)` → `{ X5, X6, X7, X8, X9, "P2-1" … "P2-8" }` (only the ids `ctx.wanted` accepts), each `{ pass: true | false | null, … }` (`null` = not applicable, with a `note`); captures `<id>.png` under `--out/shots/<browser>/p2/` (written by `ctx.shot`); `ACCEPTANCE.md` lines `P2-1` … `P2-8`.
 
-- [ ] **Step 1: Check the recette's `ctx`**
+- [ ] **Step 1: Check P1.1's recette `ctx`**
 
 ```bash
-grep -n "ctx" tools/viewer-security-check/recette/recette.js | head -20
+grep -n "browserName\|newPage\|async shot\|wanted:\|lib: module.exports" tools/viewer-security-check/recette/lib.js
+grep -n "n/a" tools/viewer-security-check/recette/recette.js
 ```
 
-Expected: the object passed to each slice's `run` carries a Playwright page, the two site URLs, the output directory and the browser name. If P1.1 named them differently, change **only** the destructuring line at the top of `run` in Step 2 to map its names onto `page`, `site`, `acme`, `out`, `browser`.
+Expected: `lib.context` defines `browserName`, `wanted`, `newPage`, `shot` and `lib` (spec §12.8 r7), and `recette.js` prints `n/a` for a `pass: null` result without counting it as a failure. If either is missing, stop: P1.1 is not merged as planned (do not adapt `p2.js` to another shape).
 
 - [ ] **Step 2: Write the recette**
 
@@ -1939,9 +1951,13 @@ Create `tools/viewer-security-check/recette/p2.js`:
 // never by npm test or CI (spec §12.8). It measures what jsdom cannot:
 // geometry (getBBox), computed fonts and colours, contrasts in both themes,
 // real clicks and navigation, 390 px, requests.
+//
+// ctx is P1.1's lib.context (spec §12.8): pages come from ctx.newPage(),
+// captures go through ctx.shot(page, id), colours and contrasts through
+// ctx.lib. A result { pass: null, note } means "not applicable": the driver
+// prints it n/a and never counts it as a failure.
 "use strict";
 const fs = require("fs");
-const path = require("path");
 const { fileURLToPath } = require("url");
 
 // acme_retail page whose type ranks second (Attested Computation -> square,
@@ -1953,39 +1969,25 @@ const TOKENS = {
   dark: { white: "#101014", blue: "#8fa5f5", gray: "#9a9aa2", hair: "#2a2a33", edge: "#8a8a94" },
 };
 
-function rgb(hex) {
-  const n = parseInt(hex.slice(1), 16);
-  return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
-}
-
-function contrast(a, b) {
-  const lum = (c) => {
-    const [r, g, bl] = c.match(/[\d.]+/g).map(Number).slice(0, 3).map((v) => {
-      const s = v / 255;
-      return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
-    });
-    return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
-  };
-  const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
-  return Math.round(((x + 0.05) / (y + 0.05)) * 100) / 100;
-}
-
 async function run(ctx) {
-  const { page, site, acme, out, browser } = ctx;
+  const { site, acme } = ctx;
+  const { rgb, contrast } = ctx.lib;
   const results = {};
   const dot = String.fromCharCode(0xb7);
+  // One page at ctx.newPage's defaults (1 440 x 900, light); P2-4 and P2-5
+  // open their own.
+  const page = await ctx.newPage();
   const check = async (id, fn) => {
+    if (!ctx.wanted(id)) { return; }
     try { results[id] = await fn(); } catch (e) { results[id] = { pass: false, error: String(e).split("\n")[0] }; }
   };
-  const shot = (name) => page.locator("#okf-local-graph").screenshot({ path: path.join(out, `p2-${browser}-${name}.png`) });
-  // A theme is forced through data-theme, which both P1 blocks honour.
-  const open = async (url, theme = "light") => {
-    await page.goto(url);
-    await page.waitForSelector("#okf-local-graph svg");
-    await page.evaluate((t) => document.documentElement.setAttribute("data-theme", t), theme);
+  const shot = (id, p = page) => ctx.shot(p, id);
+  // A theme is forced through data-theme, which both dark blocks honour.
+  const open = async (url, theme = "light", p = page) => {
+    await p.goto(url);
+    await p.waitForSelector("#okf-local-graph .okf-local-canvas > svg");
+    await p.evaluate((t) => document.documentElement.setAttribute("data-theme", t), theme);
   };
-
-  await page.setViewportSize({ width: 1440, height: 900 });
 
   await check("X5", async () => {
     await open(acme + ACME_PAGE);
@@ -2040,7 +2042,7 @@ async function run(ctx) {
     const r = await page.evaluate(() => {
       const idx = window.OKF_INDEX;
       const S = window.OkfShapes;
-      const svg = document.querySelector("#okf-local-graph svg");
+      const svg = document.querySelector("#okf-local-graph .okf-local-canvas > svg");
       const nodes = Array.from(svg.querySelectorAll("g.okf-node")).map((g) => {
         const title = g.querySelector("title").textContent;
         const ghost = title.startsWith("absent: ");
@@ -2123,7 +2125,7 @@ async function run(ctx) {
       const section = document.getElementById("okf-local-graph");
       const more = section.querySelector(".okf-local-omitted");
       return {
-        nodes: section.querySelectorAll("svg g.okf-node").length, more: more && more.textContent,
+        nodes: section.querySelectorAll(".okf-local-canvas > svg g.okf-node").length, more: more && more.textContent,
         summary: section.querySelector(".okf-local-list summary").textContent, rows: section.querySelectorAll(".okf-local-list li").length,
       };
     });
@@ -2138,11 +2140,11 @@ async function run(ctx) {
   await check("P2-1", async () => {
     await open(acme + ACME_PAGE);
     const target = await page.evaluate(() => {
-      const g = document.querySelector("#okf-local-graph svg g.okf-local-node:not(.okf-selected)");
+      const g = document.querySelector("#okf-local-graph .okf-local-canvas > svg g.okf-local-node:not(.okf-selected)");
       const id = g.querySelector("title").textContent;
       return { id, path: window.OKF_INDEX.concepts.find((c) => c.id === id).path };
     });
-    await page.locator("#okf-local-graph svg g.okf-local-node:not(.okf-selected)").first().click();
+    await page.locator("#okf-local-graph .okf-local-canvas > svg g.okf-local-node:not(.okf-selected)").first().click();
     await page.waitForURL((url) => url.href.endsWith(target.path));
     const landed = page.url();
     await page.goBack();
@@ -2151,9 +2153,9 @@ async function run(ctx) {
 
   await check("P2-2", async () => {
     await open(acme + ACME_PAGE);
-    const one = await page.locator("#okf-local-graph svg g.okf-node").count();
+    const one = await page.locator("#okf-local-graph .okf-local-canvas > svg g.okf-node").count();
     await page.click("#okf-local-hops-2");
-    const two = await page.locator("#okf-local-graph svg g.okf-node").count();
+    const two = await page.locator("#okf-local-graph .okf-local-canvas > svg g.okf-node").count();
     await shot("P2-2-two-hops");
     return { pass: two > one, one, two };
   });
@@ -2164,7 +2166,7 @@ async function run(ctx) {
     for (const theme of ["light", "dark"]) {
       await open(acme + ACME_PAGE, theme);
       const m = await page.evaluate(() => {
-        const svg = document.querySelector("#okf-local-graph svg");
+        const svg = document.querySelector("#okf-local-graph .okf-local-canvas > svg");
         const shapes = Array.from(svg.querySelectorAll("g.okf-node > :is(circle, rect, path):not(.okf-node-ring):not(.okf-node-focus)")).map((s) => {
           const cs = getComputedStyle(s);
           return cs.fill === "none" || s.classList.contains("okf-ghost-mark") ? cs.stroke : cs.fill;
@@ -2187,31 +2189,24 @@ async function run(ctx) {
   });
 
   await check("P2-4", async () => {
-    await page.setViewportSize({ width: 390, height: 844 });
-    try {
-      await open(acme + ACME_PAGE);
-      const r = await page.evaluate(() => ({
-        scroll: document.documentElement.scrollWidth, inner: window.innerWidth,
-        svg: document.querySelector("#okf-local-graph svg").getBoundingClientRect().width,
-      }));
-      await shot("P2-4-390");
-      return { pass: r.scroll <= r.inner && r.svg > 0, ...r };
-    } finally {
-      await page.setViewportSize({ width: 1440, height: 900 });
-    }
+    const narrow = await ctx.newPage({ viewport: { width: 390, height: 844 } });
+    await open(acme + ACME_PAGE, "light", narrow);
+    const r = await narrow.evaluate(() => ({
+      scroll: document.documentElement.scrollWidth, inner: window.innerWidth,
+      svg: document.querySelector("#okf-local-graph .okf-local-canvas > svg").getBoundingClientRect().width,
+    }));
+    await shot("P2-4-390", narrow);
+    return { pass: r.scroll <= r.inner && r.svg > 0, ...r };
   });
 
   await check("P2-5", async () => {
-    const outside = [];
-    const listener = (req) => { if (!req.url().startsWith(acme) && !req.url().startsWith("data:")) { outside.push(req.url()); } };
-    page.on("request", listener);
-    try {
-      await open(acme + ACME_PAGE);
-      await page.click("#okf-local-hops-2");
-      await page.click("#okf-local-hops-1");
-    } finally {
-      page.off("request", listener);
-    }
+    // A fresh page, so okfTracked holds this check's requests only; it lists
+    // every request outside both sites (data: and about: excepted).
+    const fresh = await ctx.newPage();
+    await open(acme + ACME_PAGE, "light", fresh);
+    await fresh.click("#okf-local-hops-2");
+    await fresh.click("#okf-local-hops-1");
+    const outside = fresh.okfTracked.outside.slice();
     return { pass: outside.length === 0, outside };
   });
 
@@ -2250,7 +2245,9 @@ async function run(ctx) {
     return { pass, stops, row };
   });
 
-  results["P2-8"] = { pass: null, note: "compare the p2-<browser>-X5..X9 captures with mockup A's Neighbourhood section by hand (ACCEPTANCE.md P2-8)" };
+  if (ctx.wanted("P2-8")) {
+    results["P2-8"] = { pass: null, note: "compare the captures shots/<browser>/p2/X5.png to X9.png with mockup A's Neighbourhood section by hand (ACCEPTANCE.md P2-8)" };
+  }
   return results;
 }
 
@@ -2268,7 +2265,7 @@ In `tools/viewer-security-check/ACCEPTANCE.md`, replace the line
 with
 
 ```markdown
-`recette/recette.js --slices p2` measures each line below in Chrome, Edge and Firefox (ids are its result keys, beside §11's X5–X9); what it marks `null` is checked by hand.
+`recette/recette.js --slices p2` measures each line below in Chrome, Edge and Firefox (ids are its result keys, beside §11's X5–X9); what it reports `n/a` (`pass: null`, with its note) is checked by hand or waits for P3.
 
 - [ ] **P2-1** On a concept page with neighbours (acme `computations/gross-margin-period.html`), "Neighbourhood" sits between "On this page" and "Referenced by"; clicking a neighbour opens its page in `file://`; clicking an absent concept (red dashed circle) does nothing.
 - [ ] **P2-2** "1 hop" is pressed on load and after a reload; "2 hops" adds the second ring, arrows point at their targets, links into the page are dashed as the legend says.
@@ -2277,7 +2274,7 @@ with
 - [ ] **P2-5** No request leaves the site while the local graph loads or redraws.
 - [ ] **P2-6** "Open in graph" opens the graph page selected on this concept (from P3 on; before P3 the missing page is expected, spec §9).
 - [ ] **P2-7** Keyboard: Tab from "2 hops" never stops inside the drawing; it reaches "+N omitted" (when shown), "Open in graph", then "List · N neighbours", which Enter opens, and each row.
-- [ ] **P2-8** Side by side at 1440 × 900 with mockup A's Neighbourhood section (captures `p2-<browser>-X5` … `X9`): toggle, frame, shapes, labels, edges and foot match, or the difference is one of the écarts recorded in the P2 plan's "Fidélité maquette".
+- [ ] **P2-8** Side by side at 1440 × 900 with mockup A's Neighbourhood section (captures `shots/<browser>/p2/X5.png` … `X9.png` under the recette's `--out`): toggle, frame, shapes, labels, edges and foot match, or the difference is one of the écarts recorded in the P2 plan's "Fidélité maquette".
 ```
 
 - [ ] **Step 4: Run the recette once**
@@ -2290,7 +2287,7 @@ dotnet run --project ../../src/OKF4net.Render -c Release -- "$TEMP/p2-recette/ok
 node recette/recette.js --site "$TEMP/p2-recette/okf4net-site" --acme "$TEMP/p2-recette/acme-site" --out "$TEMP/p2-recette/out" --browsers chrome,edge,firefox --slices p2
 ```
 
-Expected: the recette prints, per browser, `X5` to `X9` and `P2-1` to `P2-7` with `pass: true` (`P2-6` is `null` until P3 writes the graph page; `P2-8` is `null` by design), and writes the `p2-*.png` captures under `$TEMP/p2-recette/out`. A `false` is a defect to fix in T3–T5 (never by loosening the recette); the report goes in the PR description, not in the repository (§12.8).
+Expected: the recette prints, per browser, `X5` to `X9` and `P2-1` to `P2-7` as `ok` — except `P2-6`, printed `n/a -- the graph page is not written yet (P3)…` until P3 writes the graph page, and `P2-8`, `n/a` by design (a hand comparison) —, ends with `no check failed, N not applicable; …` and exit code 0 (P1.1's driver never counts `pass: null` as a failure), and writes the captures under `$TEMP/p2-recette/out/shots/<browser>/p2/`. A `false` is a defect to fix in T3–T5 (never by loosening the recette); the report goes in the PR description, not in the repository (§12.8).
 
 - [ ] **Step 5: Commit**
 
@@ -2360,16 +2357,44 @@ git diff --exit-code feat/viewer-interactive-p1..HEAD -- src/OKF4net.Viewer/Asse
 
 Expected: `viewer.js unchanged by P2` (the first line may differ only if P1.1 itself changed `viewer.js`, which §4.1 forbids — report it if so). P1's "viewer.js alone" harness case already passed in Step 1.
 
-- [ ] **Step 5: Check the documentation the owners wrote (no edit, ruling 10)**
+- [ ] **Step 5: Hand the documentation text to the controller (no edit, ruling 10, spec r7 §12.0)**
 
 ```bash
 grep -n "okf-local" CLAUDE.md src/OKF4net.Viewer/README.md CHANGELOG.md tools/viewer-security-check/README.md
 ```
 
-Expected: `CLAUDE.md`, the viewer README and `CHANGELOG.md` mention `okf-local.js` / the local graph as P1.1 wrote them (§12.0). If a line is missing or says something P2 did not deliver, do **not** edit the file: report it to the controller with this wording to place:
+P2 edits none of these files. **Controller hand-off:** the controller applies the text below after P2 **and** P3 are merged into `feat/viewer-interactive-p1`, in its own worktree, outside P2's and P3's (P1.1 plan, Task 0 Step 6) — P3 edits `CLAUDE.md` and the viewer README after P1.1, so this text goes on top of P3's. Put this whole step's wording, unchanged, into the final report (Step 7), marking each edit "already present" when the grep above shows it is:
 
-- `CLAUDE.md`, viewer paragraph: "`okf-local.js` (P2) draws a concept page's local graph — 1 or 2 hops, rings, 40 nodes at most centre included, then \"+N omitted\" and the equivalent list — from the site index alone, into `#okf-context`; its pure part `OkfLocal` is exercised by `tools/viewer-security-check/cases/p2.js`, its shapes come from `okf-shapes.js` only."
-- `CHANGELOG.md`, P2 line: "Local graph on every concept page: 1 or 2 hops, solid and dashed directed edges, absent concepts, a 40-node cap with \"+N omitted\" and a full neighbour list, \"Open in graph\"."
+- `CLAUDE.md`, `src/OKF4net.Viewer/` paragraph, edit 1 — replace `` `okf-toc.js`, `okf-page.js` after `viewer.js`) `` with `` `okf-toc.js`, `okf-page.js`, `okf-local.js` after `viewer.js`) ``.
+- `CLAUDE.md`, same paragraph, edit 2 — insert directly after the sentence ending `` (design: `docs/superpowers/specs/2026-10-06-okf-viewer-interactive-design.md`). `` (before the global-graph sentence P3 adds there):
+
+  ```markdown
+  `okf-local.js` (P2) draws a concept page's local graph — 1 or 2 hops, rings, 40 nodes at most centre included, then "+N omitted" and the equivalent list — from the site index alone, into `#okf-context`; its pure part `OkfLocal` is exercised by `tools/viewer-security-check/cases/p2.js`, its shapes come from `okf-shapes.js` only.
+  ```
+
+- `src/OKF4net.Viewer/README.md` — insert directly above P3's `## Global graph` heading (or append at the end if that heading is absent):
+
+  ```markdown
+  ## Local graph
+
+  Every concept page with at least one neighbour shows a "Neighbourhood"
+  section in its side panel, drawn by `okf-local.js` from the site index
+  alone: the concept and its neighbours at one hop, or two with the "2 hops"
+  button; solid lines for the links the page makes, dashed ones for the links
+  it receives; absent concepts as dashed circles that are never links; at most
+  40 nodes, then "+N omitted"; an equivalent list naming every neighbour and
+  its relation; and "Open in graph", which opens the global graph on this
+  concept.
+  ```
+
+- `CHANGELOG.md` — only if P1.1's P2 line claims something P2 did not deliver or omits one of the behaviours below; then replace the entry's P2 item (from `- *P2 — local graph.*` through `with an equivalent list.`, three lines) with:
+
+  ```markdown
+    - *P2 — local graph.* Every concept page with a neighbour shows its
+      neighbourhood in the context panel: one or two hops, solid and dashed
+      directed edges, absent concepts as ghosts, at most 40 nodes with
+      "+N omitted", a full neighbour list, and "Open in graph".
+  ```
 
 - [ ] **Step 6: Refresh the knowledge graph**
 
@@ -2381,4 +2406,4 @@ Expected: the command completes (AST-only; `graphify-out/` is git-ignored, nothi
 
 - [ ] **Step 7: Hand back**
 
-Report to the controller: the branch `feat/viewer-p2` and its head SHA, the Step 1 summaries, the recette results of T6 Step 4 per browser, and any Step 5 gap. The controller merges it into `feat/viewer-interactive-p1` (`git merge --no-ff feat/viewer-p2` in that branch's worktree); no conflict is expected, P2's edits being confined to its markers and files (§12.0). Do not merge or push from this worktree.
+Report to the controller: the branch `feat/viewer-p2` and its head SHA, the Step 1 summaries, the recette results of T6 Step 4 per browser, and the **controller hand-off** of Step 5 — its four edits verbatim, each marked "to apply" or "already present" — for the controller to apply after P2 and P3 are merged (P1.1 plan, Task 0 Step 6). The controller merges it into `feat/viewer-interactive-p1` (`git merge --no-ff feat/viewer-p2` in that branch's worktree); no conflict is expected, P2's edits being confined to its markers and files (§12.0). Do not merge or push from this worktree.
