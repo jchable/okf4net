@@ -2520,6 +2520,47 @@ checkAsync("the generated v2 index ranks the types, points each concept at its t
 
 // --- Task 7: theme button ---
 
+checkAsync("theme: the toggle is a 34 px icon button named Dark theme with the moon of the mockups", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const toggle = doc.getElementById("okf-theme-toggle");
+  assert(toggle && toggle.getAttribute("aria-label") === "Dark theme" && toggle.textContent.trim() === "",
+    `toggle name "${toggle && toggle.getAttribute("aria-label")}", text "${toggle && toggle.textContent.trim()}"`);
+  assert(toggle.hasAttribute("aria-pressed"), "the toggle lost its pressed state");
+  assert(doc.getElementById("okf-tools").lastElementChild === toggle, "the toggle is not the last tool");
+  const svg = toggle.querySelector("svg");
+  assert(svg && svg.namespaceURI === "http://www.w3.org/2000/svg" && svg.getAttribute("aria-hidden") === "true" && svg.getAttribute("focusable") === "false",
+    "the icon is not a decorative SVG");
+  const paths = svg.querySelectorAll("path");
+  assert(paths.length === 1 && paths[0].getAttribute("d") === "M13 9.5A5.5 5.5 0 0 1 6.5 3a5.5 5.5 0 1 0 6.5 6.5z" && paths[0].getAttribute("stroke-width") === "1.5",
+    `moon path: ${paths.length ? paths[0].getAttribute("d") : "none"}`);
+  for (const el of [svg, ...svg.querySelectorAll("*")]) {
+    for (const a of Array.from(el.attributes)) {
+      assert(["class", "width", "height", "viewBox", "aria-hidden", "focusable", "d", "stroke-width"].includes(a.name), `the icon carries a ${a.name} attribute (colours belong to viewer.css)`);
+    }
+  }
+  const style = window.getComputedStyle(toggle);
+  assert(style.getPropertyValue("width") === "34px" && style.getPropertyValue("height") === "34px",
+    `toggle ${style.getPropertyValue("width")} x ${style.getPropertyValue("height")}`);
+});
+
+checkAsync("theme: data-okf-js marks <html> while okf-theme.js runs, with or without storage", async () => {
+  for (const opts of [{}, { storage: "denied" }]) {
+    let atScriptLoad = "not recorded";
+    // openPage denies storage itself (opts.storage) before calling beforeParse.
+    const window = await openPage("foo.html", Object.assign({}, opts, {
+      beforeParse(w) {
+        w.document.addEventListener("load", (e) => {
+          const src = e.target && e.target.nodeType === 1 ? e.target.getAttribute("src") || "" : "";
+          if (/okf-theme\.js$/.test(src)) { atScriptLoad = w.document.documentElement.hasAttribute("data-okf-js"); }
+        }, true);
+      },
+    }));
+    assert(atScriptLoad === true, `${JSON.stringify(opts)}: when okf-theme.js had run, data-okf-js was ${atScriptLoad}`);
+    assert(window.document.documentElement.getAttribute("data-okf-js") === "", "data-okf-js is not an empty marker");
+  }
+});
+
 // --- Task 8: contents, current section ---
 
 // --- Task 10: fonts ---
