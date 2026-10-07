@@ -402,8 +402,11 @@ body > header.bar .bar-bundle {
 /* H6 */
 body > header.bar .bar-counts { flex: none; font-family: var(--mono); font-size: 13px; color: var(--gray); white-space: nowrap; }
 /* The tools, after the flexible space: palette (H7), Filters (H8), Reading
-   view (H10), Global graph (H9), theme (H11). */
-#okf-tools { margin-left: auto; display: flex; align-items: center; gap: 20px; min-width: 0; flex: 0 1 auto; }
+   view (H10), Global graph (H9), theme (H11). No min-width: 0 here: the
+   box would then shrink below its unshrinkable buttons and a long bundle
+   name would push them past the window (sideways scroll); the name gives
+   way instead (H5). */
+#okf-tools { margin-left: auto; display: flex; align-items: center; gap: 20px; flex: 0 1 auto; }
 #okf-tools .okf-tool {
   display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px; box-sizing: border-box;
   font-family: var(--body); font-size: 13.5px; font-weight: 500; line-height: 1; white-space: nowrap;
@@ -413,9 +416,15 @@ body > header.bar .bar-counts { flex: none; font-family: var(--mono); font-size:
 #okf-tools .okf-tool-graph { border-color: var(--blue); background: var(--blue-soft); color: var(--blue); font-weight: 600; }
 #okf-tools .okf-tool-graph[aria-current="page"] { background: var(--blue); color: var(--white); }
 /* H13: under 900 px the bar takes two lines (brand, name, counts; then the
-   tools), the counts go at phone width, and nothing scrolls sideways. */
-@media (max-width: 899px) {
+   tools), the counts go at phone width, and nothing scrolls sideways. The
+   complement of (min-width: 900px), like the layout's 1100 px pair: a
+   viewport of 899.333 px (Firefox) matches no (max-width: 899px) query. */
+@media not all and (min-width: 900px) {
   body > header.bar .bar-in { flex-wrap: wrap; height: auto; padding: 8px 16px; row-gap: 8px; }
+  /* A wrapping line breaks on each item's flex-basis: from a 0 basis the name
+     never sends the counts to a line of their own, then grows up to its own
+     width and is cut with its ellipsis (two lines, whatever its length). */
+  body > header.bar .bar-bundle { flex: 1 1 0px; max-width: max-content; }
   #okf-tools { flex: 1 1 100%; flex-wrap: wrap; gap: 8px; margin-left: 0; }
 }
 @media (max-width: 520px) {

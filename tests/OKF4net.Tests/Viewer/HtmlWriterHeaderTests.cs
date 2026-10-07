@@ -249,6 +249,35 @@ public class HtmlWriterHeaderTests
     }
 
     [Fact]
+    public void Write_computes_the_graph_page_name_once_for_a_hand_built_site()
+    {
+        // A computed name walks every page, so computing it per page would be
+        // quadratic: counted, never timed.
+        using var src = new TempDir();
+        using var dest = new TempDir();
+        var pages = Enumerable.Range(0, 3000)
+            .Select(i => new ViewerPage(ConceptId.Parse($"p{i}"), $"P{i}", $"p{i}.html", [], string.Empty, [], []))
+            .ToList();
+        var site = new ViewerSite(src.Path, pages, string.Empty, []);
+
+        var before = HtmlWriter.GraphPageComputations;
+        HtmlWriter.Write(site, dest.Path);
+
+        Assert.Equal(1, HtmlWriter.GraphPageComputations - before);
+        Assert.Contains("id=\"okf-global-graph\" href=\"graph.html#p2999\">", Read(dest.Path, "p2999.html"));
+    }
+
+    [Fact]
+    public void Reading_view_and_the_wordmark_share_the_root_prefix()
+    {
+        using var src = new TempDir();
+        var start = HtmlWriter.RenderDocumentStart(Acme(src), HtmlWriter.ViewKind.Graph, "Global graph", "../", null);
+
+        Assert.Contains("<a class=\"wordmark\" href=\"../index.html\">", start);
+        Assert.Contains("id=\"okf-reading-view\" href=\"../index.html\">Reading view</a>", start);
+    }
+
+    [Fact]
     public void A_valid_explicit_graph_page_is_the_one_linked()
     {
         using var src = new TempDir();

@@ -59,13 +59,13 @@ public static class HtmlWriter
 
         WriteAssets(site, outDir, root, verifiedDirs, written);
 
-        WriteFile(outDir, root, verifiedDirs, "index.html", RenderIndex(site), written);
+        WriteFile(outDir, root, verifiedDirs, "index.html", RenderIndex(site, graphPage), written);
 
         // P3: graph page (§12.5)
 
         foreach (var page in site.Pages)
         {
-            WriteFile(outDir, root, verifiedDirs, page.RelativeHtmlPath, RenderPage(site, page), written);
+            WriteFile(outDir, root, verifiedDirs, page.RelativeHtmlPath, RenderPage(site, graphPage, page), written);
         }
 
         return written;
@@ -379,7 +379,7 @@ public static class HtmlWriter
         return string.Concat(Enumerable.Repeat("../", depth));
     }
 
-    private static string RenderPage(ViewerSite site, ViewerPage page)
+    private static string RenderPage(ViewerSite site, string graphPage, ViewerPage page)
     {
         var prefix = RootPrefix(page.RelativeHtmlPath);
         var main = new StringBuilder();
@@ -389,10 +389,10 @@ public static class HtmlWriter
         main.Append(RenderFrontmatter(page.Frontmatter));
         main.Append("<div id=\"okf-body\"></div>\n");
 
-        return RenderShell(site, ViewKind.Page, page.Title, prefix, page.Id.ToString(), main.ToString(), RenderBacklinks(page.Backlinks), Payload(page));
+        return RenderShell(site, graphPage, ViewKind.Page, page.Title, prefix, page.Id.ToString(), main.ToString(), RenderBacklinks(page.Backlinks), Payload(page));
     }
 
-    private static string RenderIndex(ViewerSite site)
+    private static string RenderIndex(ViewerSite site, string graphPage)
     {
         var main = new StringBuilder();
         main.Append("<h1>Bundle index</h1>\n");
@@ -418,7 +418,7 @@ public static class HtmlWriter
         // The index's links already point at generated .html paths, so its
         // rewiring table is deliberately empty.
         var payload = BuildPayload(site.IndexMarkdown, "{}");
-        return RenderShell(site, ViewKind.Index, "Bundle index", string.Empty, conceptId: null, main.ToString(), aside: string.Empty, payload);
+        return RenderShell(site, graphPage, ViewKind.Index, "Bundle index", string.Empty, conceptId: null, main.ToString(), aside: string.Empty, payload);
     }
 
     /// <summary>The three views a page of the site can be (spec §12.3), written as <c>data-okf-view</c>.</summary>
@@ -462,6 +462,7 @@ public static class HtmlWriter
     /// <exception cref="ArgumentException">The explicit name is not one such segment.</exception>
     internal static string GraphPagePathOf(ViewerSite site)
     {
+        t_graphPageComputations++;
         if (site.GraphPagePath is not { } explicitPath)
         {
             return SiteModel.FreeGraphPagePath(site.Pages);
@@ -476,6 +477,16 @@ public static class HtmlWriter
 
         return explicitPath;
     }
+
+    /// <summary>
+    /// How many times <see cref="GraphPagePathOf"/> ran on the current thread:
+    /// a counting seam for the test that <see cref="Write"/> computes the
+    /// name once, not once per page (a computed name walks every page).
+    /// </summary>
+    internal static int GraphPageComputations => t_graphPageComputations;
+
+    [ThreadStatic]
+    private static int t_graphPageComputations;
 
     private static bool IsGraphPageName(string name)
         => name.Length > ".html".Length
@@ -492,6 +503,14 @@ public static class HtmlWriter
     /// "Global graph", "", null)</c>.
     /// </summary>
     internal static string RenderDocumentStart(ViewerSite site, ViewKind view, string title, string rootPrefix, string? conceptId)
+        => RenderDocumentStart(site, GraphPagePathOf(site), view, title, rootPrefix, conceptId);
+
+    /// <summary>
+    /// <see cref="RenderDocumentStart(ViewerSite, ViewKind, string, string, string?)"/>
+    /// with the graph page's name already computed: <see cref="Write"/>
+    /// computes it once for every page it writes.
+    /// </summary>
+    private static string RenderDocumentStart(ViewerSite site, string graphPage, ViewKind view, string title, string rootPrefix, string? conceptId)
     {
         var sb = new StringBuilder();
         sb.Append("<!doctype html>\n<html lang=\"en\" data-okf-root=\"").Append(HtmlEscape(rootPrefix))
@@ -508,7 +527,7 @@ public static class HtmlWriter
           .Append("</head>\n<body>\n")
           .Append("<a class=\"okf-skip\" href=\"#okf-main\">Skip to content</a>\n")
           .Append("<div class=\"topline\"></div>\n")
-          .Append(RenderHeader(site, view, rootPrefix, conceptId));
+          .Append(RenderHeader(site, graphPage, view, rootPrefix, conceptId));
         return sb.ToString();
     }
 
@@ -527,9 +546,15 @@ public static class HtmlWriter
     /// and the theme button are added by their scripts.
     /// </summary>
     internal static string RenderHeader(ViewerSite site, ViewKind view, string rootPrefix, string? conceptId)
+        => RenderHeader(site, GraphPagePathOf(site), view, rootPrefix, conceptId);
+
+    /// <summary>
+    /// <see cref="RenderHeader(ViewerSite, ViewKind, string, string?)"/> with the
+    /// graph page's name already computed.
+    /// </summary>
+    private static string RenderHeader(ViewerSite site, string graphPage, ViewKind view, string rootPrefix, string? conceptId)
     {
         var name = site.BundleName ?? SiteModel.BundleNameOf(site.BundleRoot);
-        var graphPage = GraphPagePathOf(site);
         var sb = new StringBuilder("<header class=\"bar\"><div class=\"bar-in\">\n");
         sb.Append("<a class=\"wordmark\" href=\"").Append(HtmlEscape(rootPrefix)).Append("index.html\">OKF4net<sup>§</sup></a>\n");
         sb.Append("<span class=\"bar-sep\" aria-hidden=\"true\"></span>\n");
@@ -543,7 +568,7 @@ public static class HtmlWriter
         sb.Append("<div class=\"bar-tools\" id=\"okf-tools\">\n");
         if (view == ViewKind.Graph)
         {
-            sb.Append("<a class=\"okf-tool\" id=\"okf-reading-view\" href=\"index.html\">Reading view</a>\n");
+            sb.Append("<a class=\"okf-tool\" id=\"okf-reading-view\" href=\"").Append(HtmlEscape(rootPrefix)).Append("index.html\">Reading view</a>\n");
         }
 
         var href = view == ViewKind.Page && conceptId is not null
@@ -588,9 +613,9 @@ public static class HtmlWriter
     /// header, the three zones, the payload and the script table. Its ids and
     /// attributes are the contract the interactive scripts rely on.
     /// </summary>
-    private static string RenderShell(ViewerSite site, ViewKind view, string title, string rootPrefix, string? conceptId, string main, string aside, string payload)
+    private static string RenderShell(ViewerSite site, string graphPage, ViewKind view, string title, string rootPrefix, string? conceptId, string main, string aside, string payload)
     {
-        var sb = new StringBuilder(RenderDocumentStart(site, view, title, rootPrefix, conceptId));
+        var sb = new StringBuilder(RenderDocumentStart(site, graphPage, view, title, rootPrefix, conceptId));
         sb.Append("<div class=\"okf-layout\">\n")
           .Append("<nav class=\"okf-explorer\" id=\"okf-explorer\" aria-label=\"Explorer\" hidden></nav>\n")
           .Append("<main id=\"okf-main\">\n").Append(main).Append("</main>\n")
