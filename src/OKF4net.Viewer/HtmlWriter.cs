@@ -52,15 +52,7 @@ public static class HtmlWriter
         var root = ReparsePoints.CanonicalizeRoot(outDir);
         var verifiedDirs = new HashSet<string>(StringComparer.Ordinal);
 
-        WriteAsset(outDir, root, verifiedDirs, "viewer.css", ViewerAssets.Css, written);
-        WriteAsset(outDir, root, verifiedDirs, "viewer.js", ViewerAssets.ViewerJs, written);
-        WriteAsset(outDir, root, verifiedDirs, "marked.min.js", ViewerAssets.MarkedJs, written);
-        WriteAsset(outDir, root, verifiedDirs, "okf-theme.js", ViewerAssets.ThemeJs, written);
-        WriteAsset(outDir, root, verifiedDirs, "okf-site.js", ViewerAssets.SiteJs, written);
-        WriteAsset(outDir, root, verifiedDirs, "okf-explorer.js", ViewerAssets.ExplorerJs, written);
-        WriteAsset(outDir, root, verifiedDirs, "okf-palette.js", ViewerAssets.PaletteJs, written);
-        WriteAsset(outDir, root, verifiedDirs, "okf-toc.js", ViewerAssets.TocJs, written);
-        WriteAsset(outDir, root, verifiedDirs, "okf-index.js", IndexScript.Render(site.Index), written);
+        WriteAssets(site, outDir, root, verifiedDirs, written);
 
         WriteFile(outDir, root, verifiedDirs, "index.html", RenderIndex(site), written);
 
@@ -94,11 +86,12 @@ public static class HtmlWriter
     /// concept named <c>Index</c> on a case-sensitive bundle volume, and its
     /// page (<c>Index.html</c>) would overwrite -- or be overwritten by --
     /// this method's own generated <c>index.html</c> on a case-insensitive
-    /// output volume. The asset files under <c>assets/</c> (the static scripts
-    /// and stylesheet, and the generated <c>okf-index.js</c>) are left out
-    /// of the set: every generated page path ends in <c>.html</c> and every
-    /// asset path ends in <c>.js</c> or <c>.css</c>, so no page FILE can
-    /// collide with an asset file under any string comparer -- adding entries
+    /// output volume. The asset files under <c>assets/</c> (the embedded
+    /// scripts, stylesheet, fonts and licence texts, and the generated
+    /// <c>okf-index.js</c>) are left out of the set: every generated page path
+    /// ends in <c>.html</c> and no asset path does (<c>HtmlWriterAssetsTests</c>
+    /// pins the second half), so no page FILE can collide with an asset file
+    /// under any string comparer -- adding entries
     /// that can never fire would only pad the set without making it any more
     /// honest. A page DIRECTORY can still be named like an asset (a concept
     /// <c>assets/okf-site.js/x</c> needs a directory where the asset file
@@ -203,16 +196,48 @@ public static class HtmlWriter
     private static ArgumentException InsideTheBundle(string bundleRoot, string outDir) =>
         new($"refusing to render into '{outDir}': it is inside the bundle being rendered ('{bundleRoot}')", nameof(outDir));
 
-    private static void WriteAsset(string outDir, string root, HashSet<string> verifiedDirs, string name, string content, List<string> written)
-        => WriteFile(outDir, root, verifiedDirs, "assets/" + name, content, written);
+    /// <summary>
+    /// Writes every embedded asset under <c>assets/</c>, at its path below
+    /// <c>Assets/</c>, byte for byte and in ordinal order of that path, then
+    /// the generated <c>okf-index.js</c>. A file added under <c>Assets/</c> is
+    /// embedded by the project's wildcard and written here with no other
+    /// change (spec §12.0); it is only LOADED by a page whose script table or
+    /// writer names it.
+    /// </summary>
+    private static void WriteAssets(ViewerSite site, string outDir, string root, HashSet<string> verifiedDirs, List<string> written)
+    {
+        foreach (var path in ViewerAssets.Paths)
+        {
+            WriteBytes(outDir, root, verifiedDirs, "assets/" + path, ViewerAssets.Bytes(path), written);
+        }
+
+        WriteFile(outDir, root, verifiedDirs, "assets/okf-index.js", IndexScript.Render(site.Index), written);
+    }
 
     private static void WriteFile(string outDir, string root, HashSet<string> verifiedDirs, string relativePath, string content, List<string> written)
+    {
+        var full = Prepare(outDir, root, verifiedDirs, relativePath);
+        File.WriteAllText(full, content, new UTF8Encoding(false));
+        written.Add(relativePath);
+    }
+
+    private static void WriteBytes(string outDir, string root, HashSet<string> verifiedDirs, string relativePath, byte[] content, List<string> written)
+    {
+        var full = Prepare(outDir, root, verifiedDirs, relativePath);
+        File.WriteAllBytes(full, content);
+        written.Add(relativePath);
+    }
+
+    /// <summary>
+    /// The checked destination of one file, its directory created: text and
+    /// binary writes go through the same guard (spec §11.0).
+    /// </summary>
+    private static string Prepare(string outDir, string root, HashSet<string> verifiedDirs, string relativePath)
     {
         var full = Path.Combine(outDir, relativePath.Replace('/', Path.DirectorySeparatorChar));
         GuardWithinOutputDirectory(outDir, root, verifiedDirs, full, relativePath);
         Directory.CreateDirectory(Path.GetDirectoryName(full)!);
-        File.WriteAllText(full, content, new UTF8Encoding(false));
-        written.Add(relativePath);
+        return full;
     }
 
     /// <summary>
