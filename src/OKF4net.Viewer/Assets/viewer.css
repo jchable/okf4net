@@ -12,6 +12,8 @@
   --display: "Inter Tight", "Arial Narrow", sans-serif;
   --body: "Inter", "Helvetica Neue", sans-serif;
   --mono: "Space Mono", Consolas, monospace;
+  /* Native scrollbars and form controls follow the theme too. */
+  color-scheme: light dark;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -50,12 +52,15 @@ table.frontmatter th { font-family: var(--mono); font-weight: 400; color: var(--
 .errors h2 { color: var(--red); font-size: 18px; }
 /* Dark theme: follows the system unless the toggle forced a theme
    (okf-theme.js sets data-theme on <html>). Same values in both blocks. */
+:root[data-theme="light"] { color-scheme: light; }
 :root[data-theme="dark"] {
   --white: #101014; --ink: #f2f2f5; --blue: #8fa5f5; --blue-soft: #1a1a22; --hair: #2a2a33; --gray: #9a9aa2;
+  color-scheme: dark;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --white: #101014; --ink: #f2f2f5; --blue: #8fa5f5; --blue-soft: #1a1a22; --hair: #2a2a33; --gray: #9a9aa2;
+    color-scheme: dark;
   }
 }
 

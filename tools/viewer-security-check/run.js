@@ -1260,6 +1260,19 @@ checkAsync("theme: a stored choice is applied while okf-theme.js runs, ahead of 
   assert(denied.document.documentElement.getAttribute("data-theme") === "dark", "the toggle is broken when storage is denied");
 });
 
+// Recette R5: native scrollbars and controls follow the theme. jsdom
+// cascades color-scheme but never matches (prefers-color-scheme: dark), so
+// the system-dark rule is seen in the browsers only (recette C6).
+checkAsync("theme: color-scheme follows the theme, so native scrollbars and controls do too", async () => {
+  const scheme = (w) => w.getComputedStyle(w.document.documentElement).getPropertyValue("color-scheme");
+  const system = await openPage("index.html");
+  assert(scheme(system) === "light dark", `with no forced theme, color-scheme is "${scheme(system)}", expected "light dark"`);
+  const dark = await openPage("index.html", { storedTheme: "dark" });
+  assert(scheme(dark) === "dark", `forced dark: color-scheme is "${scheme(dark)}"`);
+  dark.document.getElementById("okf-theme-toggle").click();
+  assert(scheme(dark) === "light", `forced light by the toggle: color-scheme is "${scheme(dark)}"`);
+});
+
 checkAsync("theme: the announced state follows a system preference change while nothing is forced", async () => {
   let query = null;
   const window = await openPage("index.html", {
