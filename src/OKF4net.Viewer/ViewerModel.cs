@@ -23,9 +23,9 @@ public sealed record ViewerFrontmatterEntry(string Key, string Value)
 
 /// <summary>What the chips of a concept page show (spec §11.3, C5).</summary>
 /// <param name="Type">The frontmatter <c>type</c>, or the empty string when absent (shown as "(no type)").</param>
-/// <param name="Status">The raw <c>status</c> when the key exists, is a scalar and is not empty; otherwise null.</param>
+/// <param name="Status">The raw <c>status</c> when the key exists, is a scalar and is neither empty nor whitespace-only; otherwise null.</param>
 /// <param name="Trust">The trust tier, read from the site index (never re-derived).</param>
-/// <param name="Verifier">The verifier shown after the tier, or null when the tier's set of verifications is empty.</param>
+/// <param name="Verifier">The verifier shown after the tier, trimmed; null when the tier's set of verifications is empty or when the last one's verifier is empty or whitespace-only (the chip never renders an empty segment; the tier itself is unchanged).</param>
 /// <param name="VerifiedDate">Its date: the first ten characters of <c>at</c> when they read <c>YYYY-MM-DD</c>, else <c>at</c> as written; null when absent.</param>
 /// <param name="MoreVerifications">How many other verifications the tier's set holds ("+N", omitted at 0).</param>
 /// <param name="StaleAfterDate">The §5.5 deadline's date from the site index, or null when there is none.</param>
@@ -76,7 +76,7 @@ public sealed record ViewerParseError(string Path, string Error);
 /// <param name="Title">The display title (frontmatter title, else the concept id).</param>
 /// <param name="RelativeHtmlPath">The page's path relative to the site root, e.g. <c>tables/users.html</c>.</param>
 /// <param name="Frontmatter">The frontmatter entries, in document order.</param>
-/// <param name="Body">The raw markdown body, rendered client-side.</param>
+/// <param name="Body">The raw markdown body, kept as read; the writer renders <see cref="DisplayBody"/> (or this when that is null) client-side.</param>
 /// <param name="Links">Outgoing internal links, for client-side href rewiring.</param>
 /// <param name="Backlinks">Concepts linking to this one.</param>
 public sealed record ViewerPage(

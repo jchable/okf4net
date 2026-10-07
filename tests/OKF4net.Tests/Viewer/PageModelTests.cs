@@ -43,6 +43,9 @@ public class PageModelTests
     [InlineData("# Gross margin\n# Gross margin\nText.", "Gross margin", "# Gross margin\nText.")]
     [InlineData("<!-- c -->\n# Gross margin\nText.", "Gross margin", "<!-- c -->\n# Gross margin\nText.")]
     [InlineData("# Gross margin\n\n\n", "Gross margin", "\n\n")]
+    [InlineData("# **Gross margin**\nText.", "**Gross margin**", "Text.")]
+    [InlineData("# Gross &amp; margin\nText.", "Gross &amp; margin", "Text.")]
+    [InlineData("# Gross & margin\nText.", "Gross &amp; margin", "# Gross & margin\nText.")]
     public void Duplicate_title_rule(string body, string title, string expected)
         => Assert.Equal(expected, SiteModel.StripDuplicateTitle(body, title));
 
@@ -63,6 +66,7 @@ public class PageModelTests
     [InlineData("status: draft\n", "draft")]
     [InlineData("status: ~\n", null)]
     [InlineData("status: { a: 1 }\n", null)]
+    [InlineData("status: \"   \"\n", null)]
     [InlineData("status: \"<b>x</b>\"\n", "<b>x</b>")]
     public void Status_is_shown_only_as_a_non_empty_scalar_and_raw(string extra, string? expected)
     {
@@ -111,6 +115,29 @@ public class PageModelTests
         Assert.Equal("human-reviewed", head.Trust);
         Assert.Equal("human:", head.Verifier);
         Assert.Equal("2026-07-01", head.VerifiedDate);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("human:   ")]
+    public void An_empty_or_whitespace_verifier_is_absent_but_the_tier_and_date_stand(string by)
+    {
+        using var tmp = new TempDir();
+        var head = Page(tmp, $"type: Note\ntitle: T\nverified:\n  - {{ by: \"{by}\", at: \"2026-06-01T08:00:00Z\" }}\n").Head!;
+
+        Assert.Null(head.Verifier);
+        Assert.Equal("2026-06-01", head.VerifiedDate);
+        Assert.Equal(by.StartsWith("human:", StringComparison.Ordinal) ? "human-reviewed" : "machine-confirmed", head.Trust);
+    }
+
+    [Fact]
+    public void A_verifier_is_trimmed()
+    {
+        using var tmp = new TempDir();
+        var head = Page(tmp, "type: Note\ntitle: T\nverified:\n  - { by: \"  tool:okf-ci \", at: \"2026-06-01\" }\n").Head!;
+
+        Assert.Equal("tool:okf-ci", head.Verifier);
     }
 
     [Fact]

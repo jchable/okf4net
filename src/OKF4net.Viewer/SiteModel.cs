@@ -229,7 +229,7 @@ public static class SiteModel
     private static ViewerPageHead BuildHead(Frontmatter frontmatter, IndexConcept indexed)
     {
         var status = frontmatter.Get("status")?.AsDisplayString();
-        if (status is { Length: 0 })
+        if (string.IsNullOrWhiteSpace(status))
         {
             status = null;
         }
@@ -247,7 +247,14 @@ public static class SiteModel
         {
             var last = set[^1];
             var by = last.By!.Value;
-            verifier = by.IsHuman && by.IsWellFormed ? by.Id! : by.Raw;
+            // Trimmed; an empty or whitespace-only verifier is absent, so the
+            // chip never renders an empty segment. The tier (above) is untouched.
+            verifier = (by.IsHuman && by.IsWellFormed ? by.Id! : by.Raw).Trim();
+            if (verifier.Length == 0)
+            {
+                verifier = null;
+            }
+
             date = DateOf(last.At);
         }
 
@@ -290,9 +297,12 @@ public static class SiteModel
     /// <paramref name="title"/> (ordinal, after both are normalized), and
     /// without the blank lines before it (spec §11.3, C4). Lines are split by
     /// <see cref="LfLines"/> (a final <c>\r</c> stripped); a blank line is
-    /// empty or made of spaces and tabs. Anything else -- setext, inline
-    /// markup, a heading inside a fence, another text -- is left alone: a kept
-    /// duplicate costs nothing, a wrong removal would delete content.
+    /// empty or made of spaces and tabs. The comparison is on raw text, never
+    /// on rendered markup: a heading with inline markup is stripped only when
+    /// the title is written with the same markup (<c>**T**</c> against
+    /// <c># **T**</c>). Anything else -- setext, a heading inside a fence,
+    /// another text -- is left alone: a kept duplicate costs nothing, a wrong
+    /// removal would delete content.
     /// </summary>
     /// <param name="body">The raw markdown body.</param>
     /// <param name="title">The display title.</param>
