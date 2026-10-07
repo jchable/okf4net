@@ -1962,17 +1962,48 @@ checkAsync("long unbroken titles and ids may wrap in the palette and the content
   type(window, doc.getElementById("okf-palette-input"), "foo");
   const option = paletteOptions(window)[0];
   assert(option, "this case needs a palette option");
+  // The title wraps only a word longer than its line (break-word): anywhere
+  // would lower its min-content size and let the row break a short title
+  // mid-word while the id kept its room (recette R4). The id may break
+  // anywhere, within a bounded share of the row.
   const targets = [
-    option.querySelector(".okf-palette-title"),
-    option.querySelector(".okf-palette-id"),
-    doc.querySelector("#okf-toc a"),
+    [option.querySelector(".okf-palette-title"), "break-word"],
+    [option.querySelector(".okf-palette-id"), "anywhere"],
+    [doc.querySelector("#okf-toc a"), "anywhere"],
   ];
-  for (const el of targets) {
+  for (const [el, wrap] of targets) {
     assert(el, "an element this case needs is missing");
     const style = window.getComputedStyle(el);
     const where = `<${el.tagName.toLowerCase()} class="${el.getAttribute("class") || ""}">`;
-    assert(style.getPropertyValue("overflow-wrap") === "anywhere", `${where} overflow-wrap: ${style.getPropertyValue("overflow-wrap")}`);
+    assert(style.getPropertyValue("overflow-wrap") === wrap, `${where} overflow-wrap: ${style.getPropertyValue("overflow-wrap")}, expected ${wrap}`);
     assert(style.getPropertyValue("min-width") === "0px" || style.getPropertyValue("min-width") === "0", `${where} min-width: ${style.getPropertyValue("min-width")}`);
+  }
+  const id = window.getComputedStyle(option.querySelector(".okf-palette-id")).getPropertyValue("max-width");
+  assert(id === "50%", `the palette id's share of the row is not bounded (max-width: ${id})`);
+});
+
+checkAsync("nothing long and unbroken widens the page: panels and tree entries shrink, page text wraps", async () => {
+  // Declarations only (jsdom does no layout); the recette measures the page
+  // at 390 px (R1, C10). A flex item's automatic minimum is its min-content
+  // width: without min-width: 0, a long nowrap tree entry widens the stacked
+  // explorer, and the entry's ellipsis never applies. In the page itself a
+  // dotted member name or a path in inline code wraps (break-word), and a
+  // frontmatter value may break anywhere, since a table cell is as wide as
+  // its min-content.
+  const window = await openPage("foo/bar.html");
+  const doc = window.document;
+  const expected = [
+    [doc.getElementById("okf-explorer"), "min-width", "0px"],
+    [doc.getElementById("okf-context"), "min-width", "0px"],
+    [doc.querySelector("#okf-explorer .okf-tree-link"), "min-width", "0px"],
+    [doc.querySelector("main"), "overflow-wrap", "break-word"],
+    [doc.querySelector("#okf-body p"), "overflow-wrap", "break-word"],
+    [doc.querySelector("main table.frontmatter td"), "overflow-wrap", "anywhere"],
+  ];
+  for (const [el, prop, value] of expected) {
+    assert(el, `an element this case needs is missing (${prop}: ${value})`);
+    const got = window.getComputedStyle(el).getPropertyValue(prop);
+    assert(got === value || (value === "0px" && got === "0"), `<${el.tagName.toLowerCase()} id="${el.id}" class="${el.getAttribute("class") || ""}"> ${prop}: ${got}, expected ${value}`);
   }
 });
 
