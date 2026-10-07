@@ -166,7 +166,10 @@ body > .okf-layout > main { flex: 999 1 560px; min-width: 0; margin: 0; }
   #okf-explorer .okf-explorer-head { position: sticky; top: 0; z-index: 1; background: var(--white); }
   #okf-explorer .okf-explorer-foot { position: sticky; bottom: 0; z-index: 1; background: var(--white); }
 }
-@media (max-width: 1099px) {
+/* The complement of (min-width: 1100px), not (max-width: 1099px): a viewport
+   of 1099.333 CSS px (Firefox at a 1099 px window, fractional zoom levels)
+   matches neither of those two and would get no layout at all. */
+@media not all and (min-width: 1100px) {
   /* Stacked: the page first, then its context, then the explorer, so a reader
      does not scroll through the tree before every page. Visual order only:
      the DOM (and so the reading and tab order) stays explorer, main, context;
@@ -335,17 +338,24 @@ svg .okf-node-ring { stroke: var(--blue); }
 svg .okf-node-focus { stroke: var(--ink); }
 svg .okf-node.okf-selected > .okf-node-ring, svg .okf-node.okf-focused > .okf-node-focus { visibility: visible; }
 /* In a type chip (white text on ink) the shape is white, filled or stroked.
-   Anchored to the chip containers too: the static anchor scan (Task 1)
-   accepts an svg ancestor only at the start of a selector. */
+   Anchored to the chip containers too, like the chip rules above: the static
+   anchor scan would accept the svg compound alone, but a rule about a chip's
+   own shape belongs to the chip containers. */
 :is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-chip-type svg :is(.okf-shape-0, .okf-shape-1, .okf-shape-2, .okf-shape-3) { fill: var(--white); }
 :is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-chip-type svg :is(.okf-shape-4, .okf-shape-5) { stroke: var(--white); }
+
+/* The hidden attribute wins over every display above (.okf-chip, .okf-row,
+   .okf-legend li, .okf-glyph-blank, svg.okf-glyph are all author displays that
+   would out-rank the user agent's [hidden] rule), so P2 and P3 can hide a
+   shared component with the attribute. */
+:is(#okf-tools, #okf-explorer, #okf-context, body > .okf-palette-backdrop, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout) [hidden] { display: none !important; }
 
 /* Body content (C7): rules for the markdown viewer.js renders, under the
    #okf-body id, never chrome. Same rules for every element of a kind, with or
    without a class. */
 #okf-body { font-size: 15.5px; line-height: 1.65; }
 #okf-body p { margin: 0 0 20px; }
-#okf-body h2 { margin: 0 0 8px; font-family: var(--display); font-weight: 600; font-size: 21px; letter-spacing: -.02em; }
+#okf-body h2 { margin: 0 0 8px; font-family: var(--display); font-weight: 600; font-size: 21px; line-height: 1.25; letter-spacing: -.02em; }
 #okf-body table { font-size: 13.5px; margin: 0 0 20px; border-collapse: collapse; }
 #okf-body th {
   text-align: left; font-family: var(--mono); font-weight: 400; font-size: 12px; color: var(--gray);
@@ -354,7 +364,9 @@ svg .okf-node.okf-selected > .okf-node-ring, svg .okf-node.okf-focused > .okf-no
 #okf-body td { padding: 6px 12px 6px 0; border-bottom: 1px solid var(--hair); }
 #okf-body pre { background: var(--blue-soft); padding: 16px; margin: 0 0 20px; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; }
 #okf-body pre code { font-size: inherit; }
-#okf-body a:hover { color: var(--blue-hover); }
+/* :not(.broken): a.broken (red, line-through, not-allowed) keeps its colour on
+   hover; #okf-body a:hover alone out-specifies it. */
+#okf-body a:not(.broken):hover { color: var(--blue-hover); }
 
 /* --- Task 7: theme button (H11) --- */
 
