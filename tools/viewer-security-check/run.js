@@ -1163,6 +1163,66 @@ checkAsync("explorer: a node is both a page and a folder, with separate open and
   assert(toggle.getAttribute("aria-expanded") === "false" && !isShown(treeLink(window, "foo/bar")), "the toggle did not collapse");
 });
 
+// Recette R2. jsdom does no layout, so this probe gives #okf-explorer a
+// geometry: 800 px tall at 100 px from the top, 3000 px of content, the
+// current entry 2700 px down it, and the given computed overflow-y. It records
+// every scroll request: the explorer's own scrollTop, window scrolling and
+// scrollIntoView. That the entry is visible on screen is the recette's (C2).
+function explorerScrollProbe(overflowY, layout = true) {
+  const probe = { requests: [], navTop: 0 };
+  probe.beforeParse = (w) => {
+    const isNav = (el) => el.id === "okf-explorer";
+    const proto = w.Element.prototype;
+    if (layout) {
+      Object.defineProperty(proto, "scrollHeight", { configurable: true, get() { return isNav(this) ? 3000 : 0; } });
+      Object.defineProperty(proto, "clientHeight", { configurable: true, get() { return isNav(this) ? 800 : 0; } });
+      proto.getBoundingClientRect = function () {
+        const current = this.getAttribute("aria-current") === "page";
+        const top = isNav(this) ? 100 : current ? 100 + 2700 - probe.navTop : 0;
+        const height = isNav(this) ? 800 : current ? 20 : 0;
+        return { top, bottom: top + height, left: 0, right: 0, width: 0, height, x: 0, y: top };
+      };
+      const computed = w.getComputedStyle.bind(w);
+      w.getComputedStyle = (el, pseudo) => {
+        const style = computed(el, pseudo);
+        if (!isNav(el)) { return style; }
+        return { overflowY, getPropertyValue: (name) => (name === "overflow-y" ? overflowY : style.getPropertyValue(name)) };
+      };
+    }
+    Object.defineProperty(proto, "scrollTop", {
+      configurable: true,
+      get() { return isNav(this) ? probe.navTop : 0; },
+      set(v) { probe.requests.push(`scrollTop of <${this.tagName.toLowerCase()} id="${this.id}"> = ${v}`); if (isNav(this)) { probe.navTop = v; } },
+    });
+    for (const name of ["scroll", "scrollTo", "scrollBy"]) {
+      w[name] = () => probe.requests.push(`window.${name}`);
+      proto[name] = function () { probe.requests.push(`${name} on <${this.tagName.toLowerCase()}>`); };
+    }
+    proto.scrollIntoView = function () { probe.requests.push(`scrollIntoView on <${this.tagName.toLowerCase()}>`); };
+  };
+  return probe;
+}
+
+checkAsync("explorer: on the desktop layout the current entry is scrolled into the explorer's own view", async () => {
+  const probe = explorerScrollProbe("auto");
+  const window = await openPage("foo/bar.html", { beforeParse: probe.beforeParse });
+  assert(probe.requests.length === 1 && /^scrollTop of <nav id="okf-explorer">/.test(probe.requests[0]),
+    `scroll requests: ${JSON.stringify(probe.requests)} (expected the explorer's own scrollTop, once)`);
+  const nav = window.document.getElementById("okf-explorer");
+  const current = nav.querySelector('a[aria-current="page"]').getBoundingClientRect();
+  const view = nav.getBoundingClientRect();
+  const visibleBottom = Math.min(view.bottom, window.innerHeight);
+  assert(current.top >= view.top && current.bottom <= visibleBottom,
+    `the current entry sits at ${current.top}-${current.bottom}, outside the explorer's visible ${view.top}-${visibleBottom}`);
+});
+
+checkAsync("explorer: without its own scroll container (stacked layout, no layout at all) nothing scrolls", async () => {
+  for (const [label, probe] of [["overflow visible", explorerScrollProbe("visible")], ["no layout", explorerScrollProbe("auto", false)]]) {
+    await openPage("foo/bar.html", { beforeParse: probe.beforeParse });
+    assert(probe.requests.length === 0, `${label}: scroll requests ${JSON.stringify(probe.requests)}`);
+  }
+});
+
 checkAsync("explorer links resolve from the site root wherever the generated folder is moved", async () => {
   const window = await openPage("foo/bar.html", { mount: "moved/elsewhere/" });
   const foo = treeLink(window, "foo");

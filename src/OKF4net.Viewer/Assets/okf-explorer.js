@@ -152,6 +152,26 @@
   nav.appendChild(list);
   nav.hidden = false;
 
+  // On the desktop layout the explorer is its own scroll container (sticky,
+  // overflow-y: auto): bring the current entry into its view, about a third
+  // from the top, by scrolling the explorer alone. Never the page: in the
+  // stacked layout the explorer is not a scroll container and nothing moves.
+  function revealCurrent() {
+    var link = nav.querySelector('a.okf-tree-link[aria-current="page"]');
+    if (!link || nav.scrollHeight <= nav.clientHeight) { return; }
+    var overflow = window.getComputedStyle(nav).overflowY;
+    if (overflow !== "auto" && overflow !== "scroll") { return; }
+    var view = nav.getBoundingClientRect();
+    var entry = link.getBoundingClientRect();
+    // The part of the explorer on screen: it may run past the window bottom.
+    var visible = Math.min(nav.clientHeight, window.innerHeight - Math.max(0, view.top));
+    if (!(visible > 0)) { visible = nav.clientHeight; }
+    var top = entry.top - view.top;
+    if (top >= 0 && top + entry.height <= visible) { return; }
+    nav.scrollTop = Math.max(0, nav.scrollTop + top - Math.round(visible / 3));
+  }
+  revealCurrent();
+
   filter.addEventListener("input", function () {
     var q = site.normalize(filter.value);
     for (var k = 0; k < tops.length; k++) { applyFilter(tops[k], q); }
