@@ -1073,7 +1073,8 @@ contrôle ne prouve sa capacité à échouer que par la passe sans polices (éch
 
 ### 11.3 Colonne centrale (A, A15)
 
-- **C1** Colonne : padding 26 48 0, largeur de lecture ≤ 720 (P1 : 900).
+- **C1** Colonne : padding 26 48 0, largeur de lecture ≤ 720 (P1 : 900) ;
+  écart assumé : padding fluide `clamp(16px, 3.5vw, 48px)`, 48 px dès 1372 px.
   → P1.1
 - **C2** Fil d'Ariane : `nav` « Breadcrumb » en liste ordonnée, Space Mono
   12,5 `--gray`, `gap: 8px`, « / » décoratif ; nom du bundle (lien vers

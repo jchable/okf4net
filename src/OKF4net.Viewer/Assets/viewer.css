@@ -14,13 +14,26 @@
 /* === end @font-face === */
 
 :root {
+  /* Tokens (spec §11.0): the light values are the mockups'. */
   --white: #ffffff;
   --ink: #101014;
   --blue: #1a3fd6;
+  --blue-hover: #102a96;
   --blue-soft: #eef1fd;
   --gray: #6a6a72;
   --hair: #e3e3e8;
   --red: #c0392b;
+  --ghost: #c0392b;
+  --edge: #8a8a94;
+  --stale: #b4540a;
+  --okf-type-0: #1a3fd6;
+  --okf-type-1: #101014;
+  --okf-type-2: #b4540a;
+  --okf-type-3: #6a6a72;
+  --okf-type-4: #0b6e69;
+  --okf-type-5: #6a6a72;
+  --backdrop: rgba(16, 16, 20, .34);
+  --shadow: 0 18px 50px rgba(16, 16, 20, .28);
   --display: "Inter Tight", "Arial Narrow", sans-serif;
   --body: "Inter", "Helvetica Neue", sans-serif;
   --mono: "Space Mono", Consolas, monospace;
@@ -43,9 +56,12 @@ body > header.bar .wordmark {
   letter-spacing: -.02em; color: var(--ink); text-decoration: none;
 }
 body > header.bar .wordmark sup { color: var(--blue); font-family: var(--mono); font-weight: 700; }
-/* break-word: a word longer than the line (a dotted member name, a path in
-   inline code) wraps instead of widening the page at phone width. */
-main { max-width: 900px; margin: 0 auto; padding: 32px clamp(16px, 3.5vw, 48px) 96px; overflow-wrap: break-word; }
+/* The reading column (C1): padding 26 48 0 (16 on a phone), at most 720
+   wide. break-word: a word longer than the line (a dotted member name, a
+   path in inline code) wraps instead of widening the page at phone width.
+   Anchored: the graph page's own <main> (P3) is not under .okf-layout. */
+body > .okf-layout > main { padding: 26px clamp(16px, 3.5vw, 48px) 0; overflow-wrap: break-word; }
+body > .okf-layout > main > * { max-width: 720px; }
 h1, h2, h3 { font-family: var(--display); letter-spacing: -.02em; margin: 1.4em 0 .5em; }
 h1 { font-size: 32px; margin-top: 0; }
 p, ul, ol, table, pre { margin: 0 0 1em; }
@@ -64,32 +80,47 @@ table.frontmatter th { font-family: var(--mono); font-weight: 400; color: var(--
 /* anywhere, not break-word: a table cell is as wide as its min-content, so
    only anywhere lets a long unbroken value fit a phone's width. */
 table.frontmatter td { overflow-wrap: anywhere; }
+/* The index page's count and parse errors (C8), anchored like all chrome. */
 body > .okf-layout > main > .meta { font-family: var(--mono); font-size: 13px; color: var(--gray); }
 body > .okf-layout > main > .errors { border-left: 3px solid var(--red); padding-left: 16px; margin-bottom: 32px; }
 body > .okf-layout > main > .errors h2 { color: var(--red); font-size: 18px; }
 /* Dark theme: follows the system unless the toggle forced a theme
-   (okf-theme.js sets data-theme on <html>). Same values in both blocks. */
+   (okf-theme.js sets data-theme on <html>). The two dark blocks hold the
+   same values (the harness checks it). --red is redefined in dark: #c0392b
+   on #101014 is 3.5:1, under the 4.5:1 text threshold of a.broken (spec
+   §11.0). */
 :root[data-theme="light"] { color-scheme: light; }
 :root[data-theme="dark"] {
-  --white: #101014; --ink: #f2f2f5; --blue: #8fa5f5; --blue-soft: #1a1a22; --hair: #2a2a33; --gray: #9a9aa2;
+  --white: #101014; --ink: #f2f2f5; --blue: #8fa5f5; --blue-hover: #b7c5f8; --blue-soft: #1a1a22;
+  --gray: #9a9aa2; --hair: #2a2a33; --red: #ef6b5e; --ghost: #ef6b5e; --edge: #8a8a94; --stale: #e08a3e;
+  --okf-type-0: #8fa5f5; --okf-type-1: #f2f2f5; --okf-type-2: #e08a3e; --okf-type-3: #9a9aa2;
+  --okf-type-4: #2fb3a8; --okf-type-5: #9a9aa2;
+  --backdrop: rgba(0, 0, 0, .55); --shadow: none;
   color-scheme: dark;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --white: #101014; --ink: #f2f2f5; --blue: #8fa5f5; --blue-soft: #1a1a22; --hair: #2a2a33; --gray: #9a9aa2;
+    --white: #101014; --ink: #f2f2f5; --blue: #8fa5f5; --blue-hover: #b7c5f8; --blue-soft: #1a1a22;
+    --gray: #9a9aa2; --hair: #2a2a33; --red: #ef6b5e; --ghost: #ef6b5e; --edge: #8a8a94; --stale: #e08a3e;
+    --okf-type-0: #8fa5f5; --okf-type-1: #f2f2f5; --okf-type-2: #e08a3e; --okf-type-3: #9a9aa2;
+    --okf-type-4: #2fb3a8; --okf-type-5: #9a9aa2;
+    --backdrop: rgba(0, 0, 0, .55); --shadow: none;
     color-scheme: dark;
   }
 }
 
 /* Interactive viewer (spec 2026-10-06).
-   Every selector below is anchored to a chrome container (#okf-tools,
-   #okf-explorer, #okf-context, the layout or the palette's backdrop, which
-   okf-palette.js appends to <body> itself). The sanitizer keeps `class` on
-   <code>, so body content can wear any of these class names: an unanchored
-   rule would let it fake a dialog over the page, a trust badge, or hide text
-   from sighted readers. #okf-body sits inside <main>, never directly under
-   <body>, so nothing here matches inside it (tools/viewer-security-check). */
-:is(#okf-tools, #okf-explorer, #okf-context, body > .okf-palette-backdrop) .okf-sr {
+   Every chrome selector is anchored to a chrome container (spec §12.6):
+   #okf-tools, #okf-explorer, #okf-context, body > .okf-palette-backdrop,
+   body > .okf-layout > main > .okf-page-head, body > .okf-layout > main >
+   :is(.meta, .errors), body > header.bar, body > .okf-skip, body > .topline,
+   body > .okf-graph-layout, or an svg ancestor. The sanitizer keeps `class`
+   on <code>, so body content can wear any of these class names: an
+   unanchored rule would let it fake a dialog over the page, a trust badge,
+   or hide text from sighted readers. #okf-body sits inside <main>, never
+   directly under <body>, and holds no svg, so nothing here matches inside it
+   (tools/viewer-security-check, chrome-class case). */
+:is(#okf-tools, #okf-explorer, #okf-context, body > .okf-palette-backdrop, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout) .okf-sr {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
@@ -100,30 +131,49 @@ body > .okf-layout > main > .errors h2 { color: var(--red); font-size: 18px; }
 }
 #okf-tools .okf-tool[aria-pressed="true"] { border-color: var(--blue); color: var(--blue); }
 
-body > .okf-layout { display: flex; flex-wrap: wrap; align-items: flex-start; max-width: 1440px; margin: 0 auto; }
+body > .okf-layout { display: flex; flex-wrap: wrap; align-items: flex-start; }
 body > .okf-layout > main { flex: 999 1 560px; min-width: 0; margin: 0; }
 /* min-width: 0 on the side panels: a flex item's automatic minimum is its
    min-content width, which a long nowrap tree entry would push past a phone's
-   width once max-width is lifted (the page then scrolls sideways). */
-#okf-explorer { flex: 1 1 260px; max-width: 320px; min-width: 0; padding: 16px; border-right: 1px solid var(--hair); }
-#okf-context { flex: 1 1 260px; max-width: 320px; min-width: 0; padding: 24px 16px; }
-@media (min-width: 1100px) {
-  #okf-explorer, #okf-context { position: sticky; top: 0; max-height: 100vh; overflow-y: auto; }
-  /* The label and the filter field stay at the top of the explorer's own
-     scroll area, so a far page (current entry deep in the tree) does not
-     scroll them out of view. Opaque, or tree rows would show through. */
-  #okf-explorer .okf-explorer-head {
-    /* -16px: a sticky offset counts from inside the explorer's 16px padding,
-       so top: 0 would leave a band where scrolled rows show above the head. */
-    position: sticky; top: -16px; z-index: 1; background: var(--white);
-    margin-top: -16px; padding: 16px 0 8px;
-  }
+   width (the page then scrolls sideways, recette R1). */
+#okf-explorer { flex: 1 1 100%; min-width: 0; padding: 0; border-bottom: 1px solid var(--hair); }
+/* The context panel stacks its sections 22 apart (X1); P2's local graph
+   slots in between them with no rule of its own. */
+#okf-context {
+  display: flex; flex-direction: column; gap: 22px;
+  flex: 1 1 100%; min-width: 0; padding: 20px 20px 0; border-bottom: 1px solid var(--hair);
 }
-@media (max-width: 1099px) {
-  #okf-explorer, #okf-context { max-width: none; flex-basis: 100%; border-right: 0; border-bottom: 1px solid var(--hair); }
+/* Both panels are flex containers or items with an author display: the
+   hidden attribute must still win. */
+#okf-explorer[hidden], #okf-context[hidden] { display: none; }
+@media (min-width: 1100px) {
+  /* Three columns that never wrap (L6): explorer 290 (E1), context 340 (X1),
+     main takes the rest and may shrink below its content. */
+  body > .okf-layout { flex-wrap: nowrap; }
+  body > .okf-layout > main { flex-grow: 1; flex-shrink: 1; flex-basis: 0; min-width: 0; }
+  #okf-explorer {
+    flex-grow: 0; flex-shrink: 0; flex-basis: auto; width: 290px;
+    border-bottom: 0; border-right: 1px solid var(--hair);
+  }
+  #okf-context {
+    flex-grow: 0; flex-shrink: 0; flex-basis: auto; width: 340px;
+    border-bottom: 0; border-left: 1px solid var(--hair);
+  }
+  #okf-explorer, #okf-context { position: sticky; top: 0; max-height: 100vh; overflow-y: auto; }
+  /* The explorer's head (title, field, type chips: E13) stays at the top of
+     its own scroll area and its legend (E12) at the bottom. Opaque, or tree
+     rows would show through. */
+  #okf-explorer .okf-explorer-head { position: sticky; top: 0; z-index: 1; background: var(--white); }
+  #okf-explorer .okf-explorer-foot { position: sticky; bottom: 0; z-index: 1; background: var(--white); }
+}
+/* The complement of (min-width: 1100px), not (max-width: 1099px): a viewport
+   of 1099.333 CSS px (Firefox at a 1099 px window, fractional zoom levels)
+   matches neither of those two and would get no layout at all. */
+@media not all and (min-width: 1100px) {
   /* Stacked: the page first, then its context, then the explorer, so a reader
      does not scroll through the tree before every page. Visual order only:
-     the DOM (and so the reading and tab order) stays explorer, main, context. */
+     the DOM (and so the reading and tab order) stays explorer, main, context;
+     "Skip to content" (H12) jumps the explorer. */
   #okf-explorer { order: 1; }
 }
 
@@ -210,6 +260,113 @@ body > .okf-palette-backdrop .okf-palette:focus { outline: none; }
 
 /* === P1.1 chrome: one block per task; a task writes only under its own line === */
 /* --- Task 3: shared components (spec §12.6), shapes (§12.2), #okf-body content (C7) --- */
+/* Shared components (spec §12.6), written once and anchored to every
+   container that uses them, present and future: the explorer, the context
+   panel (P2's local graph included), the page head, the graph page (P3) and
+   the palette. P2 and P3 use these classes without restyling them. */
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-section-title {
+  font-family: var(--mono); font-size: 11px; font-weight: 400; letter-spacing: .06em; line-height: 1.4;
+  text-transform: uppercase; color: var(--gray); margin: 0 0 8px;
+}
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-chip {
+  display: inline-flex; align-items: center; gap: 7px; height: 26px; padding: 0 10px; box-sizing: border-box;
+  font-family: var(--body); font-size: 12px; font-weight: 400; line-height: 1; white-space: nowrap;
+  border: 1px solid var(--hair); background: var(--white); color: var(--gray); text-decoration: none;
+}
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-chip-type {
+  background: var(--ink); border-color: var(--ink); color: var(--white); font-weight: 600;
+}
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-chip-status {
+  font-family: var(--mono); color: var(--ink);
+}
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-chip-trust {
+  border-color: var(--blue); color: var(--blue);
+}
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-chip-trust.okf-chip-unverified {
+  border-color: var(--hair); color: var(--gray);
+}
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-chip-stale[data-okf-stale-now] {
+  border-color: var(--stale); color: var(--stale);
+}
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) button.okf-chip {
+  cursor: pointer; font-family: var(--body);
+}
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) button.okf-chip[aria-pressed="true"] {
+  border-color: var(--blue); background: var(--blue-soft); color: var(--blue); font-weight: 600;
+}
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-chip-glyph:empty { display: none; }
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-chip-glyph {
+  flex: none; display: inline-flex; align-items: center;
+}
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-row {
+  display: flex; align-items: center; gap: 9px; padding: 6px 0; min-width: 0;
+  border-bottom: 1px solid var(--hair); font-size: 13.5px; color: var(--ink); text-decoration: none; overflow-wrap: anywhere;
+}
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) a.okf-row:hover { color: var(--blue); }
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-legend {
+  list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; font-size: 12px; color: var(--gray);
+}
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-legend li {
+  display: flex; align-items: center; gap: 8px;
+}
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) :is(.okf-legend-count, .okf-legend-mono) {
+  font-family: var(--mono);
+}
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-legend-count { font-size: 11px; color: var(--gray); }
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-glyph-blank {
+  flex: none; display: inline-block; width: 10px; height: 10px;
+}
+:is(#okf-tools, #okf-explorer, #okf-context, body > .okf-palette-backdrop, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout) svg.okf-glyph {
+  flex: none; display: block; overflow: visible;
+}
+
+/* Shapes (spec §12.2): colours come from the tokens through fixed classes,
+   never from attributes, so a theme change redraws nothing. Anchored by an
+   svg ancestor: the sanitizer never lets an svg into #okf-body (§4.5). */
+svg .okf-shape-0 { fill: var(--okf-type-0); }
+svg .okf-shape-1 { fill: var(--okf-type-1); }
+svg .okf-shape-2 { fill: var(--okf-type-2); }
+svg .okf-shape-3 { fill: var(--okf-type-3); }
+svg .okf-shape-4 { fill: none; stroke: var(--okf-type-4); }
+svg .okf-shape-5 { fill: none; stroke: var(--okf-type-5); }
+svg .okf-trust-human { fill: var(--blue); }
+svg .okf-trust-machine { fill: none; stroke: var(--blue); }
+svg .okf-stale-mark { fill: var(--stale); }
+svg .okf-ghost-mark { fill: var(--white); stroke: var(--ghost); }
+svg .okf-node-ring, svg .okf-node-focus { fill: none; visibility: hidden; }
+svg .okf-node-ring { stroke: var(--blue); }
+svg .okf-node-focus { stroke: var(--ink); }
+svg .okf-node.okf-selected > .okf-node-ring, svg .okf-node.okf-focused > .okf-node-focus { visibility: visible; }
+/* In a type chip (white text on ink) the shape is white, filled or stroked.
+   Anchored to the chip containers too, like the chip rules above: the static
+   anchor scan would accept the svg compound alone, but a rule about a chip's
+   own shape belongs to the chip containers. */
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-chip-type svg :is(.okf-shape-0, .okf-shape-1, .okf-shape-2, .okf-shape-3) { fill: var(--white); }
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-chip-type svg :is(.okf-shape-4, .okf-shape-5) { stroke: var(--white); }
+
+/* The hidden attribute wins over every display above (.okf-chip, .okf-row,
+   .okf-legend li, .okf-glyph-blank, svg.okf-glyph are all author displays that
+   would out-rank the user agent's [hidden] rule), so P2 and P3 can hide a
+   shared component with the attribute. */
+:is(#okf-tools, #okf-explorer, #okf-context, body > .okf-palette-backdrop, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout) [hidden] { display: none !important; }
+
+/* Body content (C7): rules for the markdown viewer.js renders, under the
+   #okf-body id, never chrome. Same rules for every element of a kind, with or
+   without a class. */
+#okf-body { font-size: 15.5px; line-height: 1.65; }
+#okf-body p { margin: 0 0 20px; }
+#okf-body h2 { margin: 0 0 8px; font-family: var(--display); font-weight: 600; font-size: 21px; line-height: 1.25; letter-spacing: -.02em; }
+#okf-body table { font-size: 13.5px; margin: 0 0 20px; border-collapse: collapse; }
+#okf-body th {
+  text-align: left; font-family: var(--mono); font-weight: 400; font-size: 12px; color: var(--gray);
+  padding: 6px 12px 6px 0; border-bottom: 1px solid var(--hair);
+}
+#okf-body td { padding: 6px 12px 6px 0; border-bottom: 1px solid var(--hair); }
+#okf-body pre { background: var(--blue-soft); padding: 16px; margin: 0 0 20px; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; }
+#okf-body pre code { font-size: inherit; }
+/* :not(.broken): a.broken (red, line-through, not-allowed) keeps its colour on
+   hover; #okf-body a:hover alone out-specifies it. */
+#okf-body a:not(.broken):hover { color: var(--blue-hover); }
 
 /* --- Task 7: theme button (H11) --- */
 

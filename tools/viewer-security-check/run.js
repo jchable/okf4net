@@ -2473,6 +2473,252 @@ checkAsync("a GFM table in the body scrolls in its own box; the frontmatter tabl
 // === P1.1 cases: one block per task; a task writes only under its own line ===
 // --- Task 3: CSS foundation ---
 
+console.log("\nP1.1 — CSS foundation:");
+
+// The custom properties of one rule block of viewer.css, as declared. A
+// smoke check on the SOURCE text, not on rendering: the recette measures the
+// colours and contrasts in real browsers (spec §11.0, A19).
+function declaredTokens(css, header) {
+  const start = css.indexOf(header);
+  assert(start !== -1, `viewer.css has no block starting with ${header}`);
+  const open = css.indexOf("{", start);
+  const close = css.indexOf("}", open);
+  const tokens = new Map();
+  for (const m of css.slice(open + 1, close).matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/g)) { tokens.set(m[1], m[2].trim()); }
+  return tokens;
+}
+
+check("CSS tokens match spec §11.0 in light and in both dark blocks", () => {
+  const css = fs.readFileSync(path.join(ASSETS, "viewer.css"), "utf8").replace(/[/][*][^]*?[*][/]/g, "");
+  const light = {
+    "--white": "#ffffff", "--ink": "#101014", "--blue": "#1a3fd6", "--blue-hover": "#102a96", "--blue-soft": "#eef1fd",
+    "--gray": "#6a6a72", "--hair": "#e3e3e8", "--red": "#c0392b", "--ghost": "#c0392b", "--edge": "#8a8a94",
+    "--stale": "#b4540a", "--okf-type-0": "#1a3fd6", "--okf-type-1": "#101014", "--okf-type-2": "#b4540a",
+    "--okf-type-3": "#6a6a72", "--okf-type-4": "#0b6e69", "--okf-type-5": "#6a6a72",
+    "--backdrop": "rgba(16, 16, 20, .34)", "--shadow": "0 18px 50px rgba(16, 16, 20, .28)",
+  };
+  const dark = {
+    "--white": "#101014", "--ink": "#f2f2f5", "--blue": "#8fa5f5", "--blue-hover": "#b7c5f8", "--blue-soft": "#1a1a22",
+    "--gray": "#9a9aa2", "--hair": "#2a2a33", "--red": "#ef6b5e", "--ghost": "#ef6b5e", "--edge": "#8a8a94",
+    "--stale": "#e08a3e", "--okf-type-0": "#8fa5f5", "--okf-type-1": "#f2f2f5", "--okf-type-2": "#e08a3e",
+    "--okf-type-3": "#9a9aa2", "--okf-type-4": "#2fb3a8", "--okf-type-5": "#9a9aa2",
+    "--backdrop": "rgba(0, 0, 0, .55)", "--shadow": "none",
+  };
+  const blocks = [
+    [":root {", light],
+    [':root[data-theme="dark"] {', dark],
+    [':root:not([data-theme="light"]) {', dark],
+  ];
+  for (const [header, want] of blocks) {
+    const got = declaredTokens(css, header);
+    for (const [name, value] of Object.entries(want)) {
+      assert(got.get(name) === value, `${header} ${name}: ${got.get(name)}, expected ${value}`);
+    }
+  }
+});
+
+// Unwraps the @media blocks whose condition `keep` accepts and DROPS the
+// others, so a case can apply the wide layout (min-width) without the narrow
+// one. Same parser as unwrapMedia.
+function mediaWhere(css, keep) {
+  css = css.replace(/[/][*][^]*?[*][/]/g, "");
+  let out = "";
+  const stack = [];
+  for (let i = 0; i < css.length; i++) {
+    if (css.startsWith("@media", i)) {
+      const open = css.indexOf("{", i);
+      const kept = keep(css.slice(i + 6, open).trim());
+      stack.push(kept ? "media-kept" : "media-dropped");
+      i = open;
+    } else if (css[i] === "{") {
+      stack.push("block");
+      if (!stack.includes("media-dropped")) { out += "{"; }
+    } else if (css[i] === "}") {
+      const top = stack.pop();
+      if (top === "block" && !stack.includes("media-dropped")) { out += "}"; }
+    } else if (!stack.includes("media-dropped")) {
+      out += css[i];
+    }
+  }
+  return out;
+}
+
+checkAsync("layout: three columns without wrapping from 1100 px (L6), side panels of 290 and 340", async () => {
+  const window = await openPage("foo/bar.html");
+  const doc = window.document;
+  const style = doc.createElement("style");
+  style.textContent = mediaWhere(fs.readFileSync(path.join(SITE, "assets", "viewer.css"), "utf8"), (cond) => cond === "(min-width: 1100px)");
+  doc.head.appendChild(style);
+  const get = (el, prop) => window.getComputedStyle(el).getPropertyValue(prop);
+  const layout = doc.querySelector("body > .okf-layout");
+  const main = doc.querySelector("body > .okf-layout > main");
+  const explorer = doc.getElementById("okf-explorer");
+  const context = doc.getElementById("okf-context");
+  assert(get(layout, "flex-wrap") === "nowrap", `.okf-layout flex-wrap: ${get(layout, "flex-wrap")}`);
+  assert(get(explorer, "width") === "290px" && get(explorer, "flex-grow") === "0" && get(explorer, "flex-shrink") === "0",
+    `explorer: width ${get(explorer, "width")}, grow ${get(explorer, "flex-grow")}, shrink ${get(explorer, "flex-shrink")}`);
+  assert(get(context, "width") === "340px" && get(context, "flex-grow") === "0" && get(context, "flex-shrink") === "0",
+    `context: width ${get(context, "width")}, grow ${get(context, "flex-grow")}, shrink ${get(context, "flex-shrink")}`);
+  assert(get(main, "flex-grow") === "1" && get(main, "flex-shrink") === "1" && ["0", "0px", "0%"].includes(get(main, "flex-basis")) && ["0", "0px"].includes(get(main, "min-width")),
+    `main: grow ${get(main, "flex-grow")}, shrink ${get(main, "flex-shrink")}, basis ${get(main, "flex-basis")}, min-width ${get(main, "min-width")}`);
+});
+
+checkAsync("layout: a hidden side panel stays hidden although the panels are flex containers", async () => {
+  // constructor.html has no h2/h3 and no backlinks: its context panel is hidden.
+  const window = await openPage("constructor.html");
+  const context = window.document.getElementById("okf-context");
+  assert(context.hidden, "this case needs the hidden context panel of constructor.html");
+  assert(window.getComputedStyle(context).getPropertyValue("display") === "none", `a hidden #okf-context is display: ${window.getComputedStyle(context).getPropertyValue("display")}`);
+});
+
+checkAsync("shared components are styled under every chrome container, and not in the body", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const main = doc.querySelector("body > .okf-layout > main");
+  const head = doc.createElement("div");
+  head.className = "okf-page-head";
+  main.insertBefore(head, main.firstChild);
+  const graph = doc.createElement("div");
+  graph.className = "okf-graph-layout";
+  doc.body.appendChild(graph);
+  const containers = [doc.getElementById("okf-explorer"), doc.getElementById("okf-context"), head, graph, doc.querySelector("body > .okf-palette-backdrop")];
+  const probe = (container) => {
+    const chip = doc.createElement("span"); chip.className = "okf-chip";
+    const title = doc.createElement("h2"); title.className = "okf-section-title";
+    const row = doc.createElement("a"); row.className = "okf-row";
+    container.appendChild(chip); container.appendChild(title); container.appendChild(row);
+    const css = (el, prop) => window.getComputedStyle(el).getPropertyValue(prop);
+    return { chipHeight: css(chip, "height"), chipSize: css(chip, "font-size"), titleSize: css(title, "font-size"), titleCase: css(title, "text-transform"), rowSize: css(row, "font-size") };
+  };
+  for (const container of containers) {
+    assert(container, "a chrome container this case needs is missing");
+    const got = probe(container);
+    const where = container.id || container.className;
+    assert(got.chipHeight === "26px" && got.chipSize === "12px", `${where}: .okf-chip height ${got.chipHeight}, font-size ${got.chipSize}`);
+    assert(got.titleSize === "11px" && got.titleCase === "uppercase", `${where}: .okf-section-title font-size ${got.titleSize}, text-transform ${got.titleCase}`);
+    assert(got.rowSize === "13.5px", `${where}: .okf-row font-size ${got.rowSize}`);
+  }
+  const inBody = probe(doc.getElementById("okf-body"));
+  assert(inBody.chipHeight !== "26px" && inBody.titleSize !== "11px" && inBody.rowSize !== "13.5px",
+    `the shared components styled body content: ${JSON.stringify(inBody)}`);
+});
+
+// --- Task 3 fix round: hover on a.broken, shape mapping, stacked order, content rules, [hidden] ---
+
+checkAsync("a broken link in the body keeps its colour on hover: no :hover colour rule reaches a.broken", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const link = doc.createElement("a");
+  link.className = "broken";
+  doc.getElementById("okf-body").appendChild(link);
+  // jsdom applies no :hover, so ask the stylesheet instead: every rule with a
+  // :hover colour whose selector, once stripped of :hover, matches a.broken
+  // must itself re-state --red. (Source order is no defence: the id in
+  // `#okf-body a:hover` out-specifies `a.broken`.)
+  const reaching = [];
+  walkStyleRules(window, (rule) => {
+    for (const sel of splitTopLevel(rule.selectorText, ",")) {
+      if (!sel.includes(":hover") || !rule.style.getPropertyValue("color")) { continue; }
+      let matches = false;
+      try { matches = link.matches(sel.replace(/:hover/g, "")); } catch { matches = false; }
+      if (matches && rule.style.getPropertyValue("color").replace(/\s/g, "") !== "var(--red)") {
+        reaching.push(`${sel} { color: ${rule.style.getPropertyValue("color")} }`);
+      }
+    }
+  });
+  assert(reaching.length === 0, `a hover rule recolours a broken link: ${reaching.join(" | ")}`);
+  // And the body link rule itself still exists (the fix must not delete it).
+  const live = doc.createElement("a");
+  live.setAttribute("href", "x.html");
+  doc.getElementById("okf-body").appendChild(live);
+  let liveHover = false;
+  walkStyleRules(window, (rule) => {
+    for (const sel of splitTopLevel(rule.selectorText, ",")) {
+      if (sel.includes(":hover") && rule.style.getPropertyValue("color") && live.matches(sel.replace(/:hover/g, ""))) { liveHover = true; }
+    }
+  });
+  assert(liveHover, "no :hover colour rule reaches an ordinary body link any more");
+});
+
+checkAsync("shape classes map to their §11.0 tokens (all six shapes and the marks)", async () => {
+  const window = await openPage("index.html");
+  const want = {
+    "svg .okf-shape-0": ["fill", "var(--okf-type-0)"], "svg .okf-shape-1": ["fill", "var(--okf-type-1)"],
+    "svg .okf-shape-2": ["fill", "var(--okf-type-2)"], "svg .okf-shape-3": ["fill", "var(--okf-type-3)"],
+    "svg .okf-shape-4": ["stroke", "var(--okf-type-4)"], "svg .okf-shape-5": ["stroke", "var(--okf-type-5)"],
+    "svg .okf-trust-human": ["fill", "var(--blue)"], "svg .okf-trust-machine": ["stroke", "var(--blue)"],
+    "svg .okf-stale-mark": ["fill", "var(--stale)"], "svg .okf-ghost-mark": ["stroke", "var(--ghost)"],
+  };
+  const got = new Map();
+  walkStyleRules(window, (rule) => { got.set(rule.selectorText.replace(/\s+/g, " ").trim(), rule.style); });
+  for (const [selector, [prop, value]] of Object.entries(want)) {
+    assert(got.has(selector), `viewer.css has no rule for ${selector}`);
+    const actual = got.get(selector).getPropertyValue(prop).replace(/\s/g, "");
+    assert(actual === value, `${selector}: ${prop} is ${actual || "unset"}, expected ${value}`);
+  }
+  for (const k of [4, 5]) {
+    assert(got.get(`svg .okf-shape-${k}`).getPropertyValue("fill") === "none", `svg .okf-shape-${k} is not unfilled`);
+  }
+});
+
+checkAsync("below 1100 px the explorer is ordered after the page and its context; the two queries leave no gap", async () => {
+  const raw = fs.readFileSync(path.join(SITE, "assets", "viewer.css"), "utf8").replace(/[/][*][^]*?[*][/]/g, "");
+  const conds = Array.from(raw.matchAll(/@media([^{]*)\{/g), (m) => m[1].trim());
+  // (min-width: 1100px) and its exact complement: a fractional width such as
+  // 1099.333 (Firefox, zoom) matches neither of a min 1100 / max 1099 pair.
+  assert(conds.includes("(min-width: 1100px)"), `no (min-width: 1100px) block among ${JSON.stringify(conds)}`);
+  assert(conds.includes("not all and (min-width: 1100px)"), `the stacked layout is not the complement of (min-width: 1100px): ${JSON.stringify(conds)}`);
+  assert(!conds.some((c) => /max-width:\s*1099/.test(c)), `a (max-width: 1099px) block leaves a gap at 1099.5px: ${JSON.stringify(conds)}`);
+  const window = await openPage("foo/bar.html");
+  const doc = window.document;
+  const style = doc.createElement("style");
+  style.textContent = mediaWhere(fs.readFileSync(path.join(SITE, "assets", "viewer.css"), "utf8"), (cond) => cond === "not all and (min-width: 1100px)");
+  doc.head.appendChild(style);
+  const order = (el) => window.getComputedStyle(el).getPropertyValue("order");
+  assert(order(doc.getElementById("okf-explorer")) === "1", `stacked #okf-explorer order: ${order(doc.getElementById("okf-explorer"))}`);
+  assert(order(doc.querySelector("body > .okf-layout > main")) === "0" && order(doc.getElementById("okf-context")) === "0",
+    `stacked main/context order: ${order(doc.querySelector("body > .okf-layout > main"))}/${order(doc.getElementById("okf-context"))}`);
+});
+
+checkAsync("#okf-body content rules (C7): paragraph margin 20, h2 keeps its own tight leading", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const body = doc.getElementById("okf-body");
+  const p = doc.createElement("p");
+  const h2 = doc.createElement("h2");
+  body.appendChild(p);
+  body.appendChild(h2);
+  const css = (el, prop) => window.getComputedStyle(el).getPropertyValue(prop);
+  assert(css(p, "margin-bottom") === "20px", `#okf-body p margin-bottom: ${css(p, "margin-bottom")}`);
+  assert(css(h2, "line-height") === "1.25", `#okf-body h2 line-height: ${css(h2, "line-height")} (it would inherit the body line-height 1.65)`);
+});
+
+checkAsync("the hidden attribute hides every shared component, though each has an author display", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const main = doc.querySelector("body > .okf-layout > main");
+  const head = doc.createElement("div"); head.className = "okf-page-head"; main.insertBefore(head, main.firstChild);
+  const graph = doc.createElement("div"); graph.className = "okf-graph-layout"; doc.body.appendChild(graph);
+  const containers = [doc.getElementById("okf-explorer"), doc.getElementById("okf-context"), head, graph, doc.querySelector("body > .okf-palette-backdrop")];
+  const SVG = "http://www.w3.org/2000/svg";
+  for (const container of containers) {
+    assert(container, "a chrome container this case needs is missing");
+    const where = container.id || container.className;
+    const ul = doc.createElement("ul"); ul.className = "okf-legend";
+    const li = doc.createElement("li"); ul.appendChild(li);
+    const svg = doc.createElementNS(SVG, "svg"); svg.setAttribute("class", "okf-glyph");
+    const plain = [["span", "okf-chip"], ["a", "okf-row"], ["span", "okf-glyph-blank"]].map(([tag, cls]) => {
+      const el = doc.createElement(tag); el.className = cls; return el;
+    });
+    for (const el of [...plain, svg, ul]) { container.appendChild(el); }
+    for (const el of [...plain, svg, li]) {
+      el.setAttribute("hidden", "");
+      const display = window.getComputedStyle(el).getPropertyValue("display");
+      assert(display === "none", `${where}: hidden <${el.localName} class="${el.getAttribute("class")}"> is display: ${display}`);
+    }
+  }
+});
+
 // --- Task 4: index v2 ---
 console.log("\nP1.1 — index v2:");
 
