@@ -183,8 +183,15 @@ function registerPure(h) {
     const { OkfLocal } = okfLocal();
     const index = siteIndex(["a", "b"], [[0, 1]]);
     index.edges.push([0, 99, 1, 0], [0, 0, 1, 1], ["x", 1, 1, 0], null, [0, 1.5, 1, 0], [-1, 1, 1, 0], "0,1");
+    // A ghost flag that is not 0 or 1 is damage, never read as "a concept edge".
+    index.edges.push([1, 0, 1, true], [1, 0, 1, 2], [1, 0, 1, "1"], [1, 0, 1, -1], [1, 0, 1], [1, 0, 1, null]);
     const r = OkfLocal.build(index, 0, 2);
     assert(r.total === 1 && r.edges.length === 1 && r.edges[0].count === 1, JSON.stringify(r));
+    // Two records of an enormous count add up to a count, never to Infinity.
+    const huge = siteIndex(["a", "b"], []);
+    huge.edges.push([0, 1, 1e308, 0], [0, 1, 1e308, 0]);
+    const h2 = OkfLocal.build(huge, 0, 1);
+    assert(h2.edges.length === 1 && Number.isFinite(h2.edges[0].count) && h2.edges[0].count > 0, `count: ${h2.edges[0].count}`);
   });
 
   check("local graph: two hops around a hub cost linear work in the edges (counted, not timed)", () => {
@@ -198,10 +205,22 @@ function registerPure(h) {
       for (let j = 1; j <= 3; j++) { links.push([k, 601 + ((k * 7 + j * 131) % 1399)]); }
     }
     const index = siteIndex(ids, links);
+    const edgeCount = index.edges.length;
+    // The module's own `work` is a claim about itself; this counts, on the
+    // harness side, every element of index.edges it actually reads.
+    let reads = 0;
+    index.edges = new Proxy(index.edges, {
+      get(target, prop, receiver) {
+        if (typeof prop === "string" && /^\d+$/.test(prop)) { reads++; }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
     const r = OkfLocal.build(index, 0, 2);
-    const bound = 4 * index.edges.length + 2 * n;
+    const bound = 4 * edgeCount + 2 * n;
     assert(r.work > 0 && r.work <= bound,
-      `${r.work} units of work for ${index.edges.length} edges and ${n} nodes (bound ${bound}; one scan of the edges per first-hop node would be ~${600 * index.edges.length})`);
+      `${r.work} units of work for ${edgeCount} edges and ${n} nodes (bound ${bound}; one scan of the edges per first-hop node would be ~${600 * edgeCount})`);
+    assert(reads >= edgeCount && reads <= 3 * edgeCount && r.work >= reads,
+      `${reads} edge records read for ${edgeCount} edges (at most 3 passes: ${3 * edgeCount}), and the reported work (${r.work}) must cover them`);
     assert(r.nodes.length === OkfLocal.CAP, `${r.nodes.length} nodes drawn`);
   });
 
@@ -218,6 +237,25 @@ function registerPure(h) {
     assert(close && close.x1 === 0 && close.x2 === 5 && [close.y1, close.y2].every(Number.isFinite), `overlapping reaches: ${JSON.stringify(close)}`);
     const trimmed = OkfLocal.segment(0, 0, 10, 100, 0, 11, 0);
     assert(trimmed.x1 === 10 && trimmed.x2 === 89, `trimmed: ${JSON.stringify(trimmed)}`);
+    // Finite input can still overflow: a null segment, never an Infinity coordinate;
+    // and a huge but representable one is still drawn.
+    assert(OkfLocal.segment(1e308, 0, 0, 1e308, 10, 0, -1e308) === null, "an overflowing offset gave a segment");
+    for (const args of [[0, 0, 0, 10, 0, 0, 1e307], [1e15, 0, 0, 0, 0, 0, 0]]) {
+      const out = OkfLocal.segment(...args);
+      assert(out !== null && [out.x1, out.y1, out.x2, out.y2].every(Number.isFinite), `segment(${args.join(", ")}) should give a finite segment, gave ${JSON.stringify(out)}`);
+    }
+    // A length that overflows is no segment either (never an Infinity or NaN coordinate).
+    const overflow = OkfLocal.segment(0, 0, 1e300, 1e300, 1e300, 0, 3);
+    assert(overflow === null || [overflow.x1, overflow.y1, overflow.x2, overflow.y2].every(Number.isFinite), `overflowing length: ${JSON.stringify(overflow)}`);
+  });
+
+  check("local graph: segment refuses a negative reach", () => {
+    const window = okfLocal();
+    for (const bad of [[0, 0, -1, 10, 0, 1, 0], [0, 0, 1, 10, 0, -1, 0]]) {
+      let threw = null;
+      try { window.OkfLocal.segment(...bad); } catch (e) { threw = e; }
+      assert(threw instanceof window.TypeError, `segment(${bad.join(", ")}) did not throw a TypeError`);
+    }
   });
 
   check("local graph: build rejects a centre that is not a concept, and depths other than 1 and 2", () => {
@@ -274,6 +312,87 @@ function registerPure(h) {
       assert(r.nodes.length === r.total + 1 && new Set(r.nodes.map((n) => n.key)).size === r.nodes.length, `hops ${hops}: a node was drawn twice`);
       assert(r.edges[0].count === 3, `hops ${hops}: the repeated c -> a records add up to ${r.edges[0].count}`);
     }
+  });
+
+  check("local graph: the layout does not depend on edge order; neighbours sit on the diagonals, hop 2 outside hop 1, coordinates in hundredths", () => {
+    const { OkfLocal } = okfLocal();
+    // c with four direct neighbours and six second-hop concepts, edges in a
+    // fixed pseudo-random order (no Math.random: the harness is deterministic too).
+    const ids = ["c", "a", "b", "d", "e", "f1", "f2", "f3", "f4", "f5", "f6"];
+    const links = [[0, 1], [2, 0], [0, 3], [4, 0], [1, 5], [2, 6], [3, 7], [4, 8], [1, 9], [3, 10], [5, 6], [3, 6]];
+    const shuffled = [];
+    let seed = 12345;
+    const pool = links.slice();
+    while (pool.length) { seed = (seed * 1103515245 + 12345) % 2147483648; shuffled.push(pool.splice(seed % pool.length, 1)[0]); }
+    for (const hops of [1, 2]) {
+      const reference = OkfLocal.build(siteIndex(ids, links), 0, hops);
+      for (const other of [links.slice().reverse(), shuffled]) {
+        const r = OkfLocal.build(siteIndex(ids, other), 0, hops);
+        assert(JSON.stringify(r.nodes) === JSON.stringify(reference.nodes), `hops ${hops}: the nodes depend on the edge order`);
+        assert(JSON.stringify(r.list) === JSON.stringify(reference.list), `hops ${hops}: the list depends on the edge order`);
+      }
+      for (const node of reference.nodes) {
+        assert(Math.abs(node.x * 100 - Math.round(node.x * 100)) < 1e-9 && Math.abs(node.y * 100 - Math.round(node.y * 100)) < 1e-9,
+          `hops ${hops}: node ${node.key} at (${node.x}, ${node.y}) is not in hundredths`);
+      }
+    }
+    // Four neighbours: clockwise from the top, one in each quadrant (half a step off the axes).
+    const four = OkfLocal.build(siteIndex(ids, links), 0, 1);
+    const { cx, cy } = OkfLocal.VIEW;
+    const quadrants = four.nodes.slice(1).map((n) => [Math.sign(n.x - cx), Math.sign(n.y - cy)]);
+    assert(JSON.stringify(quadrants) === "[[1,-1],[1,1],[-1,1],[-1,-1]]", `quadrants of the 4 neighbours (dx, dy signs): ${JSON.stringify(quadrants)}`);
+    // Second-hop nodes are farther from the centre than first-hop ones.
+    const two = OkfLocal.build(siteIndex(ids, links), 0, 2);
+    const far = (n) => Math.hypot(n.x - cx, n.y - cy);
+    const inner = two.nodes.filter((n) => n.dist === 1).map(far);
+    const outer = two.nodes.filter((n) => n.dist === 2).map(far);
+    assert(inner.length === 4 && outer.length === 6 && Math.min(...outer) > Math.max(...inner),
+      `ring distances: first hop ${inner.map((v) => v.toFixed(1))}, second hop ${outer.map((v) => v.toFixed(1))}`);
+  });
+
+  check("local graph: no drawn shape touches the centre, its selection square or its label, or leaves the view, for every node count up to the cap", () => {
+    const { OkfLocal } = okfLocal();
+    const { width, height, cx, cy } = OkfLocal.VIEW;
+    // A shape reaches 13 from its centre (the diamond: 25.5 / 2); a label sits
+    // at baseline y + 14 under it, 3 of descender. The centre's selection
+    // square is +- 20 and its label (X7: baseline cy + 14 + 6 + 14, Space Mono
+    // 10.5, up to about 120 wide) fills x 89..209, y 140..156.
+    const half = 13;
+    const band = { x1: 89, x2: 209, y1: 140, y2: 156 };
+    const problem = (n) => {
+      if (n.x - half < 0 || n.x + half > width || n.y - half < 0 || n.y + half + 14 + 3 > height) { return "leaves the view"; }
+      if (n.x + half > band.x1 && n.x - half < band.x2 && n.y + half > band.y1 && n.y - half < band.y2) { return "touches the centre's label"; }
+      if (n.x + half > cx - 20 && n.x - half < cx + 20 && n.y + half > cy - 20 && n.y - half < cy + 20) { return "touches the centre"; }
+      return null;
+    };
+    const star = (direct, second) => {
+      // c -> a1..aN; a1 -> d1..dM: N direct and M second-hop neighbours.
+      const ids = ["c"];
+      const links = [];
+      for (let k = 1; k <= direct; k++) { ids.push(`a${k}`); links.push([0, k]); }
+      for (let k = 1; k <= second; k++) { ids.push(`d${k}`); links.push([1, direct + k]); }
+      return siteIndex(ids, links);
+    };
+    let builds = 0;
+    for (let m = 1; m <= OkfLocal.CAP - 1; m++) {
+      for (const n of OkfLocal.build(star(m, 0), 0, 1).nodes.slice(1)) {
+        const why = problem(n);
+        assert(!why, `1 hop, ${m} neighbours: node ${n.key} at (${n.x}, ${n.y}) ${why}`);
+      }
+      builds++;
+    }
+    for (let m = 1; m <= OkfLocal.CAP - 2; m++) {
+      for (let second = 1; m + second <= OkfLocal.CAP - 1; second++) {
+        const r = OkfLocal.build(star(m, second), 0, 2);
+        assert(r.nodes.length === m + second + 1, `2 hops, ${m} + ${second}: ${r.nodes.length} nodes drawn`);
+        for (const n of r.nodes.slice(1)) {
+          const why = problem(n);
+          assert(!why, `2 hops, ${m} + ${second}: node ${n.key} at (${n.x}, ${n.y}) ${why}`);
+        }
+        builds++;
+      }
+    }
+    assert(builds === 39 + 741, `${builds} layouts checked`);
   });
 }
 

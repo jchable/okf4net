@@ -1,17 +1,13 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 //
 // The local graph of a concept page (spec §4.3, §12.4): the concept and its
-// neighbours at one or two hops, in rings. Two parts in one classic script:
-//
-// - window.OkfLocal, pure (no DOM, no clock, no randomness): from the site
-//   index alone it computes the drawn nodes and their ring positions, every
-//   index edge between them and the full neighbour list.
-//   tools/viewer-security-check calls it directly (cases/p2.js).
-// - the page part, which runs only on a concept page (<html
-//   data-okf-view="page">) and draws that result into #okf-context: an SVG
-//   built by code (fixed element and attribute names, shapes from OkfShapes,
-//   labels by textContent, URLs from index paths through OkfSite.resolve),
-//   never inside #okf-body.
+// neighbours at one or two hops, in rings. This file holds window.OkfLocal,
+// pure (no DOM, no clock, no randomness): from the site index alone it
+// computes the drawn nodes and their ring positions, every index edge between
+// them and the full neighbour list. tools/viewer-security-check calls it
+// directly (cases/p2.js). The page part, which draws the result into
+// #okf-context on a concept page, is added to this file by a later task of
+// the slice.
 //
 // Node keys: a concept is its position in index.concepts; a ghost (an absent
 // link target, never navigable) is concepts.length + its position in
@@ -23,12 +19,25 @@
 
   var CAP = 40; // nodes drawn, the centre included (spec A11)
   var VIEW = Object.freeze({ width: 298, height: 248, cx: 149, cy: 118 });
-  // One ring at 1 hop (or when the second hop draws nothing), two at 2 hops;
-  // measured on the mockup's 298 x 248 drawing, labels 14 under a shape.
-  var ONE_RING = Object.freeze([Object.freeze({ rx: 94, ry: 70 })]);
-  var TWO_RINGS = Object.freeze([Object.freeze({ rx: 52, ry: 40 }), Object.freeze({ rx: 118, ry: 88 })]);
+  // One ring at 1 hop (or when the second hop draws nothing), two at 2 hops.
+  // Chosen, not measured off the mockup (its half-extents are not radii), on
+  // three constraints that cases/p2.js pins for every node count up to the
+  // cap: a shape (up to 13 from its centre) and its label (baseline 14 under
+  // a shape, 3 of descender) stay inside the 298 x 248 view; no shape touches
+  // the centre's selection square (+- 20) or its label, centred under it at
+  // baseline cy + 34 (a band 120 wide, y 140 to 156); and each ring sits
+  // clear of the other. The inner ring of 2 hops is the large one it is
+  // because any ellipse a node can reach under that label would collide with
+  // it, whatever the number of nodes.
+  var ONE_RING = Object.freeze([Object.freeze({ rx: 127, ry: 95 })]);
+  var TWO_RINGS = Object.freeze([Object.freeze({ rx: 106, ry: 72 }), Object.freeze({ rx: 134, ry: 98 })]);
 
-  function round(value) { return Math.round(value * 100) / 100; }
+  // To hundredths; a magnitude too large to hold hundredths (and to multiply
+  // by 100 without overflowing) is returned as it is.
+  function round(value) { return Math.abs(value) < 1e15 ? Math.round(value * 100) / 100 : value; }
+
+  // A count never becomes Infinity, which would be no text and no JSON.
+  function saturate(count) { return count > Number.MAX_SAFE_INTEGER ? Number.MAX_SAFE_INTEGER : count; }
 
   // [from, to, count, toGhost] as IndexScript writes it, turned into node
   // keys; null for anything else, so a damaged index draws less instead of
@@ -37,10 +46,11 @@
     if (!Array.isArray(edge)) { return null; }
     var from = edge[0];
     var to = edge[1];
+    if (edge[3] !== 0 && edge[3] !== 1) { return null; }
     var ghost = edge[3] === 1;
     if (!Number.isInteger(from) || from < 0 || from >= conceptCount) { return null; }
     if (!Number.isInteger(to) || to < 0 || to >= (ghost ? ghostCount : conceptCount)) { return null; }
-    return { from: from, to: ghost ? conceptCount + to : to, count: Number.isInteger(edge[2]) && edge[2] > 0 ? edge[2] : 1 };
+    return { from: from, to: ghost ? conceptCount + to : to, count: Number.isInteger(edge[2]) && edge[2] > 0 ? saturate(edge[2]) : 1 };
   }
 
   // The neighbourhood of concept `centre` at `hops` (1 or 2). Membership is
@@ -138,9 +148,10 @@
       work++;
       e = ends(edges[k], C, G);
       if (!e || e.from === e.to || slot[e.from] === -1 || slot[e.to] === -1) { continue; }
-      var pair = e.from * N + e.to;
+      // Keyed by drawn slot (at most CAP of them): exact whatever N is.
+      var pair = slot[e.from] * nodes.length + slot[e.to];
       if (byPair.has(pair)) {
-        drawn[byPair.get(pair)].count += e.count;
+        drawn[byPair.get(pair)].count = saturate(drawn[byPair.get(pair)].count + e.count);
         continue;
       }
       byPair.set(pair, drawn.length);
@@ -150,7 +161,7 @@
     }
     for (k = 0; k < drawn.length; k++) {
       work++;
-      drawn[k].paired = byPair.has(nodes[drawn[k].to].key * N + nodes[drawn[k].from].key);
+      drawn[k].paired = byPair.has(drawn[k].to * nodes.length + drawn[k].from);
     }
 
     return {
@@ -169,12 +180,13 @@
   // (x2, y2): trimmed by each node's reach (r1, r2) so the arrow tip stops at
   // the target's edge -- untrimmed when the two reaches overlap -- and moved
   // by `shift` along the edge's normal, so the two lines of an A -> B, B -> A
-  // pair sit 2 x shift apart (spec §4.3: ± 3). null when the ends coincide.
+  // pair sit 2 x shift apart (spec §4.3: ± 3). null when the ends coincide or the result overflows.
   function segment(x1, y1, r1, x2, y2, r2, shift) {
     var args = [x1, y1, r1, x2, y2, r2, shift];
     for (var k = 0; k < args.length; k++) {
       if (!Number.isFinite(args[k])) { throw new TypeError("okf-local: segment needs finite numbers"); }
     }
+    if (r1 < 0 || r2 < 0) { throw new TypeError("okf-local: segment needs reaches of 0 or more"); }
     var dx = x2 - x1;
     var dy = y2 - y1;
     var length = Math.sqrt(dx * dx + dy * dy);
@@ -185,12 +197,14 @@
     var ny = ux * shift;
     var from = length > r1 + r2 ? r1 : 0;
     var to = length > r1 + r2 ? r2 : 0;
-    return {
+    var out = {
       x1: round(x1 + ux * from + nx),
       y1: round(y1 + uy * from + ny),
       x2: round(x2 - ux * to + nx),
       y2: round(y2 - uy * to + ny),
     };
+    // Finite input can still overflow (a huge shift): no segment, not Infinity.
+    return Number.isFinite(out.x1) && Number.isFinite(out.y1) && Number.isFinite(out.x2) && Number.isFinite(out.y2) ? out : null;
   }
 
   // The last segment of an id: a node's label (spec X7).
