@@ -2520,6 +2520,64 @@ checkAsync("the generated v2 index ranks the types, points each concept at its t
 
 // --- Task 7: theme button ---
 
+checkAsync("theme: a click flips the pressed state and data-theme, and a system change while nothing is forced is followed by the next click", async () => {
+  let query = null;
+  const window = await openPage("index.html", {
+    beforeParse(w) {
+      query = new w.EventTarget();
+      query.matches = false;
+      w.matchMedia = () => query;
+    },
+  });
+  const doc = window.document;
+  const toggle = doc.getElementById("okf-theme-toggle");
+  const state = () => `${toggle.getAttribute("aria-pressed")}/${doc.documentElement.getAttribute("data-theme")}`;
+  assert(state() === "false/null", `initial state ${state()}`);
+  toggle.click();
+  assert(state() === "true/dark", `after one click: ${state()} (expected true/dark)`);
+  toggle.click();
+  assert(state() === "false/light", `after two clicks: ${state()} (expected false/light)`);
+  // Nothing forced: the page follows the system. A forced theme ignores the system.
+  doc.documentElement.removeAttribute("data-theme");
+  query.matches = true;
+  query.dispatchEvent(new window.Event("change"));
+  assert(state() === "true/null", `after a system change to dark: ${state()}`);
+  toggle.click();
+  assert(state() === "false/light", `a click while the system is dark: ${state()} (expected false/light)`);
+});
+
+checkAsync("theme: the pressed toggle is drawn in blue (border-color and stroke are var(--blue)); the resting one is not", async () => {
+  // jsdom resolves neither var() nor the border shorthand in getComputedStyle,
+  // so the rules are read from the page's stylesheet (CSSOM) instead: the
+  // declarations of the toggle's own rules (selectors anchored on
+  // #okf-theme-toggle) that match the element in its current state, in source
+  // order. P1's generic .okf-tool[aria-pressed] rule also colours the border
+  // but loses to the toggle's id-anchored border shorthand, so only the
+  // toggle's own rules decide. The tokens' colours are P1's :root.
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const toggle = doc.getElementById("okf-theme-toggle");
+  const icon = toggle.querySelector(".okf-theme-icon");
+  function declared(el, property) {
+    let value = null;
+    for (const sheet of Array.from(doc.styleSheets)) {
+      for (const rule of Array.from(sheet.cssRules)) {
+        if (rule.selectorText && rule.selectorText.includes("#okf-theme-toggle") && el.matches(rule.selectorText) && rule.style.getPropertyValue(property)) {
+          value = rule.style.getPropertyValue(property);
+        }
+      }
+    }
+    return value;
+  }
+  assert(toggle.getAttribute("aria-pressed") === "false", "this case needs a light system preference at rest");
+  assert(declared(toggle, "border-color") !== "var(--blue)" && declared(icon, "stroke") === "var(--ink)",
+    `at rest: border-color ${declared(toggle, "border-color")}, stroke ${declared(icon, "stroke")} (expected not blue, ink)`);
+  toggle.click();
+  assert(toggle.getAttribute("aria-pressed") === "true", "the click did not press the toggle");
+  assert(declared(toggle, "border-color") === "var(--blue)", `pressed border-color: ${declared(toggle, "border-color")}`);
+  assert(declared(icon, "stroke") === "var(--blue)", `pressed stroke: ${declared(icon, "stroke")}`);
+});
+
 checkAsync("theme: the toggle is a 34 px icon button named Dark theme with the moon of the mockups", async () => {
   const window = await openPage("index.html");
   const doc = window.document;
