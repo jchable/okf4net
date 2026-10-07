@@ -77,9 +77,12 @@
     return value;
   }
 
-  // Rounded to the hundredth and written by String (spec §12.2).
+  // Rounded to the hundredth and written by String (spec §12.2). The RESULT is
+  // checked: arithmetic on finite inputs can still overflow to +-Infinity.
   function fmt(value) {
-    return String(Math.round(value * 100) / 100);
+    var rounded = Math.round(value * 100) / 100;
+    if (!Number.isFinite(rounded)) { throw new TypeError("OkfShapes: a coordinate is not a finite number"); }
+    return String(rounded);
   }
 
   function readOptions(options) {
@@ -123,6 +126,12 @@
     var o = readOptions(options);
     var h = size / 2;
     var w = o.stroke;
+    // A stroke-only shape (its stroke IS the shape) needs a stroke, and a stroke
+    // wider than the shape would give a negative r or side.
+    if (kind === "ring" || kind === "machine" || kind === "ghost" || kind === "other") {
+      if (!(w > 0)) { throw new TypeError("OkfShapes: " + kind + " needs a positive stroke"); }
+      if (size - w < 0) { throw new TypeError("OkfShapes: the stroke of a " + kind + " is wider than its size"); }
+    }
     var el;
     if (kind === "circle" || kind === "human") {
       el = svg("circle");

@@ -2760,6 +2760,55 @@ check("OkfShapes: the legend draws each role as spec §12.2 says", () => {
   assert(type.querySelector(".okf-shape-4") && type.querySelector(".okf-legend-count").textContent === "1" && type.textContent === "Skill1", `type entry: ${type.textContent}`);
 });
 
+check("OkfShapes: a finite input never writes Infinity, and a stroke never makes a negative or invisible shape", () => {
+  const { OkfShapes } = okfShapes();
+  // The result of the arithmetic is checked, not only the inputs (spec §12.2).
+  throwsTypeError(() => OkfShapes.shape("circle", 0, 0, 1e308), "size 1e308 (r would be Infinity)");
+  throwsTypeError(() => OkfShapes.shape("square", 0, 0, 1.79e308), "square of 1.79e308");
+  throwsTypeError(() => OkfShapes.shape("diamond", 1.79e308, 0, 1.79e308), "diamond of 1.79e308");
+  throwsTypeError(() => OkfShapes.node("square", 0, 0, 1.79e308, { ring: 1, focus: 1 }), "node of 1.79e308 (outline x would be -Infinity)");
+  // A stroke wider than the shape would give a negative r or side.
+  throwsTypeError(() => OkfShapes.shape("ring", 0, 0, 10, { stroke: 30 }), "ring stroke 30 > size 10");
+  throwsTypeError(() => OkfShapes.shape("other", 0, 0, 10, { stroke: 30 }), "other stroke 30 > size 10");
+  throwsTypeError(() => OkfShapes.shape("machine", 0, 0, 10, { stroke: 10.5 }), "machine stroke > size");
+  throwsTypeError(() => OkfShapes.shape("ghost", 0, 0, 10, { stroke: 11, dash: [2, 2] }), "ghost stroke > size");
+  assert(OkfShapes.shape("ring", 0, 0, 10, { stroke: 10 }).getAttribute("r") === "0", "a stroke equal to the size is the degenerate r=0, not an error");
+  // A stroke-only shape with no stroke would be invisible.
+  for (const kind of ["ring", "other", "machine", "ghost"]) {
+    throwsTypeError(() => OkfShapes.shape(kind, 0, 0, 10), `${kind} without options`);
+    throwsTypeError(() => OkfShapes.shape(kind, 0, 0, 10, { stroke: 0 }), `${kind} with stroke 0`);
+    throwsTypeError(() => OkfShapes.node(kind, 0, 0, 10), `node ${kind} without options`);
+  }
+  // Fill shapes need no stroke.
+  for (const kind of ["circle", "square", "diamond", "triangle", "human", "stale"]) {
+    assert(OkfShapes.shape(kind, 0, 0, 10).localName.length > 0, `${kind} without options`);
+  }
+});
+
+check("OkfShapes: the exported tables are frozen all the way down, and near-miss strings are not trust tiers", () => {
+  const { OkfShapes } = okfShapes();
+  const unfrozen = [];
+  const walk = (value, where) => {
+    if (value === null || typeof value !== "object") { return; }
+    if (!Object.isFrozen(value)) { unfrozen.push(where); }
+    for (const [k, v] of Object.entries(value)) { walk(v, `${where}.${k}`); }
+  };
+  walk(OkfShapes.KINDS, "KINDS");
+  walk(OkfShapes.BOXES, "BOXES");
+  walk(OkfShapes.SIZES, "SIZES");
+  assert(unfrozen.length === 0, `not frozen: ${unfrozen.join(", ")}`);
+  // Every dash array is among what was walked.
+  assert(Object.isFrozen(OkfShapes.SIZES.graph.ghost.dash) && Object.isFrozen(OkfShapes.SIZES.icon.ghost.dash), "a ghost dash array is not frozen");
+  for (const near of ["not-human-reviewed", "human-reviewed ", " machine-confirmed", "Human-Reviewed", "machine-confirmed2", "", "human", "machine", null, undefined, 3]) {
+    assert(OkfShapes.trustKind(near) === null, `trustKind(${JSON.stringify(near)}) is not null`);
+  }
+  // Every type in the other slot still gives exactly one "Other types" entry (spec E4).
+  const only = OkfShapes.typeLegendEntries({ types: [{ name: "", count: 2, slot: 5 }] });
+  assert(JSON.stringify(only) === JSON.stringify([{ role: "type", slot: 5, label: "Other types", count: 2 }]), `all-other: ${JSON.stringify(only)}`);
+  const two = OkfShapes.typeLegendEntries({ types: [{ name: "X", count: 2, slot: 5 }, { name: "Y", count: 1, slot: 5 }] });
+  assert(two.length === 1 && two[0].count === 3 && two[0].slot === 5, `two other types: ${JSON.stringify(two)}`);
+  assert(OkfShapes.typeLegendEntries({ types: [] }).length === 0 && OkfShapes.typeLegendEntries(null).length === 0, "no types still draws an entry");
+});
 // --- Task 7: theme button ---
 
 // --- Task 8: contents, current section ---
