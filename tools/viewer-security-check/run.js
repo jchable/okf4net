@@ -2518,6 +2518,248 @@ checkAsync("the generated v2 index ranks the types, points each concept at its t
 
 // --- Task 6: OkfShapes (control 10) ---
 
+console.log("\nP1.1 — OkfShapes (control 10):");
+
+// Spec §12.2, written out by hand: every shape of every context, as one
+// element's tag and sorted attributes. Never recomputed from the module.
+const SHAPE_ICONS = {
+  icon: {
+    circle: "circle class=okf-shape-0 cx=6 cy=6 r=5",
+    square: "rect class=okf-shape-1 height=9 width=9 x=1.5 y=1.5",
+    diamond: "path class=okf-shape-2 d=M6 0.35 L11.65 6 L6 11.65 L0.35 6 Z",
+    triangle: "path class=okf-shape-3 d=M6 0.5 L11.5 11.5 L0.5 11.5 Z",
+    ring: "circle class=okf-shape-4 cx=6 cy=6 r=4 stroke-width=2",
+    other: "rect class=okf-shape-5 height=7.5 stroke-width=1.5 width=7.5 x=2.25 y=2.25",
+    ghost: "circle class=okf-ghost-mark cx=6 cy=6 r=4.4 stroke-dasharray=2 2 stroke-width=1.2",
+  },
+  chip: {
+    circle: "circle class=okf-shape-0 cx=5 cy=5 r=4",
+    square: "rect class=okf-shape-1 height=8 width=8 x=1 y=1",
+    diamond: "path class=okf-shape-2 d=M5 0.5 L9.5 5 L5 9.5 L0.5 5 Z",
+    triangle: "path class=okf-shape-3 d=M5 0.5 L9.5 9.5 L0.5 9.5 Z",
+    ring: "circle class=okf-shape-4 cx=5 cy=5 r=3.25 stroke-width=1.5",
+    other: "rect class=okf-shape-5 height=6.5 stroke-width=1.5 width=6.5 x=1.75 y=1.75",
+  },
+  flag: {
+    human: "circle class=okf-trust-human cx=5 cy=5 r=4",
+    machine: "circle class=okf-trust-machine cx=5 cy=5 r=3 stroke-width=2",
+    stale: "path class=okf-stale-mark d=M0.5 0 L9.5 0 L5 5 L9.5 10 L0.5 10 L5 5 Z",
+  },
+};
+
+// node(kind, 100, 100, s.size, s) for every cell of the graph contexts: the
+// children of the <g>, in order.
+const SHAPE_NODES = {
+  local: {
+    circle: ["circle class=okf-shape-0 cx=100 cy=100 r=10"],
+    square: ["rect class=okf-shape-1 height=23 width=23 x=88.5 y=88.5"],
+    diamond: ["path class=okf-shape-2 d=M100 87.25 L112.75 100 L100 112.75 L87.25 100 Z"],
+    triangle: ["path class=okf-shape-3 d=M100 89 L111 111 L89 111 Z"],
+    ring: ["circle class=okf-shape-4 cx=100 cy=100 r=8.75 stroke-width=2.5"],
+    other: ["rect class=okf-shape-5 height=18.5 stroke-width=1.5 width=18.5 x=90.75 y=90.75"],
+    ghost: ["circle class=okf-ghost-mark cx=100 cy=100 r=9.9 stroke-dasharray=3 3 stroke-width=1.4"],
+  },
+  localCenter: {
+    circle: ["rect class=okf-node-ring height=38 stroke-width=2 width=38 x=81 y=81", "circle class=okf-shape-0 cx=100 cy=100 r=13"],
+    square: ["rect class=okf-node-ring height=40 stroke-width=2 width=40 x=80 y=80", "rect class=okf-shape-1 height=28 width=28 x=86 y=86"],
+    diamond: ["rect class=okf-node-ring height=43.1 stroke-width=2 width=43.1 x=78.45 y=78.45", "path class=okf-shape-2 d=M100 84.45 L115.55 100 L100 115.55 L84.45 100 Z"],
+    triangle: ["rect class=okf-node-ring height=36 stroke-width=2 width=36 x=82 y=82", "path class=okf-shape-3 d=M100 88 L112 112 L88 112 Z"],
+    ring: ["rect class=okf-node-ring height=38 stroke-width=2 width=38 x=81 y=81", "circle class=okf-shape-4 cx=100 cy=100 r=11.5 stroke-width=3"],
+    other: ["rect class=okf-node-ring height=38 stroke-width=2 width=38 x=81 y=81", "rect class=okf-shape-5 height=24 stroke-width=2 width=24 x=88 y=88"],
+  },
+  graph: {
+    circle: ["rect class=okf-node-focus height=46 stroke-dasharray=3 3 stroke-width=2 width=46 x=77 y=77", "rect class=okf-node-ring height=38 stroke-width=2.4 width=38 x=81 y=81", "circle class=okf-shape-0 cx=100 cy=100 r=13"],
+    square: ["rect class=okf-node-focus height=50 stroke-dasharray=3 3 stroke-width=2 width=50 x=75 y=75", "rect class=okf-node-ring height=42 stroke-width=2.4 width=42 x=79 y=79", "rect class=okf-shape-1 height=30 width=30 x=85 y=85"],
+    diamond: ["rect class=okf-node-focus height=51.1 stroke-dasharray=3 3 stroke-width=2 width=51.1 x=74.45 y=74.45", "rect class=okf-node-ring height=43.1 stroke-width=2.4 width=43.1 x=78.45 y=78.45", "path class=okf-shape-2 d=M100 84.45 L115.55 100 L100 115.55 L84.45 100 Z"],
+    triangle: ["rect class=okf-node-focus height=44 stroke-dasharray=3 3 stroke-width=2 width=44 x=78 y=78", "rect class=okf-node-ring height=36 stroke-width=2.4 width=36 x=82 y=82", "path class=okf-shape-3 d=M100 88 L112 112 L88 112 Z"],
+    ring: ["rect class=okf-node-focus height=46 stroke-dasharray=3 3 stroke-width=2 width=46 x=77 y=77", "rect class=okf-node-ring height=38 stroke-width=2.4 width=38 x=81 y=81", "circle class=okf-shape-4 cx=100 cy=100 r=11.5 stroke-width=3"],
+    other: ["rect class=okf-node-focus height=46 stroke-dasharray=3 3 stroke-width=2 width=46 x=77 y=77", "rect class=okf-node-ring height=38 stroke-width=2.4 width=38 x=81 y=81", "rect class=okf-shape-5 height=24 stroke-width=2 width=24 x=88 y=88"],
+    ghost: ["rect class=okf-node-focus height=47.6 stroke-dasharray=3 3 stroke-width=2 width=47.6 x=76.2 y=76.2", "rect class=okf-node-ring height=39.6 stroke-width=2.4 width=39.6 x=80.2 y=80.2", "circle class=okf-ghost-mark cx=100 cy=100 r=13 stroke-dasharray=3 3 stroke-width=1.6"],
+  },
+};
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const SVG_ELEMENTS = new Set(["svg", "g", "circle", "rect", "path", "line", "text", "title", "defs", "marker"]);
+const SVG_ATTRIBUTES = new Set(["viewBox", "width", "height", "class", "aria-hidden", "focusable", "role", "aria-label", "tabindex", "id",
+  "cx", "cy", "r", "x", "y", "x1", "y1", "x2", "y2", "d", "stroke-width", "stroke-dasharray", "text-anchor", "dominant-baseline",
+  "marker-end", "refX", "refY", "markerWidth", "markerHeight", "orient", "transform"]);
+const SHAPE_CLASSES = new Set(["okf-glyph", "okf-shape-0", "okf-shape-1", "okf-shape-2", "okf-shape-3", "okf-shape-4", "okf-shape-5",
+  "okf-trust-human", "okf-trust-machine", "okf-stale-mark", "okf-ghost-mark", "okf-node", "okf-node-ring", "okf-node-focus",
+  "okf-legend", "okf-legend-count", "okf-legend-mono", "okf-glyph-blank"]);
+
+function shapeSig(el) {
+  return el.localName + " " + Array.from(el.attributes).map((a) => `${a.name}=${a.value}`).sort().join(" ");
+}
+
+function eachElement(root, visit) {
+  visit(root);
+  for (const child of Array.from(root.children)) { eachElement(child, visit); }
+}
+
+// Only the fixed vocabulary of §12.2 and fixed class names, anywhere in `root`.
+function assertShapeVocabulary(root, where) {
+  eachElement(root, (el) => {
+    if (el.namespaceURI === SVG_NS) {
+      assert(SVG_ELEMENTS.has(el.localName), `${where}: SVG element <${el.localName}> is not in the fixed vocabulary`);
+      for (const a of Array.from(el.attributes)) { assert(SVG_ATTRIBUTES.has(a.name), `${where}: SVG attribute ${a.name} is not in the fixed vocabulary`); }
+    } else {
+      assert(["ul", "li", "span"].includes(el.localName), `${where}: unexpected HTML element <${el.localName}>`);
+    }
+    for (const c of Array.from(el.classList)) { assert(SHAPE_CLASSES.has(c), `${where}: class "${c}" is not a fixed class`); }
+  });
+}
+
+function throwsTypeError(fn, what) {
+  let error = null;
+  try { fn(); } catch (e) { error = e; }
+  assert(error && error.name === "TypeError", `${what}: expected a TypeError, got ${error ? error.name + ": " + error.message : "no error"}`);
+}
+
+check("OkfShapes: every shape of every context has exactly the attributes of spec §12.2", () => {
+  const { OkfShapes } = okfShapes();
+  for (const [context, cells] of Object.entries(SHAPE_ICONS)) {
+    const box = OkfShapes.BOXES[context];
+    for (const [kind, want] of Object.entries(cells)) {
+      const svg = OkfShapes.icon(kind, context);
+      assert(shapeSig(svg) === `svg aria-hidden=true class=okf-glyph focusable=false height=${box} viewBox=0 0 ${box} ${box} width=${box}`, `${context}/${kind} <svg>: ${shapeSig(svg)}`);
+      assert(svg.children.length === 1 && shapeSig(svg.firstElementChild) === want, `${context}/${kind}: ${svg.firstElementChild && shapeSig(svg.firstElementChild)}, expected ${want}`);
+    }
+  }
+  for (const [context, cells] of Object.entries(SHAPE_NODES)) {
+    for (const [kind, want] of Object.entries(cells)) {
+      const s = OkfShapes.SIZES[context][kind];
+      const g = OkfShapes.node(kind, 100, 100, s.size, s);
+      assert(shapeSig(g) === "g class=okf-node", `${context}/${kind} <g>: ${shapeSig(g)}`);
+      const got = Array.from(g.children, shapeSig);
+      assert(JSON.stringify(got) === JSON.stringify(want), `${context}/${kind}: ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`);
+    }
+  }
+  const cells = Object.entries(OkfShapes.SIZES).map(([context, row]) => `${context}:${Object.keys(row).join(",")}`).join(" ");
+  assert(cells === "icon:circle,square,diamond,triangle,ring,other,ghost chip:circle,square,diamond,triangle,ring,other flag:human,machine,stale local:circle,square,diamond,triangle,ring,other,ghost localCenter:circle,square,diamond,triangle,ring,other graph:circle,square,diamond,triangle,ring,other,ghost",
+    `the SIZES table has other cells: ${cells}`);
+  assert(JSON.stringify(Array.from(OkfShapes.KINDS)) === JSON.stringify(["circle", "square", "diamond", "triangle", "ring", "other"]) && OkfShapes.OTHER_SLOT === 5,
+    `KINDS ${JSON.stringify(Array.from(OkfShapes.KINDS))}, OTHER_SLOT ${OkfShapes.OTHER_SLOT}`);
+  assert(Object.isFrozen(OkfShapes) && Object.isFrozen(OkfShapes.KINDS) && Object.isFrozen(OkfShapes.SIZES) && Object.isFrozen(OkfShapes.SIZES.graph) && Object.isFrozen(OkfShapes.SIZES.graph.ghost),
+    "OkfShapes or its tables are not frozen");
+});
+
+check("OkfShapes: the hourglass has the d of no type shape, and a node never carries a title or a text", () => {
+  const { OkfShapes } = okfShapes();
+  const stale = OkfShapes.shape("stale", 5, 5, 10).getAttribute("d");
+  for (const kind of ["diamond", "triangle"]) {
+    assert(OkfShapes.shape(kind, 5, 5, 10).getAttribute("d") !== stale, `the hourglass has the d of a ${kind}`);
+  }
+  assert(stale.split(" ").filter((p) => /^[ML]/.test(p)).length === 6, `the hourglass is not one path of six points: ${stale}`);
+  for (const [context, cells] of Object.entries(SHAPE_NODES)) {
+    for (const kind of Object.keys(cells)) {
+      const s = OkfShapes.SIZES[context][kind];
+      const g = OkfShapes.node(kind, 100, 100, s.size, s);
+      assert(g.querySelector("title, text") === null, `node(${kind}) in ${context} carries a title or a text`);
+    }
+  }
+});
+
+check("OkfShapes: only the fixed SVG vocabulary and fixed classes; bundle text stays text", () => {
+  const { OkfShapes, document } = okfShapes();
+  const hostile = '<img src=x onerror="window.__pwned=1"> okf-shape-0" class="evil';
+  const outputs = [
+    OkfShapes.icon("circle", "icon", hostile),
+    OkfShapes.icon("ghost", "icon"),
+    OkfShapes.icon("stale", "flag"),
+    OkfShapes.node("ghost", 10, 10, 27.6, OkfShapes.SIZES.graph.ghost),
+    OkfShapes.legend([
+      { role: "type", slot: 0, label: hostile, count: 3 },
+      { role: "type", slot: 5, label: "Other types" },
+      { role: "trust", trust: "human-reviewed" },
+      { role: "trust", trust: "machine-confirmed" },
+      { role: "trust", trust: "unverified" },
+      { role: "stale" },
+      { role: "ghost" },
+    ]),
+  ];
+  for (const out of outputs) {
+    assertShapeVocabulary(out, out.localName);
+    assert(out.querySelectorAll("img, script").length === 0, "bundle text became markup");
+  }
+  assert(outputs[0].firstElementChild.localName === "title" && outputs[0].firstElementChild.textContent === hostile, "an icon title is not inert text in a first <title>");
+  assert(outputs[4].textContent.includes(hostile), "a legend label was dropped instead of shown as text");
+  assert(document.defaultView.__pwned === undefined, "bundle text executed");
+});
+
+check("OkfShapes: non-finite numbers, unknown kinds, contexts and roles throw a TypeError", () => {
+  const { OkfShapes } = okfShapes();
+  for (const kind of ["hexagon", "__proto__", "constructor", "toString", "", undefined]) {
+    throwsTypeError(() => OkfShapes.shape(kind, 0, 0, 10), `shape(${String(kind)})`);
+    throwsTypeError(() => OkfShapes.icon(kind, "icon"), `icon(${String(kind)})`);
+    throwsTypeError(() => OkfShapes.node(kind, 0, 0, 10), `node(${String(kind)})`);
+  }
+  throwsTypeError(() => OkfShapes.shape("circle", NaN, 0, 10), "cx NaN");
+  throwsTypeError(() => OkfShapes.shape("circle", 0, Infinity, 10), "cy Infinity");
+  throwsTypeError(() => OkfShapes.shape("circle", 0, 0, NaN), "size NaN");
+  throwsTypeError(() => OkfShapes.shape("circle", 0, 0, -1), "size negative");
+  throwsTypeError(() => OkfShapes.shape("circle", 0, 0, 0), "size zero");
+  throwsTypeError(() => OkfShapes.shape("circle", "0", 0, 10), "cx a string");
+  throwsTypeError(() => OkfShapes.shape("ring", 0, 0, 10, { stroke: NaN }), "stroke NaN");
+  throwsTypeError(() => OkfShapes.shape("ring", 0, 0, 10, { stroke: -1 }), "stroke negative");
+  throwsTypeError(() => OkfShapes.shape("ghost", 0, 0, 10, { stroke: 1, dash: [1, NaN] }), "dash NaN");
+  throwsTypeError(() => OkfShapes.shape("ghost", 0, 0, 10, { stroke: 1, dash: [1] }), "dash not a pair");
+  throwsTypeError(() => OkfShapes.shape("ghost", 0, 0, 10, { stroke: 1, dash: "3 3" }), "dash a string");
+  throwsTypeError(() => OkfShapes.node("square", 0, 0, 10, { focus: Infinity }), "focus Infinity");
+  throwsTypeError(() => OkfShapes.node("square", 0, 0, 10, { ring: -2 }), "ring negative");
+  for (const context of ["nope", "constructor", "__proto__", "local", "graph"]) {
+    throwsTypeError(() => OkfShapes.icon("circle", context), `icon context ${context}`);
+  }
+  throwsTypeError(() => OkfShapes.icon("human", "icon"), "a trust shape in the icon context");
+  throwsTypeError(() => OkfShapes.icon("stale", "chip"), "the hourglass in the chip context");
+  throwsTypeError(() => OkfShapes.icon("ghost", "chip"), "a ghost in the chip context");
+  throwsTypeError(() => OkfShapes.legend([{ role: "nope" }]), "legend role");
+  throwsTypeError(() => OkfShapes.legend([{ role: "type", slot: 6, label: "x" }]), "legend slot 6");
+  throwsTypeError(() => OkfShapes.legend([{ role: "trust", trust: "__proto__" }]), "legend trust");
+});
+
+check("OkfShapes: ranks are read from the index, never recomputed; anything out of bounds is the other slot", () => {
+  const { OkfShapes } = okfShapes();
+  // Deliberately NOT in count order: the module must read slot, not counts.
+  const index = {
+    concepts: [{ typeIndex: 0 }, { typeIndex: 1 }, { typeIndex: 9 }, { typeIndex: "0" }, {}, { typeIndex: 2 }],
+    types: [{ name: "Rare", count: 1, slot: 3 }, { name: "Common", count: 9, slot: 0 }, { name: "Bad", count: 2, slot: 7 }],
+  };
+  const slots = [0, 1, 2, 3, 4, 5, -1, 1.5, "0", 99].map((p) => OkfShapes.slotOf(index, p));
+  assert(JSON.stringify(slots) === JSON.stringify([3, 0, 5, 5, 5, 5, 5, 5, 5, 5]), `slots ${JSON.stringify(slots)}`);
+  assert(OkfShapes.kindOf(index, 0) === "triangle" && OkfShapes.kindOf(index, 1) === "circle" && OkfShapes.kindOf(index, 2) === "other", "kindOf does not map slots to KINDS");
+  assert(OkfShapes.slotOf(null, 0) === 5 && OkfShapes.slotOf({ concepts: index.concepts }, 0) === 5, "an index without types does not fall back to the other slot");
+  const entries = OkfShapes.typeLegendEntries({ types: [
+    { name: "A", count: 5, slot: 0 }, { name: "", count: 4, slot: 5 }, { name: "B", count: 3, slot: 1 }, { name: "C", count: 2, slot: 5 },
+  ] });
+  assert(JSON.stringify(entries) === JSON.stringify([
+    { role: "type", slot: 0, label: "A", count: 5 }, { role: "type", slot: 1, label: "B", count: 3 }, { role: "type", slot: 5, label: "Other types", count: 6 },
+  ]), `typeLegendEntries: ${JSON.stringify(entries)}`);
+  const plain = OkfShapes.typeLegendEntries({ types: [{ name: "A", count: 1, slot: 0 }] });
+  assert(plain.length === 1 && plain[0].label === "A", `no other type, yet: ${JSON.stringify(plain)}`);
+  assert(OkfShapes.typeLabel("") === "(no type)" && OkfShapes.typeLabel("Metric") === "Metric", "typeLabel");
+  assert(OkfShapes.trustKind("human-reviewed") === "human" && OkfShapes.trustKind("machine-confirmed") === "machine"
+    && OkfShapes.trustKind("unverified") === null && OkfShapes.trustKind("constructor") === null, "trustKind");
+});
+
+check("OkfShapes: the legend draws each role as spec §12.2 says", () => {
+  const { OkfShapes } = okfShapes();
+  const ul = OkfShapes.legend([
+    { role: "trust", trust: "human-reviewed" },
+    { role: "trust", trust: "unverified" },
+    { role: "stale" },
+    { role: "ghost" },
+    { role: "type", slot: 4, label: "Skill", count: 1 },
+  ]);
+  assert(ul.localName === "ul" && ul.className === "okf-legend" && ul.children.length === 5, `legend: <${ul.localName} class="${ul.className}"> with ${ul.children.length} items`);
+  const [human, unverified, stale, ghost, type] = Array.from(ul.children);
+  assert(human.firstElementChild.localName === "svg" && human.querySelector(".okf-trust-human") && human.textContent === "human-reviewed", "trust entry");
+  assert(unverified.firstElementChild.className === "okf-glyph-blank" && unverified.textContent === "unverified", "unverified entry has no blank 10 px slot");
+  assert(stale.querySelector(".okf-stale-mark") && stale.textContent === "stale (now " + String.fromCharCode(0x2265) + " stale_after)"
+    && stale.querySelector(".okf-legend-mono").textContent === "stale_after", `stale entry: ${stale.textContent}`);
+  assert(ghost.querySelector(".okf-ghost-mark") && ghost.textContent === "absent concept", "ghost entry");
+  assert(type.querySelector(".okf-shape-4") && type.querySelector(".okf-legend-count").textContent === "1" && type.textContent === "Skill1", `type entry: ${type.textContent}`);
+});
+
 // --- Task 7: theme button ---
 
 // --- Task 8: contents, current section ---
