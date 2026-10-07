@@ -10,17 +10,37 @@ and this project adheres to
 
 ### Added
 
-- **Interactive `okf-render` pages (P1).** Every generated page now has a tree
-  explorer of the bundle (a concept that is also a folder opens and expands
-  separately; badges for the machine-confirmed and human-reviewed trust tiers
-  and for staleness, from `ConceptAudit`, staleness evaluated when the page is
-  read), a "Jump to" palette (Ctrl+K or `/`, fixed-tier matching on titles,
-  ids and tags — not full-text search) and a light/dark toggle; where a page
-  has contents or backlinks, a side panel lists them. Headings get generated
-  `okf-h-` anchors, so author links such as `#usage` now land. The data comes
-  from a new generated `assets/okf-index.js` (`SiteIndex`, `IndexScript`);
-  `viewer.js` and the OKF4net core API are unchanged. The jsdom harness now
-  loads a site generated from a hostile fixture bundle and needs the .NET SDK.
+- **Interactive `okf-render` pages.** Delivered in slices on one branch (P1
+  and P1.1 are in; P2 and P3 are planned and not delivered yet); the OKF4net
+  core API and `viewer.js` are unchanged throughout.
+  - *P1 — navigation.* A tree explorer of the bundle (a concept that is also
+    a folder opens and expands separately; trust tiers and staleness from
+    `ConceptAudit`, staleness evaluated when the page is read), a "Jump to"
+    palette (Ctrl+K or `/`, fixed-tier matching on titles, ids and tags — not
+    full-text search), a light/dark toggle, and a side panel with contents and
+    backlinks. Headings get generated `okf-h-` anchors, so author links such
+    as `#usage` now land. The data comes from a generated
+    `assets/okf-index.js` (`SiteIndex`, `IndexScript`). The jsdom harness
+    loads a site generated from a hostile fixture bundle and needs the .NET SDK.
+  - *P1.1 — the validated mockups.* One header on every page (bundle name,
+    concept and link counts, a "Global graph" link, "Skip to content"); a
+    centre column with a breadcrumb, the title once (a leading H1 that repeats
+    it is dropped), chips for type, `status`, trust with its verifier and
+    date, and staleness, and a folding frontmatter box; types drawn as shapes
+    and colours (`OkfShapes`, ranked by frequency in the index, schema v2,
+    which also carries descriptions), explorer rows by id segment with type
+    chips that filter, a legend, the current section marked in the contents,
+    glyphs and a count on "Referenced by", the palette redrawn; Inter, Inter
+    Tight and Space Mono (SIL OFL 1.1) embedded; a tooled, manual browser
+    recette under `tools/viewer-security-check/recette/`.
+  - *P2 — local graph (planned).* The context panel will show the concept's
+    neighbourhood (one or two hops, at most 40 nodes, links to absent concepts
+    as ghosts) with an equivalent list.
+  - *P3 — global graph (planned).* `graph.html` will draw the whole bundle
+    with a deterministic layout, facets (type, trust, staleness, tags), a
+    detail drawer and keyboard navigation, linked from every page's "Global
+    graph" (the link is already written; until `graph.html` exists it has no
+    page to open).
 - **`samples/agents-quickstart`**, an `OKF4net.Agents` sample that runs with
   `dotnet run` and needs no LLM endpoint, API key or network access (#5). Over
   `bundles/ga4`, it lists the read-only tools, calls `Search` and

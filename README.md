@@ -373,8 +373,9 @@ machine. Full command reference with real output samples:
 Static HTML site generation lives in a **separate** binary, `okf-render`
 (`OKF4net.Render`), not in `okf` itself — `okf` is meant to be the small,
 dependency-free CI validator winget distributes, and the site generator pulls
-in a vendored copy of [marked](https://github.com/markedjs/marked) (MIT) that
-a CI job running `okf validate` never executes. `OKF4net.Mcp` already
+in a vendored copy of [marked](https://github.com/markedjs/marked) (MIT) and
+three embedded fonts (SIL OFL 1.1) that a CI job running `okf validate` never
+needs. `OKF4net.Mcp` already
 established the pattern this follows: a leaf executable owns the dependencies
 its one job needs, instead of pushing them into the shared core.
 
@@ -385,11 +386,18 @@ okf-render bundles/ga4 --out /tmp/ga4-site
 ```
 
 The generated site is self-contained and opens straight off the filesystem —
-no server needed. Every page carries a tree explorer of the bundle (concepts
-show a badge when they are machine-confirmed or human-reviewed, and when they
-are stale), a "Jump to" palette (Ctrl+K or `/`, matching titles, ids and
-tags) and a light/dark toggle; a side panel with the page's contents and
-backlinks appears where the page has contents (h2/h3 headings) or backlinks.
+no server needed. Every page carries one header (the bundle's name, its
+concept and link counts, a "Jump to" palette — Ctrl+K or `/`, matching
+titles, ids and tags —, a "Global graph" link and a light/dark toggle) and a
+tree explorer of the bundle with type shapes, type filters and trust and
+staleness flags. A concept page shows a breadcrumb, its title, chips for
+type, `status`, trust and staleness, and a folding frontmatter box; its side
+panel holds the page's contents and the pages that reference it. The graph
+views are **planned, not shipped yet**: a local graph in that side panel (the
+concept's neighbours at one or two hops, with an equivalent list) and a graph
+page (`graph.html`) drawing the whole bundle, which is what "Global graph"
+will open — until it exists the link has no page to open. The Inter, Inter
+Tight and Space Mono fonts are embedded.
 It is read-only, and has no full-text search: a static site has no server
 to run the shared `ConceptSearch` scorer, and mirroring its weights in
 JavaScript would fork it. Interactive browsing with search is planned as a
@@ -833,9 +841,11 @@ code.
 The one exception anywhere in the build is `OKF4net.Viewer` (not itself
 published to NuGet): it vendors a copy of
 [marked](https://github.com/markedjs/marked) (MIT) for client-side markdown
-rendering, embedded in that library and shipped inside the `okf-render`
-binary it backs; `okf` itself never references it. See [`NOTICE`](NOTICE)
-for the full accounting, including that vendored copy and the two kinds of
+rendering, and the Inter, Inter Tight and Space Mono fonts (SIL Open Font
+License 1.1, their licence texts written beside them under `assets/fonts/`),
+all embedded in that library and shipped inside the `okf-render` binary it
+backs; `okf` itself never references them. See [`NOTICE`](NOTICE)
+for the full accounting, including those vendored copies and the two kinds of
 Apache-2.0 material also in this repository — the vendored
 [OKF specification](docs/spec/README.md) and the upstream sample bundles
 under [`bundles/`](bundles/README.md), both Copyright Google LLC and

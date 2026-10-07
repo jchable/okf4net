@@ -1,7 +1,12 @@
 # OKF4net.Viewer
 
 Static HTML site generation for OKF knowledge bundles: one page per concept
-(frontmatter + rendered body), a generated index, and navigable cross-links.
+(breadcrumb, title, type/status/trust/staleness chips, a folding frontmatter
+box, the rendered body), a generated index, navigable cross-links, a tree
+explorer with type shapes and filters, a "Jump to" palette, a contents list
+that follows the reading position, "Referenced by" lists, light and dark
+themes, and the Inter, Inter Tight and Space Mono fonts embedded — all of it
+working from `file://`, with no server.
 
 Zero third-party runtime dependencies — references only `OKF4net`.
 
