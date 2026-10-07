@@ -242,6 +242,39 @@ function registerPure(h) {
     window.OkfLocal.build(siteIndex(["c", "a", "b"], [[0, 1], [2, 1], [0, 0, "ghost"]], ["gone"]), 0, 2);
     window.OkfLocal.segment(0, 0, 1, 10, 10, 1, 3);
   });
+
+  check("local graph: a second-hop node reached from two direct neighbours takes the smallest key as its via", () => {
+    const { OkfLocal } = okfLocal();
+    // c -> a, c -> b, a -> d, b -> d: d is reached through a (key 1) and b (key 2).
+    const edgesInOrder = [[0, 1], [0, 2], [1, 3], [2, 3]];
+    // ... and the same with d linking to a and b (the other direction of the walk).
+    const linkingIn = [[0, 1], [0, 2], [3, 1], [3, 2]];
+    for (const links of [edgesInOrder, edgesInOrder.slice().reverse(), linkingIn, linkingIn.slice().reverse()]) {
+      const r = OkfLocal.build(siteIndex(["c", "a", "b", "d"], links), 0, 2);
+      const list = JSON.stringify(r.list.map((e) => [e.key, e.dist, e.via]));
+      assert(list === "[[1,1,-1],[2,1,-1],[3,2,1]]", `list (key, dist, via): ${list}`);
+    }
+  });
+
+  check("local graph: a self-link on the centre or on a neighbour adds no neighbour and no hop", () => {
+    const { OkfLocal } = okfLocal();
+    // c -> c, c -> a, a -> a: only a is a neighbour; a's self-link makes nothing two hops away.
+    const r = OkfLocal.build(siteIndex(["c", "a"], [[0, 0], [0, 1], [1, 1]]), 0, 2);
+    assert(JSON.stringify(r.list.map((e) => [e.key, e.dist, e.rel, e.via])) === "[[1,1,1,-1]]", `list: ${JSON.stringify(r.list)}`);
+    assert(r.nodes.length === 2 && r.edges.length === 1 && r.omitted === 0, `nodes/edges: ${JSON.stringify(r)}`);
+  });
+
+  check("local graph: repeated edges between one pair never repeat a neighbour", () => {
+    const { OkfLocal } = okfLocal();
+    const links = [[0, 1], [0, 1], [0, 1], [1, 2], [1, 2]];
+    for (const hops of [1, 2]) {
+      const r = OkfLocal.build(siteIndex(["c", "a", "d"], links), 0, hops);
+      const keys = JSON.stringify(r.list.map((e) => e.key));
+      assert(keys === (hops === 1 ? "[1]" : "[1,2]"), `hops ${hops}: list keys ${keys}`);
+      assert(r.nodes.length === r.total + 1 && new Set(r.nodes.map((n) => n.key)).size === r.nodes.length, `hops ${hops}: a node was drawn twice`);
+      assert(r.edges[0].count === 3, `hops ${hops}: the repeated c -> a records add up to ${r.edges[0].count}`);
+    }
+  });
 }
 
 function register(h) {
