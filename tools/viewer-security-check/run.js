@@ -4069,6 +4069,120 @@ checkAsync("page: Referenced by rows whose target names an Object.prototype memb
   }
   assert(byId.has("__proto__") && byId.has("constructor") && byId.has("toString") && !byId.has("valueOf"), "the fixture's prototype-named ids changed");
 });
+checkAsync("page: anchored queries ignore body code that copies the page head's nested chrome structures", async () => {
+  // The sanitizer strips data-okf-*, so real body code cannot carry them; this
+  // probe writes them into the page itself, the worst case a selector that
+  // lost its anchor or its attribute could be fooled by. The nested structures
+  // below are what the flat and mis-nested code of p11-chrome-classes.md is not.
+  const payload = [
+    '<div id="okf-probe-body">',
+    '<code class="okf-chip okf-chip-type"><code class="okf-chip-glyph" data-okf-slot="0">t</code>TYPETEXT</code>',
+    '<code class="okf-chip okf-chip-trust"><code class="okf-chip-glyph" data-okf-trust="human">h</code>TRUSTTEXT</code>',
+    '<code class="okf-chip okf-chip-stale"><code class="okf-chip-glyph" data-okf-stale>g</code><code class="okf-chip-text">BODYTEXT</code></code>',
+    '<code class="okf-fm"><code class="okf-fm-head">H</code><code class="okf-fm-grid"><code class="okf-fm-cell">a</code><code class="okf-fm-cell" data-okf-extra>b</code></code></code>',
+    '<code class="okf-backlinks"><a class="okf-row" href="p11-page-ref.html" data-okf-target="p11-page-ref">ROWTEXT</a></code>',
+    "</div>",
+  ].join("");
+  const staleChip = /<span class="okf-chip okf-chip-stale">[\s\S]*?<\/span><\/span>\n/;
+  // p11-chrome-classes has an unverified head with no stale chip; p11-page's
+  // head loses its stale chip here, while its index entry keeps the deadline.
+  const probes = [["p11-chrome-classes.html", null], ["p11-page.html", staleChip]];
+  for (const [rel, strip] of probes) {
+    let html = fs.readFileSync(path.join(SITE, rel), "utf8");
+    if (strip) {
+      assert(strip.test(html), `${rel}: the stale chip to strip is missing`);
+      html = html.replace(strip, "");
+    }
+    assert(html.includes("</main>"), `${rel}: no </main> to splice the probe before`);
+    const probe = `p11-probe-${rel}`;
+    fs.writeFileSync(path.join(SITE, probe), html.replace("</main>", `${payload}</main>`));
+    const baseline = await openPage(probe, { blocked: ["assets/okf-page.js"] });
+    const expected = baseline.document.getElementById("okf-probe-body").innerHTML;
+    assert(expected.includes("BODYTEXT") && expected.includes("data-okf-stale"), `${rel}: the probe payload did not reach the page`);
+    let now = Date.UTC(1999, 0, 1);
+    const window = await openPage(probe, { now: () => now });
+    const doc = window.document;
+    const box = doc.getElementById("okf-probe-body");
+    const unchanged = (when) => {
+      assert(box.innerHTML === expected, `${rel} ${when}: the body code was changed: ${box.innerHTML}`);
+      assert(box.querySelector("svg, button") === null, `${rel} ${when}: a glyph or button reached the body code`);
+      for (const el of box.querySelectorAll("*")) {
+        assert(window.getComputedStyle(el).getPropertyValue("display") !== "none", `${rel} ${when}: <${el.localName} class="${el.getAttribute("class")}"> was hidden`);
+      }
+    };
+    unchanged("after load");
+    now = Date.UTC(2001, 0, 1);
+    doc.dispatchEvent(new window.Event("visibilitychange"));
+    unchanged("after visibilitychange past the deadline");
+    const toggle = doc.querySelector("body > .okf-layout > main > .okf-page-head .okf-fm-toggle");
+    assert(toggle, `${rel}: this case needs the page head's Show all`);
+    toggle.click();
+    unchanged("after Show all");
+    assert(doc.querySelectorAll("body > .okf-layout > main > .okf-page-head .okf-fm-toggle").length === 1, `${rel}: not exactly one Show all in the page head`);
+  }
+});
+
+checkAsync("page: a damaged index entry (no type, no staleAfterDate, null) is skipped, never written as text", async () => {
+  const source = fs.readFileSync(path.join(SITE, "assets", "okf-index.js"), "utf8");
+  const damage = `${source}\n;(function () {
+    var c = window.OKF_INDEX.concepts;
+    for (var i = 0; i < c.length; i++) {
+      if (c[i].id === "p11-page-ref") { delete c[i].type; }
+      if (c[i].id === "p11-page") { c[i].staleAfterDate = null; }
+    }
+  })();`;
+  const window = await openPage("p11-page.html", { override: { "assets/okf-index.js": damage }, now: () => Date.UTC(2026, 9, 7) });
+  const doc = window.document;
+  const row = Array.from(doc.querySelectorAll("#okf-context .okf-backlinks a.okf-row")).find((a) => a.getAttribute("data-okf-target") === "p11-page-ref");
+  const glyph = row && row.firstElementChild;
+  assert(glyph && glyph.localName === "svg" && glyph.querySelector("title") === null, `a concept without a type: ${glyph && glyph.outerHTML}`);
+  const chip = doc.querySelector("body > .okf-layout > main > .okf-page-head .okf-chip-stale");
+  assert(chip.querySelector(".okf-chip-text").textContent === "stale after 2000-01-01" && !chip.hasAttribute("data-okf-stale-now") && !chip.querySelector("svg"),
+    `without staleAfterDate the chip must stay as written: "${chip.textContent}"`);
+  // A null entry: the explorer and the palette read every entry and are out of
+  // this task's reach, so only okf-page.js and the scripts that tolerate it load.
+  const withNull = `${source}\n;window.OKF_INDEX.concepts.push(null);`;
+  const other = await openPage("p11-page.html", {
+    override: { "assets/okf-index.js": withNull },
+    blocked: ["assets/okf-explorer.js", "assets/okf-palette.js"],
+    now: () => Date.UTC(2026, 9, 7),
+  });
+  const head = other.document.querySelector("body > .okf-layout > main > .okf-page-head");
+  assert(head.querySelector(".okf-chip-stale .okf-chip-text").textContent === "stale since 2000-01-01" && head.querySelector(".okf-fm-toggle"),
+    "a null entry in the index stopped okf-page.js");
+});
+
+checkAsync("page: Show all needs no okf-site.js, and the stale text flips without OkfShapes", async () => {
+  const noSite = await openPage("p11-page.html", { blocked: ["assets/okf-site.js"] });
+  const toggle = noSite.document.querySelector("body > .okf-layout > main > .okf-page-head .okf-fm-toggle");
+  assert(toggle && toggle.textContent === "Show all" && toggle.getAttribute("type") === "button", "Show all depends on okf-site.js");
+  toggle.click();
+  assert(noSite.document.getElementById("okf-fm").hasAttribute("data-okf-expanded") && toggle.textContent === "Show fewer", "Show all does not work without okf-site.js");
+  let now = Date.UTC(1999, 0, 1);
+  const noShapes = await openPage("p11-page.html", { blocked: ["assets/okf-shapes.js"], now: () => now });
+  const chip = noShapes.document.querySelector("body > .okf-layout > main > .okf-page-head .okf-chip-stale");
+  const text = chip.querySelector(".okf-chip-text");
+  assert(text.textContent === "stale after 2000-01-01" && !chip.hasAttribute("data-okf-stale-now"), "before the deadline without OkfShapes");
+  now = Date.UTC(2001, 0, 1);
+  noShapes.document.dispatchEvent(new noShapes.Event("visibilitychange"));
+  assert(text.textContent === "stale since 2000-01-01" && chip.hasAttribute("data-okf-stale-now") && chip.querySelector("svg") === null,
+    `the text flip needs only the index: "${text.textContent}"`);
+});
+
+checkAsync("page: the stale chip is recalculated only when the page becomes visible", async () => {
+  let now = Date.UTC(1999, 0, 1);
+  const window = await openPage("p11-page.html", { now: () => now });
+  const doc = window.document;
+  const text = doc.querySelector("body > .okf-layout > main > .okf-page-head .okf-chip-stale .okf-chip-text");
+  let state = "hidden";
+  Object.defineProperty(doc, "visibilityState", { configurable: true, get: () => state });
+  now = Date.UTC(2001, 0, 1);
+  doc.dispatchEvent(new window.Event("visibilitychange"));
+  assert(text.textContent === "stale after 2000-01-01", `a hidden page was recalculated: "${text.textContent}"`);
+  state = "visible";
+  doc.dispatchEvent(new window.Event("visibilitychange"));
+  assert(text.textContent === "stale since 2000-01-01", `a visible page was not recalculated: "${text.textContent}"`);
+});
 
 // --- Task 16: fonts fallback (only if Task 10 found a browser blocking the fonts) ---
 
