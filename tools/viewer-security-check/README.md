@@ -138,3 +138,33 @@ failed by any script error its pages raise. Fixtures follow the same rule:
 `fixtures/hostile-bundle/p11-*`, `p2-*` and `p3-*` belong to their slice, and
 each slice lists its chrome classes in its own `*chrome-classes.md`, which the
 chrome-class case picks up by name.
+
+## Recette (manual, outside CI)
+
+`recette/` holds the tooled recette of the interactive viewer (spec §12.8):
+what jsdom cannot see — layout, fonts really loaded, colours and contrasts in
+both themes, widths at 1 100, 1 190 and 1 440 px, `file://` behaviour,
+requests leaving the site — checked in real browsers on the two sites of
+`ACCEPTANCE.md`, opened as files:
+
+    OKF_PLAYWRIGHT=<path to a playwright-core module> \
+      node tools/viewer-security-check/recette/recette.js \
+        --site <okf4net-site> --acme <acme-site> \
+        [--out <dir>] [--browsers chrome,edge,firefox,webkit] [--slices p1,p1.1,p2,p3] [--only id,id]
+
+Playwright is **not** a dependency of this repository: `recette/lib.js`
+resolves `OKF_PLAYWRIGHT`, else `require("playwright-core")`, and stops with
+a clear message when neither exists. `npm test` and CI never run the
+recette. Each slice has its own file (`p1.js`, `p1-1.js`, `p2.js`, `p3.js`)
+exporting `async function run(ctx)`, whose results are keyed by the ids of
+spec §11 (`H1`…`L6`), by the ported P1 checks `RC1`…`RC11`, or by a named
+control (`fonts`, `tokens`, `requests`). A result is `pass: true`, `false`,
+or `null` for "not applicable here" (with a `note`: a check that needs a
+later slice, or one done by hand), which is printed `n/a` and never counted
+as a failure; the exit code is 1 only when a check failed. `run(ctx)` gets
+its pages from `ctx.newPage()` and writes its captures with
+`ctx.shot(page, id)`; `ctx.lib` is `recette/lib.js` (contrast, colours,
+pages by depth). Results and captures (1 440 × 900,
+named by id) go to `--out`, by default a folder of the system's temporary
+directory; a slice's report goes into the pull request, never into the
+repository.
