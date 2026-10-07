@@ -164,7 +164,10 @@ later slice, or one done by hand), which is printed `n/a` and never counted
 as a failure; the exit code is 1 only when a check failed. `run(ctx)` gets
 its pages from `ctx.newPage()` and writes its captures with
 `ctx.shot(page, id)`; `ctx.lib` is `recette/lib.js` (contrast, colours,
-pages by depth). Results and captures (1 440 × 900,
+pages by depth, `pageUrl` to open a page whose name holds `#`, `?` or `%`). `node tools/viewer-security-check/recette/lib.js --selftest`
+(also `npm run recette:selftest`) checks the colour and url helpers against known
+answers: a wrong contrast helper gives every later check a confident wrong
+number. Results and captures (1 440 × 900,
 named by id) go to `--out`, by default a folder of the system's temporary
 directory; a slice's report goes into the pull request, never into the
 repository.

@@ -43,8 +43,11 @@
          so ViewerAssets can list every asset and HtmlWriter writes each one at
          the same path under assets/ (spec §12.0). %(RecursiveDir) carries the OS
          separator; ViewerAssets turns "\" into "/" when it reads the names.
-         fonts/README.md records the fonts' provenance and is not an asset. -->
-    <EmbeddedResource Include="Assets\**\*" Exclude="Assets\fonts\README.md" LogicalName="Assets/%(RecursiveDir)%(Filename)%(Extension)" />
+         fonts/README.md records the fonts' provenance and is not an asset.
+         Editor backups and OS litter (an untracked .orig, .bak, ~ or .swp
+         file, .DS_Store, Thumbs.db) are never embedded: the wildcard would
+         otherwise ship them in every generated site. -->
+    <EmbeddedResource Include="Assets\**\*" Exclude="Assets\fonts\README.md;Assets\**\*.orig;Assets\**\*.bak;Assets\**\*~;Assets\**\*.swp;Assets\**\.DS_Store;Assets\**\Thumbs.db" LogicalName="Assets/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup>

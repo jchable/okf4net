@@ -17,7 +17,7 @@ async function fonts(ctx) {
   for (const [label, dir, url] of [["okf4net", ctx.siteDir, ctx.site], ["acme", ctx.acmeDir, ctx.acme]]) {
     for (const { rel, depth } of ctx.lib.pagesByDepth(dir)) {
       const page = await ctx.newPage();
-      await page.goto(url + rel, { waitUntil: "load" });
+      await page.goto(ctx.lib.pageUrl(url, rel), { waitUntil: "load" });
       const faces = await page.evaluate(async (wanted) => {
         const out = [];
         for (const [family, weight] of wanted) {

@@ -80,6 +80,24 @@ public class HtmlWriterAssetsTests
         => Assert.DoesNotContain("fonts/README.md", ViewerAssets.Paths);
 
     [Fact]
+    public void Editor_backups_and_os_litter_are_never_embedded()
+    {
+        // The project's wildcard embeds whatever sits under Assets/, tracked or
+        // not: its Exclude list is what keeps a stray backup out of every site.
+        foreach (var path in ViewerAssets.Paths)
+        {
+            var name = path[(path.LastIndexOf('/') + 1)..];
+            Assert.False(
+                name.EndsWith(".orig", StringComparison.Ordinal)
+                    || name.EndsWith(".bak", StringComparison.Ordinal)
+                    || name.EndsWith('~')
+                    || name.EndsWith(".swp", StringComparison.Ordinal)
+                    || name is ".DS_Store" or "Thumbs.db",
+                path);
+        }
+    }
+
+    [Fact]
     public void An_asset_that_is_not_embedded_is_a_clear_error()
     {
         var ex = Assert.Throws<InvalidOperationException>(() => ViewerAssets.Bytes("no-such-asset.js"));
