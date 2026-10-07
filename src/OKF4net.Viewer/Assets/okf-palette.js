@@ -145,7 +145,7 @@
       option.setAttribute("role", "option");
       option.setAttribute("aria-selected", "false");
       option.appendChild(shapes.icon(shapes.kindOf(index, shown[k]), "icon"));
-      option.appendChild(el("span", "okf-sr okf-palette-type", shapes.typeLabel(concept.type)));
+      option.appendChild(el("span", "okf-sr okf-palette-type", shapes.typeLabel(typeof concept.type === "string" ? concept.type : "")));
       var text = el("span", "okf-palette-text");
       text.appendChild(el("span", "okf-palette-title", concept.title));
       text.appendChild(el("span", "okf-palette-id", concept.id));

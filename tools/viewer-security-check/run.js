@@ -3469,8 +3469,32 @@ checkAsync("palette: the opener is drawn as C draws it and keeps its shortcuts",
   assert(hint && hint.getAttribute("aria-hidden") === "true" && hint.textContent === "Ctrl K " + String.fromCharCode(0xB7) + " /", `hint: ${hint && hint.textContent}`);
   assert(opener.getAttribute("aria-keyshortcuts") === "Control+K /" && opener.getAttribute("aria-haspopup") === "dialog", "the opener lost its ARIA");
   const style = window.getComputedStyle(opener);
-  assert(style.getPropertyValue("width") === "320px" && style.getPropertyValue("min-width") === "160px" && style.getPropertyValue("height") === "34px",
-    `opener: width ${style.getPropertyValue("width")}, min-width ${style.getPropertyValue("min-width")}, height ${style.getPropertyValue("height")}`);
+  // H7: 320 at most, giving way to 160. jsdom lays nothing out, so the shrink
+  // is pinned by the declarations it rests on: a basis equal to the minimum
+  // and a grow factor (the opener fills what its tools box leaves it, up to
+  // the cap), never a definite width of 320, which keeps the opener at 320 at
+  // every window width and crushes the bundle name instead.
+  const get = (el, prop) => style.getPropertyValue(prop);
+  assert(get(opener, "max-width") === "320px" && get(opener, "min-width") === "160px" && get(opener, "height") === "34px",
+    `opener: max-width ${get(opener, "max-width")}, min-width ${get(opener, "min-width")}, height ${get(opener, "height")}`);
+  assert(get(opener, "flex-grow") === "1" && get(opener, "flex-shrink") === "1" && get(opener, "flex-basis") === "160px" && get(opener, "width") === "auto",
+    `opener flex: ${get(opener, "flex-grow")} ${get(opener, "flex-shrink")} ${get(opener, "flex-basis")}, width ${get(opener, "width")}`);
+  // Its label has a 0 basis, so a long label never sizes the button.
+  const labelStyle = window.getComputedStyle(label);
+  assert(labelStyle.getPropertyValue("flex-basis") === "0px" && labelStyle.getPropertyValue("width") === "0px", `label flex-basis ${labelStyle.getPropertyValue("flex-basis")}, width ${labelStyle.getPropertyValue("width")}`);
+});
+
+checkAsync("palette: an option whose concept has no type field announces \"(no type)\", never \"undefined\"", async () => {
+  const concepts = [{ id: "bare", title: "Bare", tags: [], path: "bare.html", trust: "unverified", staleAfterMs: null, staleAfterDate: null, typeIndex: 0, description: "" }];
+  const source = `window.OKF_INDEX = ${JSON.stringify({ version: 2, concepts, ghosts: [], edges: [], tree: [], types: [{ name: "", count: 1, slot: 0 }] })};`;
+  const window = await openPage("index.html", { override: { "assets/okf-index.js": source } });
+  const doc = window.document;
+  doc.querySelector(".okf-palette-open").click();
+  type(window, doc.getElementById("okf-palette-input"), "bare");
+  const options = paletteOptions(window);
+  assert(options.length === 1, `this case needs one option (${options.length})`);
+  const typeName = options[0].querySelector(".okf-palette-type");
+  assert(typeName && typeName.textContent === "(no type)", `hidden type: "${typeName && typeName.textContent}"`);
 });
 
 checkAsync("palette: the Esc key is the Close button, second tab stop, named Close", async () => {

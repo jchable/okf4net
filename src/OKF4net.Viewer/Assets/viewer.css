@@ -398,13 +398,21 @@ body > header.bar .bar-counts { flex: none; font-family: var(--mono); font-size:
 
 /* --- Task 14: palette (H7, J1-J6) --- */
 
-/* H7: 320 wide, shrinking to 160; the shortcut hint goes under 900 px. */
+/* H7: 320 wide at most, giving way to 160 before the bundle name does: from
+   900 px the tools box grows into the free space (right-aligned) and the
+   opener, whose basis is its minimum, takes what is left of it up to 320. Its
+   label has a 0 basis and width, so the label never sizes the button. Under
+   900 px the tools wrap: the same flex lets the opener share a row with the
+   other tools down to 390 px. The shortcut hint goes under 900 px. */
 #okf-tools .okf-palette-open {
-  flex: 0 1 320px; width: 320px; min-width: 160px; justify-content: space-between;
+  flex: 1 1 160px; width: auto; min-width: 160px; max-width: 320px; justify-content: space-between;
   padding: 0 12px; color: var(--gray); font-weight: 400;
 }
-#okf-tools .okf-palette-open .okf-palette-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#okf-tools .okf-palette-open .okf-palette-label { flex: 1 1 0px; width: 0; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #okf-tools .okf-palette-open .okf-palette-hint { flex: none; font-family: var(--mono); font-size: 11px; border: 1px solid var(--hair); padding: 1px 6px; }
+@media (min-width: 900px) {
+  #okf-tools { flex: 1 1 auto; justify-content: flex-end; }
+}
 @media not all and (min-width: 900px) {
   #okf-tools .okf-palette-open .okf-palette-hint { display: none; }
 }
