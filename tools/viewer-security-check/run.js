@@ -2422,11 +2422,14 @@ checkAsync("long unbroken titles and ids may wrap in the palette and the content
   const idStyle = window.getComputedStyle(option.querySelector(".okf-palette-id"));
   const id = idStyle.getPropertyValue("max-width");
   assert(id === "100%", `the palette id is not bounded by the row (max-width: ${id})`);
-  // The option wraps: the id shares the title's line only when both fit whole,
-  // else it goes under the title. No cap or shrink factor on the id can promise
-  // that (a title just under its line still broke when the id's cap bound it).
-  const wrap = window.getComputedStyle(option).getPropertyValue("flex-wrap");
-  assert(wrap === "wrap", `the palette option does not wrap its id under a title that leaves it no room (flex-wrap: ${wrap})`);
+  // The option's text wraps: the id shares the title's line only when both fit
+  // whole, else it goes under the title. No cap or shrink factor on the id can
+  // promise that (a title just under its line still broke when the id's cap
+  // bound it). P1.1 put the glyph beside that text, so the rule moved to it.
+  const text = option.querySelector(".okf-palette-text");
+  assert(text, "the palette option lost its text block");
+  const wrap = window.getComputedStyle(text).getPropertyValue("flex-wrap");
+  assert(wrap === "wrap", `the palette option's text does not wrap its id under a title that leaves it no room (flex-wrap: ${wrap})`);
 });
 
 checkAsync("nothing long and unbroken widens the page: panels and tree entries shrink, page text wraps", async () => {
@@ -3454,6 +3457,105 @@ checkAsync("header: the real header keeps its anchored styles", async () => {
 // --- Task 13: explorer ---
 
 // --- Task 14: palette ---
+
+checkAsync("palette: the opener is drawn as C draws it and keeps its shortcuts", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const opener = doc.querySelector("#okf-tools .okf-palette-open");
+  assert(opener && doc.getElementById("okf-tools").firstElementChild === opener, "the opener is not the first tool");
+  const label = opener.querySelector(".okf-palette-label");
+  const hint = opener.querySelector(".okf-palette-hint");
+  assert(label && label.textContent === "Jump to a concept" + String.fromCharCode(0x2026), `label: ${label && label.textContent}`);
+  assert(hint && hint.getAttribute("aria-hidden") === "true" && hint.textContent === "Ctrl K " + String.fromCharCode(0xB7) + " /", `hint: ${hint && hint.textContent}`);
+  assert(opener.getAttribute("aria-keyshortcuts") === "Control+K /" && opener.getAttribute("aria-haspopup") === "dialog", "the opener lost its ARIA");
+  const style = window.getComputedStyle(opener);
+  assert(style.getPropertyValue("width") === "320px" && style.getPropertyValue("min-width") === "160px" && style.getPropertyValue("height") === "34px",
+    `opener: width ${style.getPropertyValue("width")}, min-width ${style.getPropertyValue("min-width")}, height ${style.getPropertyValue("height")}`);
+});
+
+checkAsync("palette: the Esc key is the Close button, second tab stop, named Close", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  doc.querySelector(".okf-palette-open").click();
+  const head = doc.querySelector("body > .okf-palette-backdrop .okf-palette-head");
+  const input = doc.getElementById("okf-palette-input");
+  const close = doc.querySelector(".okf-palette-close");
+  assert(head && head.contains(input) && head.contains(close) && input.compareDocumentPosition(close) & window.Node.DOCUMENT_POSITION_FOLLOWING,
+    "the input row is not search glyph, field, Esc");
+  assert(close.textContent === "Esc" && close.getAttribute("aria-label") === "Close" && close.getAttribute("type") === "button", `close: "${close.textContent}" named "${close.getAttribute("aria-label")}"`);
+  const search = head.querySelector("svg.okf-palette-search");
+  assert(search && search.getAttribute("aria-hidden") === "true" && head.firstElementChild === search, "the search glyph is missing or not first");
+  for (const el of [search, ...search.querySelectorAll("*")]) {
+    assert(["svg", "circle", "path"].includes(el.localName), `the search glyph holds a <${el.localName}>`);
+    for (const a of Array.from(el.attributes)) {
+      assert(["class", "width", "height", "viewBox", "aria-hidden", "focusable", "cx", "cy", "r", "d", "stroke-width"].includes(a.name), `the search glyph carries ${a.name}`);
+    }
+  }
+  key(window, input, { key: "Tab" });
+  assert(doc.activeElement === close, "Tab from the field does not reach Esc");
+  close.click();
+  assert(doc.querySelector(".okf-palette-backdrop").hidden, "Esc does not close");
+});
+
+checkAsync("palette: the matches line counts results and the status region is visually hidden", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  doc.querySelector(".okf-palette-open").click();
+  const input = doc.getElementById("okf-palette-input");
+  const matches = doc.querySelector("body > .okf-palette-backdrop .okf-palette-matches");
+  const status = doc.getElementById("okf-palette-status");
+  assert(matches && matches.getAttribute("aria-hidden") === "true" && matches.textContent === "", `matches at rest: "${matches && matches.textContent}"`);
+  assert(status.classList.contains("okf-sr") && status.getAttribute("role") === "status", "the status region is not visually hidden");
+  type(window, input, "o");
+  const n = paletteOptions(window).length;
+  assert(matches.textContent === "Matches in title, id, tags " + String.fromCharCode(0xB7) + " " + n, `matches: "${matches.textContent}"`);
+  assert(status.textContent === `${n} matching concepts`, `status: "${status.textContent}"`);
+  type(window, input, "");
+  assert(matches.textContent === "", "the matches line kept a count for an empty query");
+  const foot = Array.from(doc.querySelectorAll("body > .okf-palette-backdrop .okf-palette-foot > span"), (s) => s.textContent);
+  assert(JSON.stringify(foot) === JSON.stringify(["Up / Down to move", "Enter to open"]), `foot: ${JSON.stringify(foot)}`);
+});
+
+checkAsync("palette: each option has its type glyph and type name as hidden text", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const idx = window.OKF_INDEX;
+  doc.querySelector(".okf-palette-open").click();
+  type(window, doc.getElementById("okf-palette-input"), "p11-types");
+  const options = paletteOptions(window);
+  assert(options.length >= 5, `this case needs the p11-types concepts (${options.length} options)`);
+  for (const option of options) {
+    const pos = idx.concepts.findIndex((c) => c.id === optionId(option));
+    const t = idx.types[idx.concepts[pos].typeIndex];
+    const glyph = option.firstElementChild;
+    assert(glyph.localName === "svg" && glyph.classList.contains("okf-glyph") && glyph.querySelector(`.okf-shape-${t.slot}`), `${optionId(option)}: glyph not of slot ${t.slot}`);
+    const typeName = option.querySelector(".okf-palette-type");
+    assert(typeName && typeName.classList.contains("okf-sr") && typeName.textContent === (t.name === "" ? "(no type)" : t.name), `${optionId(option)}: hidden type "${typeName && typeName.textContent}"`);
+    assert(option.querySelector(".okf-palette-text > .okf-palette-title") && option.querySelector(".okf-palette-text > .okf-palette-id"), "the title and id are not in the text block");
+  }
+});
+
+checkAsync("palette: the real palette keeps its anchored styles", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  doc.querySelector(".okf-palette-open").click();
+  type(window, doc.getElementById("okf-palette-input"), "o");
+  const chrome = [
+    [doc.querySelector("body > .okf-palette-backdrop"), "position", "fixed"],
+    [doc.querySelector("body > .okf-palette-backdrop .okf-palette"), "max-width", "600px"],
+    [doc.querySelector("body > .okf-palette-backdrop .okf-palette-head"), "height", "54px"],
+    [doc.querySelector("body > .okf-palette-backdrop .okf-palette-input"), "font-size", "17px"],
+    [doc.querySelector("body > .okf-palette-backdrop .okf-palette-close"), "font-size", "11px"],
+    [doc.querySelector("body > .okf-palette-backdrop .okf-palette-option"), "min-height", "46px"],
+    [doc.querySelector('body > .okf-palette-backdrop .okf-palette-option[aria-selected="true"] .okf-palette-title'), "font-weight", "600"],
+    [doc.querySelector("body > .okf-palette-backdrop .okf-palette-matches"), "text-transform", "uppercase"],
+  ];
+  for (const [el, prop, value] of chrome) {
+    assert(el, `a palette element this case needs is missing (${prop}: ${value})`);
+    const got = window.getComputedStyle(el).getPropertyValue(prop);
+    assert(got === value, `the real <${el.tagName.toLowerCase()} class="${el.getAttribute("class")}"> lost its ${prop}: ${value} (got ${got})`);
+  }
+});
 
 // --- Task 15: okf-page.js (control 11) ---
 

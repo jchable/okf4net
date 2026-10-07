@@ -186,45 +186,6 @@ body > .okf-layout > main { flex: 999 1 560px; min-width: 0; margin: 0; }
 #okf-explorer .okf-trust-machine { border: 2px solid var(--blue); }
 #okf-explorer .okf-stale { border-radius: 0; width: 9px; background: #b4540a; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
 /* (end of the P1 explorer rules: Task 13 removes the block above, Task 14 the one below; nobody edits this line) */
-body > .okf-palette-backdrop {
-  position: fixed; inset: 0; z-index: 10; display: flex; align-items: flex-start; justify-content: center;
-  padding: 96px 16px 16px; background: rgba(16, 16, 20, .4);
-}
-body > .okf-palette-backdrop[hidden] { display: none; }
-body > .okf-palette-backdrop .okf-palette { width: 100%; max-width: 600px; background: var(--white); color: var(--ink); border: 1px solid var(--ink); }
-body > .okf-palette-backdrop .okf-palette-input {
-  width: 100%; min-height: 52px; padding: 0 16px; font: inherit; font-size: 17px;
-  border: 0; border-bottom: 1px solid var(--hair); background: transparent; color: var(--ink);
-}
-body > .okf-palette-backdrop .okf-palette-list { list-style: none; margin: 0; padding: 0; max-height: 50vh; overflow-y: auto; }
-/* baseline, not stretch: a title is as tall as its own lines, not the id's. */
-body > .okf-palette-backdrop .okf-palette-option {
-  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 2px 12px; padding: 12px 16px;
-  cursor: pointer; border-left: 3px solid transparent;
-}
-body > .okf-palette-backdrop .okf-palette-option[aria-selected="true"] { background: var(--blue-soft); border-left-color: var(--blue); }
-body > .okf-palette-backdrop .okf-palette-id { font-family: var(--mono); font-size: 12px; color: var(--gray); }
-/* A long unbroken title or id wraps instead of widening the palette (390 px).
-   The title breaks only a word longer than its line (break-word leaves its
-   min-content size alone, where anywhere would let the row shrink it first).
-   The option wraps: the id shares the title's line only when both fit whole,
-   else it moves under the title and takes the full row, so a single-word
-   title is never squeezed by its id (a cap or a shrink factor on the id only
-   moves where the squeeze starts: with a 50% cap a 34-character title still
-   broke beside a long id). The id may break anywhere. */
-body > .okf-palette-backdrop .okf-palette-title { flex: 1 1 auto; min-width: 0; overflow-wrap: break-word; }
-body > .okf-palette-backdrop .okf-palette-id { flex: 0 1 auto; max-width: 100%; min-width: 0; overflow-wrap: anywhere; }
-/* Narrow: the id goes under the title (a column that does not wrap: a wrapping
-   column sizes its line to its widest word, not to the palette). stretch: each
-   takes the full width, so a long unbroken word wraps instead of sizing its
-   line to the word. */
-@media (max-width: 480px) {
-  body > .okf-palette-backdrop .okf-palette-option { flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 2px; }
-  body > .okf-palette-backdrop .okf-palette-id { max-width: none; }
-}
-body > .okf-palette-backdrop .okf-palette-status { margin: 0; padding: 8px 16px; font-size: 13px; color: var(--gray); }
-body > .okf-palette-backdrop .okf-palette-close { margin: 0 16px 12px; }
-body > .okf-palette-backdrop .okf-palette:focus { outline: none; }
 /* (end of the P1 palette rules: Task 14 removes the block above; nobody edits this line) */
 #okf-context :is(.okf-toc, .okf-backlinks) h2 {
   font-family: var(--mono); font-size: 11px; font-weight: 400; letter-spacing: .06em;
@@ -436,6 +397,74 @@ body > header.bar .bar-counts { flex: none; font-family: var(--mono); font-size:
 /* --- Task 13: explorer (E1-E13) and Filters (H8) --- */
 
 /* --- Task 14: palette (H7, J1-J6) --- */
+
+/* H7: 320 wide, shrinking to 160; the shortcut hint goes under 900 px. */
+#okf-tools .okf-palette-open {
+  flex: 0 1 320px; width: 320px; min-width: 160px; justify-content: space-between;
+  padding: 0 12px; color: var(--gray); font-weight: 400;
+}
+#okf-tools .okf-palette-open .okf-palette-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#okf-tools .okf-palette-open .okf-palette-hint { flex: none; font-family: var(--mono); font-size: 11px; border: 1px solid var(--hair); padding: 1px 6px; }
+@media not all and (min-width: 900px) {
+  #okf-tools .okf-palette-open .okf-palette-hint { display: none; }
+}
+/* J1: backdrop, box 120 from the top, 600 wide (at most the window less 32). */
+body > .okf-palette-backdrop {
+  position: fixed; inset: 0; z-index: 10; display: flex; align-items: flex-start; justify-content: center;
+  padding: 120px 16px 16px; background: var(--backdrop);
+}
+body > .okf-palette-backdrop[hidden] { display: none; }
+body > .okf-palette-backdrop .okf-palette {
+  width: 100%; max-width: 600px; background: var(--white); color: var(--ink);
+  border: 1px solid var(--ink); box-shadow: var(--shadow);
+}
+body > .okf-palette-backdrop .okf-palette:focus { outline: none; }
+/* J2: search glyph, field, Esc. */
+body > .okf-palette-backdrop .okf-palette-head {
+  display: flex; align-items: center; gap: 12px; height: 54px; padding: 0 16px; border-bottom: 1px solid var(--hair);
+}
+body > .okf-palette-backdrop .okf-palette-search { flex: none; fill: none; stroke: var(--gray); }
+body > .okf-palette-backdrop .okf-palette-input {
+  flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: 0; background: transparent;
+  font-family: var(--body); font-size: 17px; color: var(--ink);
+}
+body > .okf-palette-backdrop .okf-palette-close {
+  flex: none; padding: 1px 6px; border: 1px solid var(--hair); background: var(--white);
+  font-family: var(--mono); font-size: 11px; color: var(--gray); cursor: pointer;
+}
+/* J3: the shared section title, padded. */
+body > .okf-palette-backdrop .okf-palette-matches { margin: 0; padding: 10px 16px 6px; }
+body > .okf-palette-backdrop .okf-palette-matches:empty { display: none; }
+/* J4, J5 */
+body > .okf-palette-backdrop .okf-palette-list { list-style: none; margin: 0; padding: 0 0 8px; max-height: 50vh; overflow-y: auto; }
+body > .okf-palette-backdrop .okf-palette-option {
+  display: flex; align-items: center; gap: 12px; min-height: 46px; padding: 0 16px;
+  cursor: pointer; border-left: 3px solid transparent;
+}
+body > .okf-palette-backdrop .okf-palette-option[aria-selected="true"] { background: var(--blue-soft); border-left-color: var(--blue); }
+body > .okf-palette-backdrop .okf-palette-option[aria-selected="true"] .okf-palette-title { color: var(--blue); font-weight: 600; }
+/* R4 (P1 recette), kept on the text block: a long unbroken title or id wraps
+   instead of widening the palette (390 px). The title breaks only a word
+   longer than its line (break-word leaves its min-content size alone); the
+   text wraps, so the id shares the title's line only when both fit whole,
+   else it moves under the title; the id may break anywhere. */
+body > .okf-palette-backdrop .okf-palette-text {
+  flex: 1; min-width: 0; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline;
+  gap: 2px 12px; padding: 6px 0;
+}
+body > .okf-palette-backdrop .okf-palette-title { flex: 1 1 auto; min-width: 0; overflow-wrap: break-word; font-size: 15px; }
+body > .okf-palette-backdrop .okf-palette-id {
+  flex: 0 1 auto; max-width: 100%; min-width: 0; overflow-wrap: anywhere;
+  font-family: var(--mono); font-size: 12px; color: var(--gray);
+}
+@media (max-width: 480px) {
+  body > .okf-palette-backdrop .okf-palette-text { flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 2px; }
+  body > .okf-palette-backdrop .okf-palette-id { max-width: none; }
+}
+/* J6 */
+body > .okf-palette-backdrop .okf-palette-foot {
+  display: flex; gap: 16px; padding: 10px 16px; border-top: 1px solid var(--hair); font-size: 12px; color: var(--gray);
+}
 
 /* --- Task 15: Show all (C6) --- */
 

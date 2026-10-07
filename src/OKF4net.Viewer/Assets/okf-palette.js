@@ -1,27 +1,60 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 //
-// The "Jump to" palette (spec §4.6, §8): a modal dialog opened by a visible
-// button, Ctrl+K or "/". Results come from OkfSite.rank (fixed tiers, no
-// weights -- not ConceptSearch, and never the body text). Navigating
-// dispatches a cancelable "okf:navigate" event first, so a host -- or the
-// test harness -- can observe or veto it.
+// The "Jump to" palette (spec §4.6, §8, §11.6), drawn as mockup C draws it: a
+// modal dialog opened by a visible button, Ctrl+K or "/". Results come from
+// OkfSite.rank (fixed tiers, no weights -- not ConceptSearch, and never the
+// body text); each option shows its type's glyph from OkfShapes with the type
+// name as hidden text. Navigating dispatches a cancelable "okf:navigate"
+// event first, so a host -- or the test harness -- can observe or veto it.
 (function () {
   "use strict";
   var site = window.OkfSite;
+  var shapes = window.OkfShapes;
   var tools = document.getElementById("okf-tools");
-  if (!site || !tools) { return; }
+  if (!site || !shapes || !tools) { return; }
   var index = site.readIndex(window);
   if (!index) { return; }
   var root = site.rootOf(document);
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  var ELLIPSIS = String.fromCharCode(0x2026);
+  var MIDDLE_DOT = String.fromCharCode(0xB7);
 
   function el(tag, className, text) {
     return site.element(document, tag, className, text);
   }
 
-  var opener = el("button", "okf-tool okf-palette-open", "Jump to...");
+  // J2: the search glyph of C, a constant of this module (spec §4.5).
+  function searchIcon() {
+    var svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("class", "okf-palette-search");
+    svg.setAttribute("width", "18");
+    svg.setAttribute("height", "18");
+    svg.setAttribute("viewBox", "0 0 18 18");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    var circle = document.createElementNS(SVG_NS, "circle");
+    circle.setAttribute("cx", "8");
+    circle.setAttribute("cy", "8");
+    circle.setAttribute("r", "5");
+    circle.setAttribute("stroke-width", "1.6");
+    var handle = document.createElementNS(SVG_NS, "path");
+    handle.setAttribute("d", "M12 12l4 4");
+    handle.setAttribute("stroke-width", "1.6");
+    svg.appendChild(circle);
+    svg.appendChild(handle);
+    return svg;
+  }
+
+  // H7: the label, then the shortcut hint, hidden from assistive technology
+  // (aria-keyshortcuts announces the shortcuts).
+  var opener = el("button", "okf-tool okf-palette-open");
   opener.type = "button";
   opener.setAttribute("aria-haspopup", "dialog");
   opener.setAttribute("aria-keyshortcuts", "Control+K /");
+  opener.appendChild(el("span", "okf-palette-label", "Jump to a concept" + ELLIPSIS));
+  var hint = el("span", "okf-palette-hint", "Ctrl K " + MIDDLE_DOT + " /");
+  hint.setAttribute("aria-hidden", "true");
+  opener.appendChild(hint);
   tools.insertBefore(opener, tools.firstChild);
 
   var backdrop = el("div", "okf-palette-backdrop");
@@ -35,6 +68,7 @@
   dialog.tabIndex = -1;
   var title = el("h2", "okf-sr", "Jump to a concept");
   title.id = "okf-palette-title";
+  var head = el("div", "okf-palette-head");
   var input = document.createElement("input");
   input.type = "text";
   input.id = "okf-palette-input";
@@ -45,20 +79,33 @@
   input.setAttribute("aria-autocomplete", "list");
   input.setAttribute("aria-labelledby", "okf-palette-title");
   input.setAttribute("autocomplete", "off");
+  // J2: the close button is drawn as an "Esc" key and keeps the name Close.
+  var close = el("button", "okf-palette-close", "Esc");
+  close.type = "button";
+  close.setAttribute("aria-label", "Close");
+  head.appendChild(searchIcon());
+  head.appendChild(input);
+  head.appendChild(close);
+  // J3: what sighted readers see; the status region below is what is announced.
+  var matches = el("p", "okf-section-title okf-palette-matches");
+  matches.setAttribute("aria-hidden", "true");
   var list = el("ul", "okf-palette-list");
   list.id = "okf-palette-list";
   list.setAttribute("role", "listbox");
   list.setAttribute("aria-label", "Matching concepts");
-  var status = el("p", "okf-palette-status");
+  var status = el("p", "okf-palette-status okf-sr");
   status.id = "okf-palette-status";
   status.setAttribute("role", "status");
-  var close = el("button", "okf-tool okf-palette-close", "Close");
-  close.type = "button";
+  // J6
+  var foot = el("div", "okf-palette-foot");
+  foot.appendChild(el("span", "", "Up / Down to move"));
+  foot.appendChild(el("span", "", "Enter to open"));
   dialog.appendChild(title);
-  dialog.appendChild(input);
+  dialog.appendChild(head);
+  dialog.appendChild(matches);
   dialog.appendChild(list);
   dialog.appendChild(status);
-  dialog.appendChild(close);
+  dialog.appendChild(foot);
   backdrop.appendChild(dialog);
   document.body.appendChild(backdrop);
 
@@ -87,6 +134,8 @@
     }
   }
 
+  // J4: glyph of the type, the type name as hidden text (the explorer and its
+  // legend are behind the modal), then the title and the id.
   function render() {
     while (list.firstChild) { list.removeChild(list.firstChild); }
     for (var k = 0; k < shown.length; k++) {
@@ -95,8 +144,12 @@
       option.id = "okf-palette-opt-" + k;
       option.setAttribute("role", "option");
       option.setAttribute("aria-selected", "false");
-      option.appendChild(el("span", "okf-palette-title", concept.title));
-      option.appendChild(el("span", "okf-palette-id", concept.id));
+      option.appendChild(shapes.icon(shapes.kindOf(index, shown[k]), "icon"));
+      option.appendChild(el("span", "okf-sr okf-palette-type", shapes.typeLabel(concept.type)));
+      var text = el("span", "okf-palette-text");
+      text.appendChild(el("span", "okf-palette-title", concept.title));
+      text.appendChild(el("span", "okf-palette-id", concept.id));
+      option.appendChild(text);
       option.addEventListener("click", activate.bind(null, k));
       list.appendChild(option);
     }
@@ -118,10 +171,14 @@
     render();
     if (site.normalize(input.value) === "") {
       status.textContent = "";
-    } else if (shown.length === 0) {
-      status.textContent = "No matching concept";
+      matches.textContent = "";
     } else {
-      status.textContent = shown.length + (shown.length === 1 ? " matching concept" : " matching concepts");
+      matches.textContent = "Matches in title, id, tags " + MIDDLE_DOT + " " + shown.length;
+      if (shown.length === 0) {
+        status.textContent = "No matching concept";
+      } else {
+        status.textContent = shown.length + (shown.length === 1 ? " matching concept" : " matching concepts");
+      }
     }
   }
 
