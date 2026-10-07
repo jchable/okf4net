@@ -64,8 +64,25 @@ function renderBody(markdown, links, instrument) {
 let failures = 0;
 let passed = 0;
 
+// Every case name is unique: a copy-pasted name would let a passing case hide a
+// failing one in the output (and in any grep of it).
+const caseNames = new Set();
+// Counts every registration, duplicates included (a slice file must add some).
+let casesRegistered = 0;
+function duplicateName(name) {
+  casesRegistered++;
+  if (!caseNames.has(name)) {
+    caseNames.add(name);
+    return false;
+  }
+  failures++;
+  console.log(`FAIL  - duplicate case name: ${name}`);
+  return true;
+}
+
 /** @param {string} name @param {() => void} fn */
 function check(name, fn) {
+  if (duplicateName(name)) { return; }
   try {
     fn();
     passed++;
@@ -935,6 +952,17 @@ function okfSite() {
   return dom.window;
 }
 
+// A bare window with okf-site.js and okf-shapes.js (spec §12.7), for the
+// OkfShapes cases (control 10) and the slice case files. okf-shapes.js is read
+// when the helper is CALLED, not when run.js loads: it is created by a later
+// P1.1 task, and run.js must keep working before it exists.
+function okfShapes() {
+  const dom = new JSDOM("<!doctype html><html><body></body></html>", { runScripts: "outside-only" });
+  dom.window.eval(siteSource);
+  dom.window.eval(fs.readFileSync(path.join(ASSETS, "okf-shapes.js"), "utf8"));
+  return dom.window;
+}
+
 // jsdom 29 has no ResourceLoader any more: resources go through undici
 // interceptors. This one serves SITE under BASE + mount (so a case can
 // "move" the generated folder) and never lets a request reach the network.
@@ -1029,6 +1057,8 @@ function type(window, input, value) {
 }
 
 const asyncChecks = [];
+// Set when the page cases start: a case queued later would never run.
+let queueClosed = false;
 
 // checkAsync only queues: every async result prints after ALL synchronous
 // output, under the last header printed. So page cases share the one
@@ -1036,6 +1066,14 @@ const asyncChecks = [];
 // between checkAsync calls would print at queue time, above none of them.
 /** @param {string} name @param {() => Promise<void>} fn */
 function checkAsync(name, fn) {
+  if (queueClosed) {
+    failures++;
+    console.log(`FAIL  - ${name}`);
+    console.log("        checkAsync was called after the page cases started: register(h) must register synchronously");
+    process.exitCode = 1;
+    return;
+  }
+  if (duplicateName(name)) { return; }
   asyncChecks.push({ name, fn });
 }
 
@@ -1767,64 +1805,417 @@ checkAsync("explorer, palette and contents render hostile titles as inert text",
 // The sanitizer keeps `class` on <code>, so body content can wear any chrome
 // class. Every chrome rule is anchored to a chrome container: inside
 // #okf-body such a class must change nothing (no overlay faking a dialog, no
-// fake trust badge, no text hidden from sighted readers).
-checkAsync("chrome classes worn by body content change none of its styles", async () => {
+// fake trust badge, no text hidden from sighted readers). Each slice lists its
+// chrome classes in its own fixture page (spec §12.6): chrome-classes.md
+// (P1), p11-chrome-classes.md (P1.1), p2-chrome-classes.md (P2),
+// p3-chrome-classes.md (P3). The cases below run on every such page the
+// generated site holds, so a slice's page is covered as soon as its fixture
+// exists. Three layers, each with its own reach and none a proof:
+//   1. a static scan of the selector text of the stylesheet (every selector
+//      naming a class starts from a §12.6 anchor): a smoke check, but the only
+//      layer that sees a rule whose class nothing wears;
+//   2. a selector-matching differential: on a tree of elements wearing every
+//      class the page lists AND every class any rule names, an element must
+//      match exactly the class-naming selectors its unclassed twin matches,
+//      pseudo-elements stripped (jsdom cannot compute their style), @media
+//      rules included; independent of which properties a rule sets;
+//   3. a computed-style comparison of the same pairs over every property the
+//      stylesheet declares.
+// Limits: all of it runs on what jsdom's CSSOM and selector engine understand
+// (an at-rule or selector it drops is invisible), and the trees hold every tag
+// the sanitizer admits, nothing else.
+// The floor of properties compared even if no rule declares them:
+const CHROME_PROPS = ["position", "display", "width", "height", "clip", "clip-path", "overflow", "z-index", "inset", "top",
+  "background", "background-color", "border", "border-left", "border-left-color", "border-radius", "border-width",
+  "padding", "margin", "white-space", "max-width", "min-height", "cursor", "flex", "list-style", "font-family",
+  "font-size", "color", "text-transform", "outline", "overflow-wrap", "min-width", "order", "align-items",
+  "flex-direction", "flex-basis", "flex-shrink", "flex-wrap", "margin-top", "overflow-x",
+  // Properties the P1.1 chrome sets as well.
+  "font-weight", "letter-spacing", "line-height", "text-decoration", "visibility", "text-overflow", "border-top",
+  "border-bottom", "border-color", "box-shadow", "opacity", "gap", "justify-content", "vertical-align", "text-align",
+  "max-height", "padding-left", "padding-top", "grid-template-columns", "flex-grow", "fill", "stroke", "left", "bottom",
+  "transform", "background-image", "content", "filter", "pointer-events"];
+
+// --- static selector analysis: begin (the plan-CSS proof extracts this block) ---
+
+// Calls visit(rule) for every style rule of every stylesheet of a page, into
+// @media, @supports and any other grouping rule jsdom's CSSOM keeps. CSS
+// nesting (a rule inside a style rule, selectors with `&`) is walked too and
+// stays flagged by the anchor scan, deliberately: `&` starts from no anchor.
+function walkStyleRules(window, visit) {
+  const walk = (rules) => {
+    for (const rule of Array.from(rules)) {
+      if (typeof rule.selectorText === "string" && rule.style) { visit(rule); }
+      if (rule.cssRules) { walk(rule.cssRules); }
+    }
+  };
+  for (const sheet of Array.from(window.document.styleSheets)) { walk(sheet.cssRules); }
+}
+
+// Splits at the top-level occurrences of any character of `seps` (outside
+// (), [] and quotes), dropping empty pieces.
+function splitTopLevel(text, seps) {
+  const out = [];
+  let depth = 0;
+  let quote = "";
+  let cur = "";
+  for (const ch of text) {
+    if (quote) {
+      cur += ch;
+      if (ch === quote) { quote = ""; }
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      cur += ch;
+    } else if (ch === "(" || ch === "[") {
+      depth++;
+      cur += ch;
+    } else if (ch === ")" || ch === "]") {
+      depth--;
+      cur += ch;
+    } else if (depth === 0 && seps.includes(ch)) {
+      if (cur.trim()) { out.push(cur.trim()); }
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur.trim()) { out.push(cur.trim()); }
+  return out;
+}
+
+// Expands every :is(...) / :where(...) of a selector into its alternatives,
+// recursively: ":is(A, B) .x" -> ["A .x", "B .x"].
+function expandIs(selector) {
+  const m = /:(?:is|where)\(/.exec(selector);
+  if (!m) { return [selector]; }
+  let depth = 1;
+  let i = m.index + m[0].length;
+  const start = i;
+  while (i < selector.length && depth > 0) {
+    if (selector[i] === "(") { depth++; }
+    if (selector[i] === ")") { depth--; }
+    i++;
+  }
+  const inner = selector.slice(start, i - 1);
+  const before = selector.slice(0, m.index);
+  const after = selector.slice(i);
+  return splitTopLevel(inner, ",").flatMap((alt) => expandIs(before + alt + after));
+}
+
+// Parses a complex selector into compounds: [{ comb, text }], where comb is
+// the combinator written BEFORE the compound ("" for the first, " ", ">",
+// "+" or "~").
+function parseComplex(selector) {
+  const parts = [];
+  let depth = 0;
+  let quote = "";
+  let cur = "";
+  let curComb = "";
+  let gap = "";
+  for (const ch of selector.trim()) {
+    const sep = !quote && depth === 0 && /[\s>+~]/.test(ch);
+    if (sep) {
+      if (cur) {
+        parts.push({ comb: curComb, text: cur });
+        cur = "";
+        gap = "";
+      }
+      if (/\s/.test(ch)) { gap = gap || " "; } else { gap = ch; }
+      continue;
+    }
+    if (!cur) {
+      curComb = parts.length ? (gap || " ") : "";
+      gap = "";
+    }
+    cur += ch;
+    if (quote) {
+      if (ch === quote) { quote = ""; }
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === "(" || ch === "[") {
+      depth++;
+    } else if (ch === ")" || ch === "]") {
+      depth--;
+    }
+  }
+  if (cur) { parts.push({ comb: curComb, text: cur }); }
+  return parts;
+}
+
+// Does the text name a class: a .class (ASCII or not, escapes included), or a
+// [class...] attribute test (any case, any namespace)?
+function namesClass(text) {
+  const bare = text.replace(/"[^"]*"|'[^']*'/g, "");
+  return /\.(?:[A-Za-z_\\-]|[^ -~])/.test(bare.replace(/\[[^\]]*\]/g, ""))
+    || /\[\s*(?:[\w*-]*\|)?class\b/i.test(bare);
+}
+
+// Every class token a selector names (.class, and the values of [class...=...]).
+function classTokens(selectorText) {
+  const tokens = new Set();
+  const bare = selectorText.replace(/"[^"]*"|'[^']*'/g, "").replace(/\[[^\]]*\]/g, "");
+  for (const m of bare.matchAll(/\.((?:\\.|[A-Za-z0-9_-]|[^ -~])+)/g)) { tokens.add(m[1].replace(/\\(.)/g, "$1")); }
+  for (const m of selectorText.matchAll(/\[\s*(?:[\w*-]*\|)?class\s*[~|^$*]?=\s*(?:"([^"]*)"|'([^']*)'|([^\]\s]+))/gi)) {
+    for (const token of (m[1] || m[2] || m[3] || "").split(/\s+/)) { if (token) { tokens.add(token); } }
+  }
+  return Array.from(tokens);
+}
+
+function tagOf(compound) {
+  const m = /^[A-Za-z][\w-]*/.exec(compound);
+  return m ? m[0].toLowerCase() : "";
+}
+
+// The §12.6 chrome anchors a class-naming selector may start from, as chains
+// of compounds joined by ">"; `exact` anchors must be the whole selector (the
+// layout shell). After an anchor the next combinator must be a descendant
+// (space) or ">": "+" and "~" would reach siblings of the container, which
+// hold #okf-body. Anything else naming a class could match a <code> in
+// #okf-body that wears it.
+const BODY = /^body$/;
+const CHROME_ANCHORS = [
+  { chain: [/^#okf-tools(?![\w-])/] },
+  { chain: [/^#okf-explorer(?![\w-])/] },
+  { chain: [/^#okf-context(?![\w-])/] },
+  { chain: [BODY, /^\.okf-palette-backdrop(?![\w-])/] },
+  { chain: [BODY, /^\.okf-layout$/, /^main$/, /^\.okf-page-head(?![\w-])/] },
+  { chain: [BODY, /^\.okf-layout$/, /^main$/, /^\.(?:meta|errors)(?![\w-])/] },
+  { chain: [BODY, /^header\.bar(?![\w-])/] },
+  { chain: [BODY, /^\.okf-skip(?![\w-])/] },
+  { chain: [BODY, /^\.okf-graph-layout(?![\w-])/] },
+  { chain: [BODY, /^\.topline(?![\w-])/] },
+  // The layout shell and the direct children of <main>: #okf-body is one,
+  // but a class-less compound cannot be worn.
+  { chain: [BODY, /^\.okf-layout$/], exact: true },
+  { chain: [BODY, /^\.okf-layout$/, /^main$/], exact: true },
+  { chain: [BODY, /^\.okf-layout$/, /^main$/, /^\*$/], exact: true },
+];
+
+// An optional leading root-state compound (attributes only, never a class).
+const ROOT_STATE = /^(?:html|:root)(?:\[data-okf-[\w-]+(?:=(?:"[^"]*"|[^\]]*))?\])+$/;
+
+function isAnchored(partsIn) {
+  let parts = partsIn;
+  if (parts.length > 1 && ROOT_STATE.test(parts[0].text) && parts[1].comb === " ") {
+    parts = parts.slice(1).map((p, i) => (i === 0 ? { comb: "", text: p.text } : p));
+  }
+  for (const anchor of CHROME_ANCHORS) {
+    const n = anchor.chain.length;
+    if (parts.length < n) { continue; }
+    if (!anchor.chain.every((re, i) => re.test(parts[i].text) && (i === 0 || parts[i].comb === ">"))) { continue; }
+    if (anchor.exact) {
+      if (parts.length === n) { return true; }
+      continue;
+    }
+    if (parts.length === n || parts[n].comb === " " || parts[n].comb === ">") { return true; }
+  }
+  // An svg ancestor (the sanitizer never admits svg, so body content is never inside one).
+  return parts.some((p, i) => i < parts.length - 1 && tagOf(p.text) === "svg" && (parts[i + 1].comb === " " || parts[i + 1].comb === ">"));
+}
+
+// The selectors of a rule that name a class and start from no anchor. The one
+// exemption: every compound naming a class carries an explicit non-code tag
+// (a.broken, table.frontmatter th), so no <code> can be what it matches.
+function unanchoredClassSelectors(selectorText) {
+  const offenders = [];
+  for (const complex of splitTopLevel(selectorText, ",")) {
+    for (const alt of expandIs(complex)) {
+      const parts = parseComplex(alt);
+      if (!parts.some((p) => namesClass(p.text))) { continue; }
+      if (isAnchored(parts)) { continue; }
+      const tagged = parts.filter((p) => namesClass(p.text)).every((p) => {
+        const tag = tagOf(p.text);
+        return tag !== "" && tag !== "code";
+      });
+      if (tagged) { continue; }
+      offenders.push(alt.trim());
+    }
+  }
+  return offenders;
+}
+
+// A pseudo-element's rule styles the element it hangs on: matching is tested
+// on the element, with the pseudo-element removed.
+function withoutPseudoElements(selector) {
+  return selector.replace(/::?(?:before|after|first-line|first-letter|marker|placeholder|selection)(?![\w-])/g, "");
+}
+
+// --- static selector analysis: end ---
+
+// jsdom's selector engine (nwsapi) answers "no match" for a pseudo-class it
+// does not know, and only sometimes throws: so the guard fails closed on its
+// own, refusing any pseudo-class not in this list, each checked against jsdom 29
+// (it evaluates them; none of them can match an element of a static page by
+// itself except the structural ones). Add one only after checking that.
+const KNOWN_PSEUDO_CLASSES = new Set(["not", "is", "where", "has", "hover", "focus", "focus-visible", "focus-within",
+  "checked", "disabled", "enabled", "empty", "first-child", "last-child", "nth-child", "root", "link"]);
+
+function unknownPseudoClasses(selector) {
+  const bare = selector.replace(/"[^"]*"|'[^']*'/g, "").replace(/\[[^\]]*\]/g, "");
+  return Array.from(bare.matchAll(/(?<!:):([\w-]+)/g), (m) => m[1]).filter((name) => !KNOWN_PSEUDO_CLASSES.has(name));
+}
+
+function declaredProperties(window) {
+  const props = new Set(CHROME_PROPS);
+  walkStyleRules(window, (rule) => {
+    for (let i = 0; i < rule.style.length; i++) {
+      if (!rule.style[i].startsWith("--")) { props.add(rule.style[i]); }
+    }
+  });
+  return Array.from(props);
+}
+
+function chromeClassPages() {
+  return fs.readdirSync(SITE).filter((name) => /(^|-)chrome-classes\.html$/.test(name)).sort();
+}
+
+// Smoke check, not proof: it reads selector text, so it cannot see a class
+// applied by script or an anchor that is itself too wide. It sits beside the
+// matching differential and the computed-style comparison below, which test
+// what the engine does.
+checkAsync("every selector naming a class starts from a §12.6 chrome anchor (static smoke check of viewer.css, @media included)", async () => {
+  const window = await openPage("index.html");
+  let rules = 0;
+  const bad = [];
+  walkStyleRules(window, (rule) => {
+    rules++;
+    for (const sel of unanchoredClassSelectors(rule.selectorText)) { bad.push(sel); }
+  });
+  assert(rules >= 50, `the walk saw only ${rules} style rules: the stylesheet did not load or the walk lost the @media rules`);
+  assert(bad.length === 0, `class-naming selector(s) not anchored to a §12.6 chrome container (body code can wear the class): ${bad.join(" | ")}`);
+});
+
+// Every tag the sanitizer admits (viewer.js ALLOWED_TAGS), as descendants of
+// a worn <code>: a rule `.chip strong` must be seen even if no fixture holds
+// a strong. <li> appears directly under the code as well as in lists.
+const PROBE_KIDS = "<p>p</p><h1>h1</h1><h2>h2</h2><h3>h3</h3><h4>h4</h4><h5>h5</h5><h6>h6</h6>"
+  + "<ul><li>l</li></ul><ol><li>l</li></ol><li>direct</li><a href=\"#\">a</a><img alt=\"i\"><code>c</code>"
+  + "<pre>p</pre><pre><code>pc</code></pre><blockquote>q</blockquote>"
+  + "<table><thead><tr><th>h</th></tr></thead><tbody><tr><td>d</td></tr></tbody><tfoot><tr><td>f</td></tr></tfoot></table>"
+  + "<strong>s</strong><em>e</em><del>d</del><hr><br><input type=\"checkbox\" disabled>";
+
+checkAsync("chrome classes worn by body content change none of its styles, on every *chrome-classes page", async () => {
+  const pages = chromeClassPages();
+  for (const required of ["chrome-classes.html", "p11-chrome-classes.html"]) {
+    assert(pages.includes(required), `${required} is missing from the generated site (found: ${pages.join(", ")})`);
+  }
+  // jsdom applies no @media rule: a second pass loads a copy of the stylesheet
+  // with every @media wrapper removed, as if every query matched.
+  const unwrapped = unwrapMedia(fs.readFileSync(path.join(SITE, "assets", "viewer.css"), "utf8"));
+  for (const rel of pages) {
+    const window = await openPage(rel);
+    const doc = window.document;
+    const body = doc.getElementById("okf-body");
+    const reference = body.querySelector("code:not([class])");
+    assert(reference, `${rel}: the fixture lost its unclassed reference <code>`);
+    const listed = Array.from(body.querySelectorAll("code[class]"));
+    assert(listed.length >= 1 && listed[0].classList.length >= 2,
+      `${rel}: the first classed <code> carries ${listed.length ? listed[0].classList.length : 0} classes: the sanitizer dropped them, this case no longer tests anything`);
+    // The classes worn: every class the fixture lists AND every class any rule
+    // names, so a rule whose class no fixture lists is still exercised.
+    const everyClass = new Set(listed.flatMap((el) => Array.from(el.classList)));
+    walkStyleRules(window, (rule) => { for (const token of classTokens(rule.selectorText)) { everyClass.add(token); } });
+    // Descendant, child and sibling pairs: whatever the fixture nests, a pair
+    // `.a .b`, `.a > .b`, `.a + .b` is exercised by an element wearing EVERY
+    // class, nested in and beside others like it, holding every admitted tag,
+    // and followed by a <p>. Each element is paired with its twin in an
+    // identical tree of unclassed <code>.
+    const treeHtml = (mark) => `<code${mark}><code${mark}>n</code><p>x</p><code${mark}>m</code><p>y</p>${PROBE_KIDS}</code><p>after</p>`;
+    const probe = doc.createElement("div");
+    probe.innerHTML = `<div>${treeHtml(" data-probe-worn")}</div><div>${treeHtml("")}</div>`;
+    for (const el of probe.querySelectorAll("[data-probe-worn]")) {
+      el.removeAttribute("data-probe-worn");
+      el.setAttribute("class", Array.from(everyClass).join(" "));
+    }
+    body.appendChild(probe);
+    const wornTree = Array.from(probe.children[0].querySelectorAll("*"));
+    const refTree = Array.from(probe.children[1].querySelectorAll("*"));
+    assert(wornTree.length === refTree.length && wornTree.length > 40, `${rel}: the probe trees differ in shape or lost their elements (${wornTree.length}/${refTree.length})`);
+    const pairs = [...listed.map((el) => [el, reference]), ...wornTree.map((el, i) => [el, refTree[i]])];
+    const label = (el) => `<${el.tagName.toLowerCase()}${el.hasAttribute("class") ? ` class="${el.getAttribute("class").slice(0, 80)}..."` : ""}>`;
+    const props = declaredProperties(window);
+    const assertInert = (when) => {
+      for (const el of body.querySelectorAll("*")) {
+        const style = window.getComputedStyle(el);
+        const where = `${when}: ${label(el)}`;
+        assert(style.position !== "fixed" && style.position !== "absolute", `${where} inside #okf-body is position: ${style.position}`);
+        assert(!/rect\(/.test(style.clip) && style.width !== "1px" && style.height !== "1px", `${where} inside #okf-body is clipped or 1px (screen-reader-only styling)`);
+        assert(style.display !== "none" && style.visibility !== "hidden", `${where} inside #okf-body is hidden`);
+      }
+      // Layer 2. A selector the engine cannot evaluate fails the case, never
+      // passes it (nested `&` rules land here too: conservative on purpose).
+      const matches = (el, sel) => {
+        const unknown = unknownPseudoClasses(sel);
+        if (unknown.length) {
+          throw new Error(`${when}: the selector "${sel}" uses :${unknown.join(", :")}, which the guard's engine is not known to evaluate (KNOWN_PSEUDO_CLASSES): the guard fails closed`);
+        }
+        try {
+          return el.matches(sel);
+        } catch (err) {
+          throw new Error(`${when}: cannot evaluate the selector "${sel}" (${err.message}): the guard fails closed`);
+        }
+      };
+      const inPairs = new Set(pairs.flat());
+      walkStyleRules(window, (rule) => {
+        for (const complex of splitTopLevel(rule.selectorText, ",")) {
+          if (!namesClass(complex)) { continue; }
+          const sel = withoutPseudoElements(complex);
+          for (const [el, twin] of pairs) {
+            assert(matches(el, sel) === matches(twin, sel),
+              `${when}: the rule "${rule.selectorText}" reaches ${label(el)} inside #okf-body, which its unclassed twin does not match`);
+          }
+          // The rest of the body holds nothing the sanitizer let wear a class,
+          // except a class a script put on a non-code element (a.broken).
+          for (const el of body.querySelectorAll("*")) {
+            if (inPairs.has(el) || probe.contains(el) || (el.hasAttribute("class") && el.tagName !== "CODE")) { continue; }
+            assert(!matches(el, sel), `${when}: the rule "${rule.selectorText}" reaches ${label(el)} inside #okf-body`);
+          }
+        }
+      });
+      // Layer 3. jsdom neither expands shorthands nor resolves var() in them,
+      // so both the shorthands and their longhands are compared, as declared.
+      for (const [el, twin] of pairs) {
+        const style = window.getComputedStyle(el);
+        const expected = window.getComputedStyle(twin);
+        for (const prop of props) {
+          assert(style.getPropertyValue(prop) === expected.getPropertyValue(prop),
+            `${when}: ${label(el)} ${prop}: ${style.getPropertyValue(prop)} (the unclassed counterpart has ${expected.getPropertyValue(prop)})`);
+        }
+      }
+    };
+    assertInert(`${rel} as loaded`);
+    const style = doc.createElement("style");
+    style.textContent = unwrapped;
+    doc.head.appendChild(style);
+    const realHead = doc.querySelector("#okf-explorer .okf-explorer-head");
+    assert(realHead && window.getComputedStyle(realHead).getPropertyValue("position") === "sticky",
+      `${rel}: the unwrapped stylesheet no longer makes the real explorer head sticky: this pass tests nothing`);
+    assertInert(`${rel} with every @media rule applied`);
+  }
+});
+
+// The anchored rules still style the real chrome: a selector the engine
+// cannot match would pass the cases above by styling nothing at all. One probe
+// per P1 component; each P1.1 task adds its own probe case under its marker.
+checkAsync("the real P1 chrome keeps its anchored styles", async () => {
   const window = await openPage("chrome-classes.html");
   const doc = window.document;
-  const body = doc.getElementById("okf-body");
-  const reference = body.querySelector("code:not([class])");
-  assert(reference, "the fixture lost its unclassed reference <code>");
-  const worn = Array.from(body.querySelectorAll("code[class]"));
-  assert(worn.length >= 6, `the fixture lost its classed <code> elements (${worn.length})`);
-  assert(worn[0].classList.contains("okf-palette-backdrop") && worn[0].classList.contains("okf-sr"), "the sanitizer dropped the class attribute: this case no longer tests anything");
-  for (const el of body.querySelectorAll("*")) {
-    const style = window.getComputedStyle(el);
-    const where = `<${el.tagName.toLowerCase()} class="${el.getAttribute("class") || ""}">`;
-    assert(style.position !== "fixed" && style.position !== "absolute", `${where} inside #okf-body is position: ${style.position}`);
-    assert(!/rect\(/.test(style.clip) && style.width !== "1px" && style.height !== "1px", `${where} inside #okf-body is clipped or 1px (screen-reader-only styling)`);
-  }
-  // jsdom neither expands shorthands nor resolves var() in them, so both the
-  // shorthands and their longhands are compared, as declared.
-  const props = ["position", "display", "width", "height", "clip", "clip-path", "overflow", "z-index", "inset", "top",
-    "background", "background-color", "border", "border-left", "border-left-color", "border-radius", "border-width",
-    "padding", "margin", "white-space", "max-width", "min-height", "cursor", "flex", "list-style", "font-family",
-    "font-size", "color", "text-transform", "outline", "overflow-wrap", "min-width", "order", "align-items",
-    "flex-direction", "flex-basis", "flex-shrink", "flex-wrap", "margin-top", "overflow-x"];
-  // The anchored rules still style the real chrome (a selector the engine
-  // cannot match would pass the checks above by styling nothing at all).
   const chrome = [
     [doc.querySelector("body > .okf-palette-backdrop"), "position", "fixed"],
     [doc.querySelector("#okf-explorer .okf-tree-toggle .okf-sr"), "position", "absolute"],
     [doc.querySelector("#okf-explorer .okf-badge.okf-trust-human"), "width", "8px"],
     [doc.querySelector("#okf-tools .okf-tool"), "min-height", "36px"],
+    // The old header and context-title rules, anchored by P1.1.
+    [doc.querySelector("body > .topline"), "height", "6px"],
+    [doc.querySelector("body > header.bar > .bar-in"), "display", "flex"],
+    [doc.querySelector("body > header.bar .wordmark"), "font-size", "20px"],
+    [doc.querySelector("body > .okf-layout > main > .meta"), "font-size", "13px"],
   ];
   for (const [el, prop, value] of chrome) {
     assert(el, `a chrome element this case needs is missing (${prop}: ${value})`);
     const got = window.getComputedStyle(el).getPropertyValue(prop);
     assert(got === value, `the real <${el.tagName.toLowerCase()} class="${el.getAttribute("class")}"> lost its ${prop}: ${value} (got ${got})`);
   }
-  const assertWornLikeReference = (when) => {
-    const expected = window.getComputedStyle(reference);
-    for (const el of worn) {
-      const style = window.getComputedStyle(el);
-      for (const prop of props) {
-        assert(style.getPropertyValue(prop) === expected.getPropertyValue(prop),
-          `${when}: <code class="${el.getAttribute("class")}"> ${prop}: ${style.getPropertyValue(prop)} (an unclassed <code> has ${expected.getPropertyValue(prop)})`);
-      }
-    }
-  };
-  assertWornLikeReference("as loaded");
-  // jsdom applies no @media rule, so every rule inside one (the desktop
-  // explorer head, the stacked and narrow layouts) went unchecked above. Load
-  // a copy of the stylesheet with each @media wrapper removed, as if every
-  // query matched, and compare again.
-  const style = doc.createElement("style");
-  style.textContent = unwrapMedia(fs.readFileSync(path.join(SITE, "assets", "viewer.css"), "utf8"));
-  doc.head.appendChild(style);
-  const realHead = doc.querySelector("#okf-explorer .okf-explorer-head");
-  assert(realHead && window.getComputedStyle(realHead).getPropertyValue("position") === "sticky",
-    "the unwrapped stylesheet no longer makes the real explorer head sticky: this pass tests nothing");
-  assertWornLikeReference("with every @media rule applied");
 });
 
 // Drops each "@media ... {" header and its closing brace, keeping the rules
@@ -2079,6 +2470,89 @@ checkAsync("a GFM table in the body scrolls in its own box; the frontmatter tabl
     `the frontmatter table changed (display ${front.getPropertyValue("display")}, overflow-x ${front.getPropertyValue("overflow-x")})`);
 });
 
+// === P1.1 cases: one block per task; a task writes only under its own line ===
+// --- Task 3: CSS foundation ---
+
+// --- Task 4: index v2 ---
+
+// --- Task 6: OkfShapes (control 10) ---
+
+// --- Task 7: theme button ---
+
+// --- Task 8: contents, current section ---
+
+// --- Task 10: fonts ---
+
+// --- Task 11: shell and header ---
+
+// --- Task 12: page head ---
+
+// --- Task 13: explorer ---
+
+// --- Task 14: palette ---
+
+// --- Task 15: okf-page.js (control 11) ---
+
+// --- Task 16: fonts fallback (only if Task 10 found a browser blocking the fonts) ---
+
+// === end of P1.1 cases ===
+
+// --- slice case files (spec §12.7) ------------------------------------------
+//
+// P2 and P3 never edit this file: their cases live in cases/p2.js and
+// cases/p3.js, each exporting register(h). Every cases/*.js present is loaded
+// in ordinal order of its name and registered here, before the summary; an
+// absent folder or file is not an error. h is frozen, so a slice cannot
+// replace a helper another slice relies on. A slice registers synchronous
+// checks with h.check (they run at once) and page cases with h.checkAsync
+// (they are queued and awaited with every other page case).
+const SLICE_HELPERS = Object.freeze({
+  check, assert, checkAsync, okfSite, okfShapes, siteResources, openPage, navigations,
+  key, type, unwrapMedia, isShown, paletteOptions, treeLink,
+});
+const CASES_DIR = path.join(__dirname, "cases");
+let sliceCaseFiles = [];
+try {
+  sliceCaseFiles = fs.readdirSync(CASES_DIR).filter((name) => name.endsWith(".js")).sort();
+} catch (err) {
+  if (err.code !== "ENOENT") { throw err; }
+}
+for (const name of sliceCaseFiles) {
+  console.log(`\nSlice cases (cases/${name}):`);
+  let mod = null;
+  try {
+    mod = require(path.join(CASES_DIR, name));
+  } catch (err) {
+    failures++;
+    console.log(`FAIL  - cases/${name} does not load: ${err.message}`);
+    continue;
+  }
+  if (!mod || typeof mod.register !== "function") {
+    failures++;
+    console.log(`FAIL  - cases/${name} does not export register(h)`);
+    continue;
+  }
+  try {
+    const registeredBefore = casesRegistered;
+    const returned = mod.register(SLICE_HELPERS);
+    if (returned && typeof returned.then === "function") {
+      // An async register can register (or skip) its cases after the run has
+      // finished, or reject unseen: refuse it instead of losing its cases.
+      returned.then(undefined, () => {});
+      failures++;
+      console.log(`FAIL  - cases/${name}: register(h) must be synchronous (it returned a promise)`);
+    } else if (casesRegistered === registeredBefore) {
+      // A register that defers its work (setTimeout, an event) and returns
+      // undefined would otherwise register nothing and pass in silence.
+      failures++;
+      console.log(`FAIL  - cases/${name}: register(h) registered no case (cases must be registered before it returns)`);
+    }
+  } catch (err) {
+    failures++;
+    console.log(`FAIL  - cases/${name}: register(h) threw: ${err.message}`);
+  }
+}
+
 // --- end of async checks ---
 
 // A pending Promise does not keep Node alive: a case awaiting an event that
@@ -2094,6 +2568,10 @@ process.on("exit", () => {
 });
 
 async function runAsyncChecks() {
+  queueClosed = true;
+  // Synchronous output (helpers, OkfShapes, slice files) has all been printed
+  // by now; every queued page case reports under this header.
+  console.log("\nPage cases (queued above, awaited now):");
   for (const { name, fn } of asyncChecks) {
     openedPages = [];
     let timer = null;

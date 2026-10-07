@@ -1,6 +1,9 @@
 /* OKF4net bundle viewer — visual language copied from the project website
    ("The §Document" theme). Maintained independently of web/: the two are
    deliberately not coupled. */
+/* === @font-face (P1.1 Task 10 replaces the lines between these two markers) === */
+/* === end @font-face === */
+
 :root {
   --white: #ffffff;
   --ink: #101014;
@@ -20,17 +23,17 @@ body {
   background: var(--white); color: var(--ink);
   font-family: var(--body); font-size: 16px; line-height: 1.6;
 }
-.topline { height: 6px; background: var(--blue); }
+body > .topline { height: 6px; background: var(--blue); }
 header.bar { border-bottom: 1px solid var(--hair); }
-.bar-in {
+body > header.bar > .bar-in {
   max-width: 1440px; margin: 0 auto; padding: 16px clamp(16px, 3.5vw, 48px);
   display: flex; align-items: center; gap: 24px;
 }
-.wordmark {
+body > header.bar .wordmark {
   font-family: var(--display); font-weight: 900; font-size: 20px;
   letter-spacing: -.02em; color: var(--ink); text-decoration: none;
 }
-.wordmark sup { color: var(--blue); font-family: var(--mono); font-weight: 700; }
+body > header.bar .wordmark sup { color: var(--blue); font-family: var(--mono); font-weight: 700; }
 /* break-word: a word longer than the line (a dotted member name, a path in
    inline code) wraps instead of widening the page at phone width. */
 main { max-width: 900px; margin: 0 auto; padding: 32px clamp(16px, 3.5vw, 48px) 96px; overflow-wrap: break-word; }
@@ -52,9 +55,9 @@ table.frontmatter th { font-family: var(--mono); font-weight: 400; color: var(--
 /* anywhere, not break-word: a table cell is as wide as its min-content, so
    only anywhere lets a long unbroken value fit a phone's width. */
 table.frontmatter td { overflow-wrap: anywhere; }
-.meta { font-family: var(--mono); font-size: 13px; color: var(--gray); }
-.errors { border-left: 3px solid var(--red); padding-left: 16px; margin-bottom: 32px; }
-.errors h2 { color: var(--red); font-size: 18px; }
+body > .okf-layout > main > .meta { font-family: var(--mono); font-size: 13px; color: var(--gray); }
+body > .okf-layout > main > .errors { border-left: 3px solid var(--red); padding-left: 16px; margin-bottom: 32px; }
+body > .okf-layout > main > .errors h2 { color: var(--red); font-size: 18px; }
 /* Dark theme: follows the system unless the toggle forced a theme
    (okf-theme.js sets data-theme on <html>). Same values in both blocks. */
 :root[data-theme="light"] { color-scheme: light; }
@@ -140,6 +143,7 @@ body > .okf-layout > main { flex: 999 1 560px; min-width: 0; margin: 0; }
 #okf-explorer .okf-trust-human { background: var(--blue); }
 #okf-explorer .okf-trust-machine { border: 2px solid var(--blue); }
 #okf-explorer .okf-stale { border-radius: 0; width: 9px; background: #b4540a; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+/* (end of the P1 explorer rules: Task 13 removes the block above, Task 14 the one below; nobody edits this line) */
 body > .okf-palette-backdrop {
   position: fixed; inset: 0; z-index: 10; display: flex; align-items: flex-start; justify-content: center;
   padding: 96px 16px 16px; background: rgba(16, 16, 20, .4);
@@ -179,6 +183,7 @@ body > .okf-palette-backdrop .okf-palette-id { flex: 0 1 auto; max-width: 100%; 
 body > .okf-palette-backdrop .okf-palette-status { margin: 0; padding: 8px 16px; font-size: 13px; color: var(--gray); }
 body > .okf-palette-backdrop .okf-palette-close { margin: 0 16px 12px; }
 body > .okf-palette-backdrop .okf-palette:focus { outline: none; }
+/* (end of the P1 palette rules: Task 14 removes the block above; nobody edits this line) */
 #okf-context :is(.okf-toc, .okf-backlinks) h2 {
   font-family: var(--mono); font-size: 11px; font-weight: 400; letter-spacing: .06em;
   text-transform: uppercase; color: var(--gray); margin: 0 0 8px;
@@ -193,3 +198,26 @@ body > .okf-palette-backdrop .okf-palette:focus { outline: none; }
    (a sibling, outside it) or any chrome. */
 #okf-body table { display: block; overflow-x: auto; }
 #okf-body [tabindex="-1"]:focus { outline: 2px solid var(--blue); outline-offset: 4px; }
+
+/* === P1.1 chrome: one block per task; a task writes only under its own line === */
+/* --- Task 3: shared components (spec §12.6), shapes (§12.2), #okf-body content (C7) --- */
+
+/* --- Task 7: theme button (H11) --- */
+
+/* --- Task 8: contents (X3, X4) --- */
+
+/* --- Task 11: header (H1-H13) --- */
+
+/* --- Task 12: page head (C2-C6) and Referenced by (X10) --- */
+
+/* --- Task 13: explorer (E1-E13) and Filters (H8) --- */
+
+/* --- Task 14: palette (H7, J1-J6) --- */
+
+/* --- Task 15: Show all (C6) --- */
+
+/* === P2: local graph === */
+/* (P2 rules) */
+
+/* === P3: graph page === */
+/* (P3 rules) */

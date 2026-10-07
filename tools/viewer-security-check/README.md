@@ -122,3 +122,19 @@ every edge and every tree node in the shape `IndexScript.cs` writes; a smoke
 check on a non-empty bundle, not a validator for an empty one). CI's
 `aot-publish` job runs it on the file the **native** `okf-render` writes,
 which the harness above never sees.
+
+## Slice case files
+
+`run.js` belongs to P1.1 (spec §12.0, §12.7). The later slices add their
+cases without editing it: `cases/p2.js` and `cases/p3.js` each export
+`register(h)`, where `h` is a frozen object holding exactly `check`, `assert`,
+`checkAsync`, `okfSite`, `okfShapes`, `siteResources`, `openPage`,
+`navigations`, `key`, `type`, `unwrapMedia`, `isShown`, `paletteOptions` and
+`treeLink`. The loader calls `register(h)` for every `cases/*.js`, in ordinal
+order of the file name, before the summary; a missing file is not an error.
+Synchronous checks (`h.check`) run at once; page cases (`h.checkAsync`) are
+queued and awaited with the others, each bounded by the runner's timer and
+failed by any script error its pages raise. Fixtures follow the same rule:
+`fixtures/hostile-bundle/p11-*`, `p2-*` and `p3-*` belong to their slice, and
+each slice lists its chrome classes in its own `*chrome-classes.md`, which the
+chrome-class case picks up by name.
