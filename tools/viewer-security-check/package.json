@@ -6,7 +6,8 @@
   "main": "run.js",
   "scripts": {
     "pretest": "node -e \"require('fs').rmSync('.generated/hostile-site',{recursive:true,force:true})\" && dotnet run --project ../../src/OKF4net.Render -c Release -- fixtures/hostile-bundle --out .generated/hostile-site",
-    "test": "node run.js"
+    "test": "node run.js",
+    "recette:selftest": "node recette/lib.js --selftest"
   },
   "license": "LGPL-3.0-or-later",
   "dependencies": {

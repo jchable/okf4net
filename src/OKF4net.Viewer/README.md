@@ -13,4 +13,6 @@ for usage.
 
 LGPL-3.0-or-later. The generated site embeds a vendored copy of
 [marked](https://github.com/markedjs/marked) (MIT) for client-side markdown
-rendering — see `NOTICE`.
+rendering, and three font families — Inter, Inter Tight and Space Mono (SIL
+Open Font License 1.1), latin woff2 as Google Fonts distributes them — see
+`NOTICE` and `Assets/fonts/README.md`.

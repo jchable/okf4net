@@ -931,6 +931,32 @@ juste après `viewer.css` sur toutes les pages (`RenderDocumentStart`, §12.0) ;
 licences le restent) ; budget porté à ≤ 400 Ko pour `okf-fonts.css` ; la
 vérification est refaite.
 
+Mesure et vérification (P1.1, 2026-10-07) : woff2 — 4 fichiers, 126 372 octets au
+total (budget 300 000 ; Inter et Inter Tight sont servies par Google en un seul
+fichier variable chacune, Space Mono en deux), détail dans
+`src/OKF4net.Viewer/Assets/fonts/README.md` ; binaire `okf-render` AOT
+(win-x64) — 3 802 624 octets avant, 3 945 984 après (+143 360, +3,8 %).
+Vérification `file://` (recette `--slices p1.1 --only fonts`) : Chrome 154.0.8037.98
+ok, Edge 154.0.4258.37 ok, Firefox de Playwright 155.0 ok (WebKit 26.6 de
+Playwright : ok, hors procédure), Firefox installé 157.0.1 ok (page racine et
+page la plus profonde ; piloté en WebDriver BiDi, profil neuf dont le `user.js`
+pose `remote.prefs.recommended` à `false`, `document.fonts.load` et requêtes
+échouées lus comme par le contrôle — l'onglet Réseau n'a pas été regardé à
+l'œil) ; profondeurs 0 à 7 du site d'OKF4net et 0 à 1 de celui d'`acme_retail`,
+les 7 faces chargées sur les 10 pages. Réserve : le Remote Agent de Firefox
+applique ses « préférences recommandées » dès que BiDi est actif, et cette liste
+contient `security.fileuri.strict_origin_policy = false` ; Playwright pose la
+même valeur. Un Firefox piloté sans précaution ne teste donc pas la politique
+par défaut. Preuve : une iframe `../sib.html` lue depuis `child/c.html` est
+accessible avec les préférences recommandées et bloquée (`TypeError`) avec
+`remote.prefs.recommended = false`, réglage de la vérification ci-dessus ; la
+politique stricte y est donc bien active. Témoin négatif : même ainsi, une
+police `woff2` située dans un répertoire parent du document (déclarée en ligne
+ou par feuille de style) se charge ; Firefox 157 ne bloque pas les polices
+`file://` d'un répertoire parent, ce témoin ne peut donc pas échouer, et le
+contrôle ne prouve sa capacité à échouer que par la passe sans polices (échec,
+0 face). Verdict : chargées partout ; viewer.css garde ses @font-face relatifs.
+
 ### 11.1 En-tête (pages de concept, index, `graph.html`)
 
 - **H1** Bande de 6 `--blue` en haut, pleine largeur. → P1
