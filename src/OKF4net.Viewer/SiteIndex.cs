@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Globalization;
+using System.Text;
 
 namespace OKF4net.Viewer;
 
@@ -24,6 +25,13 @@ public static class SiteIndex
             .ToDictionary(f => f.Id.ToString(), StringComparer.Ordinal);
 
         var position = new Dictionary<string, int>(StringComparer.Ordinal);
+        var types = RankTypes(ordered.Select(c => c.Document.Frontmatter.Type ?? string.Empty));
+        var typePosition = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var i = 0; i < types.Count; i++)
+        {
+            typePosition[types[i].Name] = i;
+        }
+
         var concepts = new List<IndexConcept>(ordered.Count);
         foreach (var concept in ordered)
         {
@@ -39,7 +47,11 @@ public static class SiteIndex
                 SiteModel.PagePath(concept.Id),
                 AuditVocabulary.Name(finding.Trust),
                 CeilingMilliseconds(finding.Lifecycle.StaleAfter),
-                finding.Lifecycle.StaleAfterDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)));
+                finding.Lifecycle.StaleAfterDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))
+            {
+                TypeIndex = typePosition[frontmatter.Type ?? string.Empty],
+                Description = Describe(frontmatter.Description, DescriptionLimit),
+            });
         }
 
         var absent = new SortedSet<ConceptId>(Comparer<ConceptId>.Default);
@@ -81,7 +93,97 @@ public static class SiteIndex
             }
         }
 
-        return new ViewerIndex(concepts, ghosts, edges, BuildTree(concepts));
+        return new ViewerIndex(concepts, ghosts, edges, BuildTree(concepts)) { Types = types };
+    }
+
+    /// <summary>
+    /// The longest description the index carries, in code points (spec §12.1,
+    /// A18). A23: 120 instead if the measured index of the OKF4net bundle
+    /// exceeds 600 000 bytes (spec §3.6 records the measurement).
+    /// </summary>
+    internal const int DescriptionLimit = 200;
+
+    /// <summary>The slot every type past the fifth, and the empty type, share (the "other" shape).</summary>
+    internal const int OtherSlot = 5;
+
+    private const char Ellipsis = (char)0x2026;
+
+    /// <summary>
+    /// The types table (spec §12.1): one entry per distinct value, by count
+    /// descending then <see cref="string.CompareOrdinal(string, string)"/> of
+    /// the name; the first five NON-EMPTY names take slots 0 to 4 in that
+    /// order, every other name and the empty one take <see cref="OtherSlot"/>.
+    /// </summary>
+    /// <param name="types">Each concept's type, the empty string when absent.</param>
+    internal static List<IndexType> RankTypes(IEnumerable<string> types)
+    {
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var type in types)
+        {
+            counts[type] = counts.TryGetValue(type, out var n) ? n + 1 : 1;
+        }
+
+        var ranked = new List<IndexType>(counts.Count);
+        var next = 0;
+        foreach (var (name, count) in counts.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key, StringComparer.Ordinal))
+        {
+            var slot = name.Length > 0 && next < OtherSlot ? next++ : OtherSlot;
+            ranked.Add(new IndexType(name, count, slot));
+        }
+
+        return ranked;
+    }
+
+    /// <summary>
+    /// A description as the index carries it (spec §12.1): runs of
+    /// <see cref="char.IsWhiteSpace(char)"/> collapsed to one space, ends
+    /// trimmed; past <paramref name="limit"/> code points, the first
+    /// <c>limit - 1</c> kept, trailing spaces removed and U+2026 appended. A
+    /// valid surrogate pair counts one and is never split; a lone half counts
+    /// one and is kept as is.
+    /// </summary>
+    /// <param name="description">The frontmatter description, or null.</param>
+    /// <param name="limit">The longest result, in code points.</param>
+    internal static string Describe(string? description, int limit)
+    {
+        if (string.IsNullOrEmpty(description))
+        {
+            return string.Empty;
+        }
+
+        var collapsed = new StringBuilder(description.Length);
+        var pendingSpace = false;
+        foreach (var ch in description)
+        {
+            if (char.IsWhiteSpace(ch))
+            {
+                pendingSpace = collapsed.Length > 0;
+                continue;
+            }
+
+            if (pendingSpace)
+            {
+                collapsed.Append(' ');
+                pendingSpace = false;
+            }
+
+            collapsed.Append(ch);
+        }
+
+        var text = collapsed.ToString();
+        var cut = 0;
+        var points = 0;
+        for (var i = 0; i < text.Length; points++)
+        {
+            if (points == limit - 1)
+            {
+                cut = i;
+            }
+
+            i += char.IsHighSurrogate(text[i]) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1]) ? 2 : 1;
+        }
+
+        return points <= limit ? text : text[..cut].TrimEnd() + Ellipsis;
     }
 
     /// <summary>

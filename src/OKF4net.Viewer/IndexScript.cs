@@ -34,7 +34,7 @@ public static class IndexScript
     public static string Render(ViewerIndex index)
     {
         var sb = new StringBuilder(Prefix);
-        sb.Append("{\"version\":1,\"concepts\":[");
+        sb.Append("{\"version\":2,\"concepts\":[");
         for (var i = 0; i < index.Concepts.Count; i++)
         {
             if (i > 0)
@@ -63,6 +63,8 @@ public static class IndexScript
               .Append(c.StaleAfterMs is { } ms ? ms.ToString(CultureInfo.InvariantCulture) : "null")
               .Append(",\"staleAfterDate\":")
               .Append(c.StaleAfterDate is { } date ? HtmlSafeJson.Quote(date) : "null")
+              .Append(",\"typeIndex\":").Append(c.TypeIndex.ToString(CultureInfo.InvariantCulture))
+              .Append(",\"description\":").Append(HtmlSafeJson.Quote(c.Description))
               .Append('}');
         }
 
@@ -96,7 +98,22 @@ public static class IndexScript
 
         sb.Append("],\"tree\":");
         AppendNodes(sb, index.Tree);
-        sb.Append("};\n");
+        sb.Append(",\"types\":[");
+        for (var i = 0; i < index.Types.Count; i++)
+        {
+            if (i > 0)
+            {
+                sb.Append(',');
+            }
+
+            var t = index.Types[i];
+            sb.Append("{\"name\":").Append(HtmlSafeJson.Quote(t.Name))
+              .Append(",\"count\":").Append(t.Count.ToString(CultureInfo.InvariantCulture))
+              .Append(",\"slot\":").Append(t.Slot.ToString(CultureInfo.InvariantCulture))
+              .Append('}');
+        }
+
+        sb.Append("]};\n");
         return sb.ToString();
     }
 

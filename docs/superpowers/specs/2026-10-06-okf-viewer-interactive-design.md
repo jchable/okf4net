@@ -303,6 +303,11 @@ la mesure consignée ici soit fusionnée. Optimisation possible plus
 tard, non retenue (A23) : porter les descriptions, que seul le tiroir de
 `graph.html` lit, dans un script distinct chargé par cette seule page.
 
+Mesure du schéma v2 (P1.1, 2026-10-07, commande de l'étape 10 de la tâche 4
+du plan P1.1) : bundle d'OKF4net — 795 concepts, 0 fantômes, 912 arêtes, 6 types,
+`okf-index.js` de 407 325 octets ; `acme_retail` — 9 concepts, 4 954 octets.
+Troncature retenue : 200 points de code.
+
 ## 4. JavaScript
 
 ### 4.1 Fichiers et chargement

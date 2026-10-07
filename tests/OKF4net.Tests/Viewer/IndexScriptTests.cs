@@ -13,7 +13,7 @@ namespace OKF4net.Tests.Viewer;
 public class IndexScriptTests
 {
     private const string EmptyScript =
-        "window.OKF_INDEX = {\"version\":1,\"concepts\":[],\"ghosts\":[],\"edges\":[],\"tree\":[]};\n";
+        "window.OKF_INDEX = {\"version\":2,\"concepts\":[],\"ghosts\":[],\"edges\":[],\"tree\":[],\"types\":[]};\n";
 
     private static JsonElement Parse(string script)
     {
@@ -95,5 +95,42 @@ public class IndexScriptTests
         Assert.Contains(
             "\"tree\":[{\"name\":\"foo\",\"concept\":0,\"children\":[{\"name\":\"bar\",\"concept\":1,\"children\":[]}]}]",
             IndexScript.Render(index));
+    }
+
+    [Fact]
+    public void Version_2_appends_typeIndex_and_description_to_each_concept_and_the_types_table_last()
+    {
+        var concept = new IndexConcept(ConceptId.Parse("a"), "A", "Metric", [], "a.html", "unverified", null, null)
+        {
+            TypeIndex = 0,
+            Description = "Gross margin.",
+        };
+        var index = new ViewerIndex([concept], [], [], []) { Types = [new IndexType("Metric", 1, 0), new IndexType("", 2, 5)] };
+
+        var script = IndexScript.Render(index);
+
+        Assert.StartsWith("window.OKF_INDEX = {\"version\":2,\"concepts\":[", script);
+        Assert.Contains("\"staleAfterMs\":null,\"staleAfterDate\":null,\"typeIndex\":0,\"description\":\"Gross margin.\"}", script);
+        Assert.EndsWith(",\"types\":[{\"name\":\"Metric\",\"count\":1,\"slot\":0},{\"name\":\"\",\"count\":2,\"slot\":5}]};\n", script);
+    }
+
+    [Fact]
+    public void A_hostile_description_and_type_name_round_trip_inertly()
+    {
+        var lineSeparator = ((char)0x2028).ToString();
+        var hostile = "</script><img src=x onerror=alert(1)>" + lineSeparator + "\"\\";
+        var concept = new IndexConcept(ConceptId.Parse("a"), "A", hostile, [], "a.html", "unverified", null, null)
+        {
+            Description = hostile,
+        };
+        var index = new ViewerIndex([concept], [], [], []) { Types = [new IndexType(hostile, 1, 0)] };
+
+        var script = IndexScript.Render(index);
+
+        Assert.DoesNotContain("<", script);
+        Assert.DoesNotContain(lineSeparator, script);
+        var root = Parse(script);
+        Assert.Equal(hostile, root.GetProperty("concepts")[0].GetProperty("description").GetString());
+        Assert.Equal(hostile, root.GetProperty("types")[0].GetProperty("name").GetString());
     }
 }

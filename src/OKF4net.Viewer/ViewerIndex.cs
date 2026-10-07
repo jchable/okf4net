@@ -25,7 +25,24 @@ public sealed record IndexConcept(
     string Path,
     string Trust,
     long? StaleAfterMs,
-    string? StaleAfterDate);
+    string? StaleAfterDate)
+{
+    /// <summary>Position of this concept's type in <see cref="ViewerIndex.Types"/> (spec §12.1).</summary>
+    public int TypeIndex { get; init; }
+
+    /// <summary>
+    /// The frontmatter <c>description</c>, whitespace runs collapsed and
+    /// truncated to <see cref="SiteIndex.DescriptionLimit"/> code points
+    /// (spec §12.1, A18); empty when absent.
+    /// </summary>
+    public string Description { get; init; } = string.Empty;
+}
+
+/// <summary>One distinct frontmatter <c>type</c> of the bundle (spec §12.1, A19).</summary>
+/// <param name="Name">The type, or the empty string for the concepts that have none.</param>
+/// <param name="Count">How many concepts carry it.</param>
+/// <param name="Slot">0 to 4 for the five most frequent non-empty types, in order; 5 for every other type and for the empty one.</param>
+public sealed record IndexType(string Name, int Count, int Slot);
 
 /// <summary>A link target that is not a concept of the bundle (a §6.1 broken link). Never navigable.</summary>
 /// <param name="Id">The absent target's id.</param>
@@ -61,4 +78,11 @@ public sealed record ViewerIndex(
 {
     /// <summary>An index with nothing in it, for a site built by hand.</summary>
     public static ViewerIndex Empty { get; } = new([], [], [], []);
+
+    /// <summary>
+    /// The distinct types, by count descending then ordinal name; each
+    /// concept points into it by <see cref="IndexConcept.TypeIndex"/>
+    /// (spec §12.1). The JS reads the ranks here and never recomputes them.
+    /// </summary>
+    public IReadOnlyList<IndexType> Types { get; init; } = [];
 }
