@@ -133,7 +133,23 @@ body > .okf-layout > main { flex: 999 1 560px; min-width: 0; margin: 0; }
     flex-grow: 0; flex-shrink: 0; flex-basis: auto; width: 340px;
     border-bottom: 0; border-left: 1px solid var(--hair);
   }
-  #okf-explorer, #okf-context { position: sticky; top: 0; max-height: 100vh; overflow-y: auto; }
+  /* The band under the header (E12): the page opens with the 6 px band, the 52 px
+     bar and its 1 px rule above the panels, so a panel as tall as the window
+     would end 59 px below the fold and take its legend with it. The bar is a
+     fixed 52 px from 900 px (H2; it only wraps under 900), so the token is a
+     constant. Scrolled, the header has left the window and the panel sticks at
+     the top, 59 px short of the window: still whole. The layout is at least
+     as tall as that band, so a short page fills the window and the two rules
+     below run the full height. */
+  :root { --okf-header-h: 59px; }
+  body > .okf-layout { min-height: calc(100vh - var(--okf-header-h)); }
+  #okf-explorer, #okf-context { position: sticky; top: 0; max-height: calc(100vh - var(--okf-header-h)); overflow-y: auto; }
+  /* The panels' own borders end with their content. Main stretches to the
+     foot of the layout and carries both rules down as shadows one pixel outside
+     its box, which is where the explorer's right border and the context
+     panel's left border sit: the same place, the same pixel, nothing to size
+     again. A hidden panel leaves the shadow outside the window. */
+  body > .okf-layout > main { align-self: stretch; box-shadow: -1px 0 0 var(--hair), 1px 0 0 var(--hair); }
   /* The explorer's head (title, field, type chips: E13) stays at the top of
      its own scroll area and its legend (E12) at the bottom. Opaque, or tree
      rows would show through. */
@@ -176,7 +192,11 @@ body > .okf-layout > main { flex: 999 1 560px; min-width: 0; margin: 0; }
    container that uses them, present and future: the explorer, the context
    panel (P2's local graph included), the page head, the graph page (P3) and
    the palette. P2 and P3 use these classes without restyling them. */
-:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-section-title {
+/* :where(): the container anchors cost no specificity, so this default is one
+   class and any local rule (a frontmatter head's or a palette line's own
+   margin) wins by its own weight. With :is() the id in the list made it
+   (1,1,0), above every class-anchored local rule. */
+:where(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-section-title {
   font-family: var(--mono); font-size: 11px; font-weight: 400; letter-spacing: .06em; line-height: 1.4;
   text-transform: uppercase; color: var(--gray); margin: 0 0 8px;
 }
@@ -212,11 +232,13 @@ body > .okf-layout > main { flex: 999 1 560px; min-width: 0; margin: 0; }
 }
 :is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-row {
   display: flex; align-items: center; gap: 9px; padding: 6px 0; min-width: 0;
-  border-bottom: 1px solid var(--hair); font-size: 13.5px; color: var(--ink); text-decoration: none; overflow-wrap: anywhere;
+  border-bottom: 1px solid var(--hair); font-size: 13.5px; line-height: normal; color: var(--ink); text-decoration: none; overflow-wrap: anywhere;
 }
-:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) a.okf-row:hover { color: var(--blue); }
+/* A link row is a link (the mockup's <a> keeps the link colour); a row of plain text stays ink. */
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) a.okf-row { color: var(--blue); }
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) a.okf-row:hover { color: var(--blue-hover); }
 :is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-legend {
-  list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; font-size: 12px; color: var(--gray);
+  list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; font-size: 12px; line-height: normal; color: var(--gray);
 }
 :is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-legend li {
   display: flex; align-items: center; gap: 8px;
@@ -267,6 +289,11 @@ svg .okf-node.okf-selected > .okf-node-ring, svg .okf-node.okf-focused > .okf-no
    without a class. */
 #okf-body { font-size: 15.5px; line-height: 1.65; }
 #okf-body p { margin: 0 0 20px; }
+/* A body that opens its own sections with "# ..." (C4 keeps every h1 that is not
+   the page title): subordinate to the 34 px page title and above the 21 px h2,
+   in the 600 face (the 700 an unstyled h1 asks for would be drawn with the 900
+   one, heavier than the title). */
+#okf-body h1 { margin: 0 0 8px; font-family: var(--display); font-weight: 600; font-size: 26px; line-height: 1.2; letter-spacing: -.02em; }
 #okf-body h2 { margin: 0 0 8px; font-family: var(--display); font-weight: 600; font-size: 21px; line-height: 1.25; letter-spacing: -.02em; }
 #okf-body table { font-size: 13.5px; margin: 0 0 20px; border-collapse: collapse; }
 #okf-body th {
@@ -538,7 +565,7 @@ body > .okf-palette-backdrop .okf-palette-id {
 }
 /* J6 */
 body > .okf-palette-backdrop .okf-palette-foot {
-  display: flex; gap: 16px; padding: 10px 16px; border-top: 1px solid var(--hair); font-size: 12px; color: var(--gray);
+  display: flex; gap: 16px; padding: 10px 16px; border-top: 1px solid var(--hair); font-size: 12px; line-height: normal; color: var(--gray);
 }
 
 /* --- Task 15: Show all (C6) --- */

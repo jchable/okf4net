@@ -4186,6 +4186,184 @@ checkAsync("page: the stale chip is recalculated only when the page becomes visi
 
 // --- Task 16: fonts fallback (only if Task 10 found a browser blocking the fonts) ---
 
+// --- P1.1 polish (recette findings E12-foot, C6-head, J3, the body h1, rules, line-heights) ---
+// jsdom lays nothing out and its getComputedStyle ignores specificity, so these
+// cases read the CSSOM: every rule whose selector matches the element, ranked
+// by selector specificity then source order, which is what a browser does.
+// @media rules count only where `media(cond)` says so.
+function specificityOf(selector) {
+  let a = 0, b = 0, c = 0;
+  let rest = selector.replace(/\[[^\]]*\]/g, () => { b++; return ""; });
+  const take = (re, fn) => { rest = rest.replace(re, (...m) => { fn(...m); return " "; }); };
+  // Functional pseudo-classes first, innermost match each time.
+  for (;;) {
+    const m = /:(is|not|has|where|matches)\(([^()]*)\)/.exec(rest);
+    if (!m) { break; }
+    if (m[1] !== "where") {
+      const inner = splitTopLevel(m[2], ",").map((s) => specificityOf(s.trim().replace(/^[>+~]\s*/, "")));
+      const best = inner.reduce((x, y) => (y[0] - x[0] || y[1] - x[1] || y[2] - x[2]) > 0 ? y : x, [0, 0, 0]);
+      a += best[0]; b += best[1]; c += best[2];
+    }
+    rest = rest.slice(0, m.index) + " " + rest.slice(m.index + m[0].length);
+  }
+  take(/::[\w-]+/g, () => { c++; });
+  take(/#[\w-]+/g, () => { a++; });
+  take(/\.[\w-]+/g, () => { b++; });
+  take(/:[\w-]+/g, () => { b++; });
+  for (const part of rest.split(/[\s>+~]+/)) {
+    if (/^[A-Za-z][\w-]*$/.test(part)) { c++; }
+  }
+  return [a, b, c];
+}
+
+function beats(x, y) {
+  for (let i = 0; i < 3; i++) {
+    if (x[i] !== y[i]) { return x[i] > y[i]; }
+  }
+  return true;
+}
+
+function cascadeOf(doc, el, prop, media = () => false) {
+  let best = null;
+  let order = 0;
+  const walk = (rules) => {
+    for (const rule of Array.from(rules)) {
+      if (rule.cssRules && rule.media) {
+        if (media(rule.media.mediaText.trim())) { walk(rule.cssRules); }
+        continue;
+      }
+      if (!rule.selectorText) { continue; }
+      const value = rule.style.getPropertyValue(prop);
+      order++;
+      if (value === "") { continue; }
+      for (const sel of splitTopLevel(rule.selectorText, ",")) {
+        let hit = false;
+        try { hit = el.matches(sel.trim()); } catch (e) { hit = false; }
+        if (!hit) { continue; }
+        const spec = specificityOf(sel.trim());
+        // Later wins a tie: the walk is in source order.
+        if (!best || beats(spec, best.spec)) {
+          best = { value, spec, order, selector: sel.trim() };
+        }
+      }
+    }
+  };
+  for (const sheet of Array.from(doc.styleSheets)) { walk(sheet.cssRules); }
+  return best;
+}
+
+checkAsync("polish: the specificity ranking this harness uses knows :is(), :where(), :has(), ids, classes and elements", async () => {
+  const cases = [
+    [":is(#a, .b) .c", [1, 1, 0]],
+    [":where(#a, .b) .c", [0, 1, 0]],
+    ["body > .x > main > .y .z", [0, 3, 2]],
+    ["#okf-main > .okf-page-head .okf-fm-head .okf-section-title", [1, 3, 0]],
+    ["a.okf-row:hover", [0, 2, 1]],
+    ["div:not(.a):has(> #b)", [1, 1, 1]],
+    ["x::before", [0, 0, 2]],
+    ["[data-a] [data-b=\"c d\"] p", [0, 2, 1]],
+  ];
+  for (const [sel, want] of cases) {
+    const got = specificityOf(sel);
+    assert(got.join(",") === want.join(","), `${sel}: ${got.join(",")}, expected ${want.join(",")}`);
+  }
+});
+
+checkAsync("polish: a local margin on a section title in a chrome container beats the shared default (C6 head, J3), which a plain section title keeps", async () => {
+  const window = await openPage("p11-page.html");
+  const doc = window.document;
+  const bottom = (el) => { const w = cascadeOf(doc, el, "margin-bottom"); return w ? w.value + "  (" + w.selector + ")" : "none"; };
+  const zero = (el) => /^0(px)?\b/.test(bottom(el));
+  const fmTitle = doc.getElementById("okf-fm-title");
+  assert(fmTitle && fmTitle.classList.contains("okf-section-title"), "this case needs the frontmatter title");
+  assert(zero(fmTitle), `the frontmatter head's title margin-bottom is ${bottom(fmTitle)}: the head grows and the title rides above "Show all" (recette C6-head)`);
+  doc.querySelector(".okf-palette-open").click();
+  const matches = doc.querySelector("body > .okf-palette-backdrop .okf-palette-matches");
+  assert(matches, "this case needs the palette's matches line");
+  assert(zero(matches), `the palette's "Matches..." line margin-bottom is ${bottom(matches)}: the list starts 8 px under it (recette J3; the mockup has none)`);
+  // The default survives where nothing overrides it, and the explorer keeps its own 6.
+  const plain = doc.getElementById("okf-toc-title") || doc.getElementById("okf-backlinks-title");
+  assert(plain && /^8px\b/.test(bottom(plain)), `a plain section title in the context panel has margin-bottom ${plain && bottom(plain)} (expected 8px)`);
+  const explorerTitle = doc.querySelector("#okf-explorer .okf-explorer-title");
+  assert(explorerTitle && /^6px\b/.test(bottom(explorerTitle)), `the explorer title's margin-bottom is ${explorerTitle && bottom(explorerTitle)}, not the 6 px of E2`);
+});
+
+checkAsync("polish: from 1100 px the explorer and the context panel fit the band under the 59 px header, so a page opens with the whole legend on screen (E12)", async () => {
+  const window = await openPage("p11-page.html");
+  const doc = window.document;
+  const wide = (cond) => cond === "(min-width: 1100px)";
+  const tokenRule = cascadeOf(doc, doc.documentElement, "--okf-header-h", wide);
+  assert(tokenRule && tokenRule.value.trim() === "59px", `--okf-header-h in the wide layout: ${tokenRule && tokenRule.value}`);
+  // 59 = the 6 px band + the 52 px bar + its 1 px rule, read from the same stylesheet.
+  const topline = cascadeOf(doc, doc.querySelector("body > .topline"), "height", wide);
+  const bar = cascadeOf(doc, doc.querySelector("body > header.bar .bar-in"), "height", wide);
+  const rule = cascadeOf(doc, doc.querySelector("body > header.bar"), "border-bottom", wide);
+  assert(topline && bar && rule && parseFloat(topline.value) + parseFloat(bar.value) + 1 === 59 && /^1px/.test(rule.value),
+    `the header is ${topline && topline.value} + ${bar && bar.value} + ${rule && rule.value}, not the 59 px of the token`);
+  for (const id of ["okf-explorer", "okf-context"]) {
+    const max = cascadeOf(doc, doc.getElementById(id), "max-height", wide);
+    assert(max && /^calc\(100vh - var\(--okf-header-h\)\)$/.test(max.value.trim()), `#${id} max-height from 1100 px: ${max && max.value} (a panel 100vh tall ends 59 px below the fold)`);
+    assert(cascadeOf(doc, doc.getElementById(id), "max-height", () => false) === null, `#${id} has a max-height in the stacked layout`);
+  }
+  const layout = cascadeOf(doc, doc.querySelector("body > .okf-layout"), "min-height", wide);
+  assert(layout && /^calc\(100vh - var\(--okf-header-h\)\)$/.test(layout.value.trim()), `the layout's min-height from 1100 px: ${layout && layout.value}`);
+});
+
+checkAsync("polish: from 1100 px main stretches and carries the two side rules down as shadows on the panels' borders; the stacked layout has none", async () => {
+  const window = await openPage("p11-page.html");
+  const doc = window.document;
+  const main = doc.querySelector("body > .okf-layout > main");
+  const wide = (cond) => cond === "(min-width: 1100px)";
+  const shadow = cascadeOf(doc, main, "box-shadow", wide);
+  assert(shadow && /^-1px 0 0 var\(--hair\), 1px 0 0 var\(--hair\)$/.test(shadow.value.trim()), `main box-shadow from 1100 px: ${shadow && shadow.value}`);
+  const stretch = cascadeOf(doc, main, "align-self", wide);
+  assert(stretch && stretch.value.trim() === "stretch", `main align-self from 1100 px: ${stretch && stretch.value} (the rules would stop at the end of the text)`);
+  assert(cascadeOf(doc, main, "box-shadow", () => false) === null && cascadeOf(doc, main, "align-self", () => false) === null, "the stacked layout draws side rules");
+  // Where the rules fall: the explorer's right border and the context panel's left one.
+  const right = cascadeOf(doc, doc.getElementById("okf-explorer"), "border-right", wide);
+  const left = cascadeOf(doc, doc.getElementById("okf-context"), "border-left", wide);
+  assert(right && /1px solid var\(--hair\)/.test(right.value), "the explorer has no right border to line up with");
+  assert(left && /1px solid var\(--hair\)/.test(left.value), "the context panel has no left border to line up with");
+});
+
+checkAsync("polish: the legend, the link rows and the palette foot use the mockups' line-height; link rows are links (blue, blue-hover on hover), and plain rows stay ink", async () => {
+  const window = await openPage("p11-page.html");
+  const doc = window.document;
+  const lh = (el) => { const w = cascadeOf(doc, el, "line-height"); return w ? w.value.trim() : "unset"; };
+  const legend = doc.querySelector("#okf-explorer .okf-explorer-foot ul.okf-legend");
+  assert(legend && lh(legend) === "normal", `legend line-height: ${legend && lh(legend)} (the mockup's is normal; the body's 1.6 spaces the rows 26 px apart)`);
+  const row = doc.querySelector("#okf-context .okf-backlinks a.okf-row");
+  assert(row && lh(row) === "normal", `Referenced by row line-height: ${row && lh(row)}`);
+  const colour = cascadeOf(doc, row, "color");
+  assert(colour && colour.value.trim() === "var(--blue)", `Referenced by row colour: ${colour && colour.value} (the mockup's link colour is blue)`);
+  const hover = Array.from(doc.styleSheets).flatMap((s) => Array.from(s.cssRules)).filter((r) => r.selectorText && /a\.okf-row:hover/.test(r.selectorText)).map((r) => r.style.getPropertyValue("color"));
+  assert(hover.length > 0 && hover.every((v) => v === "var(--blue-hover)"), `a.okf-row:hover colours: ${JSON.stringify(hover)}`);
+  const plain = doc.createElement("span");
+  plain.className = "okf-row";
+  doc.querySelector("#okf-context").appendChild(plain);
+  assert(cascadeOf(doc, plain, "color").value.trim() === "var(--ink)", `a row that is not a link is ${cascadeOf(doc, plain, "color").value}, not ink`);
+  doc.querySelector(".okf-palette-open").click();
+  const foot = doc.querySelector("body > .okf-palette-backdrop .okf-palette-foot");
+  assert(foot && lh(foot) === "normal", `palette foot line-height: ${foot && lh(foot)} (40 px tall against the mockup's 35.5)`);
+});
+
+checkAsync("polish: a body h1 is subordinate to the page title and above the body h2 (Inter Tight 600, 26 px), anchored under #okf-body", async () => {
+  const window = await openPage("p11-page.html");
+  const doc = window.document;
+  const body = doc.getElementById("okf-body");
+  const h1 = doc.createElement("h1");
+  h1.textContent = "Computation";
+  body.appendChild(h1);
+  const h2 = doc.createElement("h2");
+  body.appendChild(h2);
+  const px = (el, prop) => { const w = cascadeOf(doc, el, prop); return w ? { v: w.value.trim(), sel: w.selector } : { v: "unset", sel: "" }; };
+  const size = px(h1, "font-size");
+  const title = px(doc.querySelector("body > .okf-layout > main > .okf-page-head h1"), "font-size");
+  assert(size.v === "26px" && /#okf-body/.test(size.sel), `a body h1 is ${size.v} (${size.sel}): the unanchored 32px rule is still what decides`);
+  assert(parseFloat(title.v) > parseFloat(size.v) && parseFloat(size.v) > parseFloat(px(h2, "font-size").v), `the scale is not title ${title.v} > body h1 ${size.v} > body h2 ${px(h2, "font-size").v}`);
+  assert(px(h1, "font-weight").v === "600" && px(h1, "font-family").v === "var(--display)", `body h1 weight ${px(h1, "font-weight").v}, family ${px(h1, "font-family").v}`);
+});
+
 // === end of P1.1 cases ===
 
 // --- slice case files (spec §12.7) ------------------------------------------
