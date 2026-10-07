@@ -1110,6 +1110,8 @@ function registerGraphPage(h) {
     const b = index.concepts[conceptPos(index, "p3-graph/b")];
     const button = Array.from(doc.querySelectorAll("#okf-graph-list .okf-graph-list-select")).find((x) => x.textContent === "p3-graph/b");
     click(window, button);
+    h.assert(detail.querySelector(".okf-section-title").textContent === "Selected", "the drawer lacks its \"Selected\" title");
+    h.assert(detail.querySelector(".okf-chips .okf-chip.okf-chip-type"), "the drawer lacks the okf-chip-type chip");
     h.assert(detail.querySelector(".okf-graph-detail-id").textContent === "p3-graph/b", "the drawer does not show the id");
     h.assert(detail.querySelector("h2").textContent === b.title, "the drawer does not show the title");
     h.assert(detail.querySelector(".okf-graph-detail-desc").textContent === b.description, "the drawer lacks the description");
@@ -1119,6 +1121,24 @@ function registerGraphPage(h) {
     h.assert(open && open.getAttribute("href") === b.path && open.textContent === "Open page", "Open page is missing or wrong");
     h.assert(reading.getAttribute("href") === b.path, `Reading view points at ${reading.getAttribute("href")}`);
     h.assert(button.getAttribute("aria-current") === "true", "the list does not mark the selection");
+  });
+
+  h.checkAsync("graph page: the status line uses the singular forms (1 concept, 1 link) and counts a cited ghost", async () => {
+    const mk = (id) => ({ id, title: "T " + id, type: "Note", tags: [], path: id + ".html", trust: "unverified", typeIndex: 0, description: "" });
+    const types = [{ name: "Note", count: 1, slot: 0 }];
+    const source = (ghosts, edges) => "window.OKF_INDEX = " + JSON.stringify({
+      version: 2, concepts: [mk("solo")], ghosts, edges, tree: [{ name: "solo", concept: 0, children: [] }], types,
+    }) + ";";
+    // One concept citing itself: listed, counted as a link, never drawn.
+    const self = await openGraph(h, { override: { "assets/okf-index.js": source([], [[0, 0, 1, 0]]) } });
+    let got = self.doc.getElementById("okf-graph-status").textContent;
+    h.assert(got === `showing 1 of 1 concept ${MIDDOT} 1 of 1 link`, `self-link status "${got}"`);
+    h.assert(got === expectedStatus(self.window.OKF_INDEX, [0], 1), "the literal and expectedStatus disagree");
+    // One concept citing one absent concept: the ghost is counted apart.
+    const ghost = await openGraph(h, { override: { "assets/okf-index.js": source([{ id: "nowhere" }], [[0, 0, 1, 1]]) } });
+    got = ghost.doc.getElementById("okf-graph-status").textContent;
+    h.assert(got === `showing 1 of 1 concept + 1 absent ${MIDDOT} 1 of 1 link`, `ghost status "${got}"`);
+    h.assert(got === expectedStatus(ghost.window.OKF_INDEX, [0], 1), "the literal and expectedStatus disagree (ghost)");
   });
 
   h.checkAsync("graph page: a cited ghost is a row without a link; a selected ghost shows only 'absent' and its id", async () => {

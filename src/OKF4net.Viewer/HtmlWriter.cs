@@ -865,7 +865,7 @@ public static class HtmlWriter
         + "</main>\n"
         + "<aside class=\"okf-graph-detail\" id=\"okf-graph-detail\" aria-label=\"Selected concept\"></aside>\n"
         + "</div>\n"
-        + "<noscript><p>The graph needs JavaScript. <a href=\"index.html\">Bundle index</a></p></noscript>\n\n";
+        + "<noscript><p>The graph needs JavaScript. <a href=\"index.html\">Bundle index</a></p></noscript>\n";
 
     /// <summary>
     /// The global graph page (spec §12.5): the shared document start and header
@@ -888,7 +888,6 @@ public static class HtmlWriter
 
         return page.Append("</body>\n</html>\n").ToString();
     }
-
 
     /// <summary>
     /// Escapes text interpolated into the generated markup, attribute values

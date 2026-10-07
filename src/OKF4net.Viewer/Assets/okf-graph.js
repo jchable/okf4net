@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 //
-// The global graph page, graph.html (spec §4.2, §4.3, §6, §8, §11.5, §12.5):
-// facets, status line, the drawing laid out by okf-sim.js, the drawer of the
-// selected concept, pan, zoom, draggable nodes, the keyboard contract and the
-// equivalent list. Bundle text reaches the DOM through textContent, or
-// setAttribute on a fixed name (aria-label; href built from an index path by
-// the one resolver, OkfSite.resolve). The SVG uses the fixed vocabulary of
-// §12.2 and every shape comes from OkfShapes. Every DOM lookup starts from
-// body > .okf-graph-layout or #okf-tools (§12.6). The layout runs in slices
-// through window.OKF_SCHEDULER when the harness injects one, else
-// requestAnimationFrame; a filter change cancels it (generation token).
+// The global graph page, graph.html (spec §6, §11.5, §12.5). This is its core:
+// the model (nodes, edges, the compute of what is shown), the status line, the
+// equivalent list with its "List" toggle, the drawer of the selected concept
+// and the "Reading view" link. Later tasks extend it, each in its own section
+// above the start-up block: facets, the drawing laid out by okf-sim.js, pan,
+// zoom, draggable nodes, the keyboard contract. Bundle text reaches the DOM
+// through textContent, or setAttribute on a fixed name (href built from an
+// index path by the one resolver, OkfSite.resolve); every shape comes from
+// OkfShapes (§12.2). Every DOM lookup starts from body > .okf-graph-layout or
+// #okf-tools (§12.6).
 (function () {
   "use strict";
 
