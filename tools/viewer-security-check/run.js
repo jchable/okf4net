@@ -2482,6 +2482,15 @@ checkAsync("a GFM table in the body scrolls in its own box; the frontmatter tabl
 // --- Task 8: contents, current section ---
 
 // --- Task 10: fonts ---
+check("fonts: every @font-face of the written stylesheet points at a file written under assets/fonts", () => {
+  const css = fs.readFileSync(path.join(SITE, "assets", "viewer.css"), "utf8");
+  const urls = Array.from(css.matchAll(/@font-face\s*\{[^}]*url\("([^"]+)"\)/g), (m) => m[1]);
+  assert(urls.length === 7, `${urls.length} @font-face urls, expected the 7 faces of spec §11.0`);
+  for (const url of urls) {
+    assert(/^fonts\/[a-z0-9-]+\.woff2$/.test(url), `${url} is not a relative fonts/ url`);
+    assert(fs.existsSync(path.join(SITE, "assets", url)), `${url} was not written`);
+  }
+});
 
 // --- Task 11: shell and header ---
 

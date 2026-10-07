@@ -931,6 +931,24 @@ juste après `viewer.css` sur toutes les pages (`RenderDocumentStart`, §12.0) ;
 licences le restent) ; budget porté à ≤ 400 Ko pour `okf-fonts.css` ; la
 vérification est refaite.
 
+Mesure et vérification (P1.1, 2026-10-07) : woff2 — 4 fichiers, 126 372 octets au
+total (budget 300 000 ; Inter et Inter Tight sont servies par Google en un seul
+fichier variable chacune, Space Mono en deux), détail dans
+`src/OKF4net.Viewer/Assets/fonts/README.md` ; binaire `okf-render` AOT
+(win-x64) — 3 802 624 octets avant, 3 945 984 après (+143 360, +3,8 %).
+Vérification `file://` (recette `--slices p1.1 --only fonts`) : Chrome 154.0.8037.98
+ok, Edge 154.0.4258.37 ok, Firefox de Playwright 155.0 ok (WebKit 26.6 de
+Playwright : ok, hors procédure), Firefox installé 157.0.1 ok (page racine et
+page la plus profonde ; piloté en WebDriver BiDi, profil neuf, préférences par
+défaut, `document.fonts.load` et requêtes échouées lus comme par le contrôle —
+l'onglet Réseau n'a pas été regardé à l'œil) ; profondeurs 0 à 7 du site
+d'OKF4net et 0 à 1 de celui d'`acme_retail`, les 7 faces chargées sur les 10
+pages. Réserve : le Firefox de Playwright force
+`security.fileuri.strict_origin_policy` à `false`, son verdict ne prouve donc
+rien sur la valeur par défaut ; c'est le Firefox installé, à ses valeurs par
+défaut, qui porte celui de Firefox. Verdict : chargées partout ; viewer.css garde
+ses @font-face relatifs.
+
 ### 11.1 En-tête (pages de concept, index, `graph.html`)
 
 - **H1** Bande de 6 `--blue` en haut, pleine largeur. → P1
