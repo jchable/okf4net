@@ -45,7 +45,7 @@ style probe and a behaviour, e.g. `H7-H7narrow`). Then, by hand:
 - [ ] Both themes: chips, explorer flags, type chips and the hourglass read clearly on the page and on the active row (the recette measures the ratios; this is the eye check).
 - [ ] At 390 px: the header takes two lines without its counts, the frontmatter box one column, and nothing scrolls sideways.
 - [ ] From the top of a page, Tab shows "Skip to content" first; Enter on it, then Tab, lands in the page, past the explorer.
-- [ ] Safari (best effort): one page of each site with its fonts and shapes.
+- [ ] Safari (best effort): one page of each site with its fonts and shapes. Safari does not Tab to links by default (Option+Tab does): the recette reports H12 as n/a on WebKit, so do the skip-link line above with Option+Tab.
 - IME and screen reader: deferred to issue #177 (A21), not blocking.
 
 - Note : « Global graph » renvoie vers graph.html, écrit par P3 : le lien est mort tant que P3 n'est pas livré.

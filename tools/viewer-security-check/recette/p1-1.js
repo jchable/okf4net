@@ -271,6 +271,12 @@ const specials = {
     return { pass: r.pressed === "true" && /Dark theme/.test(r.name) && r.border === want && r.stroke === want, ...r };
   },
   async H12(ctx) {
+    // WebKit (Safari) does not Tab to links by default: Option+Tab does, or a
+    // system setting. The viewer cannot change that, and a link that never
+    // takes the Tab focus is the browser's choice, not a defect of the skip link.
+    if (ctx.browserName === "webkit") {
+      return { pass: null, note: "WebKit does not Tab to links by default (Option+Tab does): the skip link is not reachable by plain Tab in Safari whatever the page does; checked in Chrome, Edge and Firefox" };
+    }
     const page = await ctx.newPage();
     await page.goto(urlOf(ctx, PAGE));
     const before = await page.evaluate(() => document.querySelector("body > a.okf-skip").getBoundingClientRect().bottom);
@@ -419,7 +425,36 @@ const specials = {
       }));
       await ctx.shot(page, `E12-foot-${out.length}`);
     }
-    return { pass: out.every((v) => v.footBottom <= v.innerHeight + 0.5), pages: out };
+    // The same on the far page in the smaller windows a laptop gives (the
+    // legend must still end inside the window as the page opens) ...
+    const probe = () => page.evaluate(() => {
+      const nav = document.getElementById("okf-explorer");
+      const f = nav.querySelector(".okf-explorer-foot").getBoundingClientRect();
+      return { scrollY: Math.round(scrollY), navTop: nav.getBoundingClientRect().top, footBottom: f.bottom, innerHeight };
+    });
+    const sizes = [];
+    for (const [width, height] of [[1366, 768], [1100, 700]]) {
+      const small = await ctx.newPage({ viewport: { width, height } });
+      await small.goto(pages[2]);
+      const r = await small.evaluate(() => {
+        const f = document.querySelector("#okf-explorer .okf-explorer-foot").getBoundingClientRect();
+        return { footBottom: f.bottom, innerHeight };
+      });
+      sizes.push({ width, height, ...r });
+    }
+    // ... and scrolled: on a long page the panel sticks at the top and the
+    // legend stays whole at every scroll position (top, past the header, bottom).
+    const long = ctx.lib.pageWithSections(ctx.siteDir, 3);
+    await page.goto(ctx.lib.pageUrl(ctx.site, long.rel || long));
+    const scrolled = [];
+    for (const y of [0, 30, 59, 400, 1e6]) {
+      await page.evaluate((to) => window.scrollTo(0, to), y);
+      await page.waitForTimeout(80);
+      scrolled.push(await probe());
+    }
+    await ctx.shot(page, "E12-foot-scrolled");
+    const whole = (v) => v.footBottom <= v.innerHeight + 0.5;
+    return { pass: out.every(whole) && sizes.every(whole) && scrolled.every(whole), pages: out, sizes, scrolled };
   },
   // C4: a body whose first line repeats the title in an ATX h1 loses that
   // line; seen in the browser as: no page's body starts with an h1 equal to
