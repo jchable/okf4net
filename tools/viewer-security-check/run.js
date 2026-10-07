@@ -3943,6 +3943,133 @@ checkAsync("palette: the real palette keeps its anchored styles", async () => {
 
 // --- Task 15: okf-page.js (control 11) ---
 
+checkAsync("page: chip glyphs come from OkfShapes and the stale chip flips at the deadline (control 11)", async () => {
+  // p11-page.md: stale_after 2000-01-01T00:00:00Z, human-reviewed.
+  let now = Date.UTC(1999, 11, 31, 23, 59, 59, 999);
+  const window = await openPage("p11-page.html", { now: () => now });
+  const doc = window.document;
+  const idx = window.OKF_INDEX;
+  const head = doc.querySelector("body > .okf-layout > main > .okf-page-head");
+  const pos = idx.concepts.findIndex((c) => c.id === "p11-page");
+  const slot = idx.types[idx.concepts[pos].typeIndex].slot;
+  const typeGlyph = head.querySelector(".okf-chip-type > .okf-chip-glyph > svg.okf-glyph");
+  assert(typeGlyph && typeGlyph.getAttribute("width") === "10" && typeGlyph.querySelector(`.okf-shape-${slot}`), "the type chip has no chip-context glyph of its slot");
+  assert(head.querySelector(".okf-chip-trust > .okf-chip-glyph > svg.okf-glyph .okf-trust-human"), "the trust chip has no human glyph");
+  const chip = head.querySelector(".okf-chip-stale");
+  const text = chip.querySelector(".okf-chip-text");
+  assert(text.textContent === "stale after 2000-01-01" && !chip.hasAttribute("data-okf-stale-now") && !chip.querySelector("svg"),
+    `a millisecond before the deadline: "${text.textContent}"`);
+  now = Date.UTC(2000, 0, 1);
+  doc.dispatchEvent(new window.Event("visibilitychange"));
+  assert(text.textContent === "stale since 2000-01-01" && chip.hasAttribute("data-okf-stale-now") && chip.querySelector("svg .okf-stale-mark"),
+    `at the deadline: "${text.textContent}"`);
+  now = Date.UTC(1999, 0, 1);
+  doc.dispatchEvent(new window.Event("visibilitychange"));
+  assert(text.textContent === "stale after 2000-01-01" && !chip.hasAttribute("data-okf-stale-now") && !chip.querySelector("svg"), "the chip does not flip back");
+});
+
+checkAsync("page: Show all reveals the folded entries and is announced", async () => {
+  const window = await openPage("p11-page.html");
+  const doc = window.document;
+  const box = doc.getElementById("okf-fm");
+  const toggle = box.querySelector(".okf-fm-head > button.okf-fm-toggle");
+  assert(toggle && toggle.textContent === "Show all" && toggle.getAttribute("aria-expanded") === "false" && toggle.getAttribute("aria-controls") === "okf-fm-grid",
+    `toggle: ${toggle && toggle.outerHTML}`);
+  const shown = () => Array.from(box.querySelectorAll(".okf-fm-cell")).filter((c) => window.getComputedStyle(c).getPropertyValue("display") !== "none").length;
+  const all = box.querySelectorAll(".okf-fm-cell").length;
+  assert(shown() === 4 && all > 4, `folded: ${shown()} of ${all} shown, expected the first 4`);
+  toggle.click();
+  assert(shown() === all && box.hasAttribute("data-okf-expanded") && toggle.getAttribute("aria-expanded") === "true" && toggle.textContent === "Show fewer",
+    `expanded: ${shown()} of ${all}, "${toggle.textContent}"`);
+  toggle.click();
+  assert(shown() === 4 && !box.hasAttribute("data-okf-expanded") && toggle.getAttribute("aria-expanded") === "false" && toggle.textContent === "Show all", "folded again");
+  assert(window.getComputedStyle(toggle).getPropertyValue("font-size") === "12.5px", "the real Show all lost its anchored style");
+});
+
+checkAsync("page: Referenced by rows get their type glyph from the index", async () => {
+  const window = await openPage("p11-page.html");
+  const idx = window.OKF_INDEX;
+  const row = Array.from(window.document.querySelectorAll("#okf-context .okf-backlinks a.okf-row")).find((a) => a.getAttribute("data-okf-target") === "p11-page-ref");
+  const pos = idx.concepts.findIndex((c) => c.id === "p11-page-ref");
+  const t = idx.types[idx.concepts[pos].typeIndex];
+  const glyph = row && row.firstElementChild;
+  assert(glyph && glyph.localName === "svg" && glyph.querySelector(`.okf-shape-${t.slot}`) && glyph.querySelector("title").textContent === t.name,
+    `row glyph: ${glyph && glyph.outerHTML}`);
+  assert(row.textContent.endsWith("p11-page-ref"), "the row lost its id text");
+});
+
+checkAsync("page head: hostile status, verifier, date and frontmatter stay inert text after glyphs and Show all", async () => {
+  const window = await openPage("p11-page.html");
+  const doc = window.document;
+  doc.getElementById("okf-fm").querySelector(".okf-fm-head > button.okf-fm-toggle").click();
+  const head = doc.querySelector("body > .okf-layout > main > .okf-page-head");
+  assert(head.querySelectorAll("img, script, b, i").length === 0, "markup from bundle text became live in the page head");
+  for (const text of ["<img src=x onerror=window.__pwned=1>", "<b>2026-07-01</b>", "probe<i>key</i>"]) {
+    assert(head.textContent.includes(text), `the page head dropped ${text}`);
+  }
+  assert(window.__pwned === undefined, "a hostile value executed");
+});
+
+checkAsync("page glyphs and Show all leave body code wearing P1.1 chrome classes untouched", async () => {
+  const window = await openPage("p11-chrome-classes.html");
+  const doc = window.document;
+  const body = doc.getElementById("okf-body");
+  const codes = Array.from(body.querySelectorAll("code"));
+  const before = codes.map((c) => c.textContent);
+  const toggle = doc.querySelector("body > .okf-layout > main > .okf-page-head .okf-fm-toggle");
+  assert(toggle, "this case needs the fixture's folded entries and their Show all");
+  toggle.click();
+  assert(JSON.stringify(codes.map((c) => c.textContent)) === JSON.stringify(before), "body code wearing chrome classes was changed");
+  for (const c of codes) {
+    assert(window.getComputedStyle(c).getPropertyValue("display") !== "none", `<code class="${c.getAttribute("class")}"> was hidden`);
+  }
+  for (const rel of ["p11-chrome-classes.html", "p11-page.html", "foo.html"]) {
+    const page = rel === "p11-chrome-classes.html" ? window : await openPage(rel);
+    const b = page.document.getElementById("okf-body");
+    assert(b.querySelectorAll("svg").length === 0, `${rel}: an svg reached #okf-body`);
+    assert(Array.from(b.querySelectorAll("*")).every((el) => !Array.from(el.attributes).some((a) => a.name.startsWith("data-okf-"))), `${rel}: a data-okf-* attribute reached #okf-body`);
+  }
+});
+
+checkAsync("page: okf-page.js does nothing on the index, and degrades without OkfShapes or the index", async () => {
+  const index = await openPage("index.html");
+  assert(index.document.querySelector(".okf-fm-toggle") === null, "okf-page.js acted on the index");
+  const noShapes = await openPage("p11-page.html", { blocked: ["assets/okf-shapes.js"] });
+  assert(noShapes.document.querySelector(".okf-fm-toggle"), "Show all needs no shapes");
+  assert(noShapes.document.querySelector("body > .okf-layout > main > .okf-page-head svg") === null, "a glyph appeared without OkfShapes");
+  const noIndex = await openPage("p11-page.html", { blocked: ["assets/okf-index.js"], now: () => Date.UTC(2026, 9, 7) });
+  const head = noIndex.document.querySelector("body > .okf-layout > main > .okf-page-head");
+  assert(head.querySelector(".okf-chip-type svg") && head.querySelector(".okf-chip-stale .okf-chip-text").textContent === "stale after 2000-01-01",
+    "without the index the chip glyphs still come from the C# slots and the stale chip keeps its written text");
+});
+
+checkAsync("page: Referenced by rows whose target names an Object.prototype member resolve by own id only", async () => {
+  // The renderer never emits these rows for the fixture, so write a probe page:
+  // the real p11-page.html with extra rows. Each id is looked up in a Map built
+  // from the index, never as a property of a plain object.
+  const probe = "p11-proto-rows.html";
+  const rows = ["__proto__", "constructor", "toString", "valueOf", "__proto__/a.b/c-d", "hasOwnProperty"]
+    .map((id) => `<li><a class="okf-row" href="x.html" data-okf-target="${id}">${id}</a></li>`).join("\n");
+  const html = fs.readFileSync(path.join(SITE, "p11-page.html"), "utf8").replace("</ul>\n</section>\n</aside>", `${rows}\n</ul>\n</section>\n</aside>`);
+  assert(html.includes('data-okf-target="valueOf"'), "the probe page was not built: the backlinks markup changed");
+  fs.writeFileSync(path.join(SITE, probe), html);
+  const window = await openPage(probe);
+  const idx = window.OKF_INDEX;
+  const byId = new Map(idx.concepts.map((c, i) => [c.id, i]));
+  for (const a of window.document.querySelectorAll("#okf-context .okf-backlinks a.okf-row")) {
+    const target = a.getAttribute("data-okf-target");
+    const pos = byId.get(target);
+    const glyph = a.firstElementChild;
+    if (pos === undefined) {
+      assert(glyph === null, `${target}: not a concept of the index, but the row got a glyph`);
+    } else {
+      const t = idx.types[idx.concepts[pos].typeIndex];
+      assert(glyph && glyph.localName === "svg" && glyph.querySelector(`.okf-shape-${t.slot}`), `${target}: the row has no glyph of its type`);
+    }
+  }
+  assert(byId.has("__proto__") && byId.has("constructor") && byId.has("toString") && !byId.has("valueOf"), "the fixture's prototype-named ids changed");
+});
+
 // --- Task 16: fonts fallback (only if Task 10 found a browser blocking the fonts) ---
 
 // === end of P1.1 cases ===

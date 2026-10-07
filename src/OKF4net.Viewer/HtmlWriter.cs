@@ -571,6 +571,7 @@ public static class HtmlWriter
         "okf-explorer.js",
         "okf-palette.js",
         "okf-toc.js",
+        "okf-page.js",
         // P2: local graph
     ];
 

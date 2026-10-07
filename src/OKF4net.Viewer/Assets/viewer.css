@@ -543,6 +543,12 @@ body > .okf-palette-backdrop .okf-palette-foot {
 
 /* --- Task 15: Show all (C6) --- */
 
+/* C6: "Show all" / "Show fewer", a text button at the right of the box head. */
+body > .okf-layout > main > .okf-page-head .okf-fm-toggle {
+  flex: none; padding: 0; border: 0; background: none; cursor: pointer;
+  font-family: var(--body); font-size: 12.5px; font-weight: 600; color: var(--blue);
+}
+
 /* === P2: local graph === */
 /* (P2 rules) */
 
