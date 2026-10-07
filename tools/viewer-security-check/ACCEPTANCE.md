@@ -29,7 +29,24 @@ Record the date, browser versions and any failure in the pull request.
 
 ## P1.1
 
-*(P1.1 checks)*
+Tooled first (spec §12.8): build the two sites with the commands above, run
+the recette, and paste its summary into the pull request:
+
+    OKF_PLAYWRIGHT=<path to playwright-core> node tools/viewer-security-check/recette/recette.js \
+      --site <tmp>/okf4net-site --acme <tmp>/acme-site --browsers chrome,edge,firefox --slices p1,p1.1
+
+Every result must be `ok` (`RC1`–`RC11`, `fonts`, `H1`–`H13`, `E1`–`E13`,
+`C1`–`C8`, `X1`, `X3`, `X4`, `X10`, `X11`, `J1`–`J6`, `L6`, `tokens`,
+`requests`, and the second results `<id>-<name>` of the ids that have both a
+style probe and a behaviour, e.g. `H7-H7narrow`). Then, by hand:
+
+- [ ] Every capture of `<out>/shots/<browser>/p1.1/` set beside its mockup at 1 440 × 900 (A: `Main.dc.html`; the palette of C: `Focus.dc.html`): every visible difference is an "écart" of spec §11 or a defect.
+- [ ] Installed Firefox (not Playwright's), on the OKF4net site's `index.html` and its deepest page: the Network tab shows every `assets/fonts/` request answered (or no font request at all if `okf-fonts.css` serves them), and a paragraph's computed font is Inter.
+- [ ] Both themes: chips, explorer flags, type chips and the hourglass read clearly on the page and on the active row (the recette measures the ratios; this is the eye check).
+- [ ] At 390 px: the header takes two lines without its counts, the frontmatter box one column, and nothing scrolls sideways.
+- [ ] From the top of a page, Tab shows "Skip to content" first; Enter on it, then Tab, lands in the page, past the explorer.
+- [ ] Safari (best effort): one page of each site with its fonts and shapes.
+- IME and screen reader: deferred to issue #177 (A21), not blocking.
 
 - Note : « Global graph » renvoie vers graph.html, écrit par P3 : le lien est mort tant que P3 n'est pas livré.
 

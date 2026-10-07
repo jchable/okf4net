@@ -190,7 +190,18 @@ async function guard(fn) {
   }
 }
 
-module.exports = { loadPlaywright, launch, siteUrl, pageUrl, readIndex, pagesByDepth, parseColor, rgb, contrast, context, guard, BROWSERS };
+// The first page, in index order, whose markdown body holds at least `n`
+// "## " or "### " headings: read from the payload of the generated HTML,
+// where a newline is the two characters \n (HtmlSafeJson).
+function pageWithSections(dir, n) {
+  for (const concept of readIndex(dir).concepts) {
+    const html = fs.readFileSync(path.join(dir, ...concept.path.split("/")), "utf8");
+    if ((html.match(/\\n#{2,3} /g) || []).length >= n) { return concept.path; }
+  }
+  return null;
+}
+
+module.exports = { loadPlaywright, launch, siteUrl, pageUrl, readIndex, pagesByDepth, pageWithSections, parseColor, rgb, contrast, context, guard, BROWSERS };
 
 // node recette/lib.js --selftest: known answers for the pure helpers (no
 // Playwright, no browser). A colour or url helper that is wrong gives every
