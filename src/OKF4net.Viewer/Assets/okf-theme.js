@@ -5,10 +5,19 @@
 // unavailable (file:// in some browsers, privacy modes) and, even when a
 // write succeeds, local pages may not share it: every access is guarded and
 // without it the page follows prefers-color-scheme.
+//
+// It also marks <html> with data-okf-js as soon as it runs: viewer.css folds
+// the frontmatter box only under that mark (spec §11.3, C6), so a page
+// without JavaScript shows every entry, and a page with it never shows them
+// all for a frame before okf-page.js has run.
 (function () {
   "use strict";
   var KEY = "okf-theme";
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  // The moon of the mockups (H11), a constant of this module (spec §4.5).
+  var MOON = "M13 9.5A5.5 5.5 0 0 1 6.5 3a5.5 5.5 0 1 0 6.5 6.5z";
   var root = document.documentElement;
+  root.setAttribute("data-okf-js", "");
 
   function stored() {
     try {
@@ -33,14 +42,31 @@
     return query && query.matches ? "dark" : "light";
   }
 
+  function moonIcon() {
+    var svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("class", "okf-theme-icon");
+    svg.setAttribute("width", "16");
+    svg.setAttribute("height", "16");
+    svg.setAttribute("viewBox", "0 0 16 16");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    var path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", MOON);
+    path.setAttribute("stroke-width", "1.5");
+    svg.appendChild(path);
+    return svg;
+  }
+
   function addToggle() {
     var tools = document.getElementById("okf-tools");
     if (!tools) { return; }
     var button = document.createElement("button");
     button.type = "button";
     button.id = "okf-theme-toggle";
-    button.className = "okf-tool";
-    button.textContent = "Dark theme";
+    button.className = "okf-tool okf-theme-toggle";
+    // An icon button: its name stays P1's "Dark theme", its state is aria-pressed.
+    button.setAttribute("aria-label", "Dark theme");
+    button.appendChild(moonIcon());
     function sync() {
       button.setAttribute("aria-pressed", effective() === "dark" ? "true" : "false");
     }

@@ -370,6 +370,17 @@ svg .okf-node.okf-selected > .okf-node-ring, svg .okf-node.okf-focused > .okf-no
 
 /* --- Task 7: theme button (H11) --- */
 
+/* H11: a 34 x 34 square with the 16 px moon, stroked in ink; pressed (dark
+   forced or followed): border and stroke blue. */
+#okf-tools #okf-theme-toggle {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 34px; height: 34px; min-height: 0; padding: 0;
+  border: 1px solid var(--hair); background: var(--white); cursor: pointer;
+}
+#okf-tools #okf-theme-toggle .okf-theme-icon { display: block; fill: none; stroke: var(--ink); }
+#okf-tools #okf-theme-toggle[aria-pressed="true"] { border-color: var(--blue); }
+#okf-tools #okf-theme-toggle[aria-pressed="true"] .okf-theme-icon { stroke: var(--blue); }
+
 /* --- Task 8: contents (X3, X4) --- */
 
 /* --- Task 11: header (H1-H13) --- */

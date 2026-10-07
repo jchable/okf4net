@@ -3057,6 +3057,105 @@ check("OkfShapes: the exported tables are frozen all the way down, and near-miss
 });
 // --- Task 7: theme button ---
 
+checkAsync("theme: a click flips the pressed state and data-theme, and a system change while nothing is forced is followed by the next click", async () => {
+  let query = null;
+  const window = await openPage("index.html", {
+    beforeParse(w) {
+      query = new w.EventTarget();
+      query.matches = false;
+      w.matchMedia = () => query;
+    },
+  });
+  const doc = window.document;
+  const toggle = doc.getElementById("okf-theme-toggle");
+  const state = () => `${toggle.getAttribute("aria-pressed")}/${doc.documentElement.getAttribute("data-theme")}`;
+  assert(state() === "false/null", `initial state ${state()}`);
+  toggle.click();
+  assert(state() === "true/dark", `after one click: ${state()} (expected true/dark)`);
+  toggle.click();
+  assert(state() === "false/light", `after two clicks: ${state()} (expected false/light)`);
+  // Nothing forced: the page follows the system. A forced theme ignores the system.
+  doc.documentElement.removeAttribute("data-theme");
+  query.matches = true;
+  query.dispatchEvent(new window.Event("change"));
+  assert(state() === "true/null", `after a system change to dark: ${state()}`);
+  toggle.click();
+  assert(state() === "false/light", `a click while the system is dark: ${state()} (expected false/light)`);
+});
+
+checkAsync("theme: the pressed toggle is drawn in blue (border-color and stroke are var(--blue)); the resting one is not", async () => {
+  // jsdom resolves neither var() nor the border shorthand in getComputedStyle,
+  // so the rules are read from the page's stylesheet (CSSOM) instead: the
+  // declarations of the toggle's own rules (selectors anchored on
+  // #okf-theme-toggle) that match the element in its current state, in source
+  // order. P1's generic .okf-tool[aria-pressed] rule also colours the border
+  // but loses to the toggle's id-anchored border shorthand, so only the
+  // toggle's own rules decide. The tokens' colours are P1's :root.
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const toggle = doc.getElementById("okf-theme-toggle");
+  const icon = toggle.querySelector(".okf-theme-icon");
+  function declared(el, property) {
+    let value = null;
+    for (const sheet of Array.from(doc.styleSheets)) {
+      for (const rule of Array.from(sheet.cssRules)) {
+        if (rule.selectorText && rule.selectorText.includes("#okf-theme-toggle") && el.matches(rule.selectorText) && rule.style.getPropertyValue(property)) {
+          value = rule.style.getPropertyValue(property);
+        }
+      }
+    }
+    return value;
+  }
+  assert(toggle.getAttribute("aria-pressed") === "false", "this case needs a light system preference at rest");
+  assert(declared(toggle, "border-color") !== "var(--blue)" && declared(icon, "stroke") === "var(--ink)",
+    `at rest: border-color ${declared(toggle, "border-color")}, stroke ${declared(icon, "stroke")} (expected not blue, ink)`);
+  toggle.click();
+  assert(toggle.getAttribute("aria-pressed") === "true", "the click did not press the toggle");
+  assert(declared(toggle, "border-color") === "var(--blue)", `pressed border-color: ${declared(toggle, "border-color")}`);
+  assert(declared(icon, "stroke") === "var(--blue)", `pressed stroke: ${declared(icon, "stroke")}`);
+});
+
+checkAsync("theme: the toggle is a 34 px icon button named Dark theme with the moon of the mockups", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const toggle = doc.getElementById("okf-theme-toggle");
+  assert(toggle && toggle.getAttribute("aria-label") === "Dark theme" && toggle.textContent.trim() === "",
+    `toggle name "${toggle && toggle.getAttribute("aria-label")}", text "${toggle && toggle.textContent.trim()}"`);
+  assert(toggle.hasAttribute("aria-pressed"), "the toggle lost its pressed state");
+  assert(doc.getElementById("okf-tools").lastElementChild === toggle, "the toggle is not the last tool");
+  const svg = toggle.querySelector("svg");
+  assert(svg && svg.namespaceURI === "http://www.w3.org/2000/svg" && svg.getAttribute("aria-hidden") === "true" && svg.getAttribute("focusable") === "false",
+    "the icon is not a decorative SVG");
+  const paths = svg.querySelectorAll("path");
+  assert(paths.length === 1 && paths[0].getAttribute("d") === "M13 9.5A5.5 5.5 0 0 1 6.5 3a5.5 5.5 0 1 0 6.5 6.5z" && paths[0].getAttribute("stroke-width") === "1.5",
+    `moon path: ${paths.length ? paths[0].getAttribute("d") : "none"}`);
+  for (const el of [svg, ...svg.querySelectorAll("*")]) {
+    for (const a of Array.from(el.attributes)) {
+      assert(["class", "width", "height", "viewBox", "aria-hidden", "focusable", "d", "stroke-width"].includes(a.name), `the icon carries a ${a.name} attribute (colours belong to viewer.css)`);
+    }
+  }
+  const style = window.getComputedStyle(toggle);
+  assert(style.getPropertyValue("width") === "34px" && style.getPropertyValue("height") === "34px",
+    `toggle ${style.getPropertyValue("width")} x ${style.getPropertyValue("height")}`);
+});
+
+checkAsync("theme: data-okf-js marks <html> while okf-theme.js runs, with or without storage", async () => {
+  for (const opts of [{}, { storage: "denied" }]) {
+    let atScriptLoad = "not recorded";
+    // openPage denies storage itself (opts.storage) before calling beforeParse.
+    const window = await openPage("foo.html", Object.assign({}, opts, {
+      beforeParse(w) {
+        w.document.addEventListener("load", (e) => {
+          const src = e.target && e.target.nodeType === 1 ? e.target.getAttribute("src") || "" : "";
+          if (/okf-theme\.js$/.test(src)) { atScriptLoad = w.document.documentElement.hasAttribute("data-okf-js"); }
+        }, true);
+      },
+    }));
+    assert(atScriptLoad === true, `${JSON.stringify(opts)}: when okf-theme.js had run, data-okf-js was ${atScriptLoad}`);
+    assert(window.document.documentElement.getAttribute("data-okf-js") === "", "data-okf-js is not an empty marker");
+  }
+});
+
 // --- Task 8: contents, current section ---
 
 // --- Task 10: fonts ---
