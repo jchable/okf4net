@@ -2473,6 +2473,136 @@ checkAsync("a GFM table in the body scrolls in its own box; the frontmatter tabl
 // === P1.1 cases: one block per task; a task writes only under its own line ===
 // --- Task 3: CSS foundation ---
 
+console.log("\nP1.1 — CSS foundation:");
+
+// The custom properties of one rule block of viewer.css, as declared. A
+// smoke check on the SOURCE text, not on rendering: the recette measures the
+// colours and contrasts in real browsers (spec §11.0, A19).
+function declaredTokens(css, header) {
+  const start = css.indexOf(header);
+  assert(start !== -1, `viewer.css has no block starting with ${header}`);
+  const open = css.indexOf("{", start);
+  const close = css.indexOf("}", open);
+  const tokens = new Map();
+  for (const m of css.slice(open + 1, close).matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/g)) { tokens.set(m[1], m[2].trim()); }
+  return tokens;
+}
+
+check("CSS tokens match spec §11.0 in light and in both dark blocks", () => {
+  const css = fs.readFileSync(path.join(ASSETS, "viewer.css"), "utf8").replace(/[/][*][^]*?[*][/]/g, "");
+  const light = {
+    "--white": "#ffffff", "--ink": "#101014", "--blue": "#1a3fd6", "--blue-hover": "#102a96", "--blue-soft": "#eef1fd",
+    "--gray": "#6a6a72", "--hair": "#e3e3e8", "--red": "#c0392b", "--ghost": "#c0392b", "--edge": "#8a8a94",
+    "--stale": "#b4540a", "--okf-type-0": "#1a3fd6", "--okf-type-1": "#101014", "--okf-type-2": "#b4540a",
+    "--okf-type-3": "#6a6a72", "--okf-type-4": "#0b6e69", "--okf-type-5": "#6a6a72",
+    "--backdrop": "rgba(16, 16, 20, .34)", "--shadow": "0 18px 50px rgba(16, 16, 20, .28)",
+  };
+  const dark = {
+    "--white": "#101014", "--ink": "#f2f2f5", "--blue": "#8fa5f5", "--blue-hover": "#b7c5f8", "--blue-soft": "#1a1a22",
+    "--gray": "#9a9aa2", "--hair": "#2a2a33", "--red": "#ef6b5e", "--ghost": "#ef6b5e", "--edge": "#8a8a94",
+    "--stale": "#e08a3e", "--okf-type-0": "#8fa5f5", "--okf-type-1": "#f2f2f5", "--okf-type-2": "#e08a3e",
+    "--okf-type-3": "#9a9aa2", "--okf-type-4": "#2fb3a8", "--okf-type-5": "#9a9aa2",
+    "--backdrop": "rgba(0, 0, 0, .55)", "--shadow": "none",
+  };
+  const blocks = [
+    [":root {", light],
+    [':root[data-theme="dark"] {', dark],
+    [':root:not([data-theme="light"]) {', dark],
+  ];
+  for (const [header, want] of blocks) {
+    const got = declaredTokens(css, header);
+    for (const [name, value] of Object.entries(want)) {
+      assert(got.get(name) === value, `${header} ${name}: ${got.get(name)}, expected ${value}`);
+    }
+  }
+});
+
+// Unwraps the @media blocks whose condition `keep` accepts and DROPS the
+// others, so a case can apply the wide layout (min-width) without the narrow
+// one. Same parser as unwrapMedia.
+function mediaWhere(css, keep) {
+  css = css.replace(/[/][*][^]*?[*][/]/g, "");
+  let out = "";
+  const stack = [];
+  for (let i = 0; i < css.length; i++) {
+    if (css.startsWith("@media", i)) {
+      const open = css.indexOf("{", i);
+      const kept = keep(css.slice(i + 6, open).trim());
+      stack.push(kept ? "media-kept" : "media-dropped");
+      i = open;
+    } else if (css[i] === "{") {
+      stack.push("block");
+      if (!stack.includes("media-dropped")) { out += "{"; }
+    } else if (css[i] === "}") {
+      const top = stack.pop();
+      if (top === "block" && !stack.includes("media-dropped")) { out += "}"; }
+    } else if (!stack.includes("media-dropped")) {
+      out += css[i];
+    }
+  }
+  return out;
+}
+
+checkAsync("layout: three columns without wrapping from 1100 px (L6), side panels of 290 and 340", async () => {
+  const window = await openPage("foo/bar.html");
+  const doc = window.document;
+  const style = doc.createElement("style");
+  style.textContent = mediaWhere(fs.readFileSync(path.join(SITE, "assets", "viewer.css"), "utf8"), (cond) => /min-width/.test(cond) && !/max-width/.test(cond));
+  doc.head.appendChild(style);
+  const get = (el, prop) => window.getComputedStyle(el).getPropertyValue(prop);
+  const layout = doc.querySelector("body > .okf-layout");
+  const main = doc.querySelector("body > .okf-layout > main");
+  const explorer = doc.getElementById("okf-explorer");
+  const context = doc.getElementById("okf-context");
+  assert(get(layout, "flex-wrap") === "nowrap", `.okf-layout flex-wrap: ${get(layout, "flex-wrap")}`);
+  assert(get(explorer, "width") === "290px" && get(explorer, "flex-grow") === "0" && get(explorer, "flex-shrink") === "0",
+    `explorer: width ${get(explorer, "width")}, grow ${get(explorer, "flex-grow")}, shrink ${get(explorer, "flex-shrink")}`);
+  assert(get(context, "width") === "340px" && get(context, "flex-grow") === "0" && get(context, "flex-shrink") === "0",
+    `context: width ${get(context, "width")}, grow ${get(context, "flex-grow")}, shrink ${get(context, "flex-shrink")}`);
+  assert(get(main, "flex-grow") === "1" && get(main, "flex-shrink") === "1" && ["0", "0px", "0%"].includes(get(main, "flex-basis")) && ["0", "0px"].includes(get(main, "min-width")),
+    `main: grow ${get(main, "flex-grow")}, shrink ${get(main, "flex-shrink")}, basis ${get(main, "flex-basis")}, min-width ${get(main, "min-width")}`);
+});
+
+checkAsync("layout: a hidden side panel stays hidden although the panels are flex containers", async () => {
+  // constructor.html has no h2/h3 and no backlinks: its context panel is hidden.
+  const window = await openPage("constructor.html");
+  const context = window.document.getElementById("okf-context");
+  assert(context.hidden, "this case needs the hidden context panel of constructor.html");
+  assert(window.getComputedStyle(context).getPropertyValue("display") === "none", `a hidden #okf-context is display: ${window.getComputedStyle(context).getPropertyValue("display")}`);
+});
+
+checkAsync("shared components are styled under every chrome container, and not in the body", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const main = doc.querySelector("body > .okf-layout > main");
+  const head = doc.createElement("div");
+  head.className = "okf-page-head";
+  main.insertBefore(head, main.firstChild);
+  const graph = doc.createElement("div");
+  graph.className = "okf-graph-layout";
+  doc.body.appendChild(graph);
+  const containers = [doc.getElementById("okf-explorer"), doc.getElementById("okf-context"), head, graph, doc.querySelector("body > .okf-palette-backdrop")];
+  const probe = (container) => {
+    const chip = doc.createElement("span"); chip.className = "okf-chip";
+    const title = doc.createElement("h2"); title.className = "okf-section-title";
+    const row = doc.createElement("a"); row.className = "okf-row";
+    container.appendChild(chip); container.appendChild(title); container.appendChild(row);
+    const css = (el, prop) => window.getComputedStyle(el).getPropertyValue(prop);
+    return { chipHeight: css(chip, "height"), chipSize: css(chip, "font-size"), titleSize: css(title, "font-size"), titleCase: css(title, "text-transform"), rowSize: css(row, "font-size") };
+  };
+  for (const container of containers) {
+    assert(container, "a chrome container this case needs is missing");
+    const got = probe(container);
+    const where = container.id || container.className;
+    assert(got.chipHeight === "26px" && got.chipSize === "12px", `${where}: .okf-chip height ${got.chipHeight}, font-size ${got.chipSize}`);
+    assert(got.titleSize === "11px" && got.titleCase === "uppercase", `${where}: .okf-section-title font-size ${got.titleSize}, text-transform ${got.titleCase}`);
+    assert(got.rowSize === "13.5px", `${where}: .okf-row font-size ${got.rowSize}`);
+  }
+  const inBody = probe(doc.getElementById("okf-body"));
+  assert(inBody.chipHeight !== "26px" && inBody.titleSize !== "11px" && inBody.rowSize !== "13.5px",
+    `the shared components styled body content: ${JSON.stringify(inBody)}`);
+});
+
 // --- Task 4: index v2 ---
 console.log("\nP1.1 — index v2:");
 
