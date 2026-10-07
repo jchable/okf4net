@@ -275,8 +275,81 @@ function registerSim(h) {
   });
 }
 
+// Source text with comments removed (block, then line comments). okf-sim.js
+// holds no string with "//" or "/*" in it, which this naive stripping
+// would otherwise cut.
+function codeOf(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+}
+
+// The names okf-sim.js must not reach, beyond Math: anything that reads a
+// clock, a random source, the DOM, a frame callback or another global.
+const FORBIDDEN_NAMES = ["Date", "performance", "random", "requestAnimationFrame", "setTimeout", "setInterval",
+  "document", "globalThis", "self", "eval", "Function", "OKF_SCHEDULER", "OKF_INDEX"];
+
+// Findings of the static check, as readable strings (empty = clean).
+function purityFindings(source) {
+  const code = codeOf(source);
+  const found = [];
+  for (const m of code.matchAll(/\bMath\s*\.\s*([A-Za-z_$][\w$]*)/g)) {
+    if (!ALLOWED_MATH.includes(m[1])) { found.push(`Math.${m[1]}`); }
+  }
+  if (/\bMath\s*\[/.test(code)) { found.push("Math[...] (computed access)"); }
+  if (/\bMath\b(?!\s*\.)/.test(code)) { found.push("Math used other than as Math.<name>"); }
+  if (code.includes("**")) { found.push("the ** operator"); }
+  for (const name of FORBIDDEN_NAMES) {
+    if (new RegExp(`\\b${name}\\b`).test(code)) { found.push(name); }
+  }
+  const windows = code.match(/\bwindow\b/g) || [];
+  if (windows.length !== 1 || !/\bwindow\.OkfSim\s*=/.test(code)) {
+    found.push(`window used ${windows.length} time(s); only "window.OkfSim =" is allowed`);
+  }
+  return found;
+}
+
+function registerPurity(h) {
+  // SMOKE CHECK, not proof: it reads okf-sim.js's source text. It catches a
+  // forbidden Math function, the ** operator, a clock, the DOM or another
+  // global written anywhere in the file, executed or not -- but not one
+  // reached by a disguise it does not parse (an alias assembled at run
+  // time). The runtime half below is the executable guard for the paths
+  // the cases above execute: loadSim() runs the module with a Math that
+  // holds only the allowed functions and with the DOM, clock and frame
+  // names undefined, so any such call made by a case throws.
+  h.check("sim purity: okf-sim.js calls no Math function outside §4.2 and no clock, DOM or other global (smoke check)", () => {
+    const findings = purityFindings(fs.readFileSync(SIM_FILE, "utf8"));
+    h.assert(findings.length === 0, `okf-sim.js uses: ${findings.join(", ")}`);
+  });
+
+  h.check("sim purity: the static check itself flags each forbidden form", () => {
+    const clean = "(function () { window.OkfSim = Object.freeze({ a: Math.sqrt(2) + Math.imul(3, 4) }); })();";
+    h.assert(purityFindings(clean).length === 0, `a clean module was flagged: ${purityFindings(clean).join(", ")}`);
+    const dirty = [
+      "var a = Math.sin(1);", "var a = Math.pow(2, 3);", "var a = Math.round(2.5);", "var a = 2 ** 3;",
+      "var a = Math['cos'](1);", "var m = Math; var a = m.exp(1);", "var a = Date.now();", "var a = Math.random();",
+      "var a = performance.now();", "requestAnimationFrame(f);", "var d = document.body;", "var g = globalThis;",
+      "var w = window.innerWidth;",
+    ];
+    for (const line of dirty) {
+      const source = clean.replace("window.OkfSim", `${line} window.OkfSim`);
+      h.assert(purityFindings(source).length > 0, `not flagged: ${line}`);
+    }
+    h.assert(purityFindings(clean + "\n// Math.sin and ** in a comment are not code\n").length === 0, "a comment was flagged");
+  });
+
+  h.check("sim purity: in the sandbox a forbidden Math function throws (the runtime guard is live)", () => {
+    const math = {};
+    for (const name of ALLOWED_MATH) { math[name] = Math[name]; }
+    Object.freeze(math);
+    const probe = vm.runInNewContext("(function (Math, Date) { var r = []; try { Math.sin(1); r.push('sin ran'); } catch (e) { r.push(e.name); } r.push(typeof Date); return r.join(); })", {});
+    const got = probe(math);
+    h.assert(got === "TypeError,undefined", `the sandbox let a forbidden call through: ${got}`);
+  });
+}
+
 function register(h) {
   registerSim(h);
+  registerPurity(h);
 }
 
 module.exports = { register };
@@ -303,6 +376,7 @@ if (require.main === module) {
     },
   });
   registerSim(h);
+  registerPurity(h);
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed === 0 ? 0 : 1);
 }
