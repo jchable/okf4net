@@ -64,6 +64,10 @@
 
   var shown = [];
   var active = -1;
+  // The concept the reader made active with the arrow keys since the palette
+  // opened, or -1. Only that choice survives a query change; an option that
+  // is active merely because it ranked first earlier does not (spec §8).
+  var chosen = -1;
   var returnFocus = null;
 
   // Marks the active option and keeps it visible. Arrow keys call this alone:
@@ -101,13 +105,16 @@
   }
 
   function update() {
-    var previous = active >= 0 ? shown[active] : -1;
     // Every match is listed and reachable: no cap (owner decision, 2026-10-06).
     shown = site.rank(index, input.value);
-    // Keep the active concept when it survives the new query, else the first
-    // option becomes active (spec §8).
-    active = shown.indexOf(previous);
-    if (active === -1) { active = shown.length > 0 ? 0 : -1; }
+    // Keep the concept the reader chose with the arrows when it survives the
+    // new query; otherwise the first (best-ranked) option becomes active and
+    // the choice is forgotten (spec §8).
+    active = chosen === -1 ? -1 : shown.indexOf(chosen);
+    if (active === -1) {
+      chosen = -1;
+      active = shown.length > 0 ? 0 : -1;
+    }
     render();
     if (site.normalize(input.value) === "") {
       status.textContent = "";
@@ -122,6 +129,7 @@
     if (shown.length === 0) { return; }
     list.children[active].setAttribute("aria-selected", "false");
     active = (active + delta + shown.length) % shown.length;
+    chosen = shown[active];
     sync();
   }
 
@@ -137,6 +145,7 @@
     returnFocus = document.activeElement;
     input.value = "";
     active = -1;
+    chosen = -1;
     update();
     backdrop.hidden = false;
     input.focus();

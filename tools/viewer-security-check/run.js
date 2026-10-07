@@ -1369,6 +1369,27 @@ checkAsync("palette: the active concept survives a narrower query, else the firs
   assert(selected() === paletteOptions(window)[0], "the first option is not active once the active one is filtered out");
 });
 
+// Recette R3: an option made active by an earlier keystroke, not by the
+// arrows, must not survive the narrowing, or Enter opens a worse match.
+checkAsync("palette: typing without the arrows keeps the first result active, and Enter opens it", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  doc.querySelector(".okf-palette-open").click();
+  const input = doc.getElementById("okf-palette-input");
+  const selected = () => paletteOptions(window).find((o) => o.getAttribute("aria-selected") === "true");
+  type(window, input, "t");
+  assert(optionId(selected()) === "toString", `active under "t": ${optionId(selected())} (this case needs toString first)`);
+  type(window, input, "tr");
+  const ids = paletteOptions(window).map(optionId);
+  // toString still matches "tr" but no longer first: "keep it" and "reset to the first" differ here.
+  assert(ids[0] === "constructor" && ids.includes("toString"), `order under "tr": ${ids.join(",")}`);
+  assert(optionId(selected()) === "constructor", `active under "tr": ${optionId(selected())}, expected the first result`);
+  let navigated = null;
+  doc.addEventListener("okf:navigate", (e) => { navigated = e.detail.href; e.preventDefault(); });
+  key(window, input, { key: "Enter" });
+  assert(navigated === "constructor.html", `Enter navigated to ${navigated}`);
+});
+
 checkAsync("palette: ids naming Object.prototype members are found as concepts", async () => {
   const window = await openPage("index.html");
   window.document.querySelector(".okf-palette-open").click();

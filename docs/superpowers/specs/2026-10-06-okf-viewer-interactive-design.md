@@ -421,7 +421,10 @@ fige en revanche l'ensemble d'arêtes de `okf graph` (A3).
   focus dans le champ ; Tab et Maj+Tab restent dans le dialogue ; Échap ferme ;
   flèches haut/bas déplacent l'option active, Entrée ouvre ; nombre de résultats
   annoncé (région live) ; si un filtrage supprime l'option active, la sélection
-  passe à la première option ; à la fermeture, focus rendu au déclencheur.
+  passe à la première option ; l'option active conservée d'un filtrage à
+  l'autre est celle que le lecteur a choisie avec les flèches depuis
+  l'ouverture : sans ce choix, la sélection est la première option ; à la
+  fermeture, focus rendu au déclencheur.
 - **Raccourcis** : un **bouton visible** ouvre toujours la palette. Ctrl K et `/`
   sont captés seulement si aucun champ éditable n'a le focus, sans autre
   modificateur (Alt, Meta), hors composition IME (`isComposing`) ;
