@@ -2,7 +2,7 @@
 //
 // Layout of the global graph (spec §4.2, §12.5): a pure force simulation --
 // no DOM, no clock, no Math.random, no global but its own. Same input, same
-// initial layout on every conforming engine, because it uses only + - * / %,
+// initial layout on every conforming engine, because it uses only + - * / % >>>,
 // Math.sqrt (correctly rounded by ECMAScript) and the exact Math.floor,
 // ceil, trunc, abs, min, max and imul: never another Math function and never
 // the ** operator, whose results are implementation-approximated.
@@ -48,6 +48,10 @@
     if (options === undefined || options === null) { return out; }
     if (typeof options !== "object") { throw new TypeError("OkfSim.create: options must be an object"); }
     var names = ["maxIterations", "sliceWork", "cellCap"];
+    var given = Object.keys(options);
+    for (var u = 0; u < given.length; u++) {
+      if (names.indexOf(given[u]) < 0) { throw new TypeError("OkfSim.create: unknown option \"" + given[u] + "\""); }
+    }
     for (var k = 0; k < names.length; k++) {
       var v = options[names[k]];
       if (v === undefined) { continue; }
@@ -122,11 +126,13 @@
     var phase = n <= 1 ? DONE : REPULSE;
     var temperature = SPACING;
 
-    // REPULSE cursors: node, neighbour cell (0..8), member of that cell,
-    // members visited in it, the cell's member list, and the node's force.
+    // REPULSE cursors: node, neighbour cell (0..8), the cell's member list,
+    // where the scan of that list starts, how many members to visit in it and
+    // how many were visited, and the node's force.
     var node = 0;
     var cell = 0;
-    var member = 0;
+    var start = 0;
+    var take = 0;
     var visited = 0;
     var list = null;
     var ax = 0;
@@ -173,11 +179,16 @@
               continue;
             }
             list = found;
-            member = 0;
             visited = 0;
+            // A crowded cell is scanned for at most cellCap members. The scan
+            // starts at an offset fixed by the node and the iteration, so the
+            // members that fall outside the cap rotate instead of always being
+            // the highest-numbered ones; the offset does not depend on how the
+            // work was sliced.
+            start = (node + iterations) % list.length;
+            take = Math.min(list.length, opts.cellCap);
           }
-          var j = list[member];
-          member++;
+          var j = list[(start + visited) % list.length];
           visited++;
           work++;
           if (j !== node) {
@@ -198,7 +209,7 @@
               ay += dy * f;
             }
           }
-          if (member === list.length || visited === opts.cellCap) {
+          if (visited === take) {
             list = null;
             cell++;
           }
@@ -263,24 +274,34 @@
 
   // graph: { nodeCount, edges: [[source, target], ...] }, nodes numbered in
   // index order (spec §12.5). Returns null above NODE_LIMIT (A6: the page
-  // then asks the reader to narrow the filters).
+  // then asks the reader to narrow the filters). Order of checks: graph is an
+  // object, nodeCount an integer >= 0, edges an array, options valid (unknown
+  // keys included) -- each a TypeError; then nodeCount > NODE_LIMIT gives null
+  // WITHOUT looking at the edge entries; then every edge entry is validated,
+  // each field read once, before anything is allocated from edges.length.
   function create(graph, options) {
     if (!graph || typeof graph !== "object") { throw new TypeError("OkfSim.create: graph must be an object"); }
     var n = graph.nodeCount;
     if (!isInt(n) || n < 0) { throw new TypeError("OkfSim.create: nodeCount must be an integer >= 0"); }
+    var list = graph.edges;
+    if (!Array.isArray(list)) { throw new TypeError("OkfSim.create: edges must be an array"); }
+    var opts = readOptions(options);
     if (n > NODE_LIMIT) { return null; }
-    if (!Array.isArray(graph.edges)) { throw new TypeError("OkfSim.create: edges must be an array"); }
-    var edges = new Int32Array(2 * graph.edges.length);
-    for (var k = 0; k < graph.edges.length; k++) {
-      var e = graph.edges[k];
-      if (!Array.isArray(e) || e.length !== 2 || !isInt(e[0]) || !isInt(e[1])
-          || e[0] < 0 || e[0] >= n || e[1] < 0 || e[1] >= n || e[0] === e[1]) {
+    var count = list.length;
+    var flat = [];
+    for (var k = 0; k < count; k++) {
+      var e = list[k];
+      if (!Array.isArray(e) || e.length !== 2) {
         throw new TypeError("OkfSim.create: edges[" + k + "] must be two distinct node numbers below nodeCount");
       }
-      edges[2 * k] = e[0];
-      edges[2 * k + 1] = e[1];
+      var s = e[0];
+      var t = e[1];
+      if (!isInt(s) || !isInt(t) || s < 0 || s >= n || t < 0 || t >= n || s === t) {
+        throw new TypeError("OkfSim.create: edges[" + k + "] must be two distinct node numbers below nodeCount");
+      }
+      flat.push(s, t);
     }
-    return createSimulation(n, edges, readOptions(options));
+    return createSimulation(n, new Int32Array(flat), opts);
   }
 
   window.OkfSim = Object.freeze({
