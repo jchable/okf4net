@@ -1982,6 +1982,10 @@ const CHROME_ANCHORS = [
   { chain: [/^#okf-context(?![\w-])/] },
   { chain: [BODY, /^\.okf-palette-backdrop(?![\w-])/] },
   { chain: [BODY, /^\.okf-layout$/, /^main$/, /^\.okf-page-head(?![\w-])/] },
+  // The page head again, through main's id: only so a chip rule outweighs the
+  // shared .okf-chip (an id in :is() counts as one). #okf-main is the layout's
+  // one <main>, and no body code can be what a page-head descendant matches.
+  { chain: [/^#okf-main$/, /^\.okf-page-head(?![\w-])/] },
   { chain: [BODY, /^\.okf-layout$/, /^main$/, /^\.(?:meta|errors)(?![\w-])/] },
   { chain: [BODY, /^header\.bar(?![\w-])/] },
   { chain: [BODY, /^\.okf-skip(?![\w-])/] },
@@ -2018,7 +2022,7 @@ function isAnchored(partsIn) {
 
 // The selectors of a rule that name a class and start from no anchor. The one
 // exemption: every compound naming a class carries an explicit non-code tag
-// (a.broken, table.frontmatter th), so no <code> can be what it matches.
+// (a.broken), so no <code> can be what it matches.
 function unanchoredClassSelectors(selectorText) {
   const offenders = [];
   for (const complex of splitTopLevel(selectorText, ",")) {
@@ -2212,11 +2216,13 @@ checkAsync("the real P1 chrome keeps its anchored styles", async () => {
     [doc.querySelector("body > .topline"), "height", "6px"],
     [doc.querySelector("body > header.bar > .bar-in"), "display", "flex"],
     [doc.querySelector("body > header.bar .wordmark"), "font-size", "20px"],
-    [doc.querySelector("body > .okf-layout > main > .meta"), "font-size", "13px"],
+    // The count line (C8) now lives on the index page only: a concept page's
+    // meta line became the page head (Task 12).
+    [(await openPage("index.html")).document.querySelector("body > .okf-layout > main > .meta"), "font-size", "13px"],
   ];
   for (const [el, prop, value] of chrome) {
     assert(el, `a chrome element this case needs is missing (${prop}: ${value})`);
-    const got = window.getComputedStyle(el).getPropertyValue(prop);
+    const got = (el.ownerDocument.defaultView).getComputedStyle(el).getPropertyValue(prop);
     assert(got === value, `the real <${el.tagName.toLowerCase()} class="${el.getAttribute("class")}"> lost its ${prop}: ${value} (got ${got})`);
   }
 });
@@ -2442,25 +2448,32 @@ checkAsync("nothing long and unbroken widens the page: panels and tree entries s
   // its min-content.
   const window = await openPage("foo/bar.html");
   const doc = window.document;
+  const chipDoc = (await openPage("p11-page.html")).document;
   const expected = [
     [doc.getElementById("okf-explorer"), "min-width", "0px"],
     [doc.getElementById("okf-context"), "min-width", "0px"],
     [doc.querySelector("#okf-explorer .okf-tree-link"), "overflow", "hidden"],
     [doc.querySelector("main"), "overflow-wrap", "break-word"],
     [doc.querySelector("#okf-body p"), "overflow-wrap", "break-word"],
-    [doc.querySelector("main table.frontmatter td"), "overflow-wrap", "anywhere"],
+    [doc.querySelector("body > .okf-layout > main > .okf-page-head .okf-fm-value"), "overflow-wrap", "anywhere"],
+    // The page head's chips carry bundle text of any length (type, status,
+    // verifier, a date as written): they wrap inside the column.
+    ...["max-width:100%", "white-space:normal", "overflow-wrap:anywhere", "height:auto"].map((d) => {
+      const [prop, value] = d.split(":");
+      return [chipDoc.querySelector("body > .okf-layout > main > .okf-page-head .okf-chip-status"), prop, value];
+    }),
   ];
   for (const [el, prop, value] of expected) {
     assert(el, `an element this case needs is missing (${prop}: ${value})`);
-    const got = window.getComputedStyle(el).getPropertyValue(prop);
+    const got = el.ownerDocument.defaultView.getComputedStyle(el).getPropertyValue(prop);
     assert(got === value || (value === "0px" && got === "0"), `<${el.tagName.toLowerCase()} id="${el.id}" class="${el.getAttribute("class") || ""}"> ${prop}: ${got}, expected ${value}`);
   }
 });
 
 // A wide GFM table in the page scrolls inside its own box (the page does not
-// widen at 390 px); the frontmatter table, outside #okf-body, stays a table.
-// Declarations only: the recette measures the page's width.
-checkAsync("a GFM table in the body scrolls in its own box; the frontmatter table is left alone", async () => {
+// widen at 390 px); the frontmatter box, outside #okf-body, is not a table
+// and is left alone. Declarations only: the recette measures the page's width.
+checkAsync("a GFM table in the body scrolls in its own box; the frontmatter box is left alone", async () => {
   const window = await openPage("chrome-classes.html");
   const doc = window.document;
   const table = doc.querySelector("#okf-body table");
@@ -2468,9 +2481,9 @@ checkAsync("a GFM table in the body scrolls in its own box; the frontmatter tabl
   const style = window.getComputedStyle(table);
   assert(style.getPropertyValue("display") === "block" && style.getPropertyValue("overflow-x") === "auto",
     `#okf-body table: display ${style.getPropertyValue("display")}, overflow-x ${style.getPropertyValue("overflow-x")}`);
-  const front = window.getComputedStyle(doc.querySelector("main table.frontmatter"));
-  assert(front.getPropertyValue("display") === "table" && front.getPropertyValue("overflow-x") !== "auto",
-    `the frontmatter table changed (display ${front.getPropertyValue("display")}, overflow-x ${front.getPropertyValue("overflow-x")})`);
+  const box = doc.querySelector("body > .okf-layout > main > .okf-page-head .okf-fm");
+  assert(box && box.querySelector("table") === null, "the frontmatter box is missing or is a table again");
+  assert(window.getComputedStyle(box).getPropertyValue("overflow-x") !== "auto", "the frontmatter box scrolls like a body table");
 });
 
 // === P1.1 cases: one block per task; a task writes only under its own line ===
@@ -2591,13 +2604,15 @@ checkAsync("shared components are styled under every chrome container, and not i
     const row = doc.createElement("a"); row.className = "okf-row";
     container.appendChild(chip); container.appendChild(title); container.appendChild(row);
     const css = (el, prop) => window.getComputedStyle(el).getPropertyValue(prop);
-    return { chipHeight: css(chip, "height"), chipSize: css(chip, "font-size"), titleSize: css(title, "font-size"), titleCase: css(title, "text-transform"), rowSize: css(row, "font-size") };
+    return { chipHeight: css(chip, "height"), chipMinHeight: css(chip, "min-height"), chipSize: css(chip, "font-size"), titleSize: css(title, "font-size"), titleCase: css(title, "text-transform"), rowSize: css(row, "font-size") };
   };
   for (const container of containers) {
     assert(container, "a chrome container this case needs is missing");
     const got = probe(container);
     const where = container.id || container.className;
-    assert(got.chipHeight === "26px" && got.chipSize === "12px", `${where}: .okf-chip height ${got.chipHeight}, font-size ${got.chipSize}`);
+    // The page head's chips grow with their text (Task 12): auto height, 26 px minimum.
+    const sized = where === "okf-page-head" ? got.chipHeight === "auto" && got.chipMinHeight === "26px" : got.chipHeight === "26px";
+    assert(sized && got.chipSize === "12px", `${where}: .okf-chip height ${got.chipHeight}, min-height ${got.chipMinHeight}, font-size ${got.chipSize}`);
     assert(got.titleSize === "11px" && got.titleCase === "uppercase", `${where}: .okf-section-title font-size ${got.titleSize}, text-transform ${got.titleCase}`);
     assert(got.rowSize === "13.5px", `${where}: .okf-row font-size ${got.rowSize}`);
   }
@@ -3450,6 +3465,85 @@ checkAsync("header: the real header keeps its anchored styles", async () => {
 });
 
 // --- Task 12: page head ---
+
+checkAsync("page head: the breadcrumb links resolve from the site root, wherever the site is moved", async () => {
+  for (const mount of ["", "moved/elsewhere/"]) {
+    const window = await openPage("foo/bar.html", { mount });
+    const crumbs = window.document.querySelector("body > .okf-layout > main > .okf-page-head nav.okf-crumbs");
+    assert(crumbs && crumbs.getAttribute("aria-label") === "Breadcrumb", "the breadcrumb is not a labelled nav");
+    const links = Array.from(crumbs.querySelectorAll("a"));
+    assert(links.length === 2 && links[0].textContent === "hostile-bundle" && links[0].href === `${BASE}${mount}index.html`, `bundle crumb: ${links[0] && links[0].href}`);
+    assert(links[1].textContent === "foo" && links[1].href === `${BASE}${mount}foo.html`, `folder crumb: ${links[1] && links[1].href} (foo is also a concept)`);
+    const last = crumbs.querySelector('[aria-current="page"]');
+    assert(last && last.textContent === "bar" && last.localName === "span", "the current segment is not the last crumb");
+  }
+  const typed = await openPage("p11-types/m1.html");
+  const folder = typed.document.querySelector("body > .okf-layout > main > .okf-page-head nav.okf-crumbs li:nth-child(2)");
+  assert(folder && folder.querySelector("a") === null && folder.textContent.endsWith("p11-types"), "a folder without its own concept is not plain text");
+});
+
+checkAsync("page head: the body does not repeat the title H1", async () => {
+  const window = await openPage("p11-page.html");
+  const doc = window.document;
+  assert(doc.querySelectorAll("#okf-body h1").length === 0, "the body still repeats the title");
+  const h1 = doc.querySelectorAll("h1");
+  assert(h1.length === 1 && h1[0].closest("body > .okf-layout > main > .okf-page-head") && h1[0].textContent === "Page head probe", `h1: ${h1.length}`);
+  assert(doc.querySelector("#okf-toc a").getAttribute("href") === "#okf-h-section", "the contents do not start at the first remaining heading");
+});
+
+checkAsync("page head: hostile status, verifier, date and frontmatter are written as inert text", async () => {
+  const window = await openPage("p11-page.html");
+  const doc = window.document;
+  const head = doc.querySelector("body > .okf-layout > main > .okf-page-head");
+  assert(head.querySelectorAll("img, script, b, i").length === 0, `markup from bundle text became live in the page head: ${head.innerHTML.slice(0, 200)}`);
+  for (const text of ["<img src=x onerror=window.__pwned=1>", "<b>2026-07-01</b>", "probe<i>key</i>"]) {
+    assert(head.textContent.includes(text), `the page head dropped ${text} instead of showing it as text`);
+  }
+  assert(window.__pwned === undefined, "a hostile value executed");
+});
+
+checkAsync("page head: the real page head keeps its anchored styles, and folds without JavaScript's help", async () => {
+  const window = await openPage("p11-page.html");
+  const doc = window.document;
+  const head = doc.querySelector("body > .okf-layout > main > .okf-page-head");
+  const extra = head.querySelector(".okf-fm-cell[data-okf-extra]");
+  const chrome = [
+    [head.querySelector("h1"), "font-size", "34px"],
+    [head.querySelector(".okf-chips .okf-chip"), "min-height", "26px"],
+    [head.querySelector(".okf-fm-key"), "width", "92px"],
+    [head.querySelector(".okf-fm-value"), "overflow-wrap", "anywhere"],
+    [head.querySelector(".okf-fm-struct"), "white-space", "pre-wrap"],
+    [extra, "display", "none"],
+  ];
+  for (const [el, prop, value] of chrome) {
+    assert(el, `a page-head element this case needs is missing (${prop}: ${value})`);
+    const got = window.getComputedStyle(el).getPropertyValue(prop);
+    assert(got === value, `the real <${el.tagName.toLowerCase()} class="${el.getAttribute("class")}"> lost its ${prop}: ${value} (got ${got})`);
+  }
+  doc.documentElement.removeAttribute("data-okf-js");
+  assert(window.getComputedStyle(extra).getPropertyValue("display") !== "none", "a folded entry stays hidden without the JavaScript mark");
+});
+
+checkAsync("page head: a structured frontmatter value keeps its line breaks, in the HTML and in the cell", async () => {
+  const written = fs.readFileSync(path.join(SITE, "p11-page.html"), "utf8");
+  const raw = /<span class="okf-fm-value okf-fm-struct">([^<]*resource: skills\/run\.md[^<]*)<\/span>/.exec(written);
+  assert(raw && raw[1].includes("\n"), `the written text node has no line break: ${raw && JSON.stringify(raw[1])}`);
+  const window = await openPage("p11-page.html");
+  const cell = Array.from(window.document.querySelectorAll(".okf-fm-struct")).find((c) => c.textContent.includes("resource: skills/run.md"));
+  assert(cell, "the executor cell is missing");
+  assert(cell.textContent.includes("\n") && cell.textContent.split("\n").length >= 2, `the cell text is one line: ${JSON.stringify(cell.textContent)}`);
+  const ws = window.getComputedStyle(cell).getPropertyValue("white-space");
+  assert(ws === "pre-wrap", `white-space: ${ws}`);
+});
+
+checkAsync("page head: Referenced by counts its rows, each a .okf-row naming its source", async () => {
+  const window = await openPage("p11-page.html");
+  const doc = window.document;
+  const title = doc.getElementById("okf-backlinks-title");
+  const rows = Array.from(doc.querySelectorAll("#okf-context .okf-backlinks a.okf-row[data-okf-target]"));
+  assert(title && title.textContent === `Referenced by · ${rows.length}` && rows.length >= 1, `title: ${title && title.textContent}`);
+  assert(rows.some((a) => a.getAttribute("data-okf-target") === "p11-page-ref" && a.getAttribute("href") === "p11-page-ref.html"), "the referrer row is missing");
+});
 
 // --- Task 13: explorer ---
 

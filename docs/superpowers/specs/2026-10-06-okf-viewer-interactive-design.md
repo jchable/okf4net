@@ -1140,7 +1140,9 @@ contrôle ne prouve sa capacité à échouer que par la passe sans polices (éch
   de la boîte, jamais un filet doublé, quel que soit le nombre d'entrées
   repliées ou montrées ; à 600 de large et moins, une seule colonne ; clé
   Space Mono 12 `--gray` sur 92 ; valeur 13,5, coupure
-  `anywhere` ; valeur structurée (émission YAML compacte) en Space Mono 12,5.
+  `anywhere` ; valeur structurée (émission YAML compacte) en Space Mono 12,5 ;
+  les valeurs structurées gardent leurs retours à la ligne (émission compacte
+  de P1, sans aplatissement : `white-space: pre-wrap`).
   Repliée (A27) : les quatre premières entrées en ordre du document hors
   `type`, `title`, `status`, `verified`, `stale_after` (déjà montrées par le
   titre et les puces) ; dépliée : toutes, en ordre du document. Les autres

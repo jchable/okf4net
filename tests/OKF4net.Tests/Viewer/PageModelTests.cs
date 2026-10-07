@@ -196,14 +196,15 @@ public class PageModelTests
     {
         using var tmp = new TempDir();
         var page = Page(tmp,
-            "type: Note\ntitle: T\ntags: [finance, margin, attested]\nexecutor:\n  resource: skills/run.md\n"
+            "type: Note\ntitle: T\ntags: [finance, margin, attested]\nexecutor:\n  resource: skills/run.md\n  runtime: python\n"
             + "empty: []\nmixed:\n  - a\n  - { b: 1 }\nn: 3\n");
         var entries = page.Frontmatter.ToDictionary(e => e.Key);
 
         Assert.Equal("finance, margin, attested", entries["tags"].Value);
         Assert.False(entries["tags"].Structured);
         Assert.True(entries["executor"].Structured);
-        Assert.Contains("skills/run.md", entries["executor"].Value, StringComparison.Ordinal);
+        // The compact emission keeps its line breaks (C6): the cell is pre-formatted text.
+        Assert.Equal("resource: skills/run.md\nruntime: python", entries["executor"].Value);
         Assert.True(entries["empty"].Structured);
         Assert.NotEqual(string.Empty, entries["empty"].Value);
         Assert.True(entries["mixed"].Structured);

@@ -159,8 +159,9 @@ public static class SiteModel
     /// structure (spec §11.3, C6). A scalar is shown as written; a non-empty
     /// sequence of scalars is joined by <c>", "</c> (the mockup's
     /// <c>finance, margin, attested</c>); anything else keeps P1's compact YAML
-    /// emission -- dropping it would silently hide <c>sources</c> and every
-    /// structured producer key -- and is never truncated.
+    /// emission, line breaks kept (the cell shows it as pre-formatted text) --
+    /// dropping it would silently hide <c>sources</c> and every structured
+    /// producer key -- and is never truncated.
     /// </summary>
     private static (string Text, bool Structured) DisplayValue(YamlValue value)
     {
@@ -189,7 +190,7 @@ public static class SiteModel
             }
         }
 
-        return (value.ToYamlString().TrimEnd('\n').Replace("\n", " "), value is YamlSequence or YamlMapping);
+        return (value.ToYamlString().TrimEnd('\n'), value is YamlSequence or YamlMapping);
     }
 
     /// <summary>The keys the title and the chips already show: never among the four unfolded entries (A27).</summary>
