@@ -2,6 +2,9 @@
 type: Policy
 title: Page head probe
 description: The P1.1 page head, with hostile values.
+executor:
+  resource: skills/run.md
+  params: [a, b]
 status: "<img src=x onerror=window.__pwned=1>"
 verified:
   - { by: "human:<img src=x onerror=window.__pwned=1>", at: "<b>2026-07-01</b>" }

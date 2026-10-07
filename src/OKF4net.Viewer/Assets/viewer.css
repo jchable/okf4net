@@ -229,8 +229,8 @@ body > .okf-palette-backdrop .okf-palette:focus { outline: none; }
 #okf-context .okf-toc a:hover { color: var(--blue); }
 #okf-context .okf-toc a[aria-current="location"] { border-left-color: var(--blue); color: var(--blue); font-weight: 600; }
 /* A wide GFM table scrolls inside its own box instead of widening the page
-   (390 px). #okf-body is an id, so this cannot reach the frontmatter table
-   (a sibling, outside it) or any chrome. */
+   (390 px). #okf-body is an id, so this cannot reach the frontmatter box
+   (the page head, outside it) or any chrome. */
 #okf-body table { display: block; overflow-x: auto; }
 #okf-body [tabindex="-1"]:focus { outline: 2px solid var(--blue); outline-offset: 4px; }
 
@@ -435,6 +435,14 @@ body > .okf-layout > main > .okf-page-head h1 {
 }
 /* C5: the chips themselves are the shared .okf-chip (Task 3). */
 body > .okf-layout > main > .okf-page-head .okf-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 18px; }
+/* Chip text is bundle text of any length (type, status, verifier, a date as
+   written): it wraps inside the chip, never truncated (C6) and never wider
+   than the column (R1). #okf-main raises the specificity over the shared
+   .okf-chip rule (Task 3), whose nowrap and fixed 26 px would win otherwise. */
+#okf-main > .okf-page-head .okf-chip {
+  max-width: 100%; height: auto; min-height: 26px; padding-top: 4px; padding-bottom: 4px;
+  line-height: 1.3; white-space: normal; overflow-wrap: anywhere;
+}
 /* C6: the frontmatter box. */
 body > .okf-layout > main > .okf-page-head .okf-fm { border: 1px solid var(--hair); margin: 0 0 22px; }
 body > .okf-layout > main > .okf-page-head .okf-fm-head {
@@ -455,7 +463,7 @@ body > .okf-layout > main > .okf-page-head .okf-fm-key {
 }
 /* anywhere: a long unbroken value fits a phone's width (recette R1). */
 body > .okf-layout > main > .okf-page-head .okf-fm-value { min-width: 0; overflow-wrap: anywhere; }
-/* A structured value is the compact YAML emission, which may hold line
+/* A structured value is the compact YAML emission, written with its line
    breaks: pre-wrap keeps them (and still wraps a long line). */
 body > .okf-layout > main > .okf-page-head .okf-fm-struct { font-family: var(--mono); font-size: 12.5px; white-space: pre-wrap; }
 /* Folded (A27) only while JavaScript runs and the box is not expanded: without

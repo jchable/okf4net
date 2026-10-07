@@ -151,6 +151,17 @@ public class PageHeadTests
     }
 
     [Fact]
+    public void A_structured_value_is_written_with_its_line_breaks()
+    {
+        using var src = new TempDir();
+        using var dest = new TempDir();
+        src.Write("n.md", "---\ntype: Note\ntitle: N\nexecutor:\n  resource: skills/run.md\n  runtime: python\n---\nBody.\n");
+        var page = Write(SiteModel.Build(Bundle.Load(src.Path)), dest, "n.html");
+
+        Assert.Contains("<span class=\"okf-fm-value okf-fm-struct\">resource: skills/run.md\nruntime: python</span>", page);
+    }
+
+    [Fact]
     public void A_single_field_is_singular_and_a_page_without_fields_has_no_box()
     {
         using var src = new TempDir();

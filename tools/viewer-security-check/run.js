@@ -1982,6 +1982,10 @@ const CHROME_ANCHORS = [
   { chain: [/^#okf-context(?![\w-])/] },
   { chain: [BODY, /^\.okf-palette-backdrop(?![\w-])/] },
   { chain: [BODY, /^\.okf-layout$/, /^main$/, /^\.okf-page-head(?![\w-])/] },
+  // The page head again, through main's id: only so a chip rule outweighs the
+  // shared .okf-chip (an id in :is() counts as one). #okf-main is the layout's
+  // one <main>, and no body code can be what a page-head descendant matches.
+  { chain: [/^#okf-main$/, /^\.okf-page-head(?![\w-])/] },
   { chain: [BODY, /^\.okf-layout$/, /^main$/, /^\.(?:meta|errors)(?![\w-])/] },
   { chain: [BODY, /^header\.bar(?![\w-])/] },
   { chain: [BODY, /^\.okf-skip(?![\w-])/] },
@@ -2018,7 +2022,7 @@ function isAnchored(partsIn) {
 
 // The selectors of a rule that name a class and start from no anchor. The one
 // exemption: every compound naming a class carries an explicit non-code tag
-// (a.broken, table.frontmatter th), so no <code> can be what it matches.
+// (a.broken), so no <code> can be what it matches.
 function unanchoredClassSelectors(selectorText) {
   const offenders = [];
   for (const complex of splitTopLevel(selectorText, ",")) {
@@ -2444,6 +2448,7 @@ checkAsync("nothing long and unbroken widens the page: panels and tree entries s
   // its min-content.
   const window = await openPage("foo/bar.html");
   const doc = window.document;
+  const chipDoc = (await openPage("p11-page.html")).document;
   const expected = [
     [doc.getElementById("okf-explorer"), "min-width", "0px"],
     [doc.getElementById("okf-context"), "min-width", "0px"],
@@ -2451,10 +2456,16 @@ checkAsync("nothing long and unbroken widens the page: panels and tree entries s
     [doc.querySelector("main"), "overflow-wrap", "break-word"],
     [doc.querySelector("#okf-body p"), "overflow-wrap", "break-word"],
     [doc.querySelector("body > .okf-layout > main > .okf-page-head .okf-fm-value"), "overflow-wrap", "anywhere"],
+    // The page head's chips carry bundle text of any length (type, status,
+    // verifier, a date as written): they wrap inside the column.
+    ...["max-width:100%", "white-space:normal", "overflow-wrap:anywhere", "height:auto"].map((d) => {
+      const [prop, value] = d.split(":");
+      return [chipDoc.querySelector("body > .okf-layout > main > .okf-page-head .okf-chip-status"), prop, value];
+    }),
   ];
   for (const [el, prop, value] of expected) {
     assert(el, `an element this case needs is missing (${prop}: ${value})`);
-    const got = window.getComputedStyle(el).getPropertyValue(prop);
+    const got = el.ownerDocument.defaultView.getComputedStyle(el).getPropertyValue(prop);
     assert(got === value || (value === "0px" && got === "0"), `<${el.tagName.toLowerCase()} id="${el.id}" class="${el.getAttribute("class") || ""}"> ${prop}: ${got}, expected ${value}`);
   }
 });
@@ -2593,13 +2604,15 @@ checkAsync("shared components are styled under every chrome container, and not i
     const row = doc.createElement("a"); row.className = "okf-row";
     container.appendChild(chip); container.appendChild(title); container.appendChild(row);
     const css = (el, prop) => window.getComputedStyle(el).getPropertyValue(prop);
-    return { chipHeight: css(chip, "height"), chipSize: css(chip, "font-size"), titleSize: css(title, "font-size"), titleCase: css(title, "text-transform"), rowSize: css(row, "font-size") };
+    return { chipHeight: css(chip, "height"), chipMinHeight: css(chip, "min-height"), chipSize: css(chip, "font-size"), titleSize: css(title, "font-size"), titleCase: css(title, "text-transform"), rowSize: css(row, "font-size") };
   };
   for (const container of containers) {
     assert(container, "a chrome container this case needs is missing");
     const got = probe(container);
     const where = container.id || container.className;
-    assert(got.chipHeight === "26px" && got.chipSize === "12px", `${where}: .okf-chip height ${got.chipHeight}, font-size ${got.chipSize}`);
+    // The page head's chips grow with their text (Task 12): auto height, 26 px minimum.
+    const sized = where === "okf-page-head" ? got.chipHeight === "auto" && got.chipMinHeight === "26px" : got.chipHeight === "26px";
+    assert(sized && got.chipSize === "12px", `${where}: .okf-chip height ${got.chipHeight}, min-height ${got.chipMinHeight}, font-size ${got.chipSize}`);
     assert(got.titleSize === "11px" && got.titleCase === "uppercase", `${where}: .okf-section-title font-size ${got.titleSize}, text-transform ${got.titleCase}`);
     assert(got.rowSize === "13.5px", `${where}: .okf-row font-size ${got.rowSize}`);
   }
@@ -3496,7 +3509,7 @@ checkAsync("page head: the real page head keeps its anchored styles, and folds w
   const extra = head.querySelector(".okf-fm-cell[data-okf-extra]");
   const chrome = [
     [head.querySelector("h1"), "font-size", "34px"],
-    [head.querySelector(".okf-chips .okf-chip"), "height", "26px"],
+    [head.querySelector(".okf-chips .okf-chip"), "min-height", "26px"],
     [head.querySelector(".okf-fm-key"), "width", "92px"],
     [head.querySelector(".okf-fm-value"), "overflow-wrap", "anywhere"],
     [head.querySelector(".okf-fm-struct"), "white-space", "pre-wrap"],
@@ -3509,6 +3522,18 @@ checkAsync("page head: the real page head keeps its anchored styles, and folds w
   }
   doc.documentElement.removeAttribute("data-okf-js");
   assert(window.getComputedStyle(extra).getPropertyValue("display") !== "none", "a folded entry stays hidden without the JavaScript mark");
+});
+
+checkAsync("page head: a structured frontmatter value keeps its line breaks, in the HTML and in the cell", async () => {
+  const written = fs.readFileSync(path.join(SITE, "p11-page.html"), "utf8");
+  const raw = /<span class="okf-fm-value okf-fm-struct">([^<]*resource: skills\/run\.md[^<]*)<\/span>/.exec(written);
+  assert(raw && raw[1].includes("\n"), `the written text node has no line break: ${raw && JSON.stringify(raw[1])}`);
+  const window = await openPage("p11-page.html");
+  const cell = Array.from(window.document.querySelectorAll(".okf-fm-struct")).find((c) => c.textContent.includes("resource: skills/run.md"));
+  assert(cell, "the executor cell is missing");
+  assert(cell.textContent.includes("\n") && cell.textContent.split("\n").length >= 2, `the cell text is one line: ${JSON.stringify(cell.textContent)}`);
+  const ws = window.getComputedStyle(cell).getPropertyValue("white-space");
+  assert(ws === "pre-wrap", `white-space: ${ws}`);
 });
 
 checkAsync("page head: Referenced by counts its rows, each a .okf-row naming its source", async () => {
