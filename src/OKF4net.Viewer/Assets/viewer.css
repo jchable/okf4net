@@ -151,31 +151,6 @@ body > .okf-layout > main { flex: 999 1 560px; min-width: 0; margin: 0; }
   #okf-explorer { order: 1; }
 }
 
-#okf-explorer .okf-explorer-label {
-  display: block; font-family: var(--mono); font-size: 11px; letter-spacing: .06em;
-  text-transform: uppercase; color: var(--gray); margin-bottom: 6px;
-}
-#okf-tree-filter {
-  width: 100%; min-height: 36px; padding: 0 10px; font: inherit; font-size: 14px;
-  border: 1px solid var(--hair); background: var(--white); color: var(--ink);
-}
-#okf-explorer .okf-tree, #okf-explorer .okf-tree-children { list-style: none; margin: 0; padding: 0; }
-#okf-explorer .okf-tree { margin-top: 12px; }
-#okf-explorer .okf-tree-children { padding-left: 16px; }
-#okf-explorer .okf-tree-row { display: flex; align-items: center; gap: 6px; min-height: 32px; font-size: 14px; }
-#okf-explorer .okf-tree-toggle { flex: none; width: 28px; height: 28px; border: 0; background: none; color: var(--gray); cursor: pointer; }
-#okf-explorer .okf-tree-toggle::before { content: "\25B8"; }
-#okf-explorer .okf-tree-toggle[aria-expanded="true"]::before { content: "\25BE"; }
-#okf-explorer .okf-tree-spacer { flex: none; width: 28px; }
-#okf-explorer .okf-tree-link { color: var(--ink); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#okf-explorer .okf-tree-link:hover { text-decoration: underline; }
-#okf-explorer .okf-tree-link[aria-current="page"] { color: var(--blue); font-weight: 600; }
-#okf-explorer .okf-tree-folder { color: var(--gray); }
-#okf-explorer .okf-badge { flex: none; display: inline-block; width: 8px; height: 8px; border-radius: 50%; box-sizing: border-box; }
-#okf-explorer .okf-badge[hidden] { display: none; }
-#okf-explorer .okf-trust-human { background: var(--blue); }
-#okf-explorer .okf-trust-machine { border: 2px solid var(--blue); }
-#okf-explorer .okf-stale { border-radius: 0; width: 9px; background: #b4540a; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
 /* (end of the P1 explorer rules: Task 13 removes the block above, Task 14 the one below; nobody edits this line) */
 body > .okf-palette-backdrop {
   position: fixed; inset: 0; z-index: 10; display: flex; align-items: flex-start; justify-content: center;
@@ -477,6 +452,55 @@ html[data-okf-js] body > .okf-layout > main > .okf-page-head .okf-fm:not([data-o
 #okf-context .okf-backlinks li { list-style: none; }
 
 /* --- Task 13: explorer (E1-E13) and Filters (H8) --- */
+/* E2: the head (sticky from 1100 px, Task 3) and its section title. */
+#okf-explorer .okf-explorer-head { padding: 14px 16px 10px; }
+#okf-explorer .okf-explorer-title { margin: 0 0 6px; }
+/* E3 */
+#okf-tree-filter {
+  display: block; width: 100%; height: 34px; padding: 0 10px; box-sizing: border-box;
+  font-family: var(--body); font-size: 13.5px; border: 1px solid var(--hair); border-radius: 0;
+  background: var(--white); color: var(--ink);
+}
+/* E4: the type chips are the shared .okf-chip toggles (Task 3). */
+#okf-explorer .okf-type-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+/* E5 */
+#okf-explorer .okf-tree, #okf-explorer .okf-tree-children { list-style: none; margin: 0; padding: 0; }
+#okf-explorer .okf-tree { border-top: 1px solid var(--hair); padding: 6px 0; }
+/* E6: 30 px rows; okf-explorer.js sets the left padding, 12 + 18 per level,
+   so the active row's band spans the whole panel. */
+#okf-explorer .okf-tree-row {
+  display: flex; align-items: center; gap: 9px; height: 30px; box-sizing: border-box;
+  padding-right: 14px; border-left: 3px solid transparent; font-size: 13.5px;
+}
+/* E11 */
+#okf-explorer .okf-tree-row.okf-tree-current { background: var(--blue-soft); border-left-color: var(--blue); }
+/* E7: a 6 px CSS chevron in a 12 px wide, row-high button (WCAG 2.5.8 by
+   the spacing exception: the row gap is 9). */
+#okf-explorer .okf-tree-toggle { position: relative; flex: none; width: 12px; height: 30px; padding: 0; border: 0; background: none; cursor: pointer; }
+#okf-explorer .okf-tree-toggle::before {
+  content: ""; position: absolute; left: 3px; top: 12px; width: 6px; height: 6px; box-sizing: border-box;
+  border-right: 1.5px solid var(--gray); border-bottom: 1.5px solid var(--gray); transform: rotate(-45deg);
+}
+#okf-explorer .okf-tree-toggle[aria-expanded="true"]::before { transform: rotate(45deg) translate(-1px, -1px); }
+#okf-explorer .okf-glyph-slot { flex: none; display: flex; align-items: center; justify-content: center; width: 12px; height: 12px; }
+/* E8: concept 400 ink, folder 600 ink, current 600 blue; one line, ellipsis. */
+#okf-explorer :is(.okf-tree-link, .okf-tree-folder) {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--ink); text-decoration: none;
+}
+#okf-explorer .okf-tree-folder { font-weight: 600; }
+#okf-explorer .okf-tree-link:hover { text-decoration: underline; }
+#okf-explorer .okf-tree-link[aria-current="page"] { color: var(--blue); font-weight: 600; }
+/* E9 */
+#okf-explorer .okf-tree-count { flex: none; font-family: var(--mono); font-size: 11px; color: var(--gray); }
+/* E10: flags drawn by OkfShapes (flag context, 10 px box). */
+#okf-explorer .okf-flag { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 10px; height: 10px; }
+/* E12: the legend, under a rule (sticky at the bottom from 1100 px, Task 3). */
+#okf-explorer .okf-explorer-foot { border-top: 1px solid var(--hair); padding: 12px 16px; }
+/* H8: the count badge, hidden at zero. */
+#okf-tools #okf-filters-toggle .okf-filters-count {
+  font-family: var(--mono); font-size: 11px; line-height: 1.4; padding: 1px 6px; background: var(--blue); color: var(--white);
+}
 
 /* --- Task 14: palette (H7, J1-J6) --- */
 

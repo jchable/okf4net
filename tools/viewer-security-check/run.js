@@ -1178,9 +1178,12 @@ checkAsync("the generated index executes with hostile ids as plain values", asyn
   assert(Object.getPrototypeOf(window.OKF_INDEX) === window.Object.prototype, "the index object's prototype was replaced");
 });
 
+// The explorer link of the concept `id`, found by the data-okf-id attribute
+// (spec §11.2, E8: the label is the last segment, the title a tooltip). The id
+// is compared as a value, never spliced into a selector.
 function treeLink(window, id) {
   return Array.from(window.document.querySelectorAll("#okf-explorer a.okf-tree-link"))
-    .find((a) => a.getAttribute("title") === id) || null;
+    .find((a) => a.getAttribute("data-okf-id") === id) || null;
 }
 
 function isShown(el) {
@@ -1196,7 +1199,7 @@ checkAsync("explorer: a node is both a page and a folder, with separate open and
   assert(toggle, "foo has no expand button although foo/bar exists");
   assert(toggle.getAttribute("aria-expanded") === "true", "the path to the current page is not expanded");
   const current = window.document.querySelector('#okf-explorer a[aria-current="page"]');
-  assert(current && current.getAttribute("title") === "foo/bar", "the current page is not marked");
+  assert(current && current.getAttribute("data-okf-id") === "foo/bar", "the current page is not marked");
   toggle.click();
   assert(toggle.getAttribute("aria-expanded") === "false" && !isShown(treeLink(window, "foo/bar")), "the toggle did not collapse");
 });
@@ -1206,9 +1209,18 @@ checkAsync("explorer: a node is both a page and a folder, with separate open and
 // current entry `entryOffset` (default 2700) px down it, and the given computed overflow-y. It records
 // every scroll request: the explorer's own scrollTop, window scrolling and
 // scrollIntoView. That the entry is visible on screen is the recette's (C2).
-function explorerScrollProbe(overflowY, layout = true, entryOffset = 2700) {
-  const probe = { requests: [], navTop: 0 };
+// `head` and `foot` (in px, mutable through probe.head / probe.foot) give the
+// sticky head and foot of the explorer (E12, E13) a height: the head sits at
+// the explorer's top, the foot at the bottom of its visible part. `fonts`
+// installs a document.fonts.ready that probe.resolveFonts() settles; `navTop`
+// is the explorer's initial scrollTop.
+function explorerScrollProbe(overflowY, layout = true, entryOffset = 2700, bars = {}) {
+  const probe = { requests: [], navTop: bars.navTop || 0, head: bars.head || 0, foot: bars.foot || 0, resolveFonts: null };
   probe.beforeParse = (w) => {
+    if (bars.fonts) {
+      const ready = new Promise((resolve) => { probe.resolveFonts = resolve; });
+      Object.defineProperty(w.document, "fonts", { configurable: true, value: { ready } });
+    }
     const isNav = (el) => el.id === "okf-explorer";
     const proto = w.Element.prototype;
     if (layout) {
@@ -1216,8 +1228,10 @@ function explorerScrollProbe(overflowY, layout = true, entryOffset = 2700) {
       Object.defineProperty(proto, "clientHeight", { configurable: true, get() { return isNav(this) ? 800 : 0; } });
       proto.getBoundingClientRect = function () {
         const current = this.getAttribute("aria-current") === "page";
-        const top = isNav(this) ? 100 : current ? 100 + entryOffset - probe.navTop : 0;
-        const height = isNav(this) ? 800 : current ? 20 : 0;
+        const visibleHeight = Math.min(800, w.innerHeight - 100);
+        const isHead = this.classList.contains("okf-explorer-head"), isFoot = this.classList.contains("okf-explorer-foot");
+        const top = isNav(this) ? 100 : isHead ? 100 : isFoot ? 100 + visibleHeight - probe.foot : current ? 100 + entryOffset - probe.navTop : 0;
+        const height = isNav(this) ? 800 : isHead ? probe.head : isFoot ? probe.foot : current ? 20 : 0;
         return { top, bottom: top + height, left: 0, right: 0, width: 0, height, x: 0, y: top };
       };
       const computed = w.getComputedStyle.bind(w);
@@ -1271,6 +1285,61 @@ checkAsync("explorer: without its own scroll container (stacked layout, no layou
   }
 });
 
+// P1.1 (E12, E13): the head and the foot of the explorer are sticky, so the
+// entry must land between them. The explorer is 800 px at 100 px from the top
+// of a 768 px window: its visible part is 668 px; with a 243 px head and a
+// 90 px foot the band is 243 to 578 from its top.
+function entryInBand(window, probe) {
+  const nav = window.document.getElementById("okf-explorer");
+  const entry = nav.querySelector('a[aria-current="page"]').getBoundingClientRect();
+  const bandTop = 100 + probe.head, bandBottom = 100 + Math.min(800, window.innerHeight - 100) - probe.foot;
+  return { ok: entry.top >= bandTop && entry.bottom <= bandBottom, text: `the entry sits at ${entry.top}-${entry.bottom}, outside the band ${bandTop}-${bandBottom}` };
+}
+
+checkAsync("explorer: a far entry lands between the sticky head and the sticky foot, not at a third of the whole", async () => {
+  const probe = explorerScrollProbe("auto", true, 2700, { head: 243, foot: 90 });
+  const window = await openPage("foo/bar.html", { beforeParse: probe.beforeParse });
+  const band = entryInBand(window, probe);
+  assert(probe.requests.length === 1 && band.ok, `${band.text}; requests ${JSON.stringify(probe.requests)}`);
+});
+
+checkAsync("explorer: an entry hidden under the sticky head is brought out from under it", async () => {
+  const probe = explorerScrollProbe("auto", true, 700, { head: 243, foot: 90, navTop: 500 });
+  const window = await openPage("foo/bar.html", { beforeParse: probe.beforeParse });
+  const band = entryInBand(window, probe);
+  assert(probe.requests.length === 1 && band.ok, `${band.text}; requests ${JSON.stringify(probe.requests)}`);
+});
+
+checkAsync("explorer: an entry just above the sticky foot stays, one under it is brought out", async () => {
+  const inside = explorerScrollProbe("auto", true, 556, { head: 243, foot: 90 });
+  await openPage("foo/bar.html", { beforeParse: inside.beforeParse });
+  assert(inside.requests.length === 0, `an entry fully above the foot (556-576 of 578) was moved: ${JSON.stringify(inside.requests)}`);
+  const under = explorerScrollProbe("auto", true, 560, { head: 243, foot: 90 });
+  const window = await openPage("foo/bar.html", { beforeParse: under.beforeParse });
+  const band = entryInBand(window, under);
+  assert(under.requests.length === 1 && band.ok, `${band.text}; requests ${JSON.stringify(under.requests)}`);
+});
+
+checkAsync("explorer: when the web fonts are ready the entry is placed again, unless the reader has scrolled", async () => {
+  const probe = explorerScrollProbe("auto", true, 2700, { head: 100, foot: 90, fonts: true });
+  const window = await openPage("foo/bar.html", { beforeParse: probe.beforeParse });
+  assert(probe.requests.length === 1 && entryInBand(window, probe).ok, "the first reveal did not place the entry");
+  probe.head = 400;
+  assert(!entryInBand(window, probe).ok, "this case needs the taller head to cover the entry");
+  probe.resolveFonts();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const band = entryInBand(window, probe);
+  assert(probe.requests.length === 2 && band.ok, `after the fonts: ${band.text}; requests ${JSON.stringify(probe.requests)}`);
+
+  const scrolled = explorerScrollProbe("auto", true, 2700, { head: 100, foot: 90, fonts: true });
+  await openPage("foo/bar.html", { beforeParse: scrolled.beforeParse });
+  scrolled.navTop += 500;
+  scrolled.head = 400;
+  scrolled.resolveFonts();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert(scrolled.requests.length === 1, `the reveal ran again after the reader scrolled: ${JSON.stringify(scrolled.requests)}`);
+});
+
 checkAsync("explorer links resolve from the site root wherever the generated folder is moved", async () => {
   const window = await openPage("foo/bar.html", { mount: "moved/elsewhere/" });
   const foo = treeLink(window, "foo");
@@ -1309,7 +1378,7 @@ checkAsync("explorer: trust badges follow ConceptAudit's tiers", async () => {
 checkAsync("staleness is evaluated at reading time and refreshed when the page becomes visible", async () => {
   let now = Date.UTC(2026, 9, 6);
   const window = await openPage("index.html", { now: () => now });
-  const stale = (id) => treeLink(window, id).parentElement.querySelector(".okf-stale");
+  const stale = (id) => treeLink(window, id).parentElement.querySelector(".okf-flag-stale");
   assert(!stale("foo/bar").hidden, "a 2000 deadline is not shown as stale in 2026");
   assert(stale("broken").hidden, "a 2999 deadline is shown as stale in 2026");
   assert(stale("toString") === null, "a concept without stale_after got a stale mark");
@@ -1324,7 +1393,7 @@ checkAsync("a sub-millisecond deadline is stale from the next whole millisecond,
   const edge = window.OKF_INDEX.concepts.find((c) => c.id === "edge");
   assert(edge.staleAfterMs === midnight + 1, `staleAfterMs ${edge.staleAfterMs}, expected ${midnight + 1}`);
   assert(edge.staleAfterDate === "2026-10-06", `staleAfterDate ${edge.staleAfterDate}`);
-  assert(treeLink(window, "edge").parentElement.querySelector(".okf-stale").hidden, "stale at .000 although the deadline is .0001");
+  assert(treeLink(window, "edge").parentElement.querySelector(".okf-flag-stale").hidden, "stale at .000 although the deadline is .0001");
   assert(window.OkfSite.isStale(edge.staleAfterMs, midnight + 1), "not stale one millisecond later");
 });
 
@@ -1798,7 +1867,8 @@ checkAsync("explorer, palette and contents render hostile titles as inert text",
     // still be markup that bundle text made live.
     assert(root.querySelectorAll("img, script, iframe, object, svg:not(.okf-glyph)").length === 0, `markup from bundle text became live in #${id}`);
   }
-  assert(doc.getElementById("okf-explorer").textContent.includes("<img"), "the hostile title was dropped instead of shown as text");
+  assert(treeLink(window, "foo").getAttribute("title").includes("<img") && treeLink(window, "foo").textContent === "foo",
+    "the explorer row of foo must show its segment and carry the hostile title as a tooltip");
   assert(doc.getElementById("okf-palette-list").textContent.includes("<img"), "the palette dropped the hostile title");
   assert(doc.getElementById("okf-toc").textContent.includes("<img"), "the contents dropped the hostile heading text");
   assert(doc.querySelectorAll("[onerror]").length === 0, "an onerror attribute reached the page");
@@ -2210,7 +2280,7 @@ checkAsync("the real P1 chrome keeps its anchored styles", async () => {
   const chrome = [
     [doc.querySelector("body > .okf-palette-backdrop"), "position", "fixed"],
     [doc.querySelector("#okf-explorer .okf-tree-toggle .okf-sr"), "position", "absolute"],
-    [doc.querySelector("#okf-explorer .okf-badge.okf-trust-human"), "width", "8px"],
+    [doc.querySelector("#okf-explorer .okf-flag-trust"), "width", "10px"],
     [doc.querySelector("#okf-tools .okf-tool"), "height", "34px"],
     // The old header and context-title rules, anchored by P1.1.
     [doc.querySelector("body > .topline"), "height", "6px"],
@@ -2357,14 +2427,15 @@ checkAsync("palette: a key another handler already prevented does not open it", 
   assert(backdrop.hidden, "Ctrl+K opened the palette although a page handler had taken it");
 });
 
-checkAsync("explorer: the filter field is labelled by what it does", async () => {
+checkAsync("explorer: the field is named Filter by name by aria-label, the title is text", async () => {
   const window = await openPage("index.html");
   const doc = window.document;
   const filter = doc.getElementById("okf-tree-filter");
-  const label = doc.querySelector('#okf-explorer label[for="okf-tree-filter"]');
-  assert(label, "the filter has no <label for>");
-  assert(filter.labels && filter.labels.length === 1 && filter.labels[0] === label, "the <label> is not associated with the filter");
-  assert(label.textContent.trim() === "Filter the explorer", `the filter's accessible name is "${label.textContent.trim()}"`);
+  assert(filter.getAttribute("aria-label") === "Filter by name", `aria-label: ${filter.getAttribute("aria-label")}`);
+  assert(filter.getAttribute("placeholder") === "Filter by name" + String.fromCharCode(0x2026), `placeholder: ${filter.getAttribute("placeholder")}`);
+  assert(doc.querySelector("#okf-explorer label") === null && filter.labels.length === 0, "the field still has a <label> (E2: the nav is already named Explorer)");
+  const title = doc.querySelector("#okf-explorer .okf-explorer-head .okf-explorer-title");
+  assert(title && title.textContent === "Explorer" && title.localName === "p" && title.classList.contains("okf-section-title"), "the explorer title is not section-title text");
 });
 
 checkAsync("explorer: the stale badge shows staleAfterDate as written, never a date rebuilt from staleAfterMs", async () => {
@@ -2372,7 +2443,7 @@ checkAsync("explorer: the stale badge shows staleAfterDate as written, never a d
   const concepts = [{ id: "x", title: "X", type: "Note", tags: [], path: "x.html", trust: "unverified", staleAfterMs: 0, staleAfterDate: "2026-10-06", typeIndex: 0, description: "" }];
   const source = `window.OKF_INDEX = ${JSON.stringify({ version: 2, concepts, ghosts: [], edges: [], tree: [{ name: "x", concept: 0, children: [] }], types: [{ name: "Note", count: 1, slot: 0 }] })};`;
   const window = await openPage("index.html", { override: { "assets/okf-index.js": source }, now: () => Date.UTC(2026, 9, 7) });
-  const stale = treeLink(window, "x").parentElement.querySelector(".okf-stale");
+  const stale = treeLink(window, "x").parentElement.querySelector(".okf-flag-stale");
   assert(stale && !stale.hidden, "this case needs a shown stale badge");
   assert(stale.getAttribute("title") === "stale after 2026-10-06", `stale badge title: ${stale.getAttribute("title")}`);
 });
@@ -3546,6 +3617,201 @@ checkAsync("page head: Referenced by counts its rows, each a .okf-row naming its
 });
 
 // --- Task 13: explorer ---
+
+// The type slot of the concept at `pos`, read from the executed index.
+function indexSlot(idx, pos) {
+  const t = idx.types[idx.concepts[pos].typeIndex];
+  return t ? t.slot : 5;
+}
+
+checkAsync("explorer: rows show the segment, its type glyph, counts and flags in the spec order", async () => {
+  const window = await openPage("foo/bar.html");
+  const doc = window.document;
+  const idx = window.OKF_INDEX;
+  const parts = (row) => Array.from(row.children, (el) => el.classList.contains("okf-flag") ? el.classList[1] : el.classList[0]);
+  const below = (node) => node.children.reduce((n, c) => n + (c.concept >= 0 ? 1 : 0) + below(c), 0);
+  const fooNode = idx.tree.find((n) => n.name === "foo");
+  const foo = treeLink(window, "foo");
+  const fooPos = idx.concepts.findIndex((c) => c.id === "foo");
+  assert(foo.textContent === "foo" && foo.getAttribute("title") === idx.concepts[fooPos].title, `foo label "${foo.textContent}", title "${foo.getAttribute("title")}"`);
+  assert(JSON.stringify(parts(foo.parentElement)) === JSON.stringify(["okf-tree-toggle", "okf-glyph-slot", "okf-tree-link", "okf-tree-count"]),
+    `foo row (a destination and a folder): ${JSON.stringify(parts(foo.parentElement))}`);
+  assert(foo.parentElement.querySelector(".okf-tree-count").textContent === String(below(fooNode)), "foo's count is not its destinations below");
+  assert(foo.parentElement.querySelector(".okf-tree-toggle").getAttribute("aria-expanded") === "true", "the path to the current page is not expanded");
+  assert(foo.parentElement.querySelector(`.okf-glyph-slot svg .okf-shape-${indexSlot(idx, fooPos)}`), "foo's glyph is not the shape of its type's slot");
+  assert(foo.parentElement.style.paddingLeft === "12px", `foo row padding-left ${foo.parentElement.style.paddingLeft}`);
+  const bar = treeLink(window, "foo/bar");
+  assert(bar.textContent === "bar" && bar.parentElement.style.paddingLeft === "30px", `bar: "${bar.textContent}", ${bar.parentElement.style.paddingLeft}`);
+  assert(JSON.stringify(parts(bar.parentElement)) === JSON.stringify(["okf-glyph-slot", "okf-tree-link", "okf-flag-trust", "okf-flag-stale"]),
+    `bar row (human-reviewed, stale): ${JSON.stringify(parts(bar.parentElement))}`);
+  const leaf = treeLink(window, "toString");
+  assert(JSON.stringify(parts(leaf.parentElement)) === JSON.stringify(["okf-glyph-slot", "okf-tree-link"]), `toString row: ${JSON.stringify(parts(leaf.parentElement))}`);
+  const folder = Array.from(doc.querySelectorAll("#okf-explorer .okf-tree-folder")).find((s) => s.textContent === "p11-types");
+  const folderNode = idx.tree.find((n) => n.name === "p11-types");
+  assert(folder && folderNode && folderNode.concept === -1, "this case needs the p11-types folder without its own concept");
+  assert(JSON.stringify(parts(folder.parentElement)) === JSON.stringify(["okf-tree-toggle", "okf-tree-folder", "okf-tree-count"]), `folder row: ${JSON.stringify(parts(folder.parentElement))}`);
+  assert(folder.parentElement.querySelector(".okf-tree-count").textContent === String(below(folderNode)), "the folder count is not its destinations below");
+});
+
+checkAsync("explorer: the current row is marked", async () => {
+  const window = await openPage("foo/bar.html");
+  const rows = window.document.querySelectorAll("#okf-explorer .okf-tree-row.okf-tree-current");
+  assert(rows.length === 1 && rows[0].querySelector('a.okf-tree-link[aria-current="page"]') === treeLink(window, "foo/bar"), `${rows.length} current rows`);
+});
+
+checkAsync("explorer: a hostile title lives in the title attribute only", async () => {
+  const window = await openPage("index.html");
+  const nav = window.document.getElementById("okf-explorer");
+  const foo = treeLink(window, "foo");
+  assert(foo.textContent === "foo" && foo.getAttribute("title").includes("<img"), "foo's row must show its segment and keep its title as a tooltip");
+  assert(nav.querySelectorAll("img, script").length === 0 && window.__pwned === undefined, "a hostile title became live markup");
+});
+
+checkAsync("explorer: type chips filter by rank (OR), with the name filter (AND), keeping ancestors", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const idx = window.OKF_INDEX;
+  const chips = Array.from(doc.querySelectorAll("#okf-explorer .okf-type-chips button.okf-chip"));
+  const group = doc.querySelector("#okf-explorer .okf-type-chips");
+  assert(group.getAttribute("role") === "group" && group.getAttribute("aria-label") === "Filter by type", "the chips are not a named group");
+  const ranked = idx.types.filter((t) => t.slot < 5);
+  const others = idx.types.filter((t) => t.slot === 5);
+  const labels = ranked.map((t) => (t.name === "" ? "(no type)" : t.name)).concat(others.length ? ["Other types"] : []);
+  const counts = ranked.map((t) => t.count).concat(others.length ? [others.reduce((n, t) => n + t.count, 0)] : []);
+  assert(JSON.stringify(chips.map((c) => c.querySelector(".okf-chip-text").textContent)) === JSON.stringify(labels), `chips: ${chips.map((c) => c.textContent).join(" | ")}`);
+  assert(JSON.stringify(chips.map((c) => Number(c.querySelector(".okf-chip-count").textContent))) === JSON.stringify(counts), "chip counts");
+  for (const chip of chips) {
+    const title = chip.querySelector("svg.okf-glyph > title");
+    assert(title && title.textContent === chip.querySelector(".okf-chip-text").textContent, "a chip glyph lacks its <title> (X11)");
+    assert(chip.querySelector('svg.okf-glyph[width="12"]'), "a chip glyph is not the 12 px icon (E4)");
+    assert(chip.getAttribute("aria-pressed") === "false", "a chip starts pressed");
+  }
+  const links = Array.from(doc.querySelectorAll("#okf-explorer a.okf-tree-link"));
+  const filter = doc.getElementById("okf-tree-filter");
+  const expectVisible = (pressed, q) => {
+    const wants = new Map();
+    for (const a of links) {
+      const pos = idx.concepts.findIndex((c) => c.id === a.getAttribute("data-okf-id"));
+      const c = idx.concepts[pos];
+      const label = (c.title + " " + c.id).replace(/\s+/g, " ").trim().toLowerCase();
+      wants.set(a, (pressed.size === 0 || pressed.has(indexSlot(idx, pos))) && (q === "" || label.includes(q)));
+    }
+    for (const a of links) {
+      const below = a.closest("li").querySelector("ul");
+      const descendantWanted = below ? Array.from(below.querySelectorAll("a.okf-tree-link")).some((d) => wants.get(d)) : false;
+      if (wants.get(a)) { assert(isShown(a), `${a.getAttribute("data-okf-id")} matches but is hidden (${JSON.stringify([...pressed])}, "${q}")`); }
+      if (!wants.get(a) && !descendantWanted) { assert(!isShown(a), `${a.getAttribute("data-okf-id")} matches nothing but is shown (${JSON.stringify([...pressed])}, "${q}")`); }
+    }
+  };
+  const metric = chips.find((c) => Number(c.getAttribute("data-okf-slot")) === indexSlot(idx, idx.concepts.findIndex((c2) => c2.id === "p11-types/m1")));
+  const other = chips.find((c) => c.getAttribute("data-okf-slot") === "5");
+  assert(metric && other, "this case needs the Metric chip and the Other types chip");
+  metric.click();
+  assert(metric.getAttribute("aria-pressed") === "true", "a pressed chip is not announced");
+  expectVisible(new Set([Number(metric.getAttribute("data-okf-slot"))]), "");
+  other.click();
+  expectVisible(new Set([Number(metric.getAttribute("data-okf-slot")), 5]), "");
+  type(window, filter, "one");
+  expectVisible(new Set([Number(metric.getAttribute("data-okf-slot")), 5]), "one");
+  metric.click();
+  other.click();
+  type(window, filter, "");
+  // No expectVisible(new Set(), "") here (F3): with every filter cleared the tree is collapsed by default, so "matches but is hidden" would fail on folded rows; the next assertion checks the cleared state instead.
+  assert(links.every((a) => isShown(a) || a.closest("ul.okf-tree-children[hidden]")), "clearing every filter left a concept hidden");
+});
+
+checkAsync("explorer: Filters counts pressed chips and a non-empty filter, names the count, and focuses the field", async () => {
+  const window = await openPage("foo.html");
+  const doc = window.document;
+  const button = doc.getElementById("okf-filters-toggle");
+  assert(button && button.parentElement.id === "okf-tools" && button.nextElementSibling === doc.getElementById("okf-global-graph"), "Filters is not right before Global graph");
+  const badge = button.querySelector(".okf-filters-count");
+  // The accessible name: the aria-label when there is one (a visually hidden
+  // span would be read "Filters , 1 active"), else the visible text without
+  // the aria-hidden count.
+  const spoken = () => button.getAttribute("aria-label") || Array.from(button.childNodes).filter((n) => !(n.nodeType === 1 && n.getAttribute("aria-hidden") === "true")).map((n) => n.textContent).join("");
+  assert(badge.getAttribute("aria-hidden") === "true" && badge.hidden && spoken() === "Filters", `at rest: badge hidden ${badge.hidden}, name "${spoken()}"`);
+  const chip = doc.querySelector("#okf-explorer .okf-type-chips button.okf-chip");
+  chip.click();
+  assert(!badge.hidden && badge.textContent === "1" && spoken() === "Filters, 1 active", `one chip: "${badge.textContent}", "${spoken()}"`);
+  assert(button.querySelector(".okf-sr") === null, "the Filters button still carries a visually hidden span in its name");
+  type(window, doc.getElementById("okf-tree-filter"), "x");
+  assert(badge.textContent === "2" && spoken() === "Filters, 2 active", `chip and field: "${badge.textContent}"`);
+  type(window, doc.getElementById("okf-tree-filter"), "  ");
+  assert(badge.textContent === "1", "a blank field counts as a filter");
+  chip.click();
+  assert(badge.hidden && spoken() === "Filters", "the count did not go back to zero");
+  doc.body.focus();
+  button.click();
+  assert(doc.activeElement === doc.getElementById("okf-tree-filter"), "Filters does not move the focus to the field");
+});
+
+checkAsync("explorer: the legend lists human-reviewed, machine-confirmed and stale", async () => {
+  const window = await openPage("index.html");
+  const items = Array.from(window.document.querySelectorAll("#okf-explorer .okf-explorer-foot > ul.okf-legend > li"));
+  assert(JSON.stringify(items.map((li) => li.textContent)) === JSON.stringify(["human-reviewed", "machine-confirmed", "stale (now " + String.fromCharCode(0x2265) + " stale_after)"]),
+    `legend: ${JSON.stringify(items.map((li) => li.textContent))}`);
+  assert(items[0].querySelector(".okf-trust-human") && items[1].querySelector(".okf-trust-machine") && items[2].querySelector(".okf-stale-mark"), "a legend entry lost its glyph");
+});
+
+checkAsync("explorer: the real explorer keeps its anchored styles", async () => {
+  const window = await openPage("foo/bar.html");
+  const doc = window.document;
+  const chrome = [
+    [doc.querySelector("#okf-explorer .okf-tree-row"), "height", "30px"],
+    [doc.querySelector("#okf-explorer .okf-tree-count"), "font-size", "11px"],
+    [doc.querySelector("#okf-explorer .okf-tree-folder"), "font-weight", "600"],
+    [doc.querySelector("#okf-explorer .okf-type-chips .okf-chip"), "height", "26px"],
+    [doc.getElementById("okf-tree-filter"), "height", "34px"],
+    [doc.querySelector("#okf-explorer .okf-tree-toggle"), "width", "12px"],
+    [doc.querySelector("#okf-tools #okf-filters-toggle"), "height", "34px"],
+  ];
+  for (const [el, prop, value] of chrome) {
+    assert(el, `an explorer element this case needs is missing (${prop}: ${value})`);
+    const got = window.getComputedStyle(el).getPropertyValue(prop);
+    assert(got === value, `the real <${el.tagName.toLowerCase()} class="${el.getAttribute("class")}"> lost its ${prop}: ${value} (got ${got})`);
+  }
+});
+
+checkAsync("explorer: a folder counts every destination below it, not only its direct children (E9)", async () => {
+  const mk = (id, title, path) => ({ id, title, type: "Note", tags: [], path, trust: "unverified", typeIndex: 0, description: "" });
+  const concepts = [mk("zeta/b", "B", "zeta/b.html"), mk("zeta/b/c", "C", "zeta/b/c.html"), mk("zeta/b/d/e", "E", "zeta/b/d/e.html")];
+  const tree = [{ name: "zeta", concept: -1, children: [{ name: "b", concept: 0, children: [{ name: "c", concept: 1, children: [] }, { name: "d", concept: -1, children: [{ name: "e", concept: 2, children: [] }] }] }] }];
+  const source = `window.OKF_INDEX = ${JSON.stringify({ version: 2, concepts, ghosts: [], edges: [], tree, types: [{ name: "Note", count: 3, slot: 0 }] })};`;
+  const window = await openPage("index.html", { override: { "assets/okf-index.js": source } });
+  const count = (id) => treeLink(window, id).parentElement.querySelector(".okf-tree-count").textContent;
+  const zeta = Array.from(window.document.querySelectorAll("#okf-explorer .okf-tree-folder")).find((s) => s.textContent === "zeta");
+  assert(zeta.parentElement.querySelector(".okf-tree-count").textContent === "3", `zeta counts ${zeta.parentElement.querySelector(".okf-tree-count").textContent}, expected 3 (b, c and e)`);
+  assert(count("zeta/b") === "2", `b counts ${count("zeta/b")}, expected 2 (c and e)`);
+});
+
+checkAsync("explorer: a folder matches the name filter only while no chip is pressed", async () => {
+  const concepts = [
+    { id: "a", title: "A", type: "Alpha", tags: [], path: "a.html", trust: "unverified", typeIndex: 0, description: "" },
+    { id: "zeta/b", title: "B", type: "Beta", tags: [], path: "zeta/b.html", trust: "unverified", typeIndex: 1, description: "" },
+  ];
+  const tree = [{ name: "a", concept: 0, children: [] }, { name: "zeta", concept: -1, children: [{ name: "b", concept: 1, children: [] }] }];
+  const types = [{ name: "Alpha", count: 1, slot: 0 }, { name: "Beta", count: 1, slot: 1 }];
+  const source = `window.OKF_INDEX = ${JSON.stringify({ version: 2, concepts, ghosts: [], edges: [], tree, types })};`;
+  const window = await openPage("index.html", { override: { "assets/okf-index.js": source } });
+  const doc = window.document;
+  const folder = Array.from(doc.querySelectorAll("#okf-explorer .okf-tree-folder")).find((s) => s.textContent === "zeta");
+  type(window, doc.getElementById("okf-tree-filter"), "zeta");
+  assert(isShown(folder) && isShown(treeLink(window, "zeta/b")), "the name filter must show the folder zeta and its match");
+  doc.querySelector('#okf-explorer .okf-type-chips button[data-okf-slot="0"]').click();
+  assert(!isShown(folder) && !isShown(treeLink(window, "zeta/b")), "with the Alpha chip pressed, the folder zeta matched by its name alone");
+});
+
+checkAsync("explorer: a hidden flag and a hidden Filters count are not displayed", async () => {
+  const window = await openPage("foo.html");
+  const doc = window.document;
+  const display = (el) => window.getComputedStyle(el).getPropertyValue("display");
+  const stale = doc.querySelector("#okf-explorer .okf-flag-stale");
+  const count = doc.querySelector("#okf-filters-toggle .okf-filters-count");
+  stale.hidden = true;
+  assert(count.hidden && display(count) === "none", `the zero count shows (${display(count)})`);
+  assert(display(stale) === "none", `a hidden stale flag shows (${display(stale)})`);
+});
 
 // --- Task 14: palette ---
 
