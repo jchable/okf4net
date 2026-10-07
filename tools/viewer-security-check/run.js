@@ -1793,7 +1793,10 @@ checkAsync("explorer, palette and contents render hostile titles as inert text",
   assert(input.getAttribute("aria-activedescendant") === "okf-palette-opt-1", "ArrowDown did not move the selection");
   for (const id of ["okf-explorer", "okf-palette-list", "okf-toc"]) {
     const root = doc.getElementById(id);
-    assert(root.querySelectorAll("img, script, svg, iframe, object").length === 0, `markup from bundle text became live in #${id}`);
+    // svg.okf-glyph is the chrome's own glyph (OkfShapes.icon, Tasks 13 and
+    // 14 draw one per explorer row and palette option); any other svg would
+    // still be markup that bundle text made live.
+    assert(root.querySelectorAll("img, script, iframe, object, svg:not(.okf-glyph)").length === 0, `markup from bundle text became live in #${id}`);
   }
   assert(doc.getElementById("okf-explorer").textContent.includes("<img"), "the hostile title was dropped instead of shown as text");
   assert(doc.getElementById("okf-palette-list").textContent.includes("<img"), "the palette dropped the hostile title");
@@ -2204,7 +2207,7 @@ checkAsync("the real P1 chrome keeps its anchored styles", async () => {
     [doc.querySelector("body > .okf-palette-backdrop"), "position", "fixed"],
     [doc.querySelector("#okf-explorer .okf-tree-toggle .okf-sr"), "position", "absolute"],
     [doc.querySelector("#okf-explorer .okf-badge.okf-trust-human"), "width", "8px"],
-    [doc.querySelector("#okf-tools .okf-tool"), "min-height", "36px"],
+    [doc.querySelector("#okf-tools .okf-tool"), "height", "34px"],
     // The old header and context-title rules, anchored by P1.1.
     [doc.querySelector("body > .topline"), "height", "6px"],
     [doc.querySelector("body > header.bar > .bar-in"), "display", "flex"],
@@ -3088,9 +3091,10 @@ checkAsync("theme: the pressed toggle is drawn in blue (border-color and stroke 
   // so the rules are read from the page's stylesheet (CSSOM) instead: the
   // declarations of the toggle's own rules (selectors anchored on
   // #okf-theme-toggle) that match the element in its current state, in source
-  // order. P1's generic .okf-tool[aria-pressed] rule also colours the border
-  // but loses to the toggle's id-anchored border shorthand, so only the
-  // toggle's own rules decide. The tokens' colours are P1's :root.
+  // order. No generic .okf-tool[aria-pressed] rule colours a pressed tool any
+  // more (Task 11 dropped P1's), and the header's #okf-tools .okf-tool rule
+  // loses to the toggle's id-anchored border shorthand, so only the toggle's
+  // own rules decide. The tokens' colours are P1's :root.
   const window = await openPage("index.html");
   const doc = window.document;
   const toggle = doc.getElementById("okf-theme-toggle");
@@ -3330,6 +3334,120 @@ check("fonts: every @font-face of the written stylesheet points at a file writte
 });
 
 // --- Task 11: shell and header ---
+
+checkAsync("header: Skip to content is the first focusable element and reaches main", async () => {
+  const window = await openPage("foo/bar.html");
+  const doc = window.document;
+  const focusable = doc.querySelectorAll("a[href], button, input, select, textarea, [tabindex]:not([tabindex='-1'])");
+  const first = focusable[0];
+  assert(first && first.matches("body > a.okf-skip") && first.getAttribute("href") === "#okf-main", `first focusable: <${first && first.tagName.toLowerCase()} class="${first && first.className}">`);
+  const main = doc.getElementById("okf-main");
+  assert(main && main === doc.querySelector("body > .okf-layout > main"), "#okf-main is not the layout's <main>");
+  assert(window.getComputedStyle(first).getPropertyValue("position") === "absolute", "the skip link is not taken out of the flow");
+});
+
+checkAsync("header: the tools keep their order, Global graph links this concept, and the bundle name and counts are text", async () => {
+  const window = await openPage("foo/bar.html");
+  const doc = window.document;
+  const tools = Array.from(doc.getElementById("okf-tools").children);
+  const graph = doc.getElementById("okf-global-graph");
+  assert(tools[0].classList.contains("okf-palette-open"), `first tool: ${tools[0].className}`);
+  assert(tools[tools.length - 1].id === "okf-theme-toggle", `last tool: ${tools[tools.length - 1].id}`);
+  const at = tools.indexOf(graph);
+  assert(at > 0 && at < tools.length - 1, `Global graph at ${at} of ${tools.length}`);
+  assert(graph.getAttribute("href") === "../graph.html#foo/bar" && !graph.hasAttribute("aria-current"), `Global graph: ${graph.getAttribute("href")}`);
+  const name = doc.getElementById("okf-bundle-name");
+  assert(name.textContent === "hostile-bundle" && name.children.length === 0 && name.getAttribute("title") === "hostile-bundle", `bundle name: ${name.outerHTML}`);
+  const idx = window.OKF_INDEX;
+  const n = idx.concepts.length;
+  const m = idx.edges.length;
+  const expected = `${n} ${n === 1 ? "concept" : "concepts"} · ${m} ${m === 1 ? "link" : "links"}`;
+  assert(doc.getElementById("okf-bundle-counts").textContent === expected, `counts: ${doc.getElementById("okf-bundle-counts").textContent}, expected ${expected}`);
+  const index = await openPage("index.html");
+  assert(index.document.getElementById("okf-global-graph").getAttribute("href") === "graph.html", "the index links the graph page with a fragment or a prefix");
+  assert(index.document.documentElement.getAttribute("data-okf-view") === "index" && window.document.documentElement.getAttribute("data-okf-view") === "page", "data-okf-view");
+});
+
+// jsdom lays nothing out, so the geometry (a long bundle name must not push
+// the tools past the window) is pinned by the declarations it rests on, read
+// from the page's stylesheet: every rule matching #okf-tools, @media blocks
+// included. min-width: 0 would let the tools box shrink below its
+// unshrinkable buttons, which then overflow the bar (the page scrolls
+// sideways); the bundle name gives way instead (H5, min-width: 0 there).
+checkAsync("header: the tools box never shrinks below its buttons; the bundle name gives way", async () => {
+  const window = await openPage("foo/bar.html");
+  const doc = window.document;
+  const declared = (el, prop) => {
+    const values = [];
+    const walk = (rules, media) => {
+      for (const rule of Array.from(rules)) {
+        if (rule.cssRules && rule.media) { walk(rule.cssRules, rule.media.mediaText); continue; }
+        if (rule.selectorText && el.matches(rule.selectorText) && rule.style.getPropertyValue(prop) !== "") {
+          values.push({ media, value: rule.style.getPropertyValue(prop) });
+        }
+      }
+    };
+    for (const sheet of Array.from(doc.styleSheets)) { walk(sheet.cssRules, ""); }
+    return values;
+  };
+  // The one-line bar (rules outside @media; the last declaration wins): either
+  // fix holds, no min-width: 0 (the box keeps its min-content width) or
+  // flex-shrink: 0 (flex: none); min-width: 0 on a shrinkable box fails. Under
+  // 900 px the tools wrap instead (the next case).
+  const wide = (el, prop) => {
+    const values = declared(el, prop).filter((d) => d.media === "");
+    return values.length ? values[values.length - 1].value : "";
+  };
+  const tools = doc.getElementById("okf-tools");
+  const toolsMin = wide(tools, "min-width");
+  const toolsShrink = wide(tools, "flex-shrink");
+  assert(toolsShrink === "0" || !/^0(px)?$/.test(toolsMin),
+    `#okf-tools may shrink below its buttons: min-width ${toolsMin || "unset"}, flex-shrink ${toolsShrink || "unset"}`);
+  const name = doc.getElementById("okf-bundle-name");
+  assert(/^0(px)?$/.test(wide(name, "min-width")), `#okf-bundle-name min-width: ${wide(name, "min-width") || "unset"} (it must give way)`);
+});
+
+// The narrow header is the exact complement of (min-width: 900px): a
+// viewport of 899.333 px (Firefox) matches neither of a min 900 / max 899
+// pair. Applied through mediaWhere, since jsdom evaluates no @media.
+checkAsync("header: under 900 px the bar wraps, through the complement of (min-width: 900px)", async () => {
+  const raw = fs.readFileSync(path.join(SITE, "assets", "viewer.css"), "utf8").replace(/[/][*][^]*?[*][/]/g, "");
+  const conds = Array.from(raw.matchAll(/@media([^{]*)\{/g), (m) => m[1].trim());
+  assert(conds.includes("not all and (min-width: 900px)"), `no "not all and (min-width: 900px)" block among ${JSON.stringify(conds)}`);
+  assert(!conds.some((c) => /max-width:\s*899/.test(c)), `a (max-width: 899px) block leaves a gap at 899.333px: ${JSON.stringify(conds)}`);
+  const window = await openPage("foo/bar.html");
+  const doc = window.document;
+  const get = (el, prop) => window.getComputedStyle(el).getPropertyValue(prop);
+  const barIn = doc.querySelector("body > header.bar .bar-in");
+  const tools = doc.getElementById("okf-tools");
+  assert(get(barIn, "flex-wrap") !== "wrap", "the wide bar already wraps");
+  const style = doc.createElement("style");
+  style.textContent = mediaWhere(fs.readFileSync(path.join(SITE, "assets", "viewer.css"), "utf8"), (cond) => cond === "not all and (min-width: 900px)");
+  doc.head.appendChild(style);
+  assert(get(barIn, "flex-wrap") === "wrap" && get(barIn, "height") === "auto", `narrow .bar-in: flex-wrap ${get(barIn, "flex-wrap")}, height ${get(barIn, "height")}`);
+  assert(get(tools, "flex-wrap") === "wrap", `narrow #okf-tools flex-wrap: ${get(tools, "flex-wrap")}`);
+  // A long name must not push the counts to a third line: the wrapped line
+  // breaks on flex-basis, so the name's is 0 there.
+  const name = doc.getElementById("okf-bundle-name");
+  assert(/^0(px|%)?$/.test(get(name, "flex-basis")), `narrow #okf-bundle-name flex-basis: ${get(name, "flex-basis")}`);
+});
+
+checkAsync("header: the real header keeps its anchored styles", async () => {
+  const window = await openPage("foo/bar.html");
+  const doc = window.document;
+  const chrome = [
+    [doc.querySelector("body > .topline"), "height", "6px"],
+    [doc.querySelector("body > header.bar .bar-in"), "height", "52px"],
+    [doc.querySelector("body > header.bar .bar-bundle"), "text-overflow", "ellipsis"],
+    [doc.querySelector("#okf-tools .okf-tool-graph"), "height", "34px"],
+    [doc.querySelector("#okf-tools .okf-tool-graph"), "font-weight", "600"],
+  ];
+  for (const [el, prop, value] of chrome) {
+    assert(el, `a header element this case needs is missing (${prop}: ${value})`);
+    const got = window.getComputedStyle(el).getPropertyValue(prop);
+    assert(got === value, `the real <${el.tagName.toLowerCase()} class="${el.getAttribute("class")}"> lost its ${prop}: ${value} (got ${got})`);
+  }
+});
 
 // --- Task 12: page head ---
 

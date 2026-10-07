@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Globalization;
 using System.Text;
 using OKF4net.Internal;
 
@@ -33,11 +34,15 @@ public static class HtmlWriter
     /// the same file on a case-insensitive output volume -- refused
     /// unconditionally, even on a case-sensitive volume where both writes
     /// would otherwise succeed, because a site that renders differently per
-    /// filesystem is not a site).
+    /// filesystem is not a site); or an explicit
+    /// <see cref="ViewerSite.GraphPagePath"/> is not one
+    /// <c>[A-Za-z0-9._-]+.html</c> segment, or collides with a page, a page's
+    /// folder or <c>index.html</c> (a computed one never does: spec §12.3).
     /// </exception>
     public static IReadOnlyList<string> Write(ViewerSite site, string outDir)
     {
-        GuardNoCaseCollisions(site);
+        var graphPage = GraphPagePathOf(site);
+        GuardNoCaseCollisions(site, graphPage);
         GuardOutputDirectory(site.BundleRoot, outDir);
 
         var written = new List<string>();
@@ -54,11 +59,13 @@ public static class HtmlWriter
 
         WriteAssets(site, outDir, root, verifiedDirs, written);
 
-        WriteFile(outDir, root, verifiedDirs, "index.html", RenderIndex(site), written);
+        WriteFile(outDir, root, verifiedDirs, "index.html", RenderIndex(site, graphPage), written);
+
+        // P3: graph page (§12.5)
 
         foreach (var page in site.Pages)
         {
-            WriteFile(outDir, root, verifiedDirs, page.RelativeHtmlPath, RenderPage(page), written);
+            WriteFile(outDir, root, verifiedDirs, page.RelativeHtmlPath, RenderPage(site, graphPage, page), written);
         }
 
         return written;
@@ -97,13 +104,27 @@ public static class HtmlWriter
     /// <c>assets/okf-site.js/x</c> needs a directory where the asset file
     /// is): this guard does not catch that, and the write then fails with an
     /// <see cref="IOException"/> rather than overwriting anything.
+    ///
+    /// The graph page's name (<paramref name="graphPage"/>, spec §12.3) is
+    /// seeded too, and a page whose first path segment is that name -- a
+    /// folder -- is refused as well. <see cref="SiteModel.FreeGraphPagePath"/>
+    /// never picks a name that trips either check, so only an explicit
+    /// <see cref="ViewerSite.GraphPagePath"/> set by a host can: a host error,
+    /// reported before anything is written.
     /// </remarks>
-    private static void GuardNoCaseCollisions(ViewerSite site)
+    private static void GuardNoCaseCollisions(ViewerSite site, string graphPage)
     {
         var seen = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["index.html"] = "the generated index page",
         };
+
+        if (!seen.TryAdd(graphPage, "the graph page"))
+        {
+            throw new ArgumentException(
+                $"the graph page '{graphPage}' would render to the same file as {seen[graphPage]}",
+                paramName: nameof(site));
+        }
 
         foreach (var page in site.Pages)
         {
@@ -112,6 +133,14 @@ public static class HtmlWriter
             {
                 throw new ArgumentException(
                     $"{seen[page.RelativeHtmlPath]} and {description} would render to the same file on a case-insensitive volume ('{page.RelativeHtmlPath}')",
+                    paramName: nameof(site));
+            }
+
+            var slash = page.RelativeHtmlPath.IndexOf('/');
+            if (slash > 0 && string.Equals(page.RelativeHtmlPath[..slash], graphPage, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ArgumentException(
+                    $"{description} lives in a folder named like the graph page ('{graphPage}')",
                     paramName: nameof(site));
             }
         }
@@ -344,52 +373,263 @@ public static class HtmlWriter
     }
 
     /// <summary>The <c>../</c> prefix taking a page at <paramref name="relativePath"/> back to the site root.</summary>
-    private static string RootPrefix(string relativePath)
+    internal static string RootPrefix(string relativePath)
     {
         var depth = relativePath.Count(c => c == '/');
         return string.Concat(Enumerable.Repeat("../", depth));
     }
 
-    private static string RenderPage(ViewerPage page)
+    private static string RenderPage(ViewerSite site, string graphPage, ViewerPage page)
     {
         var prefix = RootPrefix(page.RelativeHtmlPath);
-        var body = new StringBuilder();
+        var main = new StringBuilder();
 
-        body.Append("<h1>").Append(HtmlEscape(page.Title)).Append("</h1>\n");
-        body.Append("<p class=\"meta\">").Append(HtmlEscape(page.Id.ToString())).Append("</p>\n");
-        body.Append(RenderFrontmatter(page.Frontmatter));
-        body.Append("<div id=\"okf-body\"></div>\n");
+        main.Append("<h1>").Append(HtmlEscape(page.Title)).Append("</h1>\n");
+        main.Append("<p class=\"meta\">").Append(HtmlEscape(page.Id.ToString())).Append("</p>\n");
+        main.Append(RenderFrontmatter(page.Frontmatter));
+        main.Append("<div id=\"okf-body\"></div>\n");
 
-        return RenderShell(page.Title, prefix, page.Id.ToString(), body.ToString(), RenderBacklinks(page.Backlinks), Payload(page));
+        return RenderShell(site, graphPage, ViewKind.Page, page.Title, prefix, page.Id.ToString(), main.ToString(), RenderBacklinks(page.Backlinks), Payload(page));
     }
 
-    private static string RenderIndex(ViewerSite site)
+    private static string RenderIndex(ViewerSite site, string graphPage)
     {
-        var body = new StringBuilder();
-        body.Append("<h1>Bundle index</h1>\n");
-        body.Append("<p class=\"meta\">")
+        var main = new StringBuilder();
+        main.Append("<h1>Bundle index</h1>\n");
+        main.Append("<p class=\"meta\">")
             .Append(site.Pages.Count)
             .Append(site.Pages.Count == 1 ? " concept" : " concepts")
             .Append("</p>\n");
 
         if (site.ParseErrors.Count > 0)
         {
-            body.Append("<div class=\"errors\">\n<h2>Parse errors</h2>\n<ul>\n");
+            main.Append("<div class=\"errors\">\n<h2>Parse errors</h2>\n<ul>\n");
             foreach (var error in site.ParseErrors)
             {
-                body.Append("<li><code>").Append(HtmlEscape(error.Path)).Append("</code> — ")
+                main.Append("<li><code>").Append(HtmlEscape(error.Path)).Append("</code> — ")
                     .Append(HtmlEscape(error.Error)).Append("</li>\n");
             }
 
-            body.Append("</ul>\n</div>\n");
+            main.Append("</ul>\n</div>\n");
         }
 
-        body.Append("<div id=\"okf-body\"></div>\n");
+        main.Append("<div id=\"okf-body\"></div>\n");
 
         // The index's links already point at generated .html paths, so its
         // rewiring table is deliberately empty.
         var payload = BuildPayload(site.IndexMarkdown, "{}");
-        return RenderShell("Bundle index", string.Empty, conceptId: null, body.ToString(), aside: string.Empty, payload);
+        return RenderShell(site, graphPage, ViewKind.Index, "Bundle index", string.Empty, conceptId: null, main.ToString(), aside: string.Empty, payload);
+    }
+
+    /// <summary>The three views a page of the site can be (spec §12.3), written as <c>data-okf-view</c>.</summary>
+    internal enum ViewKind
+    {
+        /// <summary>A concept page.</summary>
+        Page,
+
+        /// <summary>The bundle index, <c>index.html</c>.</summary>
+        Index,
+
+        /// <summary>The global graph page (written by P3's <c>RenderGraph</c>).</summary>
+        Graph,
+    }
+
+    /// <summary>
+    /// The scripts at the end of every concept page and of the index, in load
+    /// order (spec §12.6). A script is listed only once it exists under
+    /// <c>Assets/</c>. P2 adds <c>"okf-local.js"</c> under its marker, last;
+    /// <c>graph.html</c> does not use this table (P3's <c>RenderGraph</c>
+    /// writes its own tags).
+    /// </summary>
+    internal static readonly string[] PageScripts =
+    [
+        "marked.min.js",
+        "viewer.js",
+        "okf-index.js",
+        "okf-site.js",
+        "okf-shapes.js",
+        "okf-explorer.js",
+        "okf-palette.js",
+        "okf-toc.js",
+        // P2: local graph
+    ];
+
+    /// <summary>
+    /// The graph page's file name (spec §12.3, A25): the site's explicit
+    /// <see cref="ViewerSite.GraphPagePath"/>, which must be one
+    /// <c>[A-Za-z0-9._-]+.html</c> segment, else the first free name.
+    /// </summary>
+    /// <exception cref="ArgumentException">The explicit name is not one such segment.</exception>
+    internal static string GraphPagePathOf(ViewerSite site)
+    {
+        t_graphPageComputations++;
+        if (site.GraphPagePath is not { } explicitPath)
+        {
+            return SiteModel.FreeGraphPagePath(site.Pages);
+        }
+
+        if (!IsGraphPageName(explicitPath))
+        {
+            throw new ArgumentException(
+                $"the graph page '{explicitPath}' is not one [A-Za-z0-9._-]+.html segment",
+                paramName: nameof(site));
+        }
+
+        return explicitPath;
+    }
+
+    /// <summary>
+    /// How many times <see cref="GraphPagePathOf"/> ran on the current thread:
+    /// a counting seam for the test that <see cref="Write"/> computes the
+    /// name once, not once per page (a computed name walks every page).
+    /// </summary>
+    internal static int GraphPageComputations => t_graphPageComputations;
+
+    [ThreadStatic]
+    private static int t_graphPageComputations;
+
+    private static bool IsGraphPageName(string name)
+        => name.Length > ".html".Length
+           && name.EndsWith(".html", StringComparison.Ordinal)
+           && name.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '-');
+
+    /// <summary>
+    /// Everything from <c>&lt;!doctype html&gt;</c> to the end of the header, for
+    /// the three views (spec §12.3): the root prefix, the view and the concept
+    /// on <c>&lt;html&gt;</c>; <c>okf-theme.js</c> then the stylesheet in
+    /// <c>&lt;head&gt;</c> (a stored theme applies before the first paint);
+    /// "Skip to content", the top line and the header. P3 writes
+    /// <c>graph.html</c> with <c>RenderDocumentStart(site, ViewKind.Graph,
+    /// "Global graph", "", null)</c>.
+    /// </summary>
+    internal static string RenderDocumentStart(ViewerSite site, ViewKind view, string title, string rootPrefix, string? conceptId)
+        => RenderDocumentStart(site, GraphPagePathOf(site), view, title, rootPrefix, conceptId);
+
+    /// <summary>
+    /// <see cref="RenderDocumentStart(ViewerSite, ViewKind, string, string, string?)"/>
+    /// with the graph page's name already computed: <see cref="Write"/>
+    /// computes it once for every page it writes.
+    /// </summary>
+    private static string RenderDocumentStart(ViewerSite site, string graphPage, ViewKind view, string title, string rootPrefix, string? conceptId)
+    {
+        var sb = new StringBuilder();
+        sb.Append("<!doctype html>\n<html lang=\"en\" data-okf-root=\"").Append(HtmlEscape(rootPrefix))
+          .Append("\" data-okf-view=\"").Append(ViewName(view)).Append('"');
+        if (conceptId is not null)
+        {
+            sb.Append(" data-okf-concept=\"").Append(HtmlEscape(conceptId)).Append('"');
+        }
+
+        sb.Append(">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n")
+          .Append("<title>").Append(HtmlEscape(title)).Append("</title>\n")
+          .Append(ScriptTag(rootPrefix, "okf-theme.js"))
+          .Append("<link rel=\"stylesheet\" href=\"").Append(HtmlEscape(rootPrefix)).Append("assets/viewer.css\">\n")
+          .Append("</head>\n<body>\n")
+          .Append("<a class=\"okf-skip\" href=\"#okf-main\">Skip to content</a>\n")
+          .Append("<div class=\"topline\"></div>\n")
+          .Append(RenderHeader(site, graphPage, view, rootPrefix, conceptId));
+        return sb.ToString();
+    }
+
+    private static string ViewName(ViewKind view) => view switch
+    {
+        ViewKind.Page => "page",
+        ViewKind.Index => "index",
+        _ => "graph",
+    };
+
+    /// <summary>
+    /// The header (spec §11.1, §12.3): wordmark, bundle name, counts, and the
+    /// tools: "Reading view" (graph view only), then "Global graph", the one
+    /// source of the graph page's real name -- with the concept as fragment
+    /// on a concept page, current on the graph view. The palette, "Filters"
+    /// and the theme button are added by their scripts.
+    /// </summary>
+    internal static string RenderHeader(ViewerSite site, ViewKind view, string rootPrefix, string? conceptId)
+        => RenderHeader(site, GraphPagePathOf(site), view, rootPrefix, conceptId);
+
+    /// <summary>
+    /// <see cref="RenderHeader(ViewerSite, ViewKind, string, string?)"/> with the
+    /// graph page's name already computed.
+    /// </summary>
+    private static string RenderHeader(ViewerSite site, string graphPage, ViewKind view, string rootPrefix, string? conceptId)
+    {
+        var name = site.BundleName ?? SiteModel.BundleNameOf(site.BundleRoot);
+        var sb = new StringBuilder("<header class=\"bar\"><div class=\"bar-in\">\n");
+        sb.Append("<a class=\"wordmark\" href=\"").Append(HtmlEscape(rootPrefix)).Append("index.html\">OKF4net<sup>§</sup></a>\n");
+        sb.Append("<span class=\"bar-sep\" aria-hidden=\"true\"></span>\n");
+        sb.Append("<span class=\"bar-bundle\" id=\"okf-bundle-name\" title=\"").Append(HtmlEscape(name)).Append("\">")
+          .Append(HtmlEscape(name)).Append("</span>\n");
+        if (Counts(site) is { } counts)
+        {
+            sb.Append("<span class=\"bar-counts\" id=\"okf-bundle-counts\">").Append(counts).Append("</span>\n");
+        }
+
+        sb.Append("<div class=\"bar-tools\" id=\"okf-tools\">\n");
+        if (view == ViewKind.Graph)
+        {
+            sb.Append("<a class=\"okf-tool\" id=\"okf-reading-view\" href=\"").Append(HtmlEscape(rootPrefix)).Append("index.html\">Reading view</a>\n");
+        }
+
+        var href = view == ViewKind.Page && conceptId is not null
+            ? rootPrefix + graphPage + "#" + conceptId
+            : rootPrefix + graphPage;
+        sb.Append("<a class=\"okf-tool okf-tool-graph\" id=\"okf-global-graph\" href=\"").Append(HtmlEscape(href)).Append('"');
+        if (view == ViewKind.Graph)
+        {
+            sb.Append(" aria-current=\"page\"");
+        }
+
+        sb.Append(">Global graph</a>\n</div>\n</div></header>\n");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// "N concepts · M links" (spec §11.1, H6): concepts and merged edges of the
+    /// index, links to absent concepts included, singular for one. Null --
+    /// the counts are omitted -- for a site built by hand whose index is empty
+    /// although it has pages.
+    /// </summary>
+    internal static string? Counts(ViewerSite site)
+    {
+        var concepts = site.Index.Concepts.Count;
+        if (concepts == 0 && site.Pages.Count > 0)
+        {
+            return null;
+        }
+
+        var links = site.Index.Edges.Count;
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"{concepts} {(concepts == 1 ? "concept" : "concepts")} · {links} {(links == 1 ? "link" : "links")}");
+    }
+
+    /// <summary>One <c>&lt;script src&gt;</c> line loading an asset, relative to the page's root prefix.</summary>
+    internal static string ScriptTag(string rootPrefix, string name)
+        => $"<script src=\"{HtmlEscape(rootPrefix)}assets/{HtmlEscape(name)}\"></script>\n";
+
+    /// <summary>
+    /// A concept page or the index (spec §12.3, §12.6): document start and
+    /// header, the three zones, the payload and the script table. Its ids and
+    /// attributes are the contract the interactive scripts rely on.
+    /// </summary>
+    private static string RenderShell(ViewerSite site, string graphPage, ViewKind view, string title, string rootPrefix, string? conceptId, string main, string aside, string payload)
+    {
+        var sb = new StringBuilder(RenderDocumentStart(site, graphPage, view, title, rootPrefix, conceptId));
+        sb.Append("<div class=\"okf-layout\">\n")
+          .Append("<nav class=\"okf-explorer\" id=\"okf-explorer\" aria-label=\"Explorer\" hidden></nav>\n")
+          .Append("<main id=\"okf-main\">\n").Append(main).Append("</main>\n")
+          .Append("<aside class=\"okf-context\" id=\"okf-context\" aria-label=\"Page context\"").Append(aside.Length == 0 ? " hidden" : string.Empty).Append(">\n")
+          .Append("<section class=\"okf-toc\" id=\"okf-toc\" aria-labelledby=\"okf-toc-title\" hidden>\n")
+          .Append("<h2 id=\"okf-toc-title\" class=\"okf-section-title\">On this page</h2>\n<ul></ul>\n</section>\n")
+          .Append(aside).Append("</aside>\n</div>\n")
+          .Append("<script type=\"application/json\" id=\"okf-payload\">").Append(payload).Append("</script>\n");
+        foreach (var script in PageScripts)
+        {
+            sb.Append(ScriptTag(rootPrefix, script));
+        }
+
+        return sb.Append("</body>\n</html>\n").ToString();
     }
 
     private static string RenderFrontmatter(IReadOnlyList<ViewerFrontmatterEntry> entries)
@@ -458,66 +698,15 @@ public static class HtmlWriter
     private static string BuildPayload(string body, string linksJson)
         => $"{{\"body\":{HtmlSafeJson.Quote(body)},\"links\":{linksJson}}}";
 
-    /// <summary>
-    /// The page frame shared by concept pages and the index. Its ids and
-    /// attributes are the contract the interactive scripts rely on: the root
-    /// prefix and concept id on <c>&lt;html&gt;</c>, <c>okf-tools</c>,
-    /// <c>okf-explorer</c>, <c>okf-context</c> and <c>okf-toc</c>. The
-    /// interactive scripts run after <c>viewer.js</c>, whose contract does not
-    /// change; <c>okf-theme.js</c> runs in <c>&lt;head&gt;</c> so a stored theme
-    /// applies before the first paint.
-    /// </summary>
-    private static string RenderShell(string title, string rootPrefix, string? conceptId, string body, string aside, string payload)
-    {
-        var conceptAttribute = conceptId is null ? string.Empty : $" data-okf-concept=\"{HtmlEscape(conceptId)}\"";
-        var asideHidden = aside.Length == 0 ? " hidden" : string.Empty;
-        return $"""
-        <!doctype html>
-        <html lang="en" data-okf-root="{rootPrefix}"{conceptAttribute}>
-        <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>{HtmlEscape(title)}</title>
-        <script src="{rootPrefix}assets/okf-theme.js"></script>
-        <link rel="stylesheet" href="{rootPrefix}assets/viewer.css">
-        </head>
-        <body>
-        <div class="topline"></div>
-        <header class="bar"><div class="bar-in">
-        <a class="wordmark" href="{rootPrefix}index.html">OKF<sup>§</sup></a>
-        <div class="bar-tools" id="okf-tools"></div>
-        </div></header>
-        <div class="okf-layout">
-        <nav class="okf-explorer" id="okf-explorer" aria-label="Explorer" hidden></nav>
-        <main>
-        {body}</main>
-        <aside class="okf-context" id="okf-context" aria-label="Page context"{asideHidden}>
-        <section class="okf-toc" id="okf-toc" aria-labelledby="okf-toc-title" hidden>
-        <h2 id="okf-toc-title">On this page</h2>
-        <ul></ul>
-        </section>
-        {aside}</aside>
-        </div>
-        <script type="application/json" id="okf-payload">{payload}</script>
-        <script src="{rootPrefix}assets/marked.min.js"></script>
-        <script src="{rootPrefix}assets/viewer.js"></script>
-        <script src="{rootPrefix}assets/okf-index.js"></script>
-        <script src="{rootPrefix}assets/okf-site.js"></script>
-        <script src="{rootPrefix}assets/okf-explorer.js"></script>
-        <script src="{rootPrefix}assets/okf-palette.js"></script>
-        <script src="{rootPrefix}assets/okf-toc.js"></script>
-        </body>
-        </html>
-
-        """;
-    }
+    // P3: RenderGraph (§12.5)
 
     /// <summary>
-    /// Escapes text interpolated into the generated markup. Bundle content is
-    /// semi-trusted -- a bundle may come from a third-party repository -- so
-    /// every value reaching the page goes through this.
+    /// Escapes text interpolated into the generated markup, attribute values
+    /// included (always written between double quotes): <c>&amp; &lt; &gt; "</c>.
+    /// Bundle content is semi-trusted -- a bundle may come from a third-party
+    /// repository -- so every value reaching the page goes through this.
     /// </summary>
-    private static string HtmlEscape(string value)
+    internal static string HtmlEscape(string value)
         => value.Replace("&", "&amp;")
                 .Replace("<", "&lt;")
                 .Replace(">", "&gt;")

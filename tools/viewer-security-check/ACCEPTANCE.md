@@ -31,6 +31,8 @@ Record the date, browser versions and any failure in the pull request.
 
 *(P1.1 checks)*
 
+- Note : « Global graph » renvoie vers graph.html, écrit par P3 : le lien est mort tant que P3 n'est pas livré.
+
 ## P2
 
 *(P2 checks)*
