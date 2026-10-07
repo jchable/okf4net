@@ -2212,11 +2212,13 @@ checkAsync("the real P1 chrome keeps its anchored styles", async () => {
     [doc.querySelector("body > .topline"), "height", "6px"],
     [doc.querySelector("body > header.bar > .bar-in"), "display", "flex"],
     [doc.querySelector("body > header.bar .wordmark"), "font-size", "20px"],
-    [doc.querySelector("body > .okf-layout > main > .meta"), "font-size", "13px"],
+    // The count line (C8) now lives on the index page only: a concept page's
+    // meta line became the page head (Task 12).
+    [(await openPage("index.html")).document.querySelector("body > .okf-layout > main > .meta"), "font-size", "13px"],
   ];
   for (const [el, prop, value] of chrome) {
     assert(el, `a chrome element this case needs is missing (${prop}: ${value})`);
-    const got = window.getComputedStyle(el).getPropertyValue(prop);
+    const got = (el.ownerDocument.defaultView).getComputedStyle(el).getPropertyValue(prop);
     assert(got === value, `the real <${el.tagName.toLowerCase()} class="${el.getAttribute("class")}"> lost its ${prop}: ${value} (got ${got})`);
   }
 });
@@ -2448,7 +2450,7 @@ checkAsync("nothing long and unbroken widens the page: panels and tree entries s
     [doc.querySelector("#okf-explorer .okf-tree-link"), "overflow", "hidden"],
     [doc.querySelector("main"), "overflow-wrap", "break-word"],
     [doc.querySelector("#okf-body p"), "overflow-wrap", "break-word"],
-    [doc.querySelector("main table.frontmatter td"), "overflow-wrap", "anywhere"],
+    [doc.querySelector("body > .okf-layout > main > .okf-page-head .okf-fm-value"), "overflow-wrap", "anywhere"],
   ];
   for (const [el, prop, value] of expected) {
     assert(el, `an element this case needs is missing (${prop}: ${value})`);
@@ -2458,9 +2460,9 @@ checkAsync("nothing long and unbroken widens the page: panels and tree entries s
 });
 
 // A wide GFM table in the page scrolls inside its own box (the page does not
-// widen at 390 px); the frontmatter table, outside #okf-body, stays a table.
-// Declarations only: the recette measures the page's width.
-checkAsync("a GFM table in the body scrolls in its own box; the frontmatter table is left alone", async () => {
+// widen at 390 px); the frontmatter box, outside #okf-body, is not a table
+// and is left alone. Declarations only: the recette measures the page's width.
+checkAsync("a GFM table in the body scrolls in its own box; the frontmatter box is left alone", async () => {
   const window = await openPage("chrome-classes.html");
   const doc = window.document;
   const table = doc.querySelector("#okf-body table");
@@ -2468,9 +2470,9 @@ checkAsync("a GFM table in the body scrolls in its own box; the frontmatter tabl
   const style = window.getComputedStyle(table);
   assert(style.getPropertyValue("display") === "block" && style.getPropertyValue("overflow-x") === "auto",
     `#okf-body table: display ${style.getPropertyValue("display")}, overflow-x ${style.getPropertyValue("overflow-x")}`);
-  const front = window.getComputedStyle(doc.querySelector("main table.frontmatter"));
-  assert(front.getPropertyValue("display") === "table" && front.getPropertyValue("overflow-x") !== "auto",
-    `the frontmatter table changed (display ${front.getPropertyValue("display")}, overflow-x ${front.getPropertyValue("overflow-x")})`);
+  const box = doc.querySelector("body > .okf-layout > main > .okf-page-head .okf-fm");
+  assert(box && box.querySelector("table") === null, "the frontmatter box is missing or is a table again");
+  assert(window.getComputedStyle(box).getPropertyValue("overflow-x") !== "auto", "the frontmatter box scrolls like a body table");
 });
 
 // === P1.1 cases: one block per task; a task writes only under its own line ===
@@ -3450,6 +3452,73 @@ checkAsync("header: the real header keeps its anchored styles", async () => {
 });
 
 // --- Task 12: page head ---
+
+checkAsync("page head: the breadcrumb links resolve from the site root, wherever the site is moved", async () => {
+  for (const mount of ["", "moved/elsewhere/"]) {
+    const window = await openPage("foo/bar.html", { mount });
+    const crumbs = window.document.querySelector("body > .okf-layout > main > .okf-page-head nav.okf-crumbs");
+    assert(crumbs && crumbs.getAttribute("aria-label") === "Breadcrumb", "the breadcrumb is not a labelled nav");
+    const links = Array.from(crumbs.querySelectorAll("a"));
+    assert(links.length === 2 && links[0].textContent === "hostile-bundle" && links[0].href === `${BASE}${mount}index.html`, `bundle crumb: ${links[0] && links[0].href}`);
+    assert(links[1].textContent === "foo" && links[1].href === `${BASE}${mount}foo.html`, `folder crumb: ${links[1] && links[1].href} (foo is also a concept)`);
+    const last = crumbs.querySelector('[aria-current="page"]');
+    assert(last && last.textContent === "bar" && last.localName === "span", "the current segment is not the last crumb");
+  }
+  const typed = await openPage("p11-types/m1.html");
+  const folder = typed.document.querySelector("body > .okf-layout > main > .okf-page-head nav.okf-crumbs li:nth-child(2)");
+  assert(folder && folder.querySelector("a") === null && folder.textContent.endsWith("p11-types"), "a folder without its own concept is not plain text");
+});
+
+checkAsync("page head: the body does not repeat the title H1", async () => {
+  const window = await openPage("p11-page.html");
+  const doc = window.document;
+  assert(doc.querySelectorAll("#okf-body h1").length === 0, "the body still repeats the title");
+  const h1 = doc.querySelectorAll("h1");
+  assert(h1.length === 1 && h1[0].closest("body > .okf-layout > main > .okf-page-head") && h1[0].textContent === "Page head probe", `h1: ${h1.length}`);
+  assert(doc.querySelector("#okf-toc a").getAttribute("href") === "#okf-h-section", "the contents do not start at the first remaining heading");
+});
+
+checkAsync("page head: hostile status, verifier, date and frontmatter are written as inert text", async () => {
+  const window = await openPage("p11-page.html");
+  const doc = window.document;
+  const head = doc.querySelector("body > .okf-layout > main > .okf-page-head");
+  assert(head.querySelectorAll("img, script, b, i").length === 0, `markup from bundle text became live in the page head: ${head.innerHTML.slice(0, 200)}`);
+  for (const text of ["<img src=x onerror=window.__pwned=1>", "<b>2026-07-01</b>", "probe<i>key</i>"]) {
+    assert(head.textContent.includes(text), `the page head dropped ${text} instead of showing it as text`);
+  }
+  assert(window.__pwned === undefined, "a hostile value executed");
+});
+
+checkAsync("page head: the real page head keeps its anchored styles, and folds without JavaScript's help", async () => {
+  const window = await openPage("p11-page.html");
+  const doc = window.document;
+  const head = doc.querySelector("body > .okf-layout > main > .okf-page-head");
+  const extra = head.querySelector(".okf-fm-cell[data-okf-extra]");
+  const chrome = [
+    [head.querySelector("h1"), "font-size", "34px"],
+    [head.querySelector(".okf-chips .okf-chip"), "height", "26px"],
+    [head.querySelector(".okf-fm-key"), "width", "92px"],
+    [head.querySelector(".okf-fm-value"), "overflow-wrap", "anywhere"],
+    [head.querySelector(".okf-fm-struct"), "white-space", "pre-wrap"],
+    [extra, "display", "none"],
+  ];
+  for (const [el, prop, value] of chrome) {
+    assert(el, `a page-head element this case needs is missing (${prop}: ${value})`);
+    const got = window.getComputedStyle(el).getPropertyValue(prop);
+    assert(got === value, `the real <${el.tagName.toLowerCase()} class="${el.getAttribute("class")}"> lost its ${prop}: ${value} (got ${got})`);
+  }
+  doc.documentElement.removeAttribute("data-okf-js");
+  assert(window.getComputedStyle(extra).getPropertyValue("display") !== "none", "a folded entry stays hidden without the JavaScript mark");
+});
+
+checkAsync("page head: Referenced by counts its rows, each a .okf-row naming its source", async () => {
+  const window = await openPage("p11-page.html");
+  const doc = window.document;
+  const title = doc.getElementById("okf-backlinks-title");
+  const rows = Array.from(doc.querySelectorAll("#okf-context .okf-backlinks a.okf-row[data-okf-target]"));
+  assert(title && title.textContent === `Referenced by · ${rows.length}` && rows.length >= 1, `title: ${title && title.textContent}`);
+  assert(rows.some((a) => a.getAttribute("data-okf-target") === "p11-page-ref" && a.getAttribute("href") === "p11-page-ref.html"), "the referrer row is missing");
+});
 
 // --- Task 13: explorer ---
 

@@ -42,6 +42,7 @@ public static class HtmlWriter
     public static IReadOnlyList<string> Write(ViewerSite site, string outDir)
     {
         var graphPage = GraphPagePathOf(site);
+        var lookups = new PageLookups(site);
         GuardNoCaseCollisions(site, graphPage);
         GuardOutputDirectory(site.BundleRoot, outDir);
 
@@ -65,7 +66,7 @@ public static class HtmlWriter
 
         foreach (var page in site.Pages)
         {
-            WriteFile(outDir, root, verifiedDirs, page.RelativeHtmlPath, RenderPage(site, graphPage, page), written);
+            WriteFile(outDir, root, verifiedDirs, page.RelativeHtmlPath, RenderPage(site, graphPage, page, lookups), written);
         }
 
         return written;
@@ -379,17 +380,136 @@ public static class HtmlWriter
         return string.Concat(Enumerable.Repeat("../", depth));
     }
 
-    private static string RenderPage(ViewerSite site, string graphPage, ViewerPage page)
+    private static string RenderPage(ViewerSite site, string graphPage, ViewerPage page, PageLookups lookups)
     {
         var prefix = RootPrefix(page.RelativeHtmlPath);
-        var main = new StringBuilder();
+        var main = RenderPageHead(site, page, prefix, lookups) + "<div id=\"okf-body\"></div>\n";
+        return RenderShell(site, graphPage, ViewKind.Page, page.Title, prefix, page.Id.ToString(), main, RenderBacklinks(page.Backlinks), Payload(page));
+    }
 
-        main.Append("<h1>").Append(HtmlEscape(page.Title)).Append("</h1>\n");
-        main.Append("<p class=\"meta\">").Append(HtmlEscape(page.Id.ToString())).Append("</p>\n");
-        main.Append(RenderFrontmatter(page.Frontmatter));
-        main.Append("<div id=\"okf-body\"></div>\n");
+    /// <summary>Lookups every concept page shares, built once per <see cref="Write"/>.</summary>
+    private sealed class PageLookups
+    {
+        public PageLookups(ViewerSite site)
+        {
+            foreach (var page in site.Pages)
+            {
+                PathById.TryAdd(page.Id.ToString(), page.RelativeHtmlPath);
+            }
 
-        return RenderShell(site, graphPage, ViewKind.Page, page.Title, prefix, page.Id.ToString(), main.ToString(), RenderBacklinks(page.Backlinks), Payload(page));
+            var types = site.Index.Types;
+            foreach (var concept in site.Index.Concepts)
+            {
+                var slot = concept.TypeIndex >= 0 && concept.TypeIndex < types.Count ? types[concept.TypeIndex].Slot : SiteIndex.OtherSlot;
+                SlotById.TryAdd(concept.Id.ToString(), slot);
+            }
+        }
+
+        /// <summary>Each page's path by concept id: the breadcrumb links a folder that is also a concept (C2).</summary>
+        public Dictionary<string, string> PathById { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>Each concept's type slot by id, read from the index's types table, never recomputed (C5).</summary>
+        public Dictionary<string, int> SlotById { get; } = new(StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// The head of a concept page (spec §11.3, §12.3): breadcrumb (C2), the one
+    /// <c>&lt;h1&gt;</c> (C3), the chips (C5) and the frontmatter box (C6). The
+    /// glyph slots are empty: <c>okf-page.js</c> fills them from the fixed
+    /// <c>data-okf-*</c> values written here, never from bundle text.
+    /// </summary>
+    private static string RenderPageHead(ViewerSite site, ViewerPage page, string prefix, PageLookups lookups)
+    {
+        var sb = new StringBuilder("<div class=\"okf-page-head\">\n");
+        sb.Append(RenderCrumbs(site, page, prefix, lookups));
+        sb.Append("<h1>").Append(HtmlEscape(page.Title)).Append("</h1>\n");
+        sb.Append(RenderChips(page, lookups));
+        sb.Append(RenderFrontmatterBox(page.Frontmatter));
+        return sb.Append("</div>\n").ToString();
+    }
+
+    private static string RenderCrumbs(ViewerSite site, ViewerPage page, string prefix, PageLookups lookups)
+    {
+        const string Separator = "<span class=\"okf-crumb-sep\" aria-hidden=\"true\">/</span>";
+        var name = site.BundleName ?? SiteModel.BundleNameOf(site.BundleRoot);
+        var sb = new StringBuilder("<nav class=\"okf-crumbs\" aria-label=\"Breadcrumb\"><ol>\n");
+        sb.Append("<li><a href=\"").Append(HtmlEscape(prefix)).Append("index.html\">").Append(HtmlEscape(name)).Append("</a></li>\n");
+        var segments = page.Id.Segments;
+        for (var i = 0; i < segments.Count - 1; i++)
+        {
+            var folder = string.Join('/', segments.Take(i + 1));
+            sb.Append("<li>").Append(Separator);
+            if (lookups.PathById.TryGetValue(folder, out var path))
+            {
+                sb.Append("<a href=\"").Append(HtmlEscape(prefix + path)).Append("\">").Append(HtmlEscape(segments[i])).Append("</a>");
+            }
+            else
+            {
+                sb.Append("<span>").Append(HtmlEscape(segments[i])).Append("</span>");
+            }
+
+            sb.Append("</li>\n");
+        }
+
+        sb.Append("<li>").Append(Separator).Append("<span aria-current=\"page\">").Append(HtmlEscape(segments[^1])).Append("</span></li>\n");
+        return sb.Append("</ol></nav>\n").ToString();
+    }
+
+    private static string RenderChips(ViewerPage page, PageLookups lookups)
+    {
+        if (page.Head is not { } head)
+        {
+            return string.Empty;
+        }
+
+        var slot = lookups.SlotById.TryGetValue(page.Id.ToString(), out var s) ? s : SiteIndex.OtherSlot;
+        var sb = new StringBuilder("<div class=\"okf-chips\">\n");
+        sb.Append("<span class=\"okf-chip okf-chip-type\"><span class=\"okf-chip-glyph\" data-okf-slot=\"")
+          .Append(slot.ToString(CultureInfo.InvariantCulture)).Append("\"></span>")
+          .Append(HtmlEscape(head.Type.Length == 0 ? "(no type)" : head.Type)).Append("</span>\n");
+        if (head.Status is { } status)
+        {
+            sb.Append("<span class=\"okf-chip okf-chip-status\">").Append(HtmlEscape(status)).Append("</span>\n");
+        }
+
+        var glyph = head.Trust == AuditVocabulary.Name(TrustTier.HumanReviewed) ? "human"
+            : head.Trust == AuditVocabulary.Name(TrustTier.MachineConfirmed) ? "machine"
+            : null;
+        sb.Append("<span class=\"okf-chip okf-chip-trust").Append(glyph is null ? " okf-chip-unverified" : string.Empty).Append("\">");
+        if (glyph is not null)
+        {
+            sb.Append("<span class=\"okf-chip-glyph\" data-okf-trust=\"").Append(glyph).Append("\"></span>");
+        }
+
+        sb.Append(HtmlEscape(TrustText(head))).Append("</span>\n");
+        if (head.StaleAfterDate is { } date)
+        {
+            sb.Append("<span class=\"okf-chip okf-chip-stale\"><span class=\"okf-chip-glyph\" data-okf-stale></span><span class=\"okf-chip-text\">stale after ")
+              .Append(HtmlEscape(date)).Append("</span></span>\n");
+        }
+
+        return sb.Append("</div>\n").ToString();
+    }
+
+    /// <summary>The trust chip's text (C5): the tier, then " · verifier · date · +N" when the tier names a verifier.</summary>
+    internal static string TrustText(ViewerPageHead head)
+    {
+        var text = new StringBuilder(head.Trust);
+        if (head.Verifier is { } verifier)
+        {
+            text.Append(" · ").Append(verifier);
+            if (head.VerifiedDate is { } date)
+            {
+                text.Append(" · ").Append(date);
+            }
+
+            if (head.MoreVerifications > 0)
+            {
+                text.Append(" · +").Append(head.MoreVerifications.ToString(CultureInfo.InvariantCulture));
+            }
+        }
+
+        return text.ToString();
     }
 
     private static string RenderIndex(ViewerSite site, string graphPage)
@@ -632,23 +752,40 @@ public static class HtmlWriter
         return sb.Append("</body>\n</html>\n").ToString();
     }
 
-    private static string RenderFrontmatter(IReadOnlyList<ViewerFrontmatterEntry> entries)
+    /// <summary>
+    /// The frontmatter box (spec §11.3, C6): every entry in document order in a
+    /// two-column grid; the folded ones carry <c>data-okf-extra</c>, hidden by
+    /// <c>viewer.css</c> only while JavaScript runs (<c>html[data-okf-js]</c>)
+    /// and the box is not expanded. Without JavaScript everything shows.
+    /// </summary>
+    private static string RenderFrontmatterBox(IReadOnlyList<ViewerFrontmatterEntry> entries)
     {
         if (entries.Count == 0)
         {
             return string.Empty;
         }
 
-        var sb = new StringBuilder("<table class=\"frontmatter\">\n");
+        var sb = new StringBuilder("<section class=\"okf-fm\" id=\"okf-fm\" aria-labelledby=\"okf-fm-title\">\n");
+        sb.Append("<div class=\"okf-fm-head\"><h2 class=\"okf-section-title\" id=\"okf-fm-title\">Frontmatter · ")
+          .Append(entries.Count.ToString(CultureInfo.InvariantCulture))
+          .Append(entries.Count == 1 ? " field" : " fields").Append("</h2></div>\n");
+        sb.Append("<div class=\"okf-fm-grid\" id=\"okf-fm-grid\">\n");
         foreach (var entry in entries)
         {
-            sb.Append("<tr><th>").Append(HtmlEscape(entry.Key)).Append("</th><td>")
-              .Append(HtmlEscape(entry.Value)).Append("</td></tr>\n");
+            sb.Append("<div class=\"okf-fm-cell\"").Append(entry.Extra ? " data-okf-extra" : string.Empty).Append('>')
+              .Append("<span class=\"okf-fm-key\">").Append(HtmlEscape(entry.Key)).Append("</span>")
+              .Append("<span class=\"okf-fm-value").Append(entry.Structured ? " okf-fm-struct" : string.Empty).Append("\">")
+              .Append(HtmlEscape(entry.Value)).Append("</span></div>\n");
         }
 
-        return sb.Append("</table>\n").ToString();
+        return sb.Append("</div>\n</section>\n").ToString();
     }
 
+    /// <summary>
+    /// "Referenced by · N" (spec §11.4, X10): <c>.okf-row</c> links, each
+    /// carrying its source id in <c>data-okf-target</c> so <c>okf-page.js</c>
+    /// finds its type in the index and adds its glyph.
+    /// </summary>
     private static string RenderBacklinks(IReadOnlyList<ViewerLink> backlinks)
     {
         if (backlinks.Count == 0)
@@ -656,10 +793,13 @@ public static class HtmlWriter
             return string.Empty;
         }
 
-        var sb = new StringBuilder("<section class=\"okf-backlinks\" aria-labelledby=\"okf-backlinks-title\">\n<h2 id=\"okf-backlinks-title\">Referenced by</h2>\n<ul>\n");
+        var sb = new StringBuilder("<section class=\"okf-backlinks\" aria-labelledby=\"okf-backlinks-title\">\n")
+            .Append("<h2 id=\"okf-backlinks-title\" class=\"okf-section-title\">Referenced by <span class=\"okf-count\">· ")
+            .Append(backlinks.Count.ToString(CultureInfo.InvariantCulture)).Append("</span></h2>\n<ul>\n");
         foreach (var link in backlinks)
         {
-            sb.Append("<li><a href=\"").Append(HtmlEscape(link.Href)).Append("\">")
+            sb.Append("<li><a class=\"okf-row\" href=\"").Append(HtmlEscape(link.Href))
+              .Append("\" data-okf-target=\"").Append(HtmlEscape(link.RawTarget)).Append("\">")
               .Append(HtmlEscape(link.RawTarget)).Append("</a></li>\n");
         }
 
@@ -684,7 +824,9 @@ public static class HtmlWriter
         }
 
         links.Append('}');
-        return BuildPayload(page.Body, links.ToString());
+        // The display body: the leading H1 that repeats the title is already
+        // in the page head (spec §11.3, C4); viewer.js renders what it gets.
+        return BuildPayload(page.DisplayBody ?? page.Body, links.ToString());
     }
 
     /// <summary>

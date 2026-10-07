@@ -705,7 +705,7 @@ public class HtmlWriterTests
 
         var orders = File.ReadAllText(Path.Combine(dest.Path, "orders.html"));
         var aside = orders.IndexOf("<aside class=\"okf-context\" id=\"okf-context\" aria-label=\"Page context\">", StringComparison.Ordinal);
-        var backlinks = orders.IndexOf("<h2 id=\"okf-backlinks-title\">Referenced by</h2>", StringComparison.Ordinal);
+        var backlinks = orders.IndexOf("<h2 id=\"okf-backlinks-title\" class=\"okf-section-title\">Referenced by <span class=\"okf-count\">· 1</span></h2>", StringComparison.Ordinal);
         Assert.True(aside >= 0 && backlinks > aside, "backlinks must be rendered inside the visible aside");
         var users = File.ReadAllText(Path.Combine(dest.Path, "users.html"));
         Assert.Contains("aria-label=\"Page context\" hidden>", users);

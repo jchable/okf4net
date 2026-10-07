@@ -60,15 +60,6 @@ a.broken { color: var(--red); text-decoration: line-through; cursor: not-allowed
 code { font-family: var(--mono); font-size: .92em; background: var(--blue-soft); padding: .1em .35em; }
 pre { background: var(--blue-soft); padding: 16px; overflow-x: auto; }
 pre code { background: none; padding: 0; }
-table.frontmatter { border-collapse: collapse; width: 100%; font-size: 14px; }
-table.frontmatter th, table.frontmatter td {
-  text-align: left; vertical-align: top; padding: 6px 12px 6px 0;
-  border-bottom: 1px solid var(--hair);
-}
-table.frontmatter th { font-family: var(--mono); font-weight: 400; color: var(--gray); width: 200px; }
-/* anywhere, not break-word: a table cell is as wide as its min-content, so
-   only anywhere lets a long unbroken value fit a phone's width. */
-table.frontmatter td { overflow-wrap: anywhere; }
 /* The index page's count and parse errors (C8), anchored like all chrome. */
 body > .okf-layout > main > .meta { font-family: var(--mono); font-size: 13px; color: var(--gray); }
 body > .okf-layout > main > .errors { border-left: 3px solid var(--red); padding-left: 16px; margin-bottom: 32px; }
@@ -226,10 +217,6 @@ body > .okf-palette-backdrop .okf-palette-status { margin: 0; padding: 8px 16px;
 body > .okf-palette-backdrop .okf-palette-close { margin: 0 16px 12px; }
 body > .okf-palette-backdrop .okf-palette:focus { outline: none; }
 /* (end of the P1 palette rules: Task 14 removes the block above; nobody edits this line) */
-#okf-context :is(.okf-toc, .okf-backlinks) h2 {
-  font-family: var(--mono); font-size: 11px; font-weight: 400; letter-spacing: .06em;
-  text-transform: uppercase; color: var(--gray); margin: 0 0 8px;
-}
 /* Sections are spaced by #okf-context's gap (X1). */
 #okf-context :is(.okf-toc, .okf-backlinks) ul { list-style: none; margin: 0; padding: 0; font-size: 13.5px; }
 /* X3: each entry is a link on a 2 px rule, an h3 indented; X4 marks the
@@ -241,7 +228,6 @@ body > .okf-palette-backdrop .okf-palette:focus { outline: none; }
 #okf-context .okf-toc li.okf-toc-sub a { padding-left: 22px; }
 #okf-context .okf-toc a:hover { color: var(--blue); }
 #okf-context .okf-toc a[aria-current="location"] { border-left-color: var(--blue); color: var(--blue); font-weight: 600; }
-#okf-context .okf-backlinks li { padding: 6px 0; border-bottom: 1px solid var(--hair); }
 /* A wide GFM table scrolls inside its own box instead of widening the page
    (390 px). #okf-body is an id, so this cannot reach the frontmatter table
    (a sibling, outside it) or any chrome. */
@@ -432,6 +418,55 @@ body > header.bar .bar-counts { flex: none; font-family: var(--mono); font-size:
 }
 
 /* --- Task 12: page head (C2-C6) and Referenced by (X10) --- */
+
+/* C2: the breadcrumb, an ordered list with decorative separators. */
+body > .okf-layout > main > .okf-page-head .okf-crumbs ol {
+  list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  font-family: var(--mono); font-size: 12.5px; color: var(--gray);
+}
+body > .okf-layout > main > .okf-page-head .okf-crumbs li { display: inline-flex; align-items: center; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
+body > .okf-layout > main > .okf-page-head .okf-crumbs a { color: var(--gray); text-decoration: none; }
+body > .okf-layout > main > .okf-page-head .okf-crumbs a:hover { color: var(--blue); }
+body > .okf-layout > main > .okf-page-head .okf-crumbs [aria-current="page"] { color: var(--ink); }
+/* C3 */
+body > .okf-layout > main > .okf-page-head h1 {
+  margin: 14px 0 6px; font-family: var(--display); font-weight: 600; font-size: 34px;
+  letter-spacing: -.02em; line-height: 1.15;
+}
+/* C5: the chips themselves are the shared .okf-chip (Task 3). */
+body > .okf-layout > main > .okf-page-head .okf-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 18px; }
+/* C6: the frontmatter box. */
+body > .okf-layout > main > .okf-page-head .okf-fm { border: 1px solid var(--hair); margin: 0 0 22px; }
+body > .okf-layout > main > .okf-page-head .okf-fm-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 9px 14px; border-bottom: 1px solid var(--hair); background: var(--blue-soft);
+}
+body > .okf-layout > main > .okf-page-head .okf-fm-head .okf-section-title { margin: 0; }
+/* Two columns; every cell has a bottom rule and the grid sinks 1 px under the
+   box's own border, so the last row shows no extra rule whatever is folded. */
+body > .okf-layout > main > .okf-page-head .okf-fm-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); font-size: 13.5px; margin-bottom: -1px;
+}
+body > .okf-layout > main > .okf-page-head .okf-fm-cell {
+  display: flex; gap: 12px; padding: 8px 14px; min-width: 0; border-bottom: 1px solid var(--hair);
+}
+body > .okf-layout > main > .okf-page-head .okf-fm-key {
+  flex: none; width: 92px; font-family: var(--mono); font-size: 12px; color: var(--gray); overflow-wrap: anywhere;
+}
+/* anywhere: a long unbroken value fits a phone's width (recette R1). */
+body > .okf-layout > main > .okf-page-head .okf-fm-value { min-width: 0; overflow-wrap: anywhere; }
+/* A structured value is the compact YAML emission, which may hold line
+   breaks: pre-wrap keeps them (and still wraps a long line). */
+body > .okf-layout > main > .okf-page-head .okf-fm-struct { font-family: var(--mono); font-size: 12.5px; white-space: pre-wrap; }
+/* Folded (A27) only while JavaScript runs and the box is not expanded: without
+   JavaScript every entry shows, and the fold applies before the first paint
+   (okf-theme.js marks <html> in <head>). */
+html[data-okf-js] body > .okf-layout > main > .okf-page-head .okf-fm:not([data-okf-expanded]) .okf-fm-cell[data-okf-extra] { display: none; }
+@media (max-width: 600px) {
+  body > .okf-layout > main > .okf-page-head .okf-fm-grid { grid-template-columns: minmax(0, 1fr); }
+}
+/* X10: the rows are the shared .okf-row (Task 3). */
+#okf-context .okf-backlinks li { list-style: none; }
 
 /* --- Task 13: explorer (E1-E13) and Filters (H8) --- */
 
