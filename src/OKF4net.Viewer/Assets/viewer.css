@@ -101,8 +101,10 @@ body > .okf-layout > main { flex: 999 1 560px; min-width: 0; margin: 0; }
      scroll area, so a far page (current entry deep in the tree) does not
      scroll them out of view. Opaque, or tree rows would show through. */
   #okf-explorer .okf-explorer-head {
-    position: sticky; top: 0; z-index: 1; background: var(--white);
-    margin-top: -8px; padding: 8px 0;
+    /* -16px: a sticky offset counts from inside the explorer's 16px padding,
+       so top: 0 would leave a band where scrolled rows show above the head. */
+    position: sticky; top: -16px; z-index: 1; background: var(--white);
+    margin-top: -16px; padding: 16px 0 8px;
   }
 }
 @media (max-width: 1099px) {
