@@ -952,9 +952,234 @@ function registerPurity(h) {
   });
 }
 
+// --- graph page (graph.html) -----------------------------------------------
+
+// U+00B7, built at run time (an escape typed into a file is decoded on write).
+const MIDDOT = String.fromCharCode(0xb7);
+const EMDASH = String.fromCharCode(0x2014);
+const GRAPH_SCRIPTS = ["okf-index.js", "okf-site.js", "okf-shapes.js", "okf-palette.js", "okf-sim.js", "okf-graph.js"];
+
+// The page's path, from the "Global graph" link of index.html with its
+// fragment removed: never a hard-coded name (§12.7, A25).
+async function graphPath(h) {
+  const index = await h.openPage("index.html");
+  const link = index.document.getElementById("okf-global-graph");
+  h.assert(link, "index.html has no #okf-global-graph link");
+  return link.getAttribute("href").split("#")[0];
+}
+
+// The deterministic scheduler of §7: frame callbacks queue here and run only
+// when a case drains them.
+function makeScheduler() {
+  const queue = [];
+  let ran = 0;
+  return {
+    install(w) { w.OKF_SCHEDULER = (callback) => { queue.push(callback); }; },
+    pending() { return queue.length; },
+    ran() { return ran; },
+    // Runs `count` queued callbacks (fewer if the queue empties).
+    frames(count) {
+      for (let k = 0; k < count && queue.length > 0; k++) { queue.shift()(); ran++; }
+    },
+    // Drains the queue, callbacks queued meanwhile included; bounded.
+    flush(limit = 100000) {
+      let k = 0;
+      while (queue.length > 0) {
+        if (k++ >= limit) { throw new Error(`the layout did not end within ${limit} frames`); }
+        queue.shift()();
+        ran++;
+      }
+    },
+  };
+}
+
+// Opens the graph page with the scheduler injected before any script runs.
+async function openGraph(h, opts = {}) {
+  const rel = await graphPath(h);
+  const scheduler = makeScheduler();
+  const before = opts.beforeParse;
+  const window = await h.openPage(rel, Object.assign({}, opts, {
+    beforeParse(w) {
+      scheduler.install(w);
+      if (before) { before(w); }
+    },
+  }));
+  return { window, doc: window.document, scheduler, rel };
+}
+
+// The drawn nodes, by the id their <title> carries ("absent: <id>" for a ghost).
+function drawnNodes(doc) {
+  return Array.from(doc.querySelectorAll("#okf-graph-canvas g.okf-node")).map((g) => ({
+    g, name: g.querySelector("title").textContent,
+  }));
+}
+
+function nodeNamed(doc, name) {
+  const found = drawnNodes(doc).find((n) => n.name === name);
+  return found ? found.g : null;
+}
+
+// The centre of a drawn node, from its label (x = cx, y = cy + size/2 + 16).
+function labelPoint(g) {
+  const text = g.querySelector("text");
+  return { x: Number(text.getAttribute("x")), y: Number(text.getAttribute("y")) };
+}
+
+function facetInputs(doc, id) {
+  const heading = doc.getElementById(`okf-facet-${id}`);
+  return heading ? Array.from(heading.parentElement.querySelectorAll("input[type=checkbox]")) : [];
+}
+
+function click(window, target) {
+  target.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+}
+
+function setChecked(window, input, value) {
+  input.checked = value;
+  input.dispatchEvent(new window.Event("change", { bubbles: true }));
+}
+
+// Expected status line, computed from the executed index (never a count
+// written in a case, §12.7).
+function expectedStatus(index, shownConcepts, matchedCount) {
+  const N = index.concepts.length;
+  const shown = new Set(shownConcepts);
+  const ghosts = new Set();
+  let links = 0;
+  for (const [from, to, , toGhost] of index.edges) {
+    if (!shown.has(from)) { continue; }
+    if (toGhost === 1) { ghosts.add(to); links++; } else if (shown.has(to)) { links++; }
+  }
+  const M = index.edges.length;
+  let text = `showing ${matchedCount} of ${N} ${N === 1 ? "concept" : "concepts"}`;
+  if (ghosts.size > 0) { text += ` + ${ghosts.size} absent`; }
+  return `${text} ${MIDDOT} ${links} of ${M} ${M === 1 ? "link" : "links"}`;
+}
+
+function conceptPos(index, id) {
+  const i = index.concepts.findIndex((c) => c.id === id);
+  if (i === -1) { throw new Error(`the fixture lost concept ${id}`); }
+  return i;
+}
+
+function registerGraphPage(h) {
+  h.checkAsync("graph page: reached by the Global graph link, it loads exactly its six scripts", async () => {
+    const { doc, rel } = await openGraph(h);
+    h.assert(doc.documentElement.getAttribute("data-okf-view") === "graph", `${rel} is not the graph view`);
+    const scripts = Array.from(doc.querySelectorAll("body script[src]"), (s) => s.getAttribute("src"));
+    h.assert(JSON.stringify(scripts) === JSON.stringify(GRAPH_SCRIPTS.map((s) => `assets/${s}`)), `scripts: ${scripts.join(", ")}`);
+    h.assert(doc.getElementById("okf-body") === null && doc.getElementById("okf-payload") === null, "the graph page carries a body or a payload");
+  });
+
+  h.checkAsync("graph page: the status line counts the whole bundle by default", async () => {
+    const { window, doc } = await openGraph(h);
+    const index = window.OKF_INDEX;
+    const all = index.concepts.map((_, i) => i);
+    const want = expectedStatus(index, all, all.length);
+    const got = doc.getElementById("okf-graph-status").textContent;
+    h.assert(got === want, `status "${got}", expected "${want}"`);
+  });
+
+  h.checkAsync("graph page: List shows every concept and ghost with its relations, in index order", async () => {
+    const { window, doc } = await openGraph(h);
+    const index = window.OKF_INDEX;
+    const toggle = doc.querySelector("#okf-graph-zoom .okf-graph-list-toggle");
+    h.assert(toggle && toggle.getAttribute("aria-pressed") === "false", "no List toggle, or pressed by default");
+    click(window, toggle);
+    const list = doc.getElementById("okf-graph-list");
+    h.assert(!list.hidden && doc.getElementById("okf-graph-canvas").hidden && toggle.getAttribute("aria-pressed") === "true", "List did not replace the drawing");
+    const names = Array.from(list.querySelectorAll(".okf-graph-list-select"), (b) => b.textContent);
+    const want = index.concepts.map((c) => c.id).concat(index.ghosts.map((g) => `absent: ${g.id}`));
+    h.assert(JSON.stringify(names) === JSON.stringify(want), `list entries: ${names.join(" | ")}`);
+    const a = Array.from(list.querySelectorAll(".okf-graph-list-item")).find((li) => li.querySelector(".okf-graph-list-select").textContent === "p3-graph/b");
+    const relations = Array.from(a.querySelectorAll(".okf-graph-list-rel li"), (li) => li.textContent);
+    for (const want2 of ["links to p3-graph/c", "referenced by p3-graph/a", "referenced by p3-graph/hostile"]) {
+      h.assert(relations.includes(want2), `p3-graph/b lacks "${want2}": ${relations.join(" | ")}`);
+    }
+    click(window, toggle);
+    h.assert(list.hidden && !doc.getElementById("okf-graph-canvas").hidden, "List did not give the drawing back");
+  });
+
+  h.checkAsync("graph page: selecting from the list fills the drawer and points Reading view at the page", async () => {
+    const { window, doc } = await openGraph(h);
+    const index = window.OKF_INDEX;
+    const detail = doc.getElementById("okf-graph-detail");
+    h.assert(detail.textContent.includes("Select a concept to see its links."), "the empty drawer lacks its prompt");
+    const reading = doc.getElementById("okf-reading-view");
+    h.assert(reading.getAttribute("href") === "index.html", `Reading view starts at ${reading.getAttribute("href")}`);
+    const b = index.concepts[conceptPos(index, "p3-graph/b")];
+    const button = Array.from(doc.querySelectorAll("#okf-graph-list .okf-graph-list-select")).find((x) => x.textContent === "p3-graph/b");
+    click(window, button);
+    h.assert(detail.querySelector(".okf-graph-detail-id").textContent === "p3-graph/b", "the drawer does not show the id");
+    h.assert(detail.querySelector("h2").textContent === b.title, "the drawer does not show the title");
+    h.assert(detail.querySelector(".okf-graph-detail-desc").textContent === b.description, "the drawer lacks the description");
+    const heads = Array.from(detail.querySelectorAll(".okf-graph-rel h3"), (x) => x.textContent);
+    h.assert(heads[0] === `Links to ${MIDDOT} 1` && heads[1] === `Referenced by ${MIDDOT} 2`, `relation heads: ${heads.join(" | ")}`);
+    const open = detail.querySelector("a.okf-graph-open");
+    h.assert(open && open.getAttribute("href") === b.path && open.textContent === "Open page", "Open page is missing or wrong");
+    h.assert(reading.getAttribute("href") === b.path, `Reading view points at ${reading.getAttribute("href")}`);
+    h.assert(button.getAttribute("aria-current") === "true", "the list does not mark the selection");
+  });
+
+  h.checkAsync("graph page: a cited ghost is a row without a link; a selected ghost shows only 'absent' and its id", async () => {
+    const { window, doc } = await openGraph(h);
+    const detail = doc.getElementById("okf-graph-detail");
+    const pick = (name) => click(window, Array.from(doc.querySelectorAll("#okf-graph-list .okf-graph-list-select")).find((x) => x.textContent === name));
+    pick("p3-graph/hostile");
+    const absent = Array.from(detail.querySelectorAll(".okf-row")).find((r) => r.textContent === "absent: p3-graph/absent-target");
+    h.assert(absent && absent.tagName === "SPAN" && !absent.closest("a"), "the cited ghost is not a plain row");
+    pick("absent: p3-graph/absent-target");
+    h.assert(detail.querySelector("h2").textContent === "absent" && detail.querySelector(".okf-graph-detail-id").textContent === "p3-graph/absent-target", "the ghost drawer is wrong");
+    h.assert(detail.querySelectorAll("a").length === 0, "the ghost drawer holds a link");
+    h.assert(doc.getElementById("okf-reading-view").getAttribute("href") === "index.html", "Reading view points at a ghost");
+  });
+
+  h.checkAsync("graph page: hostile title, type and description stay text in the drawer", async () => {
+    const { window, doc } = await openGraph(h);
+    click(window, Array.from(doc.querySelectorAll("#okf-graph-list .okf-graph-list-select")).find((x) => x.textContent === "p3-graph/hostile"));
+    const detail = doc.getElementById("okf-graph-detail");
+    for (const n of ["31", "32", "33"]) {
+      h.assert(detail.textContent.includes(`<img src=x onerror="window.__pwned=${n}">`), `the drawer dropped hostile text ${n} instead of showing it`);
+    }
+    h.assert(doc.getElementById("okf-graph-layout").querySelectorAll("img, [onerror]").length === 0, "an element or handler from bundle text reached the page");
+    h.assert(window.__pwned === undefined, "bundle text executed");
+  });
+
+  h.checkAsync("graph page: the drawer's trust and staleness chips wear P1.1's chip states (§12.6)", async () => {
+    const { window, doc } = await openGraph(h);
+    const index = window.OKF_INDEX;
+    const detail = doc.getElementById("okf-graph-detail");
+    const pick = (i) => click(window, Array.from(doc.querySelectorAll("#okf-graph-list .okf-graph-list-select")).find((x) => x.textContent === index.concepts[i].id));
+    const chipOf = (cls) => detail.querySelector(`.okf-chips .okf-chip.${cls}`);
+    // Every concept is chosen from the executed index (§12.7): the hostile
+    // bundle has verified and unverified concepts, one stale long ago and one
+    // stale only in 2999.
+    const now = Date.now();
+    const verified = index.concepts.findIndex((c) => window.OkfShapes.trustKind(c.trust) !== null);
+    const unverified = index.concepts.findIndex((c) => window.OkfShapes.trustKind(c.trust) === null);
+    const since = index.concepts.findIndex((c) => typeof c.staleAfterDate === "string" && window.OkfSite.isStale(c.staleAfterMs, now));
+    const after = index.concepts.findIndex((c) => typeof c.staleAfterDate === "string" && !window.OkfSite.isStale(c.staleAfterMs, now));
+    h.assert(verified >= 0 && unverified >= 0 && since >= 0 && after >= 0, "this case needs a verified, an unverified, a stale and a not-yet-stale concept");
+    pick(verified);
+    h.assert(chipOf("okf-chip-trust") && !chipOf("okf-chip-trust").classList.contains("okf-chip-unverified"), "a verified tier is drawn as unverified");
+    pick(unverified);
+    h.assert(chipOf("okf-chip-trust") && chipOf("okf-chip-trust").classList.contains("okf-chip-unverified"), "the unverified tier lacks okf-chip-unverified");
+    pick(since);
+    const sinceChip = chipOf("okf-chip-stale");
+    h.assert(sinceChip && sinceChip.hasAttribute("data-okf-stale-now") && sinceChip.querySelector("svg.okf-glyph")
+      && sinceChip.textContent === `stale since ${index.concepts[since].staleAfterDate}`, "stale since is not okf-chip-stale[data-okf-stale-now] with its sandglass");
+    pick(after);
+    const afterChip = chipOf("okf-chip-stale");
+    h.assert(afterChip && !afterChip.hasAttribute("data-okf-stale-now")
+      && afterChip.textContent === `stale after ${index.concepts[after].staleAfterDate}`, "stale after is not a plain okf-chip-stale");
+    h.assert(detail.querySelectorAll("[class*='okf-graph-chip']").length === 0, "the drawer wears a P3-only chip class (spec §12.6 names the states)");
+  });
+}
+
 function register(h) {
   registerSim(h);
   registerPurity(h);
+  registerGraphPage(h);
 }
 
 module.exports = { register };
