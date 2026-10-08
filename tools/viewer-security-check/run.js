@@ -4423,12 +4423,26 @@ checkAsync("explorer: a long type name wraps whole inside its chip and the panel
   // jsdom does no layout, so this reads the cascade (the recette measures: no
   // sideways scroll at 390 and 1440 px). The shared chip is nowrap and 26 px
   // high: left alone, a long name widens the page or is clipped (E4 shows it whole).
-  const window = await openPage("foo/bar.html");
+  // The long type is made in the executed index, not by a fixture: a bundle
+  // fixture only reaches the chips while it ranks 0 to 4 among all the types,
+  // and every fixture added later shifts that. Type rank 2 is renamed.
+  const names = [
+    "A deliberately very long type name written with spaces so that it must wrap inside its chip",
+    "U".repeat(740),
+  ];
+  for (const name of names) {
+    const rename = `window.OKF_INDEX.types[2].name = ${JSON.stringify(name)};`;
+    const source = fs.readFileSync(path.join(SITE, "assets", "okf-index.js"), "utf8") + "\n;" + rename;
+    const window = await openPage("foo/bar.html", { override: { "assets/okf-index.js": source } });
+    assertWrappingChip(window, name);
+  }
+});
+
+function assertWrappingChip(window, name) {
   const doc = window.document;
-  const name = "A deliberately very long type name written with spaces so that it must wrap inside its chip";
   const chip = Array.from(doc.querySelectorAll("#okf-explorer .okf-type-chips .okf-chip"))
     .find((c) => c.querySelector(".okf-chip-text").textContent === name);
-  assert(chip, "this case needs the fixture's long type among the type chips (rank 0 to 4)");
+  assert(chip, `the renamed type (${name.length} characters) is not among the type chips (rank 0 to 4)`);
   const count = chip.querySelector(".okf-chip-count");
   assert(count && /^\d+$/.test(count.textContent), "the chip lost its count");
   const want = { "max-width": "100%", height: "auto", "min-height": "26px", "white-space": "normal", "overflow-wrap": "anywhere" };
@@ -4439,7 +4453,7 @@ checkAsync("explorer: a long type name wraps whole inside its chip and the panel
   }
   const noShrink = cascadeOf(doc, count, "flex");
   assert(noShrink && /^(none|0 0 auto)$/.test(noShrink.value.trim()), `the count may shrink or wrap inside the chip (flex: ${noShrink && noShrink.value})`);
-});
+}
 
 checkAsync("contents: a fragment naming an element outside the body (the skip link's #okf-main) is the browser's, even beside a heading titled alike", async () => {
   const probe = withBody("foo.html", "p11-fixb-skip.html", "## Okf: main\n\nfirst\n\n## OKF main\n\nsecond\n\n## Usage\n\nthird");
