@@ -158,8 +158,8 @@ requests leaving the site — checked in real browsers on the two sites of
 Playwright is **not** a dependency of this repository: `recette/lib.js`
 resolves `OKF_PLAYWRIGHT`, else `require("playwright-core")`, and stops with
 a clear message when neither exists. `npm test` and CI never run the
-recette. Each slice has its own file (`p1.js`, `p1-1.js`, `p2.js`, `p3.js`)
-exporting `async function run(ctx)`, whose results are keyed by the ids of
+recette. Each slice has its own file: `p1.js` and `p1-1.js`; P2 and P3 add
+`p2.js` and `p3.js` (a missing file is reported as skipped). Each one exports `async function run(ctx)`, whose results are keyed by the ids of
 spec §11 (`H1`…`L6`), by the ported P1 checks `RC1`…`RC11`, or by a named
 control (`fonts`, `tokens`, `requests`). A result is `pass: true`, `false`,
 or `null` for "not applicable here" (with a `note`: a check that needs a

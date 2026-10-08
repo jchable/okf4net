@@ -3,10 +3,11 @@ bundles/acme_retail/** -text
 bundles/ga4/** -text
 docs/spec/SPEC.md -text
 
-# The viewer's vendored fonts: the woff2 files are binary and the OFL texts and
-# provenance README are recorded by sha256 in fonts/README.md. Without -text a
-# Windows checkout (autocrlf) turns the texts into CRLF, so the recorded hashes
-# stop matching the working copy and Windows and Linux builds embed different bytes.
+# The viewer's vendored fonts: the woff2 files and the OFL texts are recorded
+# (size and sha256) in fonts/README.md, and ViewerFontsTests hashes the bytes
+# OKF4net.Viewer embeds against that table. Without -text a Windows checkout
+# (autocrlf) turns the stored-LF texts into CRLF, so Windows and Linux builds
+# embed different bytes and that test fails. The README itself is not hashed.
 src/OKF4net.Viewer/Assets/fonts/** -text
 
 # Shell scripts run via `sh` (or piped straight into it, e.g.

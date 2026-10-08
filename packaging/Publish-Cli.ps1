@@ -6,6 +6,10 @@
     the result.
 
 .DESCRIPTION
+    The archiving is delegated to New-ReleaseArchive.ps1 (which also decides
+    the licence files that travel with each binary); this script publishes
+    and checks the published binary.
+
     Windows RIDs (win-x64, win-arm64) are zipped with Compress-Archive.
     Linux/macOS RIDs are tar.gz'd instead: Compress-Archive does not preserve
     the Unix executable permission bit, so a .zip built from a Unix binary
@@ -68,20 +72,9 @@ if (-not $isWindowsRid) {
     }
 }
 
-New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
-$archiveExt = if ($isWindowsRid) { 'zip' } else { 'tar.gz' }
-$archive = Join-Path $OutDir "$BinName-$Version-$Rid.$archiveExt"
-if (Test-Path $archive) { Remove-Item $archive }
-
-if ($isWindowsRid) {
-    Compress-Archive -Path $bin -DestinationPath $archive
-} else {
-    $binDir = Split-Path $bin -Parent
-    tar czf $archive -C $binDir $publishedName
-    if ($LASTEXITCODE -ne 0) { throw "tar failed for $archive" }
-}
-
-$sha = (Get-FileHash $archive -Algorithm SHA256).Hash
-Set-Content -Path "$archive.sha256" -Value $sha -NoNewline
-Write-Host "Wrote $archive"
-$sha
+# The archive itself -- the binary at the archive root plus whatever licence
+# files travel with it (okf-render: NOTICE, LICENSE, LICENSE.GPL-3.0 and the
+# fonts' OFL texts under licenses/) -- is New-ReleaseArchive.ps1's job, so
+# its layout can be checked without a publish. It writes the .sha256
+# sidecar and returns the hash.
+& (Join-Path $PSScriptRoot 'New-ReleaseArchive.ps1') -Bin $bin -BinName $BinName -Rid $Rid -Version $Version -OutDir $OutDir

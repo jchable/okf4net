@@ -24,6 +24,7 @@
   - X14 (T3 fixtures): the twins are titled "Graph twin A" / "Graph twin B" ("Twin A" took the palette's first tier for "t" and turned a P1 case red); the fixture-naming rule is now a Global Constraint.
   - X18 (T9): `font-family: inherit` (with `font-weight`/`line-height: inherit` where needed) instead of the font shorthand set to inherit, which jsdom does not expand (it drops what follows it).
   - X19 (T9): the wide layout's height is `calc(100vh - 59px)`: topline 6 + bar 52 + the bar's 1 px bottom border (P1.1 Task 11).
+- **Revision r3 (2026-10-08): aligned with spec revision 8 on what Task 3 merged.** The one `Write` line is `WriteFile(outDir, root, verifiedDirs, graphPage, RenderGraph(site, graphPage), written);` and `RenderGraph(ViewerSite site, string graphPage)` calls P1.1's private `RenderDocumentStart(site, graphPage, ViewKind.Graph, "Global graph", string.Empty, null)`, so the name is computed once and passed down (X6's `RenderGraph(site)` went through the internal overload, which recomputes it). P1.1's final review also removed the internal counting seam: `Write` now pins the computed name on the site (`site with { GraphPagePath = graphPage }`). R3, Task 3 Step 5 and the type-consistency note say so.
 
 ## Global Constraints
 
@@ -47,9 +48,9 @@
 
 Points the spec leaves open in P3's area. The most conservative reading was taken; those marked **[spec fix requested]** need the controller to settle the spec text.
 
-- **R1 — settled by spec r7 §12.3.** The signatures are `internal static string RenderDocumentStart(ViewerSite site, ViewKind view, string title, string rootPrefix, string? conceptId)` with `internal enum ViewKind { Page, Index, Graph }`, and `internal static string ScriptTag(string rootPrefix, string name)`, which returns one whole line `<script src="{prefix}assets/{name}"></script>` followed by `\n`. Task 3 calls `RenderDocumentStart(site, HtmlWriter.ViewKind.Graph, "Global graph", string.Empty, null)` (passing the string `"graph"` is a CS1503 build error) and appends `ScriptTag(string.Empty, name)` with no newline of its own; its xunit test pins the `assets/…` paths.
+- **R1 — settled by spec r7 §12.3.** The signatures are `internal static string RenderDocumentStart(ViewerSite site, ViewKind view, string title, string rootPrefix, string? conceptId)` with `internal enum ViewKind { Page, Index, Graph }`, and `internal static string ScriptTag(string rootPrefix, string name)`, which returns one whole line `<script src="{prefix}assets/{name}"></script>` followed by `\n`. Task 3 calls `RenderDocumentStart` with `ViewKind.Graph` — as merged, through P1.1's private overload that also takes the precomputed name, `RenderDocumentStart(site, graphPage, ViewKind.Graph, "Global graph", string.Empty, null)` (r3, spec r8) — (passing the string `"graph"` is a CS1503 build error) and appends `ScriptTag(string.Empty, name)` with no newline of its own; its xunit test pins the `assets/…` paths.
 - **R2 — settled by spec r7 §12.8.** `recette/p3.js` uses P1.1's `ctx` (`lib.context`): `ctx.newPage({ viewport, colorScheme })` (a fresh Playwright page, 1 440 × 900 and light by default, whose `okfTracked` lists `errors`, `outside`, `failed`), `ctx.browserName`, `ctx.site` / `ctx.acme` (`file://` URLs ending `/`), `ctx.wanted(id)`, `ctx.shot(page, id)` (captures under `--out/shots/<browser>/p3/`), `ctx.lib` (`contrast`, `rgb`, …). There is no shared page and no `--out` folder in `ctx`.
-- **R3 — settled by spec r7 §12.0/§12.5.** `GuardNoCaseCollisions`, `SiteModel.FreeGraphPagePath` and `HtmlWriter.GraphPagePathOf` (explicit validated value, else the free name; the `graph-1.html` fallback, A25) are P1.1's. `Write` computes the local `graphPage = GraphPagePathOf(site)` once; P3's one `Write` line is exactly `WriteFile(outDir, root, verifiedDirs, graphPage, RenderGraph(site), written);` and never recomputes the name. Its xunit tests check that the page lands at the fallback name and that the index links to it.
+- **R3 — settled by spec r7 §12.0/§12.5.** `GuardNoCaseCollisions`, `SiteModel.FreeGraphPagePath` and `HtmlWriter.GraphPagePathOf` (explicit validated value, else the free name; the `graph-1.html` fallback, A25) are P1.1's. `Write` computes the local `graphPage = GraphPagePathOf(site)` once (and pins it on the site); P3's one `Write` line is `WriteFile(outDir, root, verifiedDirs, graphPage, RenderGraph(site, graphPage), written);` (as merged, spec r8 §12.0/§12.5; r7 read `RenderGraph(site)`), and `RenderGraph` hands that name to P1.1's private `RenderDocumentStart(site, graphPage, …)` overload, so P3 never recomputes it. Its xunit tests check that the page lands at the fallback name and that the index links to it.
 - **R4** The harness README belongs to P1.1 (§12.0); P3 documents its cases in the header of `cases/p3.js` and does not edit the README.
 - **R5 — settled by spec r7 §12.0.** The root `README.md` (its `okf-render` paragraph and licence paragraph) is P1.1's, for the three slices, like the `CHANGELOG` (P1.1 plan, Task 17 Step 5 describes the graph page there). P3 updates `src/OKF4net.Viewer/README.md` (its row) and leaves the root README alone.
 - **R6** `CHANGELOG.md`: P1.1 writes the whole entry (§12.0). Task 11 only corrects the P3 line if the delivery deviates from it.
@@ -1580,10 +1581,10 @@ if (require.main === module) {
 
 - [ ] **Step 5: Write `RenderGraph` and its one `Write` line**
 
-In `src/OKF4net.Viewer/HtmlWriter.cs`, directly under the line `// P3: graph page (§12.5)` in `Write`, add exactly this line (spec r7 §12.0, §12.5) — `graphPage` is the local P1.1 computes at the top of `Write` by `GraphPagePathOf(site)`, the same value its collision guard and header use; P3 never recomputes the name:
+In `src/OKF4net.Viewer/HtmlWriter.cs`, directly under the line `// P3: graph page (§12.5)` in `Write`, add exactly this line (as merged; spec r8 §12.0, §12.5 — r7 read `RenderGraph(site)`) — `graphPage` is the local P1.1 computes at the top of `Write` by `GraphPagePathOf(site)`, the same value its collision guard and header use, and `RenderGraph` passes it on, so P3 never recomputes the name:
 
 ```csharp
-        WriteFile(outDir, root, verifiedDirs, graphPage, RenderGraph(site), written);
+        WriteFile(outDir, root, verifiedDirs, graphPage, RenderGraph(site, graphPage), written);
 ```
 
 Directly under the line `// P3: RenderGraph (§12.5)` (before `HtmlEscape`), add:
@@ -1601,9 +1602,9 @@ Directly under the line `// P3: RenderGraph (§12.5)` (before `HtmlEscape`), add
     /// site root, so its root prefix is empty. It renders no markdown: no
     /// payload, no <c>marked</c>, no <c>viewer.js</c>.
     /// </summary>
-    private static string RenderGraph(ViewerSite site)
+    private static string RenderGraph(ViewerSite site, string graphPage)
     {
-        var page = new StringBuilder(RenderDocumentStart(site, HtmlWriter.ViewKind.Graph, "Global graph", string.Empty, null));
+        var page = new StringBuilder(RenderDocumentStart(site, graphPage, ViewKind.Graph, "Global graph", string.Empty, null));
         page.Append("""
 
             <div class="okf-graph-layout" id="okf-graph-layout">
@@ -4694,4 +4695,4 @@ git commit -m "docs(viewer): global graph page and okf-sim.js determinism rule; 
 
 **Placeholders.** None: every code step carries the complete code, verified by execution (see the revision history). Since r2 no instruction is conditional on a P1.1 detail: spec r7 fixes the view kind, `ScriptTag`'s output, the `graphPage` local, the recette `ctx` and the chip states, and P1.1's link order is known (`id` before `href`).
 
-**Type consistency.** `OkfSim.create(graph, options)` → `{ step, positions, stats, cancel }` is used with exactly those names by `okf-graph.js` (`create`, `step`, `positions`, `cancel`) and by the cases (`stats`). Node keys (concepts `0..N-1`, ghosts `N..N+G-1`) are the simulation's node numbers through `drawing.slotOf`/`drawing.keys`, in index order, as §12.5 requires — pinned by "the page draws okf-sim's layout…". `select(key, origin)` with `origin` `"user"` | `"url"` is the only selection entry; `writeUrl` acts on `"user"` only. `OkfShapes` calls match §12.2's signatures (`kindOf(index, position)`, `icon(kind, context)`, `node(kind, cx, cy, size, options)`, `SIZES.graph[kind]`, `typeLabel`, `trustKind`, `KINDS`, `OTHER_SLOT`); `OkfSite` calls match P1's API (`readIndex`, `rootOf`, `resolve`, `isStale`, `element`). The C# calls match §12.3's signatures as spec r7 fixes them: `RenderDocumentStart(site, HtmlWriter.ViewKind.Graph, "Global graph", string.Empty, null)`, `ScriptTag(string.Empty, name)` appended as a whole line (no extra newline), and the `Write` local `graphPage` (from P1.1's `GraphPagePathOf(site)`) in P3's one `WriteFile` line (R1, R3).
+**Type consistency.** `OkfSim.create(graph, options)` → `{ step, positions, stats, cancel }` is used with exactly those names by `okf-graph.js` (`create`, `step`, `positions`, `cancel`) and by the cases (`stats`). Node keys (concepts `0..N-1`, ghosts `N..N+G-1`) are the simulation's node numbers through `drawing.slotOf`/`drawing.keys`, in index order, as §12.5 requires — pinned by "the page draws okf-sim's layout…". `select(key, origin)` with `origin` `"user"` | `"url"` is the only selection entry; `writeUrl` acts on `"user"` only. `OkfShapes` calls match §12.2's signatures (`kindOf(index, position)`, `icon(kind, context)`, `node(kind, cx, cy, size, options)`, `SIZES.graph[kind]`, `typeLabel`, `trustKind`, `KINDS`, `OTHER_SLOT`); `OkfSite` calls match P1's API (`readIndex`, `rootOf`, `resolve`, `isStale`, `element`). The C# calls match §12.3's signatures as spec r8 records the merge: `RenderDocumentStart(site, graphPage, ViewKind.Graph, "Global graph", string.Empty, null)` (P1.1's private overload, from `RenderGraph(site, graphPage)`), `ScriptTag(string.Empty, name)` appended as a whole line (no extra newline), and the `Write` local `graphPage` (from P1.1's `GraphPagePathOf(site)`) in P3's one `WriteFile` line (R1, R3).
