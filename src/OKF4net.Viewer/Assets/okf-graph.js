@@ -211,6 +211,19 @@
     updateMode();
   });
 
+  // The list is built only while it is shown, and only when the shown set has
+  // changed since it was last built: its entries and relations depend on
+  // nothing else (about ten elements per node, so ~16k at NODE_LIMIT).
+  var listStale = true;
+
+  function sameKeys(a, b) {
+    if (a === null || a.length !== b.length) { return false; }
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) { return false; }
+    }
+    return true;
+  }
+
   // The drawing, or the equivalent list (§6): the list stands in for the
   // drawing when the reader asks for it, and always above NODE_LIMIT (A6).
   function updateMode() {
@@ -219,6 +232,10 @@
     canvas.hidden = showList;
     listButton.setAttribute("aria-pressed", showList ? "true" : "false");
     listButton.disabled = view.over;
+    if (showList && listStale) {
+      renderList();
+      listStale = false;
+    }
   }
 
   var listButtons = new Map();
@@ -361,9 +378,10 @@
 
   function refresh() {
     run(hooks.beforeRefresh);
+    var previousKeys = view ? view.keys : null;
     view = compute();
+    if (!sameKeys(previousKeys, view.keys)) { listStale = true; }
     renderStatus();
-    renderList();
     run(hooks.refresh);
     updateMode();
   }
@@ -375,7 +393,186 @@
     "Drag to pan " + MIDDOT + " scroll to zoom",
   ].forEach(function (text) { legendBox.appendChild(el("span", "okf-graph-legend-item", text)); });
 
+  // === facets ===
+  var facetInputs = { types: [], trust: [], stale: null, labels: null, dim: null };
+  var tagButtons = new Map();
+  var staleCount = null;
+
+  function facetSection(title, id) {
+    var section = el("section", "okf-facet");
+    var heading = el("h2", "okf-section-title", title);
+    heading.id = "okf-facet-" + id;
+    section.setAttribute("role", "group");
+    section.setAttribute("aria-labelledby", heading.id);
+    section.appendChild(heading);
+    return section;
+  }
+
+  function checkboxRow(checked, mark, name, count, onChange) {
+    var row = el("label", "okf-facet-row");
+    var input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = checked;
+    input.addEventListener("change", function () { onChange(input.checked); });
+    row.appendChild(input);
+    if (mark) { row.appendChild(mark); }
+    row.appendChild(el("span", "okf-facet-name", name));
+    var countSpan = null;
+    if (count !== null) {
+      // The space keeps the accessible name "Note 9", not "Note9".
+      row.appendChild(document.createTextNode(" "));
+      countSpan = el("span", "okf-facet-count", String(count));
+      row.appendChild(countSpan);
+    }
+    return { row: row, input: input, count: countSpan };
+  }
+
+  function emptyMark() {
+    // P1.1's shared empty glyph slot (10 x 10, spec §12.6), not a class of P3's.
+    var span = el("span", "okf-glyph-blank");
+    span.setAttribute("aria-hidden", "true");
+    return span;
+  }
+
+  function staleNowCount() {
+    var n = 0;
+    for (var i = 0; i < N; i++) {
+      if (site.isStale(index.concepts[i].staleAfterMs, nowMs)) { n++; }
+    }
+    return n;
+  }
+
+  function buildFacets() {
+    var details = el("details", "okf-facets-details");
+    details.appendChild(el("summary", "okf-facets-summary", "Filters"));
+    var body = el("div", "okf-facets-body");
+    details.appendChild(body);
+
+    // G3: one row per entry of `types`, index order; the page's type legend.
+    var typeSection = facetSection("Type", "type");
+    var typeList = el("div", "okf-facet-list");
+    index.types.forEach(function (type, t) {
+      var slot = isIndex(type.slot, shapes.KINDS.length) ? type.slot : shapes.OTHER_SLOT;
+      var r = checkboxRow(true, shapes.icon(shapes.KINDS[slot], "icon"), shapes.typeLabel(type.name), type.count,
+        function (on) { state.types[t] = on; refresh(); });
+      facetInputs.types.push(r.input);
+      typeList.appendChild(r.row);
+    });
+    typeSection.appendChild(typeList);
+    body.appendChild(typeSection);
+
+    // G4: the three tiers, bundle totals.
+    var trustSection = facetSection("Trust", "trust");
+    var trustList = el("div", "okf-facet-list");
+    var trustCounts = [0, 0, 0];
+    index.concepts.forEach(function (concept) { trustCounts[trustSlot(concept.trust)]++; });
+    TRUST.forEach(function (tier, t) {
+      var kind = shapes.trustKind(tier);
+      var r = checkboxRow(true, kind ? shapes.icon(kind, "flag") : emptyMark(), tier, trustCounts[t],
+        function (on) { state.trust[t] = on; refresh(); });
+      facetInputs.trust.push(r.input);
+      trustList.appendChild(r.row);
+    });
+    trustSection.appendChild(trustList);
+    body.appendChild(trustSection);
+
+    // G5: stale as of now, re-evaluated with nowMs (§4.4).
+    var freshSection = facetSection("Freshness", "freshness");
+    var fresh = checkboxRow(false, shapes.icon("stale", "flag"), "Stale only (as of now)", staleNowCount(),
+      function (on) { state.staleOnly = on; refresh(); });
+    facetInputs.stale = fresh.input;
+    staleCount = fresh.count;
+    freshSection.appendChild(fresh.row);
+    body.appendChild(freshSection);
+
+    // G6: tags by count (descending), then ordinal; the first 12, then all.
+    var tagCounts = new Map();
+    index.concepts.forEach(function (concept) {
+      new Set(concept.tags).forEach(function (tag) { tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1); });
+    });
+    var tags = Array.from(tagCounts.keys()).sort(function (a, b) {
+      var d = tagCounts.get(b) - tagCounts.get(a);
+      return d !== 0 ? d : (a < b ? -1 : a > b ? 1 : 0);
+    });
+    if (tags.length > 0) {
+      var tagSection = facetSection("Tags", "tags");
+      var tagRow = el("div", "okf-facet-tags");
+      tags.forEach(function (tag, k) {
+        // Name and count in their own spans (the name may wrap, the count
+        // stays); textContent is still "<tag> <count>".
+        var button = el("button", "okf-chip");
+        button.appendChild(el("span", "okf-facet-tag-name", tag));
+        button.appendChild(document.createTextNode(" "));
+        button.appendChild(el("span", "okf-facet-tag-count", String(tagCounts.get(tag))));
+        button.type = "button";
+        button.setAttribute("aria-pressed", "false");
+        button.hidden = k >= 12;
+        button.addEventListener("click", function () {
+          if (state.tags.has(tag)) { state.tags.delete(tag); } else { state.tags.add(tag); }
+          button.setAttribute("aria-pressed", state.tags.has(tag) ? "true" : "false");
+          refresh();
+        });
+        tagButtons.set(tag, button);
+        tagRow.appendChild(button);
+      });
+      tagSection.appendChild(tagRow);
+      if (tags.length > 12) {
+        var more = el("button", "okf-facet-more", "Show all tags (" + tags.length + ")");
+        more.type = "button";
+        more.addEventListener("click", function () {
+          tagButtons.forEach(function (button) { button.hidden = false; });
+          more.remove();
+          tagButtons.get(tags[12]).focus();
+        });
+        tagSection.appendChild(more);
+      }
+      body.appendChild(tagSection);
+    }
+
+    // G7.
+    var displaySection = facetSection("Display", "display");
+    displaySection.classList.add("okf-facet-display");
+    var labels = checkboxRow(true, null, "Node labels", null, function (on) { state.labels = on; refresh(); });
+    var dim = checkboxRow(false, null, "Dim unmatched instead of hiding", null, function (on) { state.dim = on; refresh(); });
+    facetInputs.labels = labels.input;
+    facetInputs.dim = dim.input;
+    displaySection.appendChild(labels.row);
+    displaySection.appendChild(dim.row);
+    body.appendChild(displaySection);
+
+    facetsBox.appendChild(details);
+
+    // G19: below 1100 px the facets fold into "Filters"; above, always open.
+    var wide = typeof window.matchMedia === "function" ? window.matchMedia("(min-width: 1100px)") : null;
+    details.open = wide ? wide.matches : true;
+    if (wide) {
+      var onWide = function () { if (wide.matches) { details.open = true; } };
+      if (typeof wide.addEventListener === "function") { wide.addEventListener("change", onWide); } else { wide.addListener(onWide); }
+    }
+  }
+
+  // Back to the defaults of G3-G7. The caller refreshes.
+  function resetFacets() {
+    state = defaultState();
+    facetInputs.types.forEach(function (input) { input.checked = true; });
+    facetInputs.trust.forEach(function (input) { input.checked = true; });
+    if (facetInputs.stale) { facetInputs.stale.checked = false; }
+    if (facetInputs.labels) { facetInputs.labels.checked = true; }
+    if (facetInputs.dim) { facetInputs.dim.checked = false; }
+    tagButtons.forEach(function (button) { button.setAttribute("aria-pressed", "false"); });
+  }
+
+  // §4.4, A9: staleness is re-read when the page comes back to the front.
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState !== "visible") { return; }
+    nowMs = Date.now();
+    if (staleCount) { staleCount.textContent = String(staleNowCount()); }
+    refresh();
+    renderDrawer();
+  });
+
   // === start-up ===
+  buildFacets();
   refresh();
   renderDrawer();
   updateReadingView();

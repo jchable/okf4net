@@ -1056,6 +1056,12 @@ function expectedStatus(index, shownConcepts, matchedCount) {
   return `${text} ${MIDDOT} ${links} of ${M} ${M === 1 ? "link" : "links"}`;
 }
 
+// The list is built only while it is shown: a case that reads it opens it first.
+function showList(window, doc) {
+  const toggle = doc.querySelector("#okf-graph-zoom .okf-graph-list-toggle");
+  if (doc.getElementById("okf-graph-list").hidden) { click(window, toggle); }
+}
+
 function conceptPos(index, id) {
   const i = index.concepts.findIndex((c) => c.id === id);
   if (i === -1) { throw new Error(`the fixture lost concept ${id}`); }
@@ -1102,6 +1108,7 @@ function registerGraphPage(h) {
 
   h.checkAsync("graph page: selecting from the list fills the drawer and points Reading view at the page", async () => {
     const { window, doc } = await openGraph(h);
+    showList(window, doc);
     const index = window.OKF_INDEX;
     const detail = doc.getElementById("okf-graph-detail");
     h.assert(detail.textContent.includes("Select a concept to see its links."), "the empty drawer lacks its prompt");
@@ -1143,6 +1150,7 @@ function registerGraphPage(h) {
 
   h.checkAsync("graph page: a cited ghost is a row without a link; a selected ghost shows only 'absent' and its id", async () => {
     const { window, doc } = await openGraph(h);
+    showList(window, doc);
     const detail = doc.getElementById("okf-graph-detail");
     const pick = (name) => click(window, Array.from(doc.querySelectorAll("#okf-graph-list .okf-graph-list-select")).find((x) => x.textContent === name));
     pick("p3-graph/hostile");
@@ -1156,6 +1164,7 @@ function registerGraphPage(h) {
 
   h.checkAsync("graph page: hostile title, type and description stay text in the drawer", async () => {
     const { window, doc } = await openGraph(h);
+    showList(window, doc);
     click(window, Array.from(doc.querySelectorAll("#okf-graph-list .okf-graph-list-select")).find((x) => x.textContent === "p3-graph/hostile"));
     const detail = doc.getElementById("okf-graph-detail");
     for (const n of ["31", "32", "33"]) {
@@ -1167,6 +1176,7 @@ function registerGraphPage(h) {
 
   h.checkAsync("graph page: the drawer's trust and staleness chips wear P1.1's chip states (§12.6)", async () => {
     const { window, doc } = await openGraph(h);
+    showList(window, doc);
     const index = window.OKF_INDEX;
     const detail = doc.getElementById("okf-graph-detail");
     const pick = (i) => click(window, Array.from(doc.querySelectorAll("#okf-graph-list .okf-graph-list-select")).find((x) => x.textContent === index.concepts[i].id));
@@ -1196,10 +1206,255 @@ function registerGraphPage(h) {
   });
 }
 
+// Changes OKF_INDEX as the page assigns it, so a case can hand the page a
+// bundle shape the fixture does not have (a repeated tag, many tags).
+function patchIndex(patch) {
+  return (w) => {
+    let value;
+    Object.defineProperty(w, "OKF_INDEX", {
+      configurable: true,
+      get() { return value; },
+      set(v) { patch(v); value = v; },
+    });
+  };
+}
+
+function registerFacets(h) {
+  h.checkAsync("facets: type, trust, freshness, tags and display, with the bundle's fixed totals", async () => {
+    const DEADLINE = Date.UTC(2026, 9, 6); // edge.md: 2026-10-06T00:00:00.0001Z, rounded up to +1 ms
+    const { window, doc } = await openGraph(h, { now: () => DEADLINE + 1 });
+    const index = window.OKF_INDEX;
+    const types = facetInputs(doc, "type");
+    h.assert(types.length === index.types.length && types.every((i) => i.checked), "one checked box per entry of types");
+    const typeRows = types.map((i) => i.closest("label"));
+    index.types.forEach((t, k) => {
+      const name = typeRows[k].querySelector(".okf-facet-name").textContent;
+      const count = typeRows[k].querySelector(".okf-facet-count").textContent;
+      h.assert(name === (t.name === "" ? "(no type)" : t.name) && count === String(t.count), `type row ${k}: ${name} ${count}`);
+      h.assert(typeRows[k].querySelector("svg.okf-glyph"), `type row ${k} has no glyph (it is the type legend, G3)`);
+    });
+    const trust = facetInputs(doc, "trust");
+    const tiers = ["human-reviewed", "machine-confirmed", "unverified"];
+    trust.forEach((input, k) => {
+      const row = input.closest("label");
+      const want = index.concepts.filter((c) => c.trust === tiers[k]).length;
+      h.assert(row.querySelector(".okf-facet-name").textContent === tiers[k] && row.querySelector(".okf-facet-count").textContent === String(want), `trust row ${k}`);
+    });
+    const [stale] = facetInputs(doc, "freshness");
+    const staleWant = index.concepts.filter((c) => c.staleAfterMs !== null && DEADLINE + 1 >= c.staleAfterMs).length;
+    h.assert(!stale.checked && stale.closest("label").querySelector(".okf-facet-count").textContent === String(staleWant), "freshness row");
+    const chips = Array.from(doc.querySelectorAll("#okf-facets button.okf-chip"));
+    const counts = new Map();
+    for (const c of index.concepts) { for (const t of new Set(c.tags)) { counts.set(t, (counts.get(t) || 0) + 1); } }
+    const order = Array.from(counts.keys()).sort((a, b) => counts.get(b) - counts.get(a) || (a < b ? -1 : a > b ? 1 : 0));
+    h.assert(JSON.stringify(chips.map((b) => b.textContent)) === JSON.stringify(order.map((t) => `${t} ${counts.get(t)}`)), `tag chips: ${chips.map((b) => b.textContent).join(" | ")}`);
+    h.assert(chips.every((b) => b.getAttribute("aria-pressed") === "false"), "a tag starts pressed");
+    for (const name of ["__proto__", "constructor"]) {
+      h.assert(chips.some((b) => b.textContent === `${name} 1`), `the tag ${name} is missing or merged with an inherited property`);
+    }
+    const display = facetInputs(doc, "display");
+    h.assert(display.length === 2 && display[0].checked && !display[1].checked, "Display: labels on, dim off");
+  });
+
+  h.checkAsync("facets: AND between facets, OR inside one; a ghost stays while one shown concept cites it", async () => {
+    const { window, doc } = await openGraph(h);
+    showList(window, doc);
+    const index = window.OKF_INDEX;
+    const status = () => doc.getElementById("okf-graph-status").textContent;
+    const chip = (tag) => Array.from(doc.querySelectorAll("#okf-facets button.okf-chip")).find((b) => b.textContent.startsWith(`${tag} `));
+    click(window, chip("graph-core"));
+    click(window, chip("constructor"));
+    let shown = index.concepts.map((c, i) => (c.tags.includes("graph-core") || c.tags.includes("constructor") ? i : -1)).filter((i) => i >= 0);
+    h.assert(status() === expectedStatus(index, shown, shown.length), `two tags (OR): ${status()}`);
+    // AND with the type facet: drop the type of p3-graph/c.
+    const cType = index.concepts[conceptPos(index, "p3-graph/c")].typeIndex;
+    setChecked(window, facetInputs(doc, "type")[cType], false);
+    shown = shown.filter((i) => index.concepts[i].typeIndex !== cType);
+    h.assert(status() === expectedStatus(index, shown, shown.length), `tags AND type: ${status()}`);
+    // The hostile concept is the only source of p3-graph/absent-target.
+    const hostile = conceptPos(index, "p3-graph/hostile");
+    setChecked(window, facetInputs(doc, "type")[index.concepts[hostile].typeIndex], false);
+    shown = shown.filter((i) => i !== hostile);
+    h.assert(status() === expectedStatus(index, shown, shown.length), `ghost without a shown source: ${status()}`);
+    const ghostRow = Array.from(doc.querySelectorAll("#okf-graph-list .okf-graph-list-select")).find((b) => b.textContent === "absent: p3-graph/absent-target");
+    h.assert(!ghostRow, "a ghost no shown concept cites is still listed");
+    // The list restricts its relations to shown nodes (X4/R23): hostile is hidden, so b is no longer "referenced by" it.
+    const bItem = Array.from(doc.querySelectorAll("#okf-graph-list .okf-graph-list-item")).find((li) => li.querySelector(".okf-graph-list-select").textContent === "p3-graph/b");
+    h.assert(bItem, "p3-graph/b left the list although its type is shown");
+    const bRelations = Array.from(bItem.querySelectorAll(".okf-graph-list-rel li"), (li) => li.textContent);
+    h.assert(!bRelations.includes("referenced by p3-graph/hostile"), `a hidden concept still appears in a relation: ${bRelations.join(" | ")}`);
+    h.assert(!Array.from(doc.querySelectorAll("#okf-graph-list .okf-graph-list-select")).some((b) => b.textContent === "p3-graph/hostile"), "a concept of an unchecked type is listed");
+  });
+
+  h.checkAsync("facets: the trust facet filters, and dimming keeps every concept shown while the status counts only the matches", async () => {
+    const { window, doc } = await openGraph(h);
+    showList(window, doc);
+    const index = window.OKF_INDEX;
+    const status = () => doc.getElementById("okf-graph-status").textContent;
+    const tiers = ["human-reviewed", "machine-confirmed", "unverified"];
+    const trustBoxes = facetInputs(doc, "trust");
+    setChecked(window, trustBoxes[2], false);
+    const all = index.concepts.map((c, i) => i);
+    const kept = all.filter((i) => index.concepts[i].trust !== tiers[2]);
+    h.assert(kept.length > 0 && kept.length < all.length, "the fixture must hold both unverified and verified concepts");
+    h.assert(status() === expectedStatus(index, kept, kept.length), `trust off: ${status()}`);
+    const listed = () => Array.from(doc.querySelectorAll("#okf-graph-list .okf-graph-list-select"), (b) => b.textContent);
+    h.assert(listed().length < index.concepts.length + index.ghosts.length, "an unchecked tier still lists everything");
+    const dim = facetInputs(doc, "display")[1];
+    setChecked(window, dim, true);
+    h.assert(status() === expectedStatus(index, all, kept.length), `dimming: ${status()}`);
+    h.assert(all.every((i) => listed().includes(index.concepts[i].id)), "dimming dropped a concept from the list");
+    setChecked(window, dim, false);
+    h.assert(status() === expectedStatus(index, kept, kept.length), `dimming off again: ${status()}`);
+  });
+
+  h.checkAsync("facets: a hostile type name and tag stay text, before and after filtering by them", async () => {
+    const { window, doc } = await openGraph(h);
+    showList(window, doc);
+    const facets = doc.getElementById("okf-facets");
+    h.assert(facets.textContent.includes('<img src=x onerror="window.__pwned=31">Kind'), "the hostile type name is not shown as text");
+    const tag = Array.from(facets.querySelectorAll("button.okf-chip")).find((b) => b.textContent.startsWith("<img"));
+    h.assert(tag && tag.textContent.includes("window.__pwned=34"), "the hostile tag is not a chip");
+    click(window, tag);
+    h.assert(tag.getAttribute("aria-pressed") === "true", "the hostile tag did not press");
+    const listed = Array.from(doc.querySelectorAll("#okf-graph-list .okf-graph-list-select"), (b) => b.textContent);
+    h.assert(listed.includes("p3-graph/hostile"), "filtering by the hostile tag lost its concept");
+    h.assert(doc.getElementById("okf-graph-layout").querySelectorAll("img, [onerror]").length === 0, "an element or handler from bundle text reached the page");
+    h.assert(window.__pwned === undefined, "bundle text executed");
+  });
+
+  h.checkAsync("facets: freshness is re-read on visibilitychange (A9)", async () => {
+    const DEADLINE = Date.UTC(2026, 9, 6) + 1;
+    let now = DEADLINE - 1;
+    const { window, doc } = await openGraph(h, { now: () => now });
+    showList(window, doc);
+    const [stale] = facetInputs(doc, "freshness");
+    const count = () => Number(stale.closest("label").querySelector(".okf-facet-count").textContent);
+    const before = count();
+    setChecked(window, stale, true);
+    const listed = () => Array.from(doc.querySelectorAll("#okf-graph-list .okf-graph-list-select"), (b) => b.textContent);
+    h.assert(!listed().includes("edge"), "edge is stale before its deadline");
+    now = DEADLINE;
+    doc.dispatchEvent(new window.Event("visibilitychange"));
+    h.assert(count() === before + 1, `stale count ${count()} after the deadline, ${before} before`);
+    h.assert(listed().includes("edge"), "edge did not become stale at its deadline");
+  });
+  h.checkAsync("facets: a tag a concept lists twice counts that concept once (G6)", async () => {
+    const { window, doc } = await openGraph(h, {
+      beforeParse: patchIndex((idx) => { idx.concepts.find((c) => c.tags.includes("graph-core")).tags.push("graph-core"); }),
+    });
+    const index = window.OKF_INDEX;
+    h.assert(index.concepts.some((c) => c.tags.filter((t) => t === "graph-core").length === 2), "the patch did not repeat the tag");
+    const want = index.concepts.filter((c) => c.tags.includes("graph-core")).length;
+    const chip = Array.from(doc.querySelectorAll("#okf-facets button.okf-chip")).find((b) => b.textContent.startsWith("graph-core "));
+    h.assert(chip && chip.textContent === `graph-core ${want}`, `chip: ${chip && chip.textContent}, expected graph-core ${want}`);
+    h.assert(chip.querySelector(".okf-facet-tag-name").textContent === "graph-core" && chip.querySelector(".okf-facet-tag-count").textContent === String(want), "the chip does not keep its name and its count in their own spans");
+  });
+
+  h.checkAsync("facets: only the first 12 tags show, then 'Show all tags (n)' reveals the rest and keeps the focus (G6)", async () => {
+    const plain = await openGraph(h);
+    h.assert(plain.doc.querySelectorAll("#okf-facets button.okf-chip").length <= 12 && !plain.doc.querySelector("#okf-facets .okf-facet-more"),
+      "a bundle with at most 12 tags offers 'Show all tags'");
+    const sections = Array.from(plain.doc.querySelectorAll("#okf-facets .okf-facet"));
+    h.assert(sections.length >= 4 && sections.every((x) => x.getAttribute("role") === "group" && plain.doc.getElementById(x.getAttribute("aria-labelledby")) && x.contains(plain.doc.getElementById(x.getAttribute("aria-labelledby")))), "a facet section is not a labelled group");
+    const row0 = plain.doc.querySelector("#okf-facets .okf-facet-row");
+    const t0 = plain.window.OKF_INDEX.types[0];
+    h.assert(row0.textContent === `${t0.name} ${t0.count}`, `the first type row reads "${row0.textContent}" (its accessible name needs a space before the count)`);
+    const { window, doc } = await openGraph(h, {
+      beforeParse: patchIndex((idx) => { for (let k = 0; k < 9; k++) { idx.concepts[0].tags.push(`zz-extra-${k}`); } }),
+    });
+    const chips = Array.from(doc.querySelectorAll("#okf-facets button.okf-chip"));
+    h.assert(chips.length > 12, "the patch did not give the bundle more than 12 tags");
+    h.assert(chips.filter((b) => !b.hidden).length === 12 && chips.slice(0, 12).every((b) => !b.hidden), "not exactly the first 12 chips are visible");
+    const more = doc.querySelector("#okf-facets .okf-facet-more");
+    h.assert(more && more.textContent === `Show all tags (${chips.length})`, `more button: ${more && more.textContent}`);
+    click(window, more);
+    h.assert(chips.every((b) => !b.hidden), "a chip is still hidden after 'Show all tags'");
+    h.assert(!doc.querySelector("#okf-facets .okf-facet-more"), "'Show all tags' is still there");
+    h.assert(doc.activeElement === chips[12], "the focus did not move to the first revealed tag");
+  });
+
+  h.checkAsync("facets: staleness is not re-read while the page is hidden (A9)", async () => {
+    const DEADLINE = Date.UTC(2026, 9, 6) + 1;
+    let now = DEADLINE - 1;
+    let visibility = "visible";
+    const { window, doc } = await openGraph(h, {
+      now: () => now,
+      beforeParse(w) { Object.defineProperty(w.document, "visibilityState", { configurable: true, get: () => visibility }); },
+    });
+    const [stale] = facetInputs(doc, "freshness");
+    const count = () => Number(stale.closest("label").querySelector(".okf-facet-count").textContent);
+    const before = count();
+    now = DEADLINE;
+    visibility = "hidden";
+    doc.dispatchEvent(new window.Event("visibilitychange"));
+    h.assert(count() === before, `a hidden page re-read the clock: ${count()}, was ${before}`);
+    visibility = "visible";
+    doc.dispatchEvent(new window.Event("visibilitychange"));
+    h.assert(count() === before + 1, `coming back to the front: ${count()}, expected ${before + 1}`);
+  });
+
+  h.checkAsync("facets: below 1100px the facets fold into 'Filters' and open again when the viewport widens (G19)", async () => {
+    // One stub per media query: the theme script asks for others too.
+    const queries = new Map();
+    const stub = (matches) => (w) => {
+      w.matchMedia = (text) => {
+        if (!queries.has(text)) {
+          const q = { matches: text === WIDE ? matches : false, listeners: [] };
+          q.addEventListener = (type, fn) => { if (type === "change") { q.listeners.push(fn); } };
+          q.removeEventListener = () => {};
+          q.addListener = (fn) => { q.listeners.push(fn); };
+          queries.set(text, q);
+        }
+        return queries.get(text);
+      };
+    };
+    const WIDE = "(min-width: 1100px)";
+    const { doc } = await openGraph(h, { beforeParse: stub(false) });
+    const details = doc.querySelector("#okf-facets details");
+    h.assert(details && details.querySelector("summary").textContent === "Filters", "no 'Filters' disclosure");
+    h.assert(!details.open, "the facets start open on a narrow viewport");
+    const query = queries.get(WIDE);
+    h.assert(query && query.listeners.length > 0, "the page does not follow the media query");
+    query.matches = true;
+    query.listeners.forEach((fn) => fn());
+    h.assert(details.open, "the facets did not open when the viewport widened");
+    queries.clear();
+    const wide = await openGraph(h, { beforeParse: stub(true) });
+    h.assert(wide.doc.querySelector("#okf-facets details").open, "the facets start closed on a wide viewport");
+  });
+
+  h.checkAsync("facets: the list is built only when shown, and only when the shown set changed", async () => {
+    const { window, doc } = await openGraph(h);
+    const index = window.OKF_INDEX;
+    const list = doc.getElementById("okf-graph-list");
+    const items = () => list.querySelectorAll(".okf-graph-list-item");
+    h.assert(items().length === 0, "the list is built while hidden");
+    const cType = index.concepts[conceptPos(index, "p3-graph/c")].typeIndex;
+    setChecked(window, facetInputs(doc, "type")[cType], false);
+    h.assert(items().length === 0, "a filter change built the hidden list");
+    showList(window, doc);
+    const names = () => Array.from(list.querySelectorAll(".okf-graph-list-select"), (b) => b.textContent);
+    const wantAfter = (type) => index.concepts.filter((c) => c.typeIndex !== type).map((c) => c.id);
+    h.assert(wantAfter(cType).every((id) => names().includes(id)) && !index.concepts.some((c) => c.typeIndex === cType && names().includes(c.id)),
+      "the list built on show ignores the filters set while it was hidden");
+    const first = items()[0];
+    setChecked(window, facetInputs(doc, "display")[0], false);
+    h.assert(items()[0] === first, "Node labels rebuilt a list whose entries did not change");
+    setChecked(window, facetInputs(doc, "type")[cType], true);
+    h.assert(items()[0] !== first && names().length > index.concepts.filter((c) => c.typeIndex !== cType).length, "a changed shown set did not rebuild the visible list");
+    click(window, doc.querySelector("#okf-graph-zoom .okf-graph-list-toggle"));
+    setChecked(window, facetInputs(doc, "type")[cType], false);
+    showList(window, doc);
+    h.assert(!index.concepts.some((c) => c.typeIndex === cType && names().includes(c.id)), "re-opening the list showed a stale one");
+  });
+}
+
 function register(h) {
   registerSim(h);
   registerPurity(h);
   registerGraphPage(h);
+  registerFacets(h);
 }
 
 module.exports = { register };
