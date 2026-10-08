@@ -211,6 +211,19 @@
     updateMode();
   });
 
+  // The list is built only while it is shown, and only when the shown set has
+  // changed since it was last built: its entries and relations depend on
+  // nothing else (about ten elements per node, so ~16k at NODE_LIMIT).
+  var listStale = true;
+
+  function sameKeys(a, b) {
+    if (a === null || a.length !== b.length) { return false; }
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) { return false; }
+    }
+    return true;
+  }
+
   // The drawing, or the equivalent list (§6): the list stands in for the
   // drawing when the reader asks for it, and always above NODE_LIMIT (A6).
   function updateMode() {
@@ -219,6 +232,10 @@
     canvas.hidden = showList;
     listButton.setAttribute("aria-pressed", showList ? "true" : "false");
     listButton.disabled = view.over;
+    if (showList && listStale) {
+      renderList();
+      listStale = false;
+    }
   }
 
   var listButtons = new Map();
@@ -361,9 +378,10 @@
 
   function refresh() {
     run(hooks.beforeRefresh);
+    var previousKeys = view ? view.keys : null;
     view = compute();
+    if (!sameKeys(previousKeys, view.keys)) { listStale = true; }
     renderStatus();
-    renderList();
     run(hooks.refresh);
     updateMode();
   }
@@ -384,6 +402,7 @@
     var section = el("section", "okf-facet");
     var heading = el("h2", "okf-section-title", title);
     heading.id = "okf-facet-" + id;
+    section.setAttribute("role", "group");
     section.setAttribute("aria-labelledby", heading.id);
     section.appendChild(heading);
     return section;
@@ -400,6 +419,8 @@
     row.appendChild(el("span", "okf-facet-name", name));
     var countSpan = null;
     if (count !== null) {
+      // The space keeps the accessible name "Note 9", not "Note9".
+      row.appendChild(document.createTextNode(" "));
       countSpan = el("span", "okf-facet-count", String(count));
       row.appendChild(countSpan);
     }
@@ -477,7 +498,12 @@
       var tagSection = facetSection("Tags", "tags");
       var tagRow = el("div", "okf-facet-tags");
       tags.forEach(function (tag, k) {
-        var button = el("button", "okf-chip", tag + " " + tagCounts.get(tag));
+        // Name and count in their own spans (the name may wrap, the count
+        // stays); textContent is still "<tag> <count>".
+        var button = el("button", "okf-chip");
+        button.appendChild(el("span", "okf-facet-tag-name", tag));
+        button.appendChild(document.createTextNode(" "));
+        button.appendChild(el("span", "okf-facet-tag-count", String(tagCounts.get(tag))));
         button.type = "button";
         button.setAttribute("aria-pressed", "false");
         button.hidden = k >= 12;
