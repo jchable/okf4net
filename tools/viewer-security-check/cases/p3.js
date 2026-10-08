@@ -1959,12 +1959,283 @@ function registerDrawing(h) {
   });
 }
 
+function selectedName(doc) {
+  const g = doc.querySelector("#okf-graph-canvas g.okf-node.okf-selected");
+  return g ? g.querySelector("title").textContent : null;
+}
+
+function nextHashChange(window) {
+  return new Promise((resolve) => window.addEventListener("hashchange", resolve, { once: true }));
+}
+
+function registerFragment(h) {
+  h.checkAsync("fragment: a concept's id selects it and centres it in the fitted view (control 13)", async () => {
+    const { window, doc, scheduler } = await openGraph(h, { hash: "#p3-graph/b" });
+    scheduler.flush();
+    const index = window.OKF_INDEX;
+    h.assert(selectedName(doc) === "p3-graph/b", `selected: ${selectedName(doc)}`);
+    h.assert(doc.querySelector("#okf-graph-detail .okf-graph-detail-id").textContent === "p3-graph/b", "the drawer is not filled");
+    h.assert(doc.getElementById("okf-reading-view").getAttribute("href") === index.concepts[conceptPos(index, "p3-graph/b")].path, "Reading view");
+    // jsdom has no layout: the canvas is taken as 800 x 600.
+    const t = viewportTransform(doc);
+    const p = labelPoint(nodeNamed(doc, "p3-graph/b"));
+    const size = 30; // a square in the graph context (§12.2): label baseline at cy + 15 + 16
+    const cx = t.a + p.x * t.s;
+    const cy = t.b + (p.y - size / 2 - 16) * t.s;
+    h.assert(Math.abs(cx - 400) < 1 && Math.abs(cy - 300) < 1, `the selection is drawn at (${cx}, ${cy}), not centred`);
+  });
+
+  h.checkAsync("fragment: hostile, unknown, ghost or malformed fragments select nothing and link nowhere", async () => {
+    for (const hash of ["#%3Cimg%20src%3Dx%20onerror%3D%22window.__pwned%3D9%22%3E", "#no-such-concept", "#nowhere",
+      "#p3-graph/absent-target", "#%E0%A4%A", "#", "#hasOwnProperty"]) {
+      const { window, doc, scheduler } = await openGraph(h, { hash });
+      scheduler.flush();
+      h.assert(selectedName(doc) === null, `${hash} selected ${selectedName(doc)}`);
+      h.assert(doc.getElementById("okf-graph-detail").textContent.includes("Select a concept to see its links."), `${hash}: the drawer is not empty`);
+      h.assert(doc.getElementById("okf-reading-view").getAttribute("href") === "index.html", `${hash}: Reading view moved`);
+      h.assert(window.__pwned === undefined, `${hash} executed`);
+    }
+  });
+
+  h.checkAsync("fragment: ids named like Object.prototype members are ordinary concepts (control 7)", async () => {
+    for (const id of ["__proto__", "constructor", "toString"]) {
+      const { doc, scheduler } = await openGraph(h, { hash: `#${id}` });
+      scheduler.flush();
+      h.assert(selectedName(doc) === id, `#${id} selected ${selectedName(doc)}`);
+      h.assert(drawnNodes(doc).filter((n) => n.name === id).length === 1, `${id} is not exactly one node`);
+    }
+  });
+
+  h.checkAsync("fragment: a hashchange to a concept hidden by the facets resets them, then selects", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    scheduler.flush();
+    const index = window.OKF_INDEX;
+    const cType = index.concepts[conceptPos(index, "p3-graph/c")].typeIndex;
+    const status = doc.getElementById("okf-graph-status");
+    const initialStatus = status.textContent;
+    setChecked(window, facetInputs(doc, "type")[cType], false);
+    click(window, Array.from(doc.querySelectorAll("#okf-facets button.okf-chip")).find((b) => b.textContent.startsWith("graph-core ")));
+    scheduler.flush();
+    h.assert(nodeNamed(doc, "p3-graph/c") === null, "the facets did not hide p3-graph/c");
+    // Every other facet away from its default as well: trust, freshness, display.
+    setChecked(window, facetInputs(doc, "trust")[0], false);
+    setChecked(window, facetInputs(doc, "freshness")[0], true);
+    setChecked(window, facetInputs(doc, "display")[0], false);
+    setChecked(window, facetInputs(doc, "display")[1], true);
+    scheduler.flush();
+    const changed = nextHashChange(window);
+    window.location.hash = "#p3-graph/c";
+    await changed;
+    scheduler.flush();
+    h.assert(facetInputs(doc, "type").every((i) => i.checked), "the type facet was not reset");
+    h.assert(Array.from(doc.querySelectorAll("#okf-facets button.okf-chip")).every((b) => b.getAttribute("aria-pressed") === "false"), "the tags were not reset");
+    h.assert(selectedName(doc) === "p3-graph/c", `selected after the hashchange: ${selectedName(doc)}`);
+    h.assert(facetInputs(doc, "trust").every((i) => i.checked), "the trust facet was not reset");
+    h.assert(!facetInputs(doc, "freshness")[0].checked, "'Stale only' was not reset");
+    h.assert(facetInputs(doc, "display")[0].checked && !facetInputs(doc, "display")[1].checked, "the display facets were not reset");
+    h.assert(!doc.querySelector("#okf-graph-canvas svg").classList.contains("okf-graph-nolabels"), "the labels stayed hidden");
+    h.assert(status.textContent === initialStatus, `the status line after the reset: ${status.textContent} (was ${initialStatus})`);
+    h.assert(drawnNodes(doc).every((n) => !n.g.classList.contains("okf-graph-dim")), "a node stayed dimmed");
+  });
+
+  h.checkAsync("fragment: above NODE_LIMIT it fills the drawer and marks the list entry, drawing nothing", async () => {
+    const { doc } = await openGraph(h, { hash: "#p3-graph/d", override: { "assets/okf-sim.js": lowLimitSim(3) } });
+    h.assert(doc.querySelector("#okf-graph-canvas svg") === null, "something was drawn");
+    h.assert(doc.querySelector("#okf-graph-detail .okf-graph-detail-id").textContent === "p3-graph/d", "the drawer is not filled");
+    const current = doc.querySelector('#okf-graph-list .okf-graph-list-select[aria-current="true"]');
+    h.assert(current && current.textContent === "p3-graph/d", "the list does not mark the entry");
+  });
+
+  h.checkAsync("history: a selection rewrites the URL by replaceState, never adding an entry; a ghost clears it", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    scheduler.flush();
+    const length = window.history.length;
+    click(window, nodeNamed(doc, "p3-graph/a"));
+    h.assert(window.location.hash === "#p3-graph/a", `hash after a click: ${window.location.hash}`);
+    click(window, nodeNamed(doc, "p3-graph/e"));
+    h.assert(window.location.hash === "#p3-graph/e", `hash after a second click: ${window.location.hash}`);
+    click(window, nodeNamed(doc, "absent: p3-graph/absent-target"));
+    h.assert(window.location.hash === "" && !window.location.href.includes("#"), `a ghost left the fragment: ${window.location.href}`);
+    h.assert(doc.getElementById("okf-reading-view").getAttribute("href") === "index.html", "Reading view after selecting a ghost");
+    h.assert(window.history.length === length, `history.length went from ${length} to ${window.history.length}`);
+  });
+
+  h.checkAsync("history: when replaceState throws, location.replace keeps history.length and its hashchange is ignored", async () => {
+    const { window, doc, scheduler } = await openGraph(h, {
+      beforeParse(w) {
+        w.History.prototype.replaceState = function () { throw new w.DOMException("file:// origin", "SecurityError"); };
+      },
+    });
+    scheduler.flush();
+    const length = window.history.length;
+    // A facet the ignored hashchange must not reset.
+    setChecked(window, facetInputs(doc, "display")[0], false);
+    const changed = nextHashChange(window);
+    click(window, nodeNamed(doc, "p3-graph/a"));
+    await changed;
+    h.assert(window.location.hash === "#p3-graph/a", `hash: ${window.location.hash}`);
+    h.assert(window.history.length === length, `history.length went from ${length} to ${window.history.length}`);
+    h.assert(!facetInputs(doc, "display")[0].checked, "the page's own hashchange was followed (the facets were reset)");
+    h.assert(selectedName(doc) === "p3-graph/a", "the selection changed");
+    const cleared = nextHashChange(window);
+    click(window, nodeNamed(doc, "absent: nowhere"));
+    await cleared;
+    h.assert(window.location.hash === "" && window.history.length === length, `deselecting: ${window.location.href}, length ${window.history.length}`);
+  });
+
+  h.checkAsync("fragment: a selection made while the list is hidden is marked when the list is built, and after a facet reset", async () => {
+    const { window, doc, scheduler } = await openGraph(h, { hash: "#p3-graph/b" });
+    scheduler.flush();
+    h.assert(doc.getElementById("okf-graph-list").hidden, "the list was built for nothing");
+    showList(window, doc);
+    const marked = () => Array.from(doc.querySelectorAll('#okf-graph-list .okf-graph-list-select[aria-current="true"]')).map((b) => b.textContent);
+    h.assert(marked().length === 1 && marked()[0] === "p3-graph/b", `list marks: ${marked()}`);
+    // The list is built and shown; a facet hides c, then a fragment brings it back.
+    const index = window.OKF_INDEX;
+    setChecked(window, facetInputs(doc, "type")[index.concepts[conceptPos(index, "p3-graph/c")].typeIndex], false);
+    scheduler.flush();
+    const changed = nextHashChange(window);
+    window.location.hash = "#p3-graph/c";
+    await changed;
+    scheduler.flush();
+    h.assert(marked().length === 1 && marked()[0] === "p3-graph/c", `list marks after the reset: ${marked()}`);
+    // The list stale and hidden (canvas mode), a fragment selects: the rebuild marks it.
+    const toggle = doc.querySelector("#okf-graph-zoom .okf-graph-list-toggle");
+    click(window, toggle);
+    setChecked(window, facetInputs(doc, "display")[1], true);
+    const again = nextHashChange(window);
+    window.location.hash = "#p3-graph/d";
+    await again;
+    scheduler.flush();
+    showList(window, doc);
+    h.assert(marked().length === 1 && marked()[0] === "p3-graph/d", `list marks after a hidden rebuild: ${marked()}`);
+  });
+
+  h.checkAsync("history: ids named like Object.prototype members round-trip through the URL and a hashchange", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    scheduler.flush();
+    for (const id of ["__proto__", "constructor", "toString"]) {
+      click(window, nodeNamed(doc, id));
+      h.assert(window.location.hash === `#${id}`, `hash after clicking ${id}: ${window.location.hash}`);
+      h.assert(selectedName(doc) === id, `selected: ${selectedName(doc)}`);
+    }
+    click(window, nodeNamed(doc, "p3-graph/a"));
+    const changed = nextHashChange(window);
+    window.location.hash = "#__proto__";
+    await changed;
+    h.assert(selectedName(doc) === "__proto__", `selected after a hashchange to #__proto__: ${selectedName(doc)}`);
+    h.assert(doc.querySelector("#okf-graph-detail .okf-graph-detail-id").textContent === "__proto__", "the drawer is not filled");
+  });
+
+  h.checkAsync("fragment: a hashchange to a hostile fragment deselects, link-free and without throwing", async () => {
+    const { window, doc, scheduler } = await openGraph(h, { hash: "#p3-graph/b" });
+    scheduler.flush();
+    h.assert(selectedName(doc) === "p3-graph/b", "setup: not selected");
+    const hostile = ["#%3Cimg%20src%3Dx%20onerror%3Dwindow.__pwned%3D9%3E", "#%E0%A4%A", "#p3-graph/a&id=p3-graph/b", `#${"a".repeat(200000)}`, "#%00", "#p3-graph/b%20", "#P3-GRAPH/B"];
+    for (const hash of hostile) {
+      click(window, nodeNamed(doc, "p3-graph/b"));
+      h.assert(selectedName(doc) === "p3-graph/b", "setup: not reselected");
+      const changed = nextHashChange(window);
+      window.location.hash = hash;
+      await changed;
+      scheduler.flush();
+      h.assert(selectedName(doc) === null, `${hash.slice(0, 40)} selected ${selectedName(doc)}`);
+      h.assert(doc.getElementById("okf-reading-view").getAttribute("href") === "index.html", "Reading view moved");
+      h.assert(window.__pwned === undefined, "a fragment executed");
+      h.assert(doc.querySelectorAll("#okf-graph-detail img, #okf-graph-detail script").length === 0, "the drawer carries markup");
+    }
+  });
+
+  h.checkAsync("fragment: centring belongs to the fragment that asked for it; a rebuild after a click fits the view", async () => {
+    // Opened on #b, then a click selects a: a later rebuild must not recentre b.
+    const hiding = async (opts) => {
+      const opened = await openGraph(h, opts);
+      opened.scheduler.flush();
+      return opened;
+    };
+    const { window, doc, scheduler } = await hiding({ hash: "#p3-graph/b" });
+    const index = window.OKF_INDEX;
+    const cType = index.concepts[conceptPos(index, "p3-graph/c")].typeIndex;
+    click(window, nodeNamed(doc, "p3-graph/a"));
+    setChecked(window, facetInputs(doc, "type")[cType], false);
+    scheduler.flush();
+    h.assert(window.location.hash === "#p3-graph/a" && selectedName(doc) === "p3-graph/a", "setup: a is not selected");
+    h.assert(nodeNamed(doc, "p3-graph/c") === null, "setup: the facet did not hide p3-graph/c");
+    // The reference: the same facets on a page opened without a fragment (Fit).
+    const fresh = await hiding({});
+    setChecked(fresh.window, facetInputs(fresh.doc, "type")[cType], false);
+    fresh.scheduler.flush();
+    const got = viewportTransform(doc);
+    const want = viewportTransform(fresh.doc);
+    h.assert(Math.abs(got.a - want.a) < 0.01 && Math.abs(got.b - want.b) < 0.01 && Math.abs(got.s - want.s) < 0.001,
+      `the rebuilt view is ${JSON.stringify(got)}, Fit is ${JSON.stringify(want)}`);
+  });
+
+  h.checkAsync("history: with replaceState throwing, two selections in one task leave the page's own hashchanges ignored", async () => {
+    const { window, doc, scheduler } = await openGraph(h, {
+      beforeParse(w) {
+        w.History.prototype.replaceState = function () { throw new w.DOMException("file:// origin", "SecurityError"); };
+      },
+    });
+    scheduler.flush();
+    setChecked(window, facetInputs(doc, "display")[0], false);
+    const before = viewportTransform(doc);
+    let events = 0;
+    window.addEventListener("hashchange", () => { events++; });
+    click(window, nodeNamed(doc, "p3-graph/a"));
+    click(window, nodeNamed(doc, "p3-graph/e"));
+    // Both navigations fire their own hashchange; wait for them.
+    for (let k = 0; k < 50 && events < 2; k++) { await new Promise((resolve) => window.setTimeout(resolve, 0)); }
+    scheduler.flush();
+    h.assert(events === 2, `${events} hashchange events fired, expected 2`);
+    h.assert(window.location.hash === "#p3-graph/e" && selectedName(doc) === "p3-graph/e", `hash ${window.location.hash}, selected ${selectedName(doc)}`);
+    h.assert(!facetInputs(doc, "display")[0].checked, "a hashchange of the page's own reset the facets");
+    const after = viewportTransform(doc);
+    h.assert(after.a === before.a && after.b === before.b && after.s === before.s, `the view moved: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+  });
+
+  h.checkAsync("history: a fragment-driven selection never rewrites the URL, and an unchanged one does not either", async () => {
+    let calls = 0;
+    const count = {
+      beforeParse(w) {
+        const real = w.History.prototype.replaceState;
+        w.History.prototype.replaceState = function (...args) { calls++; return real.apply(this, args); };
+      },
+    };
+    // A fragment that selects nothing stays in the URL: only the reader's selections write it.
+    let opened = await openGraph(h, Object.assign({ hash: "#nowhere" }, count));
+    opened.scheduler.flush();
+    h.assert(opened.window.location.hash === "#nowhere", `a followed fragment was rewritten: ${opened.window.location.hash}`);
+    h.assert(calls === 0, `replaceState was called ${calls} time(s) while following a fragment`);
+    // A selection that leaves the URL as it is writes nothing.
+    calls = 0;
+    opened = await openGraph(h, Object.assign({ hash: "#p3-graph/b" }, count));
+    opened.scheduler.flush();
+    click(opened.window, nodeNamed(opened.doc, "p3-graph/b"));
+    h.assert(calls === 0, `replaceState was called ${calls} time(s) for a selection the URL already states`);
+    click(opened.window, nodeNamed(opened.doc, "p3-graph/a"));
+    h.assert(calls === 1, `a new selection called replaceState ${calls} time(s)`);
+  });
+
+  h.checkAsync("fragment: the Global graph link of a concept page leads to that concept, selected", async () => {
+    const page = await h.openPage("p3-graph/a.html");
+    const href = page.document.getElementById("okf-global-graph").getAttribute("href");
+    const hash = href.slice(href.indexOf("#"));
+    h.assert(href.indexOf("#") > 0 && hash === "#p3-graph/a", `Global graph link: ${href}`);
+    const { doc, scheduler } = await openGraph(h, { hash });
+    scheduler.flush();
+    h.assert(selectedName(doc) === "p3-graph/a", "the graph page did not select the linking concept");
+  });
+}
+
+
 function register(h) {
   registerSim(h);
   registerPurity(h);
   registerGraphPage(h);
   registerFacets(h);
   registerDrawing(h);
+  registerFragment(h);
 }
 
 module.exports = { register };

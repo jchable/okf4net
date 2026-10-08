@@ -372,6 +372,9 @@
   // origin: "user" (click, keys, list) or "url" (a fragment).
   function select(key, origin) {
     selected = key;
+    // Centring belongs to the fragment that asked for it; after a click, a
+    // rebuild fits the view instead of recentring the node the page opened on.
+    if (origin === "user") { intent = -1; }
     renderDrawer();
     markListSelection();
     updateReadingView();
@@ -882,9 +885,62 @@
   // its size was unknown, so fit again unless the reader moved the view.
   hooks.show.push(applyIntent);
 
+  // === fragment and history ===
+
+  function decodeFragment(hash) {
+    var h = String(hash || "");
+    if (h.charAt(0) === "#") { h = h.slice(1); }
+    try { return decodeURIComponent(h); } catch (e) { return h; }
+  }
+
+  // §12.5: replaceState, or location.replace when replaceState throws (a
+  // file:// document's null origin); never a new history entry. A ghost or
+  // no selection leaves no fragment.
+  function writeUrl(origin) {
+    if (origin !== "user") { return; }
+    var id = selected >= 0 && selected < N ? index.concepts[selected].id : "";
+    if (decodeFragment(window.location.hash) === id) { return; }
+    try {
+      window.history.replaceState(null, "", id === "" ? window.location.pathname + window.location.search : "#" + id);
+    } catch (err) {
+      window.location.replace(id === "" ? "#" : "#" + id);
+    }
+  }
+  hooks.select.push(writeUrl);
+
+  // A concept's id (exact, concepts only): facets back to their defaults,
+  // node selected and centred. Anything else: no selection, Fit.
+  function followFragment(hash) {
+    var id = decodeFragment(hash);
+    var key = id === "" ? undefined : byId.get(id);
+    userMovedView = false;
+    if (key === undefined) {
+      intent = -1;
+      select(-1, "url");
+      applyIntent();
+      return;
+    }
+    resetFacets();
+    intent = key;
+    refresh();
+    select(key, "url");
+    applyIntent();
+  }
+
+  // The page's own location.replace fires one hashchange per call, so two
+  // selections in one task fire two. A fragment that names what is already
+  // selected is that echo (the URL always states the selection), never a
+  // reader's move: no flag to run out of, however many fire.
+  window.addEventListener("hashchange", function () {
+    var id = decodeFragment(window.location.hash);
+    if (id === (selected >= 0 && selected < N ? index.concepts[selected].id : "")) { return; }
+    followFragment(window.location.hash);
+  });
+
   // === start-up ===
   buildFacets();
   refresh();
   renderDrawer();
   updateReadingView();
+  followFragment(window.location.hash);
 })();
