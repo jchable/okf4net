@@ -61,6 +61,10 @@ and this project adheres to
 
 ### Changed
 
+- **The `okf-render` release archives carry its licences:** `NOTICE`, `LICENSE`,
+  `LICENSE.GPL-3.0` and the embedded fonts' SIL OFL texts (`licenses/OFL-*.txt`)
+  beside the binary, which stays at the archive root; the `okf` archives are
+  unchanged, and CI checks each archive's exact file list.
 - **`okf --help` now lists the bare `help` and `version` commands (#11).** Both
   already worked as aliases of `-h`/`--help` and `-V`/`--version`, but nothing
   said so; a test now pins that each answers exactly like its flag form.

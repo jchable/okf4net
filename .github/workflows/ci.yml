@@ -141,11 +141,36 @@ jobs:
         shell: pwsh
         run: packaging/Publish-Cli.ps1 -Rid ${{ matrix.rid }} -Version $env:DECLARED -OutDir dist -ProjectDir src/OKF4net.Render -BinName okf-render
 
-      - name: Archives exist, are non-empty, and (on Unix) their binaries are executable
+      - name: Archives exist, hold exactly their declared files, and (on Unix) their binaries are executable
         shell: pwsh
         run: |
           $isWin = '${{ matrix.rid }}'.StartsWith('win-')
           $ext = if ($isWin) { 'zip' } else { 'tar.gz' }
+          $exe = if ($isWin) { '.exe' } else { '' }
+
+          # Each archive's files, exactly (packaging/New-ReleaseArchive.ps1):
+          # the binary AT THE ROOT -- install.sh extracts "$BIN" from there and
+          # winget's RelativeFilePath points there -- and, for okf-render, the
+          # licences that must travel with it: NOTICE, the LGPL and GPL texts,
+          # and the SIL OFL text of each font family OKF4net.Viewer embeds.
+          $expected = @{
+            'okf'        = @("okf$exe")
+            'okf-render' = @("okf-render$exe", 'NOTICE', 'LICENSE', 'LICENSE.GPL-3.0',
+                             'licenses/OFL-Inter.txt', 'licenses/OFL-InterTight.txt', 'licenses/OFL-SpaceMono.txt')
+          }
+
+          function Get-ArchiveEntries([string]$archive) {
+            if ($isWin) {
+              Add-Type -AssemblyName System.IO.Compression.FileSystem
+              $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $archive).Path)
+              try { $names = @($zip.Entries | ForEach-Object { $_.FullName }) } finally { $zip.Dispose() }
+            } else {
+              $names = @(tar tzf $archive)
+              if ($LASTEXITCODE -ne 0) { throw "tar list failed for $archive" }
+            }
+            # Directory entries hold no file; a zip may spell its separator "\".
+            @($names | ForEach-Object { $_ -replace '\\', '/' } | Where-Object { -not $_.EndsWith('/') })
+          }
 
           function Test-Archive([string]$bin) {
             $archive = "dist/$bin-$env:DECLARED-${{ matrix.rid }}.$ext"
@@ -154,6 +179,15 @@ jobs:
             if ($len -eq 0) { throw "archive is empty: $archive" }
             if (-not (Test-Path "$archive.sha256")) { throw "sha256 sidecar not found: $archive.sha256" }
             Write-Host "OK: $archive ($len bytes)"
+
+            $entries = Get-ArchiveEntries $archive
+            $diff = Compare-Object -CaseSensitive -ReferenceObject $expected[$bin] -DifferenceObject $entries
+            if ($diff) {
+              $missing = @($diff | Where-Object SideIndicator -eq '<=' | ForEach-Object InputObject)
+              $extra = @($diff | Where-Object SideIndicator -eq '=>' | ForEach-Object InputObject)
+              throw "$archive does not hold exactly its declared files -- missing: [$($missing -join ', ')]; unexpected: [$($extra -join ', ')]"
+            }
+            Write-Host "OK: $archive holds $($entries -join ', ')"
 
             if (-not $isWin) {
               # The bug this whole packaging change exists to prevent:
