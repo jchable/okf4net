@@ -247,13 +247,15 @@ jobs:
           node tools/viewer-security-check/check-index.js $indexScript
           if ($LASTEXITCODE -ne 0) { throw "$indexScript does not execute as a usable site index" }
           # Embedded assets come out of the NATIVE binary too (GetManifestResourceNames
-          # under AOT): the P1.1 scripts, the font licences, and the fonts either as
-          # woff2 files or inlined in okf-fonts.css (spec section 11.0, A26).
-          foreach ($asset in @("okf-shapes.js", "okf-page.js", "fonts/OFL-Inter.txt", "fonts/OFL-InterTight.txt", "fonts/OFL-SpaceMono.txt")) {
+          # under AOT): the P1.1 scripts, the font licences, and each of the four
+          # woff2 fonts by name (spec section 11.0, A26).
+          $assets = @("okf-shapes.js", "okf-page.js",
+                      "fonts/OFL-Inter.txt", "fonts/OFL-InterTight.txt", "fonts/OFL-SpaceMono.txt",
+                      "fonts/inter-latin.woff2", "fonts/inter-tight-latin.woff2",
+                      "fonts/space-mono-400-latin.woff2", "fonts/space-mono-700-latin.woff2")
+          foreach ($asset in $assets) {
             if (-not (Test-Path "$outDir/assets/$asset")) { throw "okf-render did not write assets/$asset" }
           }
-          $woff2 = @(Get-ChildItem -Path "$outDir/assets/fonts" -Filter *.woff2 -ErrorAction SilentlyContinue)
-          if ($woff2.Count -eq 0 -and -not (Test-Path "$outDir/assets/okf-fonts.css")) { throw "okf-render wrote neither the woff2 fonts nor okf-fonts.css" }
           Write-Host "OK: okf-render wrote $outDir/index.html, an executable $indexScript, the P1.1 scripts and the fonts"
 
       # `okf --version` / `okf-render --version` each read
