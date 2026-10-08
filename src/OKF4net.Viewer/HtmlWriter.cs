@@ -63,6 +63,7 @@ public static class HtmlWriter
         WriteFile(outDir, root, verifiedDirs, "index.html", RenderIndex(site, graphPage), written);
 
         // P3: graph page (§12.5)
+        WriteFile(outDir, root, verifiedDirs, graphPage, RenderGraph(site, graphPage), written);
 
         foreach (var page in site.Pages)
         {
@@ -842,6 +843,51 @@ public static class HtmlWriter
         => $"{{\"body\":{HtmlSafeJson.Quote(body)},\"links\":{linksJson}}}";
 
     // P3: RenderGraph (§12.5)
+
+    /// <summary>The scripts at the end of the graph page's body, in this order (spec §12.5, §12.6).</summary>
+    private static readonly string[] GraphScripts =
+        ["okf-index.js", "okf-site.js", "okf-shapes.js", "okf-palette.js", "okf-sim.js", "okf-graph.js"];
+
+    /// <summary>
+    /// The fixed skeleton <c>okf-graph.js</c> fills (spec §12.5). Written with
+    /// explicit <c>\n</c> line endings, not a raw string literal, so the page
+    /// is the same bytes on a CRLF checkout.
+    /// </summary>
+    private const string GraphSkeleton =
+        "\n<div class=\"okf-graph-layout\" id=\"okf-graph-layout\">\n"
+        + "<aside class=\"okf-facets\" id=\"okf-facets\" aria-label=\"Facets\"></aside>\n"
+        + "<main id=\"okf-main\" class=\"okf-graph-main\" aria-label=\"Global graph\">\n"
+        + "<p class=\"okf-graph-status\" id=\"okf-graph-status\" role=\"status\"></p>\n"
+        + "<div class=\"okf-graph-zoom\" id=\"okf-graph-zoom\"></div>\n"
+        + "<div class=\"okf-graph-canvas\" id=\"okf-graph-canvas\"></div>\n"
+        + "<section class=\"okf-graph-list\" id=\"okf-graph-list\" aria-label=\"Concepts and links\" hidden></section>\n"
+        + "<p class=\"okf-graph-legend\" id=\"okf-graph-legend\"></p>\n"
+        + "</main>\n"
+        + "<aside class=\"okf-graph-detail\" id=\"okf-graph-detail\" aria-label=\"Selected concept\"></aside>\n"
+        + "</div>\n"
+        + "<noscript><p>The graph needs JavaScript. <a href=\"index.html\">Bundle index</a></p></noscript>\n";
+
+    /// <summary>
+    /// The global graph page (spec §12.5): the shared document start and header
+    /// in their <c>graph</c> view, the fixed skeleton <c>okf-graph.js</c> fills,
+    /// and its six scripts. The only method that writes this page or loads
+    /// <c>okf-sim.js</c> and <c>okf-graph.js</c> (§12.0). The page sits at the
+    /// site root, so its root prefix is empty. It renders no markdown: no
+    /// payload, no <c>marked</c>, no <c>viewer.js</c>. <paramref name="graphPage"/>
+    /// is the name <see cref="Write"/> computed once for the whole site.
+    /// </summary>
+    private static string RenderGraph(ViewerSite site, string graphPage)
+    {
+        var page = new StringBuilder(RenderDocumentStart(site, graphPage, ViewKind.Graph, "Global graph", string.Empty, null));
+        page.Append(GraphSkeleton);
+        // ScriptTag returns a whole line, its "\n" included (spec §12.3).
+        foreach (var script in GraphScripts)
+        {
+            page.Append(ScriptTag(string.Empty, script));
+        }
+
+        return page.Append("</body>\n</html>\n").ToString();
+    }
 
     /// <summary>
     /// Escapes text interpolated into the generated markup, attribute values
