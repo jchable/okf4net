@@ -158,8 +158,8 @@ requests leaving the site — checked in real browsers on the two sites of
 Playwright is **not** a dependency of this repository: `recette/lib.js`
 resolves `OKF_PLAYWRIGHT`, else `require("playwright-core")`, and stops with
 a clear message when neither exists. `npm test` and CI never run the
-recette. Each slice has its own file: `p1.js` and `p1-1.js`; P2 and P3 add
-`p2.js` and `p3.js` (a missing file is reported as skipped). Each one exports `async function run(ctx)`, whose results are keyed by the ids of
+recette. Each slice has its own file: `p1.js`, `p1-1.js`, `p2.js` and `p3.js` (a
+missing file is reported as skipped). Each one exports `async function run(ctx)`, whose results are keyed by the ids of
 spec §11 (`H1`…`L6`), by the ported P1 checks `RC1`…`RC11`, or by a named
 control (`fonts`, `tokens`, `requests`). A result is `pass: true`, `false`,
 or `null` for "not applicable here" (with a `note`: a check that needs a
@@ -174,3 +174,21 @@ number. Results and captures (1 440 × 900,
 named by id) go to `--out`, by default a folder of the system's temporary
 directory; a slice's report goes into the pull request, never into the
 repository.
+
+The `p3` slice reads two more sites from the environment, because neither
+official site can cover what they hold: `OKF_RECETTE_GHOST=<dir>`, a render of
+`fixtures/hostile-bundle` (broken links, so ghost nodes; concepts named
+`__proto__`, `constructor` and `toString`), and `OKF_RECETTE_BIG=<dir>`, a
+render of a bundle of more than 1 500 concepts (the node limit), two types or
+more and more than 12 tags. Without them the checks that need them report
+`n/a`. The second is a throwaway bundle: 1 600 files `c0000.md` to
+`c1599.md`, alternating `type: note` and `type: task`, each with a title, a
+description, one tag out of twenty (`t0` to `t19`; add one tag longer than the
+facet panel to a few, to see it wrap) and a body link to the next file (the
+last to the first); give a few of the ids more than 24 characters, to see a
+label cut. Render both and run the slice:
+
+    dotnet run --project src/OKF4net.Render -c Release -- <big-bundle> --out <tmp>/big-site
+    dotnet run --project src/OKF4net.Render -c Release -- tools/viewer-security-check/fixtures/hostile-bundle --out <tmp>/ghost-site
+    export OKF_RECETTE_GHOST=<tmp>/ghost-site OKF_RECETTE_BIG=<tmp>/big-site OKF_PLAYWRIGHT=<path>
+    node tools/viewer-security-check/recette/recette.js --site <okf4net-site> --acme <acme-site> --slices p3
