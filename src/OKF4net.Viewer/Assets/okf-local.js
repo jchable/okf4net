@@ -417,15 +417,22 @@
   details.id = "okf-local-list";
   var summary = el("summary", "");
   var rows = el("ul", "");
+  // The shared list reset (list-style: none) makes Safari/VoiceOver drop the
+  // implicit list role; the explicit one keeps "list, N items" announced.
+  rows.setAttribute("role", "list");
   details.appendChild(summary);
   details.appendChild(rows);
   section.appendChild(details);
 
   // The relation a row names, from this concept's point of view (X8's
   // words); a second-hop row names the first direct neighbour, in index
-  // order, it is reached through.
+  // order, it is reached through. A damaged `via` (no readable id) names no
+  // one rather than leaving a dangling "via".
   function relationText(entry) {
-    if (entry.dist === 2) { return "2 hops via " + idOf(entry.via); }
+    if (entry.dist === 2) {
+      var through = idOf(entry.via);
+      return through === "" ? "2 hops" : "2 hops via " + through;
+    }
     if (entry.rel === 3) { return "links to" + DOT + "referenced by"; }
     return entry.rel === 1 ? "links to" : "referenced by";
   }
@@ -435,6 +442,10 @@
     return concept !== null && typeof concept === "object" && typeof concept.type === "string" ? concept.type : "";
   }
 
+  // One row of the list. Its link goes through the resolver, like the
+  // drawing's click, but does not dispatch okf:navigate: like the explorer
+  // and Referenced by, a plain link is left to the browser; only the palette
+  // and the drawing (which has no href to follow) dispatch the event.
   function row(entry) {
     var item = el("li", "");
     var line;

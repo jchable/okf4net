@@ -898,10 +898,125 @@ function registerList(h) {
   });
 }
 
+// The list's wording, boundaries and links, pinned exactly (review of P2 Task 4).
+function registerListPins(h) {
+  const { checkAsync, assert, openPage } = h;
+  const dot = String.fromCharCode(0xb7);
+  const served = (index) => ({ override: { "assets/okf-index.js": `window.OKF_INDEX = ${JSON.stringify(index)};` } });
+  const pairs = (doc) => Array.from(doc.querySelectorAll("#okf-local-list li"),
+    (li) => [li.querySelector(".okf-local-id").textContent, li.querySelector(".okf-local-rel").textContent]);
+
+  // A hub with `n` direct neighbours (alternating directions) and nothing else.
+  async function hub(n) {
+    const ids = ["p2-local/hub"];
+    const links = [];
+    for (let k = 0; k < n; k++) {
+      ids.push(`p2-local/n${String(k).padStart(3, "0")}`);
+      links.push(k % 2 ? [k + 1, 0] : [0, k + 1]);
+    }
+    return openPage("p2-local/hub.html", served(siteIndex(ids, links)));
+  }
+
+  checkAsync("local graph: the cap boundary - 39 neighbours show no mention, 40 say +1 omitted, 41 say +2", async () => {
+    for (const [n, omitted] of [[38, 0], [39, 0], [40, 1], [41, 2]]) {
+      const window = await hub(n);
+      const section = window.document.getElementById("okf-local-graph");
+      const drawn = section.querySelectorAll("svg g.okf-node").length;
+      const more = section.querySelector("button.okf-local-omitted");
+      assert(drawn === Math.min(n + 1, 40), `${n} neighbours: ${drawn} nodes drawn`);
+      assert(omitted === 0 ? more === null : more !== null && more.textContent === `+${omitted} omitted`,
+        `${n} neighbours: ${more ? more.textContent : "no mention"}`);
+      assert(window.document.querySelectorAll("#okf-local-list li").length === n, `${n} neighbours: the list has every one`);
+      assert(window.document.querySelector("#okf-local-list summary").textContent === `List ${dot} ${n} neighbours`, `${n} neighbours: summary`);
+    }
+  });
+
+  checkAsync("local graph: each row names exactly its relation - 1 hop and 2 hops, the smallest direct neighbour wins, ghosts included", async () => {
+    // hub -> a, b -> hub, hub <-> d; e is reached from b AND a (edge of b
+    // first), f and g only through d; ghost zz-0 is linked by hub, zz-1 by a.
+    const ids = ["hub", "a", "b", "d", "e", "f", "g"].map((s) => `p2-local/${s}`);
+    const links = [[0, 1], [2, 0], [0, 3], [3, 0], [2, 4], [1, 4], [3, 5], [6, 3], [0, 0, "ghost"], [1, 1, "ghost"]];
+    const window = await openPage("p2-local/hub.html", served(siteIndex(ids, links, ["p2-local/zz-0", "p2-local/zz-1"])));
+    const doc = window.document;
+    const one = JSON.stringify(pairs(doc));
+    const wantOne = JSON.stringify([
+      ["p2-local/a", "links to"],
+      ["p2-local/b", "referenced by"],
+      ["p2-local/d", `links to ${dot} referenced by`],
+      ["absent: p2-local/zz-0", "links to"],
+    ]);
+    assert(one === wantOne, `1 hop: ${one}`);
+    doc.getElementById("okf-local-hops-2").click();
+    const two = JSON.stringify(pairs(doc));
+    const wantTwo = JSON.stringify([
+      ["p2-local/a", "links to"],
+      ["p2-local/b", "referenced by"],
+      ["p2-local/d", `links to ${dot} referenced by`],
+      ["absent: p2-local/zz-0", "links to"],
+      ["p2-local/e", "2 hops via p2-local/a"],
+      ["p2-local/f", "2 hops via p2-local/d"],
+      ["p2-local/g", "2 hops via p2-local/d"],
+      ["absent: p2-local/zz-1", "2 hops via p2-local/a"],
+    ]);
+    assert(two === wantTwo, `2 hops: ${two}`);
+    doc.getElementById("okf-local-hops-1").click();
+    assert(JSON.stringify(pairs(doc)) === wantOne, "going back to 1 hop did not restore the list");
+  });
+
+  checkAsync("local graph: a 2-hop row whose direct neighbour is unreadable says '2 hops' with no dangling via", async () => {
+    const index = siteIndex(["p2-local/hub", "p2-local/a", "p2-local/e"], [[0, 1], [1, 2]]);
+    index.concepts[1] = null;
+    const window = await openPage("p2-local/hub.html", Object.assign(served(index), { blocked: ["assets/okf-explorer.js", "assets/okf-palette.js"] }));
+    const doc = window.document;
+    doc.getElementById("okf-local-hops-2").click();
+    const rels = pairs(doc).map(([, rel]) => rel);
+    assert(JSON.stringify(rels) === JSON.stringify(["links to", "2 hops"]), `relations: ${JSON.stringify(rels)}`);
+  });
+
+  checkAsync("local graph: the list's links are the drawing's links, through the resolver, from a nested page and under a mount", async () => {
+    for (const mount of ["", "moved/dir/"]) {
+      const window = await openPage("p2-local/c.html", { mount });
+      const doc = window.document;
+      const base = window.location.href.slice(0, -"p2-local/c.html".length);
+      const hrefs = new Map(); // concept id -> where the drawing's click goes
+      let href = null;
+      doc.addEventListener("okf:navigate", (e) => { href = e.detail.href; e.preventDefault(); });
+      for (const g of doc.querySelectorAll("#okf-local-graph svg g.okf-local-node:not(.okf-selected)")) {
+        href = null;
+        click(window, g.lastElementChild);
+        hrefs.set(g.firstElementChild.textContent, href);
+      }
+      const links = Array.from(doc.querySelectorAll("#okf-local-list a.okf-row"));
+      assert(links.length === 3 && hrefs.size === 3, `${mount}: ${links.length} links, ${hrefs.size} drawn concepts`);
+      for (const a of links) {
+        const id = a.querySelector(".okf-local-id").textContent;
+        const path = window.OKF_INDEX.concepts[positionOf(window, id)].path;
+        assert(a.getAttribute("href") === hrefs.get(id) && a.getAttribute("href") === "../" + path,
+          `${mount}${id}: list href ${a.getAttribute("href")}, drawing href ${hrefs.get(id)}`);
+        assert(a.href === base + path, `${mount}${id}: resolves to ${a.href}, expected ${base + path}`);
+      }
+    }
+  });
+
+  checkAsync("local graph: the summary is singular for one neighbour, rows carry their type label or 'absent concept', the list keeps its role", async () => {
+    const index = siteIndex(["p2-local/hub", "p2-local/x", "p2-local/y"], [[0, 1], [0, 2], [0, 0, "ghost"]], ["p2-local/zz"]);
+    index.concepts[2].type = "";
+    const window = await openPage("p2-local/hub.html", served(index));
+    const doc = window.document;
+    const titles = Array.from(doc.querySelectorAll("#okf-local-list li"), (li) => li.querySelector("svg.okf-glyph > title").textContent);
+    assert(JSON.stringify(titles) === JSON.stringify(["Note", "(no type)", "absent concept"]), `glyph titles: ${JSON.stringify(titles)}`);
+    assert(doc.querySelector("#okf-local-list > ul").getAttribute("role") === "list", "the list lost its explicit role");
+    const one = await openPage("p2-local/hub.html", served(siteIndex(["p2-local/hub", "p2-local/x"], [[0, 1]])));
+    assert(one.document.querySelector("#okf-local-list summary").textContent === `List ${dot} 1 neighbour`,
+      `summary: ${one.document.querySelector("#okf-local-list summary").textContent}`);
+  });
+}
+
 function register(h) {
   registerPure(h);
   registerPage(h);
   registerList(h);
+  registerListPins(h);
 }
 
 module.exports = { register };
