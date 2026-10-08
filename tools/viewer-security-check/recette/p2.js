@@ -379,8 +379,9 @@ async function run(ctx) {
     await open(acme + ACME_PAGE);
     const href = await page.getAttribute("#okf-local-open", "href");
     const target = new URL(href, page.url());
+    // The graph page exists since P3: a missing target is a defect, not n/a.
     if (!fs.existsSync(fileURLToPath(target.href.split("#")[0]))) {
-      return { pass: null, note: "the graph page is not written yet (P3): not a P2 defect (spec §9)", href };
+      return { pass: false, note: "the graph page \"Open in graph\" points at does not exist", href };
     }
     await page.click("#okf-local-open");
     await page.waitForURL((url) => url.href.split("#")[0] === target.href.split("#")[0]);
