@@ -10,9 +10,9 @@ and this project adheres to
 
 ### Added
 
-- **Interactive `okf-render` pages.** Delivered in slices on one branch (P1
-  and P1.1 are in; P2 and P3 are planned and not delivered yet); the OKF4net
-  core API and `viewer.js` are unchanged throughout.
+- **Interactive `okf-render` pages.** Delivered in slices on one branch (P1,
+  P1.1, P2 and P3 are all in); the OKF4net core API and `viewer.js` are
+  unchanged throughout.
   - *P1 — navigation.* A tree explorer of the bundle (a concept that is also
     a folder opens and expands separately; trust tiers and staleness from
     `ConceptAudit`, staleness evaluated when the page is read), a "Jump to"
@@ -33,14 +33,27 @@ and this project adheres to
     glyphs and a count on "Referenced by", the palette redrawn; Inter, Inter
     Tight and Space Mono (SIL OFL 1.1) embedded; a tooled, manual browser
     recette under `tools/viewer-security-check/recette/`.
-  - *P2 — local graph (planned).* The context panel will show the concept's
-    neighbourhood (one or two hops, at most 40 nodes, links to absent concepts
-    as ghosts) with an equivalent list.
-  - *P3 — global graph (planned).* `graph.html` will draw the whole bundle
-    with a deterministic layout, facets (type, trust, staleness, tags), a
-    detail drawer and keyboard navigation, linked from every page's "Global
-    graph" (the link is already written; until `graph.html` exists it has no
-    page to open).
+  - *P2 — local graph.* A concept page that has neighbours gets a
+    "Neighbourhood" section in its context panel: the concept and its
+    neighbours at one hop, or two with the "2 hops" button, drawn in rings
+    (at most 40 nodes, "+N omitted" beyond; links to absent concepts as
+    ghosts that never navigate), an equivalent list of every neighbour with
+    its relation to the concept, and an "Open in graph" link. The drawing's
+    layout is a pure function of the site index (`OkfLocal`), tested directly.
+  - *P3 — global graph.* `graph.html` at the site root (`graph-1.html`… when
+    a concept already uses the name), written by `okf-render` and opened by
+    every page's "Global graph" link, draws the bundle's body links with a
+    force layout computed in the browser by `okf-sim.js`, which is
+    deterministic (same bundle, same initial layout on every conforming
+    engine) and whose work is counted, never timed, and spread over animation
+    frames. Facets by type, trust, freshness and tags (AND between facets,
+    OR within one), a "dim unmatched" option and a labels toggle; pan, wheel
+    and button zoom, "Fit", and draggable nodes; a detail drawer for the
+    selected concept; a "List" equivalent of the drawing, which replaces it
+    above 1,500 visible nodes; and a keyboard contract (one tab stop; Page
+    Up/Down, Home/End, arrows, Space, Enter). `graph.html#<concept id>` opens
+    the graph with that concept selected, and a concept page's link carries
+    its id.
 - **`samples/agents-quickstart`**, an `OKF4net.Agents` sample that runs with
   `dotnet run` and needs no LLM endpoint, API key or network access (#5). Over
   `bundles/ga4`, it lists the read-only tools, calls `Search` and
