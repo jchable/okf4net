@@ -759,6 +759,9 @@
   // later drawing that shows them reuses them: a filter change does not
   // rebuild what it keeps, and the layout moves nodes, never remakes them.
   var stage = null;
+  // The canvas as the last buildDrawing measured it, before it changed the
+  // drawing (the canvas's size does not depend on what it holds).
+  var builtSize = null;
   var nodeCache = [];
   var lineCache = [];
   var simulation = null;
@@ -1024,13 +1027,15 @@
     if (intent >= 0) { centerOn(intent, size); }
   }
 
-  // The whole drawing at once (a drag that stops the layout; the layout's
-  // own paints go through paintSlice). Geometry only: no class changes here,
-  // buildDrawing styles once and styleDrawing runs on every change of state.
-  // The canvas is measured first: measured after the nodes moved, it would
-  // make the browser lay the whole drawing out at once, inside this task.
-  function paint(positions) {
-    var size = canvasSize();
+  // The whole drawing at once, then fitted: a layout's start (every node it
+  // shows placed in the task that built it), its end under reduced motion,
+  // and a drag that stops it; the layout's other paints go through
+  // paintSlice. Geometry only: no class changes here, buildDrawing styles
+  // once and styleDrawing runs on every change of state. The canvas is
+  // measured first (or by the caller, `size`): measured after the nodes
+  // moved, it would make the browser lay the whole drawing out at once.
+  function paint(positions, size) {
+    if (!size) { size = canvasSize(); }
     drawing.nodes.forEach(function (node, slot) { moveNode(node, positions[2 * slot], positions[2 * slot + 1]); });
     placeEdges();
     applyIntent(size);
@@ -1044,11 +1049,13 @@
     }
   }
 
-  // A layout's paint moves at most PAINT_SLICE nodes a frame (and their
+  // A layout's repaint moves at most PAINT_SLICE nodes a frame (and their
   // links): the browser restyles, lays out and repaints only what moved, so
   // a frame of a large graph stays short. The view follows (Fit, a centred
   // fragment) once every node is placed: in the same frame when one slice
   // was enough, else in a frame of its own, since a new view repaints all.
+  // The start is never sliced: nodes new to the drawing have no position
+  // until they are painted, and would show piled up at (0, 0).
   var PAINT_SLICE = 500;
 
   // Draws `positions` from slot `from` on, one slice; returns where the
@@ -1062,10 +1069,11 @@
     return end;
   }
 
-  // The layout runs a slice of work a frame (okf-sim's budget). Every
-  // REDRAW_EVERY iterations it is drawn, slice by slice, from a copy of its
-  // positions while it goes on; its end is always drawn, and only then is it
-  // "done". Under reduced motion, only its start and its end are drawn.
+  // The layout runs a slice of work a frame (okf-sim's budget). Its start is
+  // drawn whole, at once. Every REDRAW_EVERY iterations it is drawn, slice by
+  // slice, from a copy of its positions while it goes on; its end is always
+  // drawn, and only then is it "done". Under reduced motion, only its start
+  // and its end are drawn, each whole, at once.
   // `size`: the canvas, measured before the drawing was changed.
   function startLayout(size) {
     stopLayout();
@@ -1095,7 +1103,8 @@
         applyIntent(size, !finished);
       }
     }
-    paintStep();
+    paint(shown, size);
+    next = count;
     function frame() {
       if (mine !== generation) { return; }
       // Measured before anything moves (see paint).
@@ -1110,6 +1119,10 @@
           shown = current.positions();
           next = 0;
           fitDue = false;
+          if (still) {
+            paint(shown, size);
+            next = count;
+          }
         }
       }
       paintStep();
@@ -1167,6 +1180,7 @@
   function buildDrawing() {
     stopLayout();
     var size = canvasSize();
+    builtSize = size;
     if (!stage) { makeStage(); }
     var keys = view.keys.slice();
     var slotOf = new Int32Array(total).fill(-1);
@@ -1252,14 +1266,15 @@
 
   // A concept's id (exact, concepts only): facets back to their defaults,
   // node selected and centred. Anything else: no selection, Fit.
-  function followFragment(hash) {
+  // `size`: the canvas as the start-up measured it (see the start-up block).
+  function followFragment(hash, size) {
     var id = decodeFragment(hash);
     var key = id === "" ? undefined : byId.get(id);
     userMovedView = false;
     if (key === undefined) {
       intent = -1;
       select(-1, "url");
-      applyIntent();
+      applyIntent(size);
       return;
     }
     resetFacets();
@@ -1270,7 +1285,7 @@
     // explicit navigation, it fits and centres whatever happened meanwhile.
     userMovedView = false;
     select(key, "url");
-    applyIntent();
+    applyIntent(size);
   }
 
   // The page's own location.replace fires one hashchange per call, so two
@@ -1646,21 +1661,16 @@
   function dropGesture(e) {
     if (gesture && e.pointerId === gesture.id) { gesture = null; }
   }
-  // A touch captures the element it lands on, and a browser may report that
-  // capture lost while the node under the finger moves (it used to be
-  // redrawn; since revision 12 it is translated), in the middle of a drag
-  // that goes on, and the pointerup or pointercancel still comes. So a node
-  // drag does not end there. A pan moves nothing under the pointer: a
-  // capture lost during one is not ours, and ends it.
-  function captureLost(e) {
-    if (gesture && !gesture.node) { dropGesture(e); }
-  }
   // A click after a release over another element lands on their common
   // ancestor, not on the node: it is the drag's too, once it came.
   window.addEventListener("click", function () { suppressedAt = null; });
   window.addEventListener("pointerup", endGesture);
   window.addEventListener("pointercancel", dropGesture);
-  window.addEventListener("lostpointercapture", captureLost);
+  // A capture lost during a gesture is not ours (the page takes none), and
+  // ends it, a node drag as a pan. A touch drag's own capture is reported
+  // lost only after its release (Chromium, since nodes are translated rather
+  // than redrawn: revision 12), when the gesture is already over.
+  window.addEventListener("lostpointercapture", dropGesture);
   window.addEventListener("blur", function () { gesture = null; });
 
   // 2.4.11: a focused node is not left outside the canvas, or under its
@@ -1696,8 +1706,9 @@
   renderDrawer();
   updateReadingView();
   // A fragment naming a concept selects and centres it. Any other leaves the
-  // page as refresh() drew it -- nothing selected, the layout's own fit --
-  // without measuring the canvas again (a layout of the whole new drawing).
+  // page as refresh() drew it -- nothing selected, the layout's own fit. In
+  // neither case is the canvas measured again: measured now, after the whole
+  // new drawing went in, it would make the browser lay it all out at once.
   var startId = decodeFragment(window.location.hash);
-  if (startId !== "" && byId.has(startId)) { followFragment(window.location.hash); }
+  if (startId !== "" && byId.has(startId)) { followFragment(window.location.hash, builtSize); }
 })();

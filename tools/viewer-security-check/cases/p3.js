@@ -3819,7 +3819,7 @@ function registerPointerFix(h) {
     }
   });
 
-  h.checkAsync("fix I2: a touch drag on a node goes on although the browser loses the capture of the shape the node redraws", async () => {
+  h.checkAsync("fix I2 (revised by final review C): a touch drag moves the node by the full delta; the capture a browser reports lost after the release changes nothing, one lost mid-gesture ends it", async () => {
     const { window, doc, scheduler } = await openGraph(h);
     scheduler.flush();
     const c = nodeNamed(doc, "p3-graph/c");
@@ -3827,19 +3827,25 @@ function registerPointerFix(h) {
     const p0 = labelPoint(c);
     const touch = { pointerType: "touch", pointerId: 7 };
     pointer(window, c, "pointerdown", 100, 100, touch);
-    for (let k = 1; k <= 5; k++) {
-      pointer(window, c, "pointermove", 100 + 8 * k, 100 + 6 * k, touch);
-      // The shape the touch captured was just replaced: the browser reports the capture lost, at the document.
-      doc.dispatchEvent(new window.PointerEvent("lostpointercapture", { bubbles: true, pointerId: 7, pointerType: "touch" }));
-    }
+    for (let k = 1; k <= 5; k++) { pointer(window, c, "pointermove", 100 + 8 * k, 100 + 6 * k, touch); }
     pointer(window, c, "pointerup", 140, 130, touch);
+    // Real Chromium (touch drag through CDP) reports the capture lost only now, after the release.
+    doc.dispatchEvent(new window.PointerEvent("lostpointercapture", { bubbles: true, pointerId: 7, pointerType: "touch" }));
     const p1 = labelPoint(c);
     // s is read to 3 decimals: 40 / s is right to within 40 * 0.0005 / s^2.
     const tol = 0.05 + 40 * 0.0005 / (s * s);
     h.assert(Math.abs(p1.x - p0.x - 40 / s) < tol && Math.abs(p1.y - p0.y - 30 / s) < tol, `the node moved by (${(p1.x - p0.x) * s}, ${(p1.y - p0.y) * s}) px, not (40, 30)`);
     click(window, c);
     h.assert(selectedName(doc) === null, "the dragged node was selected by the click that follows");
-    // A background pan is not redrawn under the pointer: a lost capture there is the browser's own, and ends it.
+    // A capture lost in the middle of a gesture is not ours: it ends it, a node drag as a pan.
+    const p2 = labelPoint(c);
+    pointer(window, c, "pointerdown", 100, 100, touch);
+    pointer(window, c, "pointermove", 120, 100, touch);
+    doc.dispatchEvent(new window.PointerEvent("lostpointercapture", { bubbles: true, pointerId: 7, pointerType: "touch" }));
+    const p3 = labelPoint(c);
+    pointer(window, c, "pointermove", 180, 100, touch);
+    h.assert(Math.abs(labelPoint(c).x - p3.x) < 1e-9 && Math.abs(p3.x - p2.x - 20 / s) < tol, "a node drag went on after a capture lost mid-gesture");
+    pointer(window, c, "pointerup", 180, 100, touch);
     const t = viewportTransform(doc);
     const svg = doc.querySelector("#okf-graph-canvas svg");
     pointer(window, svg, "pointerdown", 10, 10, touch);
@@ -4196,6 +4202,8 @@ function registerFixWave(h) {
       const want = validView(window.OKF_INDEX);
       const status = doc.getElementById("okf-graph-status").textContent;
       h.assert(status === want.status, `${name}: status "${status}", expected "${want.status}"`);
+      const counts = Array.from(doc.querySelectorAll("#okf-facets .okf-facet-count"), (c) => c.textContent);
+      h.assert(counts.every((c) => /^[0-9]+$/.test(c)), `${name}: a facet count is not a number: ${counts.join(", ")}`);
       const names = drawnNodes(doc).map((n) => n.name);
       h.assert(JSON.stringify(names) === JSON.stringify(want.names), `${name}: drawn ${names.join(" | ")}`);
       h.assert(doc.getElementById("okf-graph-canvas").getAttribute("data-okf-layout") === "done", `${name}: the layout did not end`);
@@ -4456,8 +4464,147 @@ function gridPoints(count, gap) {
   return Array.from({ length: count + 1 }, (_, i) => [((i % side) - side / 2) * gap, (Math.floor(i / side) - side / 2) * gap]);
 }
 
+// `count` concepts c0..c<count-1>, alternately of two types (Note, Metric),
+// chained c(i) -> c(i+1).
+function twoTypeIndexSource(count) {
+  const concepts = Array.from({ length: count }, (_, i) => ({ id: `c${i}`, title: `T c${i}`, type: i % 2 ? "Metric" : "Note", tags: [], path: `c${i}.html`,
+    trust: "unverified", staleAfterMs: null, staleAfterDate: null, typeIndex: i % 2, description: "" }));
+  const edges = [];
+  for (let i = 0; i + 1 < count; i++) { edges.push([i, i + 1, 1, 0]); }
+  const tree = concepts.map((c, i) => ({ name: c.id, concept: i, children: [] }));
+  return "window.OKF_INDEX = " + JSON.stringify({
+    version: 2, concepts, ghosts: [], edges, tree,
+    types: [{ name: "Note", count: Math.ceil(count / 2), slot: 0 }, { name: "Metric", count: Math.floor(count / 2), slot: 1 }],
+  }) + ";";
+}
+
+// Every drawn node has a translate, no two the same: none left piled at (0, 0).
+function assertAllPlaced(h, doc, when) {
+  const nodes = drawnNodes(doc);
+  const unplaced = nodes.filter((n) => !n.g.hasAttribute("transform")).length;
+  h.assert(nodes.length > 0 && unplaced === 0, `${when}: ${unplaced} of ${nodes.length} drawn nodes have no position`);
+  const at = new Set(nodes.map((n) => n.g.getAttribute("transform")));
+  h.assert(at.size === nodes.length, `${when}: ${nodes.length - at.size} nodes share a position`);
+}
+
+function nodePositions(doc) {
+  return drawnNodes(doc).map((n) => n.g.getAttribute("transform")).join("|");
+}
+
+function registerFixWaveC(h) {
+  h.checkAsync("drawing: once a large drawing is built every node has its start position and the view is fitted, in the same task (final review C, 1)", async () => {
+    const { doc } = await openGraph(h, { override: { "assets/okf-index.js": twoTypeIndexSource(1200) }, beforeParse: sizedCanvas(800, 600) });
+    const window = doc.defaultView;
+    h.assert(drawnNodes(doc).length === 1200, "setup: 1 200 nodes are not drawn");
+    assertAllPlaced(h, doc, "at load");
+    assertFitted(h, window, doc, 800, 600, "at load");
+  });
+
+  h.checkAsync("drawing: a facet change that brings more than 500 new nodes places them all and fits at once (final review C, 1)", async () => {
+    const { window, doc } = await openGraph(h, {
+      override: { "assets/okf-index.js": twoTypeIndexSource(1200), "assets/okf-sim.js": lowLimitSim(700) },
+      beforeParse: sizedCanvas(800, 600),
+    });
+    h.assert(doc.querySelector("#okf-graph-canvas svg") === null, "setup: 1 200 nodes were drawn above a limit of 700");
+    setChecked(window, facetInputs(doc, "type")[1], false);
+    h.assert(drawnNodes(doc).length === 600, `setup: ${drawnNodes(doc).length} nodes drawn after narrowing`);
+    assertAllPlaced(h, doc, "right after the facet change");
+    assertFitted(h, window, doc, 800, 600, "right after the facet change");
+  });
+
+  h.checkAsync("reduced motion: a large graph is drawn exactly twice -- its start and its end (final review C, 1)", async () => {
+    const count = 1200;
+    const { window, doc, scheduler } = await openGraph(h, {
+      override: { "assets/okf-index.js": twoTypeIndexSource(count), "assets/okf-sim.js": growingSim(gridPoints(count - 1, 40), 1.02, 30) },
+      beforeParse: (w) => { sizedCanvas(800, 600)(w); reducedMotion(true)(w); },
+    });
+    const canvas = doc.getElementById("okf-graph-canvas");
+    assertAllPlaced(h, doc, "at load");
+    let last = nodePositions(doc);
+    let drawings = 1;
+    for (let frames = 0; scheduler.pending() > 0; frames++) {
+      scheduler.frames(1);
+      const now = nodePositions(doc);
+      if (now !== last) { drawings++; last = now; }
+      h.assert(frames < 1000, "the layout never ended");
+    }
+    h.assert(canvas.getAttribute("data-okf-layout") === "done", "the layout did not end");
+    h.assert(drawings === 2, `the drawing changed ${drawings} times (start included), not 2`);
+    assertFitted(h, window, doc, 800, 600, "at the end");
+  });
+
+  h.checkAsync("drawing: while a large graph's layout shrinks, its view zooms in once the drawing is more than 1.5x too small for it (final review C, 2)", async () => {
+    const count = 1200;
+    const { window, doc, scheduler } = await openGraph(h, {
+      override: { "assets/okf-index.js": hubIndexSource(count), "assets/okf-sim.js": growingSim(gridPoints(count, 60), 0.98, 60) },
+      beforeParse: sizedCanvas(800, 600),
+    });
+    const canvas = doc.getElementById("okf-graph-canvas");
+    const viewport = () => doc.querySelector("#okf-graph-canvas g.okf-graph-viewport").getAttribute("transform");
+    let fits = 0;
+    let smallest = Infinity;
+    while (scheduler.pending() > 0) {
+      const before = viewport();
+      scheduler.frames(1);
+      if (canvas.getAttribute("data-okf-layout") !== "running") { break; }
+      if (viewport() !== before) {
+        fits++;
+        const b = fittedBox(window, doc);
+        // The drawing fills at least 1/1.5 of the canvas on one axis (6.9 vs 7 an advance: a little slack).
+        const fill = Math.max((b.maxX - b.minX) / (800 - 2 * FIT_SIDE), (b.maxY - b.minY) / (600 - 2 * FIT_TOP));
+        smallest = Math.min(smallest, fill);
+        h.assert(fill >= 1 / 1.5 - 0.03, `a running fit left the drawing filling ${fill.toFixed(3)} of the canvas`);
+      }
+      h.assert(fits < 1000, "the layout never ended");
+    }
+    h.assert(fits >= 8, `setup: only ${fits} running fits`);
+    scheduler.flush();
+    assertFitted(h, window, doc, 800, 600, "at the end of a shrinking layout");
+  });
+
+  h.checkAsync("list: a selection whose entry the current build has not made yet marks nothing and scrolls nothing until it is made (final review C, 2)", async () => {
+    const ROW = 30;
+    const VIEW = 200;
+    const TOP = 100;
+    const HEAD = 40;
+    const geometry = (w) => {
+      Object.defineProperty(w.HTMLElement.prototype, "scrollTop", { configurable: true, get() { return this.okfTop || 0; }, set(v) { this.okfTop = v; } });
+      Object.defineProperty(w.HTMLElement.prototype, "clientHeight", { configurable: true, get() { return this.id === "okf-graph-list" && !this.hidden ? VIEW : 0; } });
+      w.Element.prototype.getBoundingClientRect = function () {
+        const list = w.document.getElementById("okf-graph-list");
+        const rect = (top, height) => ({ top, bottom: top + height, height, left: 0, right: 300, width: 300, x: 0, y: top });
+        if (this === list) { return rect(TOP, VIEW); }
+        const item = this.closest && this.closest(".okf-graph-list-item");
+        if (!item || !item.parentElement) { return rect(0, 0); }
+        const k = Array.prototype.indexOf.call(item.parentElement.children, item);
+        return rect(TOP - list.scrollTop + HEAD + k * ROW, item === this ? ROW : 18);
+      };
+    };
+    const { window, doc, scheduler } = await openGraph(h, { beforeParse: geometry, override: { "assets/okf-index.js": hubIndexSource(400) } });
+    showList(window, doc);
+    scheduler.flush();
+    const list = doc.getElementById("okf-graph-list");
+    h.assert(list.querySelectorAll(".okf-graph-list-item").length === 401, "setup: the list is not whole");
+    // A new build (the shown set emptied, then back): only its first chunk is made.
+    const unverified = facetInputs(doc, "trust")[2];
+    setChecked(window, unverified, false);
+    setChecked(window, unverified, true);
+    h.assert(list.querySelectorAll(".okf-graph-list-item").length < 401, "setup: the new build was made at once");
+    const top = list.scrollTop;
+    const changed = nextHashChange(window);
+    window.location.hash = "#leaf350";
+    await changed;
+    h.assert(list.scrollTop === top, `the list scrolled to ${list.scrollTop} for an entry not made yet (an older build's button)`);
+    h.assert(list.querySelectorAll('[aria-current="true"]').length === 0, "an entry is marked before the selection's is made");
+    scheduler.flush();
+    const marked = Array.from(list.querySelectorAll('.okf-graph-list-select[aria-current="true"]'), (b) => b.textContent);
+    h.assert(JSON.stringify(marked) === JSON.stringify(["leaf350"]), `marked once made: ${marked}`);
+    h.assert(list.scrollTop === HEAD + 350 * ROW - (VIEW - ROW) / 2, `leaf350 is not centred: ${list.scrollTop}`);
+  });
+}
+
 function registerFixWavePaint(h) {
-  h.checkAsync("drawing: a large graph is painted at most 500 nodes a frame, links included, then fitted in a frame of its own; done only then", async () => {
+  h.checkAsync("drawing: a large graph is repainted at most 500 nodes a frame, links included, then fitted in a frame of its own; done only then", async () => {
     const count = 1200;
     const points = gridPoints(count, 50);
     const { window, doc, scheduler } = await openGraph(h, {
@@ -4468,7 +4615,8 @@ function registerFixWavePaint(h) {
     const viewport = doc.querySelector("#okf-graph-canvas g.okf-graph-viewport");
     const observer = new window.MutationObserver(() => {});
     observer.observe(canvas, { attributes: true, subtree: true, attributeFilter: ["transform"] });
-    h.assert(canvas.getAttribute("data-okf-layout") === "running", "setup: the first paint of 1201 nodes was not spread over frames");
+    // The start is drawn whole at load (final review C); the end, a repaint, is sliced.
+    h.assert(canvas.getAttribute("data-okf-layout") === "running", "setup: the layout ended before its end was painted");
     const frames = [];
     while (scheduler.pending() > 0) {
       scheduler.frames(1);
@@ -4567,6 +4715,7 @@ function register(h) {
   registerStyles(h);
   registerFixWave(h);
   registerFixWavePaint(h);
+  registerFixWaveC(h);
 }
 
 module.exports = { register };
