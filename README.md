@@ -392,12 +392,15 @@ titles, ids and tags —, a "Global graph" link and a light/dark toggle) and a
 tree explorer of the bundle with type shapes, type filters and trust and
 staleness flags. A concept page shows a breadcrumb, its title, chips for
 type, `status`, trust and staleness, and a folding frontmatter box; its side
-panel holds the page's contents and the pages that reference it. The graph
-views are **planned, not shipped yet**: a local graph in that side panel (the
-concept's neighbours at one or two hops, with an equivalent list) and a graph
-page (`graph.html`) drawing the whole bundle, which is what "Global graph"
-will open — until it exists the link has no page to open. The Inter, Inter
-Tight and Space Mono fonts are embedded.
+panel holds the page's contents, the pages that reference it and, when the
+concept has neighbours, a "Neighbourhood" local graph (its neighbours at one
+or two hops, at most 40 drawn, with an equivalent list of all of them and an
+"Open in graph" link). "Global graph" opens `graph.html`, a page that draws
+the whole bundle's links with a layout computed in the browser, narrowed by
+facets (type, trust, freshness, tags), with a list equivalent and keyboard
+navigation; both are described in
+[`src/OKF4net.Viewer/README.md`](src/OKF4net.Viewer/README.md). The Inter,
+Inter Tight and Space Mono fonts are embedded.
 It is read-only, and has no full-text search: a static site has no server
 to run the shared `ConceptSearch` scorer, and mirroring its weights in
 JavaScript would fork it. Interactive browsing with search is planned as a
