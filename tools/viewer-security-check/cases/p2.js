@@ -567,7 +567,8 @@ function registerPage(h) {
       assert(label.localName === "text" && label.textContent === window.OkfLocal.lastSegment(id), `node ${k}: label "${label.textContent}" for ${id}`);
       // X7: baseline at cy + size / 2 + 14 (centre: + 6 more, under its square) unless
       // another label or shape is there: then a whole number of rows (12) further under
-      // or over it (OkfLocal.labels; the cases below pin the rule itself).
+      // or over it, or beside the shape (baseline cy + 4, plus whole rows), or against a
+      // margin (OkfLocal.labels; the cases below pin the rule itself).
       const anchor = label.getAttribute("text-anchor");
       assert(anchor === "middle" || anchor === "start" || anchor === "end", `node ${k}: label anchor ${anchor}`);
       const node = hood.nodes[k];
@@ -575,7 +576,8 @@ function registerPage(h) {
       const fromUnder = Number(label.getAttribute("y")) - (node.y + half + 14);
       const fromOver = node.y - half - 4 - Number(label.getAttribute("y"));
       const rows = (d) => Math.abs(Math.round(d / 12) * 12 - d) < 0.02 && Math.round(d / 12) >= 0 && Math.round(d / 12) <= 10;
-      assert(rows(fromUnder) || rows(fromOver), `node ${k}: label baseline ${label.getAttribute("y")} is on no row under or over its node at y=${node.y}`);
+      const fromLevel = Number(label.getAttribute("y")) - (node.y + 4);
+      assert(rows(fromUnder) || rows(fromOver) || rows(fromLevel) || rows(-fromLevel), `node ${k}: label baseline ${label.getAttribute("y")} is on no row under or over its node at y=${node.y}`);
       if (centre) { assert(fromUnder === 0 && anchor === "middle", "the centre label left its place under the square"); }
       const reference = S.node(kind, node.x, node.y, size.size, size);
       assert(label.previousElementSibling.outerHTML === reference.lastElementChild.outerHTML,
@@ -716,9 +718,9 @@ function registerPage(h) {
       const titles = Array.from(svg.querySelectorAll("title")).map((t) => t.textContent);
       assert(titles.includes(id) || titles.includes(`absent: ${id}`), `no node titled with the literal id: ${JSON.stringify(titles)}`);
       const labels = Array.from(svg.querySelectorAll("text.okf-local-label")).map((t) => t.textContent);
-      // The label is cut to 24 characters with an ellipsis; the node title keeps the whole id.
+      // The label is cut to 20 characters with an ellipsis; the node title keeps the whole id.
       const ellipsis = String.fromCharCode(0x2026);
-      assert(labels.some((l) => l.endsWith(ellipsis) && l.length === 24 && evil.startsWith(l.slice(0, -1))), `no label reads the literal markup, cut: ${JSON.stringify(labels)}`);
+      assert(labels.some((l) => l.endsWith(ellipsis) && l.length === 20 && evil.startsWith(l.slice(0, -1))), `no label reads the literal markup, cut: ${JSON.stringify(labels)}`);
       assert(section.querySelector("img") === null && window.__pwned === undefined, "an id became an element");
     }
   });
@@ -1127,8 +1129,9 @@ function registerLabels(h) {
     return { x1, x2: x1 + width, y1: y - 8, y2: y + 3 };
   };
   const meet = (a, b) => a.x1 < b.x2 && b.x1 < a.x2 && a.y1 < b.y2 && b.y1 < a.y2;
-  // Problems of one set of boxes [name, box]: outside the 4 px margin, or touching another.
-  const problems = (named) => {
+  // Problems of one set of boxes [name, box]: outside the 4 px margin, touching another,
+  // or touching one of the `shapes` [name, box] (a label over a node).
+  const problems = (named, shapes = []) => {
     const found = [];
     named.forEach(([name, box], i) => {
       if (box.x1 < MARGIN - 0.1 || box.x2 > view.width - MARGIN + 0.1 || box.y1 < MARGIN - 0.1 || box.y2 > view.height - MARGIN + 0.1) {
@@ -1137,12 +1140,15 @@ function registerLabels(h) {
       for (let j = 0; j < i; j++) {
         if (meet(box, named[j][1])) { found.push(`${name} covers ${named[j][0]}`); }
       }
+      for (const [shape, extent] of shapes) {
+        if (meet(box, extent)) { found.push(`${name} covers ${shape}`); }
+      }
     });
     return found;
   };
   // A hub with `first` direct neighbours (alternating directions) and `second`
   // concepts two hops away (all through the first ones), `ghosts` absent
-  // targets, the ids' last segments `length` characters long (the cut is at 24).
+  // targets, the ids' last segments `length` characters long (the cut is at 20).
   const star = (first, second, ghosts, length) => {
     const name = (prefix, k) => `p2-local/${prefix}${String(k).padStart(2, "0")}${"s".repeat(Math.max(0, length - 3))}`;
     const ids = ["p2-local/hub"];
@@ -1179,7 +1185,7 @@ function registerLabels(h) {
     }
   });
 
-  check("local graph: labels() keeps every label in the view and apart, for every neighbourhood of up to 10 neighbours", () => {
+  check("local graph: labels() keeps every label in the view, apart and off every shape, for every neighbourhood of up to 10 neighbours", () => {
     const { OkfLocal } = okfLocal();
     let layouts = 0;
     const sweep = (first, second, ghosts, length) => {
@@ -1189,7 +1195,8 @@ function registerLabels(h) {
       const texts = r.nodes.map((n) => OkfLocal.lastSegment(n.key < C ? index.concepts[n.key].id : index.ghosts[n.key - C].id));
       const halves = r.nodes.map((n) => (n.dist === 0 ? 20 : n.key >= C ? 10.6 : 12.75));
       const placed = OkfLocal.labels(r.nodes, texts, halves);
-      const found = problems(placed.map((p, k) => [`label ${k} "${p.text}"`, boxOf(p.text, p.x, p.y, p.anchor, k === 0)]));
+      const shapes = r.nodes.map((n, k) => [`the shape of node ${k}`, { x1: n.x - halves[k], x2: n.x + halves[k], y1: n.y - halves[k], y2: n.y + halves[k] }]);
+      const found = problems(placed.map((p, k) => [`label ${k} "${p.text}"`, boxOf(p.text, p.x, p.y, p.anchor, k === 0)]), shapes);
       assert(found.length === 0, `${first} + ${second} neighbours, ${ghosts} absent, ids of ${length}: ${found.slice(0, 3).join("; ")}`);
       layouts++;
     };
@@ -1212,16 +1219,39 @@ function registerLabels(h) {
     });
   });
 
-  check("local graph: labels() cuts a text over 24 characters to 23 and an ellipsis, and keeps a shorter one whole", () => {
+  check("local graph: labels() cuts a text of more than 20 code points to 19 and an ellipsis, by code points, and keeps a shorter one whole", () => {
     const { OkfLocal } = okfLocal();
     const r = OkfLocal.build(siteIndex(["c", "a", "b"], [[0, 1], [0, 2]]), 0, 1);
     const long = "x".repeat(60);
-    const exact = "y".repeat(24);
+    const exact = "y".repeat(20);
     const placed = OkfLocal.labels(r.nodes, ["c", long, exact], [20, 12, 12]);
     const ellipsis = String.fromCharCode(0x2026);
-    assert(placed[1].text === "x".repeat(23) + ellipsis && placed[1].truncated === true, `cut: ${placed[1].text}`);
-    assert(placed[2].text === exact && placed[2].truncated === false, `24 characters are kept: ${placed[2].text}`);
+    assert(placed[1].text === "x".repeat(19) + ellipsis && placed[1].truncated === true, `cut: ${placed[1].text}`);
+    assert(placed[2].text === exact && placed[2].truncated === false, `20 characters are kept: ${placed[2].text}`);
     assert(placed[0].text === "c" && placed[0].truncated === false, "a short text changed");
+    // By code points: 18 letters, one astral character (two UTF-16 units) as the 19th code point, then 4 more.
+    // Cutting by units would keep 18 letters and half of the pair.
+    const astral = String.fromCodePoint(0x1f600);
+    const mixed = OkfLocal.labels(r.nodes, ["c", "a".repeat(18) + astral + "bbbb", "z"], [20, 12, 12])[1];
+    assert(mixed.text === "a".repeat(18) + astral + ellipsis && mixed.truncated === true, `astral cut: ${JSON.stringify(mixed.text)}`);
+    assert(mixed.text.isWellFormed(), "the cut left half of a surrogate pair");
+    // One more letter than fits whole, no astral: 21 code points -> 19 + ellipsis.
+    const twentyOne = OkfLocal.labels(r.nodes, ["c", "k".repeat(21), "z"], [20, 12, 12])[1];
+    assert(twentyOne.text === "k".repeat(19) + ellipsis, `21 code points: ${twentyOne.text}`);
+  });
+
+  check("local graph: labels() leaves a gap between two labels, even when their boxes would just touch", () => {
+    const { OkfLocal } = okfLocal();
+    // Two neighbours on one line whose default labels (10 characters, 62 wide) would meet exactly
+    // at x = 131: the second must not stay touching the first (0.5 clear).
+    const nodes = [{ x: 149, y: 118, dist: 0, key: 0 }, { x: 100, y: 30, dist: 1, key: 1 }, { x: 162, y: 30, dist: 1, key: 2 }];
+    const placed = OkfLocal.labels(nodes, ["c", "a".repeat(10), "b".repeat(10)], [20, 0, 0]);
+    assert(placed[1].x === 100 && placed[1].y === 44 && placed[1].anchor === "middle", `the first label moved: ${JSON.stringify(placed[1])}`);
+    const a = placed[1].box;
+    const b = placed[2].box;
+    const gapX = Math.max(b.x1 - a.x2, a.x1 - b.x2);
+    const gapY = Math.max(b.y1 - a.y2, a.y1 - b.y2);
+    assert(Math.max(gapX, gapY) >= 0.5 - 1e-9, `two labels leave a gap of only ${Math.max(gapX, gapY)} (x ${gapX}, y ${gapY})`);
   });
 
   check("local graph: labels() at the cap is deterministic, never throws, and still keeps every label in the view", () => {
@@ -1230,7 +1260,7 @@ function registerLabels(h) {
     const ids = ["hub"];
     const links = [];
     for (let k = 1; k <= 300; k++) { ids.push(`s${k}-${"q".repeat(k % 30)}`); links.push(k % 2 ? [0, k] : [k, 0]); }
-    // Mixed lengths, then 39 labels of 24 characters: more than 20 rows can hold, so some
+    // Mixed lengths, then 39 labels of 20 characters: more than 20 rows can hold, so some
     // fall back to their own place (clamped), and may overlap (A11) but never leave the view.
     for (const [hops, every] of [[1, null], [2, null], [1, "z".repeat(40)], [2, "z".repeat(40)]]) {
       const r = OkfLocal.build(siteIndex(ids, links), 0, hops);

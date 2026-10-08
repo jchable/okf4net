@@ -222,24 +222,41 @@
   // is 8 above its baseline and 3 below it. The default place is the mockup's:
   // centred, baseline 14 under the shape. Three rules keep it readable, in this
   // order, all deterministic (node order, no clock, no randomness):
-  //  1. a label stays 4 inside the view: its centre is clamped, and a text over
-  //     24 characters is cut to 23 plus an ellipsis (the node's <title> and the
-  //     list carry the whole id);
+  //  1. a label stays 4 inside the view: its box is clamped, and a text of more
+  //     than 20 code points is cut to 19 plus an ellipsis (never inside a
+  //     surrogate pair; the node's <title> and the list carry the whole id);
   //  2. a label that would cover another label, or a shape, takes the first free
   //     place of a fixed, bounded search: for each of 21 rows (the default,
   //     then 12 further under and above, alternately), centred, then starting
-  //     or ending at its node's x;
+  //     or ending at its node's x, then beside the shape (to its right, then
+  //     to its left, 3 clear of it, rows counted from the node's own height), then
+  //     against either margin; failing that, resting just under or over an obstacle,
+  //     the nearest first;
   //  3. none free: first the places that avoid labels only, then the default
   //     (clamped) -- the cap's 39 nodes cannot all be readable (A11).
-  // At most 40 labels x 126 places x 80 boxes, twice: bounded whatever the index.
+  // Boxes keep 0.5 clear of each other and 1 of a shape. At most 40 labels x (294
+  // row places + 7 x 158 places resting on an obstacle) x 80 boxes, twice: bounded
+  // whatever the index.
   var LABEL = Object.freeze({
-    margin: 4, char: 6.2, centreChar: 6.5, ascent: 8, descent: 3, under: 14, above: 4, step: 12, rows: 20, maxChars: 24,
+    margin: 4, char: 6.2, centreChar: 6.5, ascent: 8, descent: 3, under: 14, above: 4, beside: 3, level: 4, step: 12, rows: 20, maxChars: 20,
   });
   var ELLIPSIS = String.fromCharCode(0x2026);
 
+  // By code points, not UTF-16 units: a cut never leaves half a surrogate pair.
+  // Reads at most maxChars + 1 code points, whatever the length of the text.
   function cut(text) {
     var s = String(text);
-    return s.length > LABEL.maxChars ? s.slice(0, LABEL.maxChars - 1) + ELLIPSIS : s;
+    var units = 0;
+    var points = 0;
+    var keep = 0; // the length, in units, of the first maxChars - 1 code points
+    while (units < s.length && points <= LABEL.maxChars) {
+      if (points === LABEL.maxChars - 1) { keep = units; }
+      var high = s.charCodeAt(units);
+      var pair = high >= 0xd800 && high <= 0xdbff && units + 1 < s.length && (s.charCodeAt(units + 1) & 0xfc00) === 0xdc00;
+      units += pair ? 2 : 1;
+      points++;
+    }
+    return points > LABEL.maxChars ? s.slice(0, keep) + ELLIPSIS : s;
   }
 
   function overlaps(a, b) { return a.x1 < b.x2 && b.x1 < a.x2 && a.y1 < b.y2 && b.y1 < a.y2; }
@@ -265,31 +282,65 @@
     var placed = [];
     var out = [];
 
+    // Modes: 0 centred on the node, 1 starting at its x, 2 ending at its x,
+    // 3 starting right of the shape, 4 ending left of it, 5 and 6 against the left
+    // and the right margin.
     function place(j, width, baseline, mode) {
-      var x1 = mode === 0 ? nodes[j].x - width / 2 : mode === 1 ? nodes[j].x : nodes[j].x - width;
+      var x1 = mode === 0 ? nodes[j].x - width / 2
+        : mode === 1 ? nodes[j].x
+        : mode === 2 ? nodes[j].x - width
+        : mode === 3 ? nodes[j].x + halves[j] + LABEL.beside
+        : mode === 4 ? nodes[j].x - halves[j] - LABEL.beside - width
+        : mode === 5 ? m
+        : w - m - width;
       x1 = Math.min(Math.max(x1, m), w - m - width);
       var box = { x1: x1, y1: baseline - LABEL.ascent, x2: x1 + width, y2: baseline + LABEL.descent };
       return { box: box, baseline: baseline, mode: mode };
     }
 
-    // Tries the places of node j against `blocking`; the first that is inside
-    // the view and free, or null.
+    // The place (j, baseline, mode) if it is inside the view and free, else null.
+    function fit(j, width, baseline, mode, avoidShapes) {
+      var candidate = place(j, width, baseline, mode);
+      var b = candidate.box;
+      if (b.y1 < m || b.y2 > h - m) { return null; }
+      for (var p = 0; p < placed.length; p++) { if (overlaps(b, placed[p])) { return null; } }
+      for (var s = 0; avoidShapes && s < shapes.length; s++) { if (overlaps(b, shapes[s])) { return null; } }
+      return candidate;
+    }
+
+    // The first free place for node j, or null. Stage 1: the rows around the
+    // node. Stage 2, for a crowded drawing whose free bands fall between rows: the
+    // baselines that rest against an obstacle (just under or over a label or,
+    // when shapes count, a shape), nearest to the default first; every mode each.
     function search(j, width, avoidShapes) {
       var below = nodes[j].y + halves[j] + LABEL.under;
       var above = nodes[j].y - halves[j] - LABEL.above;
-      for (var row = 0; row <= LABEL.rows; row++) {
+      var row;
+      var mode;
+      var side;
+      var found;
+      for (row = 0; row <= LABEL.rows; row++) {
         var baselines = [below + row * LABEL.step, above - row * LABEL.step];
-        for (var mode = 0; mode < 3; mode++) {
-          for (var side = 0; side < 2; side++) {
-            // Within a row: centred below, centred above, starting below and above, ending below and above.
-            var candidate = place(j, width, baselines[side], mode);
-            var b = candidate.box;
-            if (b.y1 < m || b.y2 > h - m) { continue; }
-            var free = true;
-            for (var p = 0; p < placed.length && free; p++) { free = !overlaps(b, placed[p]); }
-            for (var s = 0; avoidShapes && s < shapes.length && free; s++) { free = !overlaps(b, shapes[s]); }
-            if (free) { return candidate; }
+        var level = [nodes[j].y + LABEL.level + row * LABEL.step, nodes[j].y + LABEL.level - row * LABEL.step];
+        for (mode = 0; mode < 7; mode++) {
+          for (side = 0; side < 2; side++) {
+            // Within a row: centred below, centred above, starting below and above, ending below
+            // and above, then right of the shape and left of it, level with the node, lower, higher,
+            // then against the left and the right margin, under and over the node.
+            found = fit(j, width, mode < 3 || mode > 4 ? baselines[side] : level[side], mode, avoidShapes);
+            if (found) { return found; }
           }
+        }
+      }
+      var rests = [];
+      var q;
+      for (q = 0; q < placed.length; q++) { rests.push(placed[q].y2 + LABEL.ascent, placed[q].y1 - LABEL.descent); }
+      for (q = 0; avoidShapes && q < shapes.length; q++) { rests.push(shapes[q].y2 + LABEL.ascent, shapes[q].y1 - LABEL.descent); }
+      rests.sort(function (a, b) { return Math.abs(a - below) - Math.abs(b - below) || a - b; });
+      for (q = 0; q < rests.length; q++) {
+        for (mode = 0; mode < 7; mode++) {
+          found = fit(j, width, rests[q], mode, avoidShapes);
+          if (found) { return found; }
         }
       }
       return null;
@@ -307,9 +358,9 @@
       placed.push({ x1: box.x1 - 0.5, y1: box.y1 - 0.5, x2: box.x2 + 0.5, y2: box.y2 + 0.5 });
       out.push({
         text: text,
-        x: round(chosen.mode === 0 ? (box.x1 + box.x2) / 2 : chosen.mode === 1 ? box.x1 : box.x2),
+        x: round(chosen.mode === 0 ? (box.x1 + box.x2) / 2 : chosen.mode === 1 || chosen.mode === 3 || chosen.mode === 5 ? box.x1 : box.x2),
         y: round(chosen.baseline),
-        anchor: chosen.mode === 0 ? "middle" : chosen.mode === 1 ? "start" : "end",
+        anchor: chosen.mode === 0 ? "middle" : chosen.mode === 1 || chosen.mode === 3 || chosen.mode === 5 ? "start" : "end",
         truncated: text !== String(texts[j]),
         box: { x1: round(box.x1), y1: round(box.y1), x2: round(box.x2), y2: round(box.y2) },
       });

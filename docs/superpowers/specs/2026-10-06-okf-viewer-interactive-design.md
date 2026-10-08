@@ -1,9 +1,16 @@
 # Viewer interactif (`okf-render`) — design
 
 Date : 2026-10-06
-Statut : révision 8 (2026-10-08) : P1 et P1.1 livrés et recettés ; arbitrages
+Statut : révision 9 (2026-10-08) : P1 et P1.1 livrés et recettés ; arbitrages
 A15–A30 rendus ; plans de P1.1, P2 et P3 rédigés en parallèle depuis la
 révision 6, leurs lacunes de spec tranchées ici ; aucun point ouvert (§13)
+
+**Révision 9 (revue de P2 tâche 5, 2026-10-08)** : X7 disait les libellés du
+graphe local toujours centrés sous leur forme ; les rayons finals de la spec
+laissaient sortir ou se recouvrir des libellés dans des cas ordinaires (un
+voisin absent à gauche, sept voisins à 2 sauts). X7 distingue désormais la
+place par défaut (celle de la maquette) des déplacements permis, de leur
+bornage et de la coupe à 20 caractères (§4.3, §12.4).
 
 **Révision 8 (revue finale de P1.1, 2026-10-08)** : la spec dit ce que P1.1 a
 livré là où elle le sous-décrivait. Surface publique de `OKF4net.Viewer`
@@ -1221,8 +1228,16 @@ contrôle ne prouve sa capacité à échouer que par la passe sans polices (éch
   2, `--blue`), libellé Space Mono 10,5 700 `--ink` ; voisins : contexte
   `local` (cercle 20, losange 25,5, triangle 22 comme A), libellé = dernier
   segment de l'id, Space Mono 10 `--ink`, id complet en `<title>` ; fantôme :
-  contexte `local`, forme `ghost`. Libellés centrés sous la forme, ligne de
-  base à `cy + size / 2 + 14` (centre : `+ 6 + 14`, sous le contour). Arêtes
+  contexte `local`, forme `ghost`. Libellés : place par défaut
+  centrée sous la forme, ligne de base à `cy + size / 2 + 14` (centre : `+ 6 + 14`,
+  sous le contour) ; `OkfLocal.labels()` (pure, déterministe, bornée) peut
+  déplacer un libellé qui en recouvrirait un autre ou une forme vers la première
+  ligne libre, au-dessus ou au-dessous (12 par ligne), l'ancrer au début ou à
+  la fin au x de son nœud, le poser à côté de la forme ou contre un bord, le tenir
+  à 4 de bord du dessin, et le couper à 20 caractères (19 + « … », comptés en
+  points de code ; l'id complet reste en `<title>`). Au plafond de 40 nœuds les libellés peuvent se recouvrir (A11) mais
+  ne sortent jamais du dessin ; largeur estimée à 6,2 par caractère (6,5 pour
+  le centre), jamais mesurée. Arêtes
   (§4.3) `--edge` 1,4, flèche 7 vers la cible ; **pleine** si la cible n'est
   pas plus proche du centre que la source (« links to »), **tiretée 4 3** si
   elle pointe vers le centre (« referenced by »). → P2
