@@ -214,8 +214,111 @@
     return slash === -1 ? text : text.slice(slash + 1);
   }
 
+  // --- node labels (spec X7, review D1/D2) ----------------------------------
+  // A label is the last segment of its node's id in Space Mono 10 (the centre's
+  // 10.5 bold). Its width is ESTIMATED from the text length, never measured (this
+  // module is pure): 6.2 per character, 6.5 for the centre's (Space Mono's advance
+  // is 0.612 em; the constants round up so the estimate is never short). A label
+  // is 8 above its baseline and 3 below it. The default place is the mockup's:
+  // centred, baseline 14 under the shape. Three rules keep it readable, in this
+  // order, all deterministic (node order, no clock, no randomness):
+  //  1. a label stays 4 inside the view: its centre is clamped, and a text over
+  //     24 characters is cut to 23 plus an ellipsis (the node's <title> and the
+  //     list carry the whole id);
+  //  2. a label that would cover another label, or a shape, takes the first free
+  //     place of a fixed, bounded search: for each of 21 rows (the default,
+  //     then 12 further under and above, alternately), centred, then starting
+  //     or ending at its node's x;
+  //  3. none free: first the places that avoid labels only, then the default
+  //     (clamped) -- the cap's 39 nodes cannot all be readable (A11).
+  // At most 40 labels x 126 places x 80 boxes, twice: bounded whatever the index.
+  var LABEL = Object.freeze({
+    margin: 4, char: 6.2, centreChar: 6.5, ascent: 8, descent: 3, under: 14, above: 4, step: 12, rows: 20, maxChars: 24,
+  });
+  var ELLIPSIS = String.fromCharCode(0x2026);
+
+  function cut(text) {
+    var s = String(text);
+    return s.length > LABEL.maxChars ? s.slice(0, LABEL.maxChars - 1) + ELLIPSIS : s;
+  }
+
+  function overlaps(a, b) { return a.x1 < b.x2 && b.x1 < a.x2 && a.y1 < b.y2 && b.y1 < a.y2; }
+
+  // nodes: build()'s nodes (the centre first); texts: each node's label text;
+  // halves: each node's half-extent (the centre's counts its selection square).
+  // Returns, per node, { text, x, y, anchor, truncated, box }.
+  function labels(nodes, texts, halves) {
+    if (!Array.isArray(nodes) || !Array.isArray(texts) || !Array.isArray(halves) || texts.length !== nodes.length || halves.length !== nodes.length) {
+      throw new TypeError("okf-local: labels needs one text and one half-extent per node");
+    }
+    var w = VIEW.width;
+    var h = VIEW.height;
+    var m = LABEL.margin;
+    var shapes = [];
+    var k;
+    for (k = 0; k < nodes.length; k++) {
+      if (!Number.isFinite(nodes[k].x) || !Number.isFinite(nodes[k].y) || !Number.isFinite(halves[k]) || halves[k] < 0) {
+        throw new TypeError("okf-local: labels needs finite positions and half-extents");
+      }
+      shapes.push({ x1: nodes[k].x - halves[k] - 1, y1: nodes[k].y - halves[k] - 1, x2: nodes[k].x + halves[k] + 1, y2: nodes[k].y + halves[k] + 1 });
+    }
+    var placed = [];
+    var out = [];
+
+    function place(j, width, baseline, mode) {
+      var x1 = mode === 0 ? nodes[j].x - width / 2 : mode === 1 ? nodes[j].x : nodes[j].x - width;
+      x1 = Math.min(Math.max(x1, m), w - m - width);
+      var box = { x1: x1, y1: baseline - LABEL.ascent, x2: x1 + width, y2: baseline + LABEL.descent };
+      return { box: box, baseline: baseline, mode: mode };
+    }
+
+    // Tries the places of node j against `blocking`; the first that is inside
+    // the view and free, or null.
+    function search(j, width, avoidShapes) {
+      var below = nodes[j].y + halves[j] + LABEL.under;
+      var above = nodes[j].y - halves[j] - LABEL.above;
+      for (var row = 0; row <= LABEL.rows; row++) {
+        var baselines = [below + row * LABEL.step, above - row * LABEL.step];
+        for (var mode = 0; mode < 3; mode++) {
+          for (var side = 0; side < 2; side++) {
+            // Within a row: centred below, centred above, starting below and above, ending below and above.
+            var candidate = place(j, width, baselines[side], mode);
+            var b = candidate.box;
+            if (b.y1 < m || b.y2 > h - m) { continue; }
+            var free = true;
+            for (var p = 0; p < placed.length && free; p++) { free = !overlaps(b, placed[p]); }
+            for (var s = 0; avoidShapes && s < shapes.length && free; s++) { free = !overlaps(b, shapes[s]); }
+            if (free) { return candidate; }
+          }
+        }
+      }
+      return null;
+    }
+
+    for (var j = 0; j < nodes.length; j++) {
+      var text = cut(texts[j]);
+      var width = text.length * (j === 0 ? LABEL.centreChar : LABEL.char);
+      var chosen = search(j, width, true) || search(j, width, false);
+      if (!chosen) {
+        var base = Math.min(Math.max(nodes[j].y + halves[j] + LABEL.under, m + LABEL.ascent), h - m - LABEL.descent);
+        chosen = place(j, width, base, 0);
+      }
+      var box = chosen.box;
+      placed.push({ x1: box.x1 - 0.5, y1: box.y1 - 0.5, x2: box.x2 + 0.5, y2: box.y2 + 0.5 });
+      out.push({
+        text: text,
+        x: round(chosen.mode === 0 ? (box.x1 + box.x2) / 2 : chosen.mode === 1 ? box.x1 : box.x2),
+        y: round(chosen.baseline),
+        anchor: chosen.mode === 0 ? "middle" : chosen.mode === 1 ? "start" : "end",
+        truncated: text !== String(texts[j]),
+        box: { x1: round(box.x1), y1: round(box.y1), x2: round(box.x2), y2: round(box.y2) },
+      });
+    }
+    return out;
+  }
+
   window.OkfLocal = Object.freeze({
-    CAP: CAP, VIEW: VIEW, build: build, segment: segment, lastSegment: lastSegment,
+    CAP: CAP, VIEW: VIEW, LABEL: LABEL, build: build, segment: segment, lastSegment: lastSegment, labels: labels,
   });
 
   // --- page part: a concept page only (spec §4.1, §12.4) -------------------
@@ -334,6 +437,16 @@
     }
     picture.appendChild(lines);
 
+    // Where each label goes: OkfLocal.labels keeps them inside the view and
+    // apart from each other (the node <title> keeps a cut id whole).
+    var texts = [];
+    var halves = [];
+    for (var t = 0; t < result.nodes.length; t++) {
+      texts.push(lastSegment(idOf(result.nodes[t].key)));
+      halves.push(sizes[t].size / 2 + (t === 0 ? 6 : 0));
+    }
+    var places = labels(result.nodes, texts, halves);
+
     nodeKeys = new Map();
     for (var j = 0; j < result.nodes.length; j++) {
       var node = result.nodes[j];
@@ -346,10 +459,10 @@
       title.textContent = ghost ? "absent: " + idOf(node.key) : idOf(node.key);
       g.insertBefore(title, g.firstChild);
       var label = svg("text", "okf-local-label" + (j === 0 ? " okf-local-label-center" : "") + (ghost ? " okf-local-label-ghost" : ""));
-      label.setAttribute("x", num(node.x));
-      label.setAttribute("y", num(node.y + size.size / 2 + (j === 0 ? 6 : 0) + 14));
-      label.setAttribute("text-anchor", "middle");
-      label.textContent = lastSegment(idOf(node.key));
+      label.setAttribute("x", num(places[j].x));
+      label.setAttribute("y", num(places[j].y));
+      label.setAttribute("text-anchor", places[j].anchor);
+      label.textContent = places[j].text;
       g.appendChild(label);
       nodeKeys.set(g, node.key);
       picture.appendChild(g);

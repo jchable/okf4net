@@ -543,12 +543,13 @@ function registerPage(h) {
     assert(marker && marker.getAttribute("markerWidth") === "7" && marker.getAttribute("markerHeight") === "7", "the arrow is not 7");
   });
 
-  checkAsync("local graph: shapes are OkfShapes nodes at the local and localCenter sizes, labels under them", async () => {
+  checkAsync("local graph: shapes are OkfShapes nodes at the local and localCenter sizes, labels under or over them", async () => {
     const window = await openPage("p2-local/c.html");
     const doc = window.document;
     doc.getElementById("okf-local-hops-2").click();
     const S = window.OkfShapes;
     const index = window.OKF_INDEX;
+    const hood = window.OkfLocal.build(index, positionOf(window, "p2-local/c"), 2);
     const groups = Array.from(doc.querySelectorAll("#okf-local-graph svg g.okf-node"));
     assert(groups.length > 2, "this case needs drawn neighbours");
     const kinds = new Set();
@@ -564,11 +565,19 @@ function registerPage(h) {
       const size = S.SIZES[centre ? "localCenter" : "local"][kind];
       const label = g.lastElementChild;
       assert(label.localName === "text" && label.textContent === window.OkfLocal.lastSegment(id), `node ${k}: label "${label.textContent}" for ${id}`);
-      assert(label.getAttribute("text-anchor") === "middle", `node ${k}: the label is not centred`);
-      // X7: baseline at cy + size / 2 + 14 (centre: + 6 more, under its square).
-      const x = Number(label.getAttribute("x"));
-      const y = Math.round((Number(label.getAttribute("y")) - size.size / 2 - (centre ? 6 : 0) - 14) * 100) / 100;
-      const reference = S.node(kind, x, y, size.size, size);
+      // X7: baseline at cy + size / 2 + 14 (centre: + 6 more, under its square) unless
+      // another label or shape is there: then a whole number of rows (12) further under
+      // or over it (OkfLocal.labels; the cases below pin the rule itself).
+      const anchor = label.getAttribute("text-anchor");
+      assert(anchor === "middle" || anchor === "start" || anchor === "end", `node ${k}: label anchor ${anchor}`);
+      const node = hood.nodes[k];
+      const half = size.size / 2 + (centre ? 6 : 0);
+      const fromUnder = Number(label.getAttribute("y")) - (node.y + half + 14);
+      const fromOver = node.y - half - 4 - Number(label.getAttribute("y"));
+      const rows = (d) => Math.abs(Math.round(d / 12) * 12 - d) < 0.02 && Math.round(d / 12) >= 0 && Math.round(d / 12) <= 10;
+      assert(rows(fromUnder) || rows(fromOver), `node ${k}: label baseline ${label.getAttribute("y")} is on no row under or over its node at y=${node.y}`);
+      if (centre) { assert(fromUnder === 0 && anchor === "middle", "the centre label left its place under the square"); }
+      const reference = S.node(kind, node.x, node.y, size.size, size);
       assert(label.previousElementSibling.outerHTML === reference.lastElementChild.outerHTML,
         `node ${k} (${id}, ${kind}): ${label.previousElementSibling.outerHTML} is not OkfShapes' ${reference.lastElementChild.outerHTML}`);
       assert(centre === (g.querySelector(".okf-node-ring") !== null), `node ${k}: the selection square is ${centre ? "missing" : "present"}`);
@@ -707,7 +716,9 @@ function registerPage(h) {
       const titles = Array.from(svg.querySelectorAll("title")).map((t) => t.textContent);
       assert(titles.includes(id) || titles.includes(`absent: ${id}`), `no node titled with the literal id: ${JSON.stringify(titles)}`);
       const labels = Array.from(svg.querySelectorAll("text.okf-local-label")).map((t) => t.textContent);
-      assert(labels.includes(evil), `no label reads the literal markup: ${JSON.stringify(labels)}`);
+      // The label is cut to 24 characters with an ellipsis; the node title keeps the whole id.
+      const ellipsis = String.fromCharCode(0x2026);
+      assert(labels.some((l) => l.endsWith(ellipsis) && l.length === 24 && evil.startsWith(l.slice(0, -1))), `no label reads the literal markup, cut: ${JSON.stringify(labels)}`);
       assert(section.querySelector("img") === null && window.__pwned === undefined, "an id became an element");
     }
   });
@@ -1099,12 +1110,176 @@ function registerChrome(h) {
   });
 }
 
+// Node labels (review of P2 Task 5, D1 and D2): a label never leaves the view
+// and, for an ordinary neighbourhood, never covers another label. The width is
+// the module's stated estimate (6.2 per character, the centre's 6.5; a label is
+// 8 above its baseline and 3 below it), restated here so a change of the
+// constants is a change of this case.
+function registerLabels(h) {
+  const { check, checkAsync, assert, openPage } = h;
+  const CHAR = 6.2;
+  const CENTRE_CHAR = 6.5;
+  const MARGIN = 4;
+  const view = { width: 298, height: 248 };
+  const boxOf = (text, x, y, anchor, centre) => {
+    const width = text.length * (centre ? CENTRE_CHAR : CHAR);
+    const x1 = anchor === "middle" ? x - width / 2 : anchor === "start" ? x : x - width;
+    return { x1, x2: x1 + width, y1: y - 8, y2: y + 3 };
+  };
+  const meet = (a, b) => a.x1 < b.x2 && b.x1 < a.x2 && a.y1 < b.y2 && b.y1 < a.y2;
+  // Problems of one set of boxes [name, box]: outside the 4 px margin, or touching another.
+  const problems = (named) => {
+    const found = [];
+    named.forEach(([name, box], i) => {
+      if (box.x1 < MARGIN - 0.1 || box.x2 > view.width - MARGIN + 0.1 || box.y1 < MARGIN - 0.1 || box.y2 > view.height - MARGIN + 0.1) {
+        found.push(`${name} [${box.x1.toFixed(1)}..${box.x2.toFixed(1)} x ${box.y1.toFixed(1)}..${box.y2.toFixed(1)}] leaves the view`);
+      }
+      for (let j = 0; j < i; j++) {
+        if (meet(box, named[j][1])) { found.push(`${name} covers ${named[j][0]}`); }
+      }
+    });
+    return found;
+  };
+  // A hub with `first` direct neighbours (alternating directions) and `second`
+  // concepts two hops away (all through the first ones), `ghosts` absent
+  // targets, the ids' last segments `length` characters long (the cut is at 24).
+  const star = (first, second, ghosts, length) => {
+    const name = (prefix, k) => `p2-local/${prefix}${String(k).padStart(2, "0")}${"s".repeat(Math.max(0, length - 3))}`;
+    const ids = ["p2-local/hub"];
+    const links = [];
+    for (let k = 0; k < first; k++) { ids.push(name("n", k)); links.push(k % 2 ? [k + 1, 0] : [0, k + 1]); }
+    for (let k = 0; k < second; k++) { ids.push(name("f", k)); links.push([1 + (k % first), first + 1 + k]); }
+    const absent = [];
+    for (let g = 0; g < ghosts; g++) { absent.push(name("g", g)); links.push([0, g, "ghost"]); }
+    return siteIndex(ids, links, absent);
+  };
+  const served = (index) => ({ override: { "assets/okf-index.js": `window.OKF_INDEX = ${JSON.stringify(index)};` } });
+  const drawnLabels = (doc) => Array.from(doc.querySelectorAll("#okf-local-graph svg text.okf-local-label"), (t, k) => [
+    `label ${k} "${t.textContent}"`,
+    boxOf(t.textContent, Number(t.getAttribute("x")), Number(t.getAttribute("y")), t.getAttribute("text-anchor"), t.classList.contains("okf-local-label-center")),
+  ]);
+
+  checkAsync("local graph: no label leaves the drawing or covers another, 1 and 2 hops, ghosts and long ids included", async () => {
+    const pages = [
+      ["the fixture concept, 2 hops", "p2-local/c.html", null, 2],
+      ["the fixture hub with its absent concepts", "p2-local/hub.html", null, 1],
+      ["8 direct neighbours, 2 absent, 2 hops", "p2-local/hub.html", star(8, 0, 2, 12), 2],
+      ["5 direct and 5 second-hop, 1 absent, 2 hops", "p2-local/hub.html", star(5, 5, 1, 19), 2],
+      ["10 direct neighbours with 40-character ids", "p2-local/hub.html", star(10, 0, 0, 40), 1],
+      ["4 direct and 6 second-hop with 40-character ids", "p2-local/hub.html", star(4, 6, 0, 40), 2],
+      ["6 direct, 1 absent with a 40-character id, 1 hop", "p2-local/hub.html", star(6, 0, 1, 40), 1],
+    ];
+    for (const [what, page, index, hops] of pages) {
+      const window = await openPage(page, index ? served(index) : {});
+      if (hops === 2) { window.document.getElementById("okf-local-hops-2").click(); }
+      const labels = drawnLabels(window.document);
+      assert(labels.length >= 3, `${what}: only ${labels.length} labels drawn`);
+      const found = problems(labels);
+      assert(found.length === 0, `${what}: ${found.slice(0, 3).join("; ")}`);
+    }
+  });
+
+  check("local graph: labels() keeps every label in the view and apart, for every neighbourhood of up to 10 neighbours", () => {
+    const { OkfLocal } = okfLocal();
+    let layouts = 0;
+    const sweep = (first, second, ghosts, length) => {
+      const index = star(first, second, ghosts, length);
+      const r = OkfLocal.build(index, 0, second > 0 ? 2 : 1);
+      const C = index.concepts.length;
+      const texts = r.nodes.map((n) => OkfLocal.lastSegment(n.key < C ? index.concepts[n.key].id : index.ghosts[n.key - C].id));
+      const halves = r.nodes.map((n) => (n.dist === 0 ? 20 : n.key >= C ? 10.6 : 12.75));
+      const placed = OkfLocal.labels(r.nodes, texts, halves);
+      const found = problems(placed.map((p, k) => [`label ${k} "${p.text}"`, boxOf(p.text, p.x, p.y, p.anchor, k === 0)]));
+      assert(found.length === 0, `${first} + ${second} neighbours, ${ghosts} absent, ids of ${length}: ${found.slice(0, 3).join("; ")}`);
+      layouts++;
+    };
+    for (const length of [4, 12, 19, 24, 60]) {
+      for (let first = 1; first <= 10; first++) {
+        for (let ghosts = 0; ghosts <= 2 && first + ghosts <= 10; ghosts++) { sweep(first, 0, ghosts, length); }
+        for (let second = 1; first + second <= 10; second++) { sweep(first, second, 0, length); }
+      }
+    }
+    assert(layouts > 300, `${layouts} layouts swept`);
+  });
+
+  check("local graph: labels() is the mockup place when nothing collides: centred, baseline 14 under the shape", () => {
+    const { OkfLocal } = okfLocal();
+    const r = OkfLocal.build(siteIndex(["c", "a", "b", "d", "e"], [[0, 1], [0, 2], [3, 0], [4, 0]]), 0, 1);
+    const placed = OkfLocal.labels(r.nodes, ["c", "a", "b", "d", "e"], r.nodes.map((n) => (n.dist === 0 ? 20 : 12)));
+    placed.forEach((p, k) => {
+      assert(p.x === r.nodes[k].x && p.anchor === "middle" && p.y === r.nodes[k].y + (k === 0 ? 20 : 12) + 14 && !p.truncated,
+        `label ${k}: (${p.x}, ${p.y}) ${p.anchor} for a node at (${r.nodes[k].x}, ${r.nodes[k].y})`);
+    });
+  });
+
+  check("local graph: labels() cuts a text over 24 characters to 23 and an ellipsis, and keeps a shorter one whole", () => {
+    const { OkfLocal } = okfLocal();
+    const r = OkfLocal.build(siteIndex(["c", "a", "b"], [[0, 1], [0, 2]]), 0, 1);
+    const long = "x".repeat(60);
+    const exact = "y".repeat(24);
+    const placed = OkfLocal.labels(r.nodes, ["c", long, exact], [20, 12, 12]);
+    const ellipsis = String.fromCharCode(0x2026);
+    assert(placed[1].text === "x".repeat(23) + ellipsis && placed[1].truncated === true, `cut: ${placed[1].text}`);
+    assert(placed[2].text === exact && placed[2].truncated === false, `24 characters are kept: ${placed[2].text}`);
+    assert(placed[0].text === "c" && placed[0].truncated === false, "a short text changed");
+  });
+
+  check("local graph: labels() at the cap is deterministic, never throws, and still keeps every label in the view", () => {
+    const { OkfLocal } = okfLocal();
+    const other = okfLocal().OkfLocal;
+    const ids = ["hub"];
+    const links = [];
+    for (let k = 1; k <= 300; k++) { ids.push(`s${k}-${"q".repeat(k % 30)}`); links.push(k % 2 ? [0, k] : [k, 0]); }
+    // Mixed lengths, then 39 labels of 24 characters: more than 20 rows can hold, so some
+    // fall back to their own place (clamped), and may overlap (A11) but never leave the view.
+    for (const [hops, every] of [[1, null], [2, null], [1, "z".repeat(40)], [2, "z".repeat(40)]]) {
+      const r = OkfLocal.build(siteIndex(ids, links), 0, hops);
+      const texts = r.nodes.map((n) => every || ids[n.key]);
+      const halves = r.nodes.map((n) => (n.dist === 0 ? 20 : 12));
+      const placed = OkfLocal.labels(r.nodes, texts, halves);
+      assert(r.nodes.length === OkfLocal.CAP && placed.length === OkfLocal.CAP, `hops ${hops}: ${placed.length} labels`);
+      assert(JSON.stringify(placed) === JSON.stringify(OkfLocal.labels(r.nodes, texts, halves)), `hops ${hops}: two layouts in one window differ`);
+      assert(JSON.stringify(placed) === JSON.stringify(other.labels(r.nodes, texts, halves)), `hops ${hops}: two windows disagree`);
+      placed.forEach((p, k) => {
+        const b = boxOf(p.text, p.x, p.y, p.anchor, k === 0);
+        assert(b.x1 >= MARGIN - 0.1 && b.x2 <= view.width - MARGIN + 0.1 && b.y1 >= MARGIN - 0.1 && b.y2 <= view.height - MARGIN + 0.1,
+          `hops ${hops}: label "${p.text}" at (${p.x}, ${p.y}) ${p.anchor} leaves the view`);
+      });
+    }
+  });
+
+  check("local graph: labels() at the cap with two rings (20 + 19) keeps every label in the view, the bottom of the outer ring included", () => {
+    const { OkfLocal } = okfLocal();
+    const index = star(20, 19, 0, 40);
+    const r = OkfLocal.build(index, 0, 2);
+    assert(r.nodes.length === OkfLocal.CAP && r.nodes.some((n) => n.dist === 2), "this case needs both rings at the cap");
+    const texts = r.nodes.map(() => "z".repeat(40));
+    const placed = OkfLocal.labels(r.nodes, texts, r.nodes.map((n) => (n.dist === 0 ? 20 : 12)));
+    placed.forEach((p, k) => {
+      const b = boxOf(p.text, p.x, p.y, p.anchor, k === 0);
+      assert(b.x1 >= MARGIN - 0.1 && b.x2 <= view.width - MARGIN + 0.1 && b.y1 >= MARGIN - 0.1 && b.y2 <= view.height - MARGIN + 0.1,
+        `label ${k} at (${p.x}, ${p.y}) ${p.anchor} leaves the view`);
+    });
+  });
+
+  check("local graph: labels() refuses mismatched or non-finite input with a TypeError", () => {
+    const window = okfLocal();
+    const nodes = [{ x: 149, y: 118, dist: 0, key: 0 }];
+    for (const args of [[nodes, [], [1]], [nodes, ["a"], []], [nodes, ["a"], [NaN]], [[{ x: Infinity, y: 0 }], ["a"], [1]], [[{ x: 1, y: 1 }], ["a"], [-1]], [null, [], []]]) {
+      let threw = null;
+      try { window.OkfLocal.labels(...args); } catch (e) { threw = e; }
+      assert(threw instanceof window.TypeError, `labels(${JSON.stringify(args)}) did not throw a TypeError`);
+    }
+  });
+}
+
 function register(h) {
   registerPure(h);
   registerPage(h);
   registerList(h);
   registerListPins(h);
   registerChrome(h);
+  registerLabels(h);
 }
 
 module.exports = { register };
