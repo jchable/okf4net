@@ -574,6 +574,7 @@ public static class HtmlWriter
         "okf-toc.js",
         "okf-page.js",
         // P2: local graph
+        "okf-local.js",
     ];
 
     /// <summary>
