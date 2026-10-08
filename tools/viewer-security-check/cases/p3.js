@@ -1450,11 +1450,521 @@ function registerFacets(h) {
   });
 }
 
+// The vocabulary of §12.2, for P3's SVG: element names, attribute names, and
+// the only values `id` and `transform` may take.
+const SVG_NS = "http://www.w3.org/2000/svg";
+const SVG_ELEMENTS = new Set(["svg", "g", "circle", "rect", "path", "line", "text", "title", "defs", "marker"]);
+const SVG_ATTRIBUTES = new Set(["viewBox", "width", "height", "class", "aria-hidden", "focusable", "role", "aria-label",
+  "tabindex", "id", "cx", "cy", "r", "x", "y", "x1", "y1", "x2", "y2", "d", "stroke-width", "stroke-dasharray",
+  "text-anchor", "dominant-baseline", "marker-end", "refX", "refY", "markerWidth", "markerHeight", "orient", "transform"]);
+
+function assertFixedSvg(h, doc) {
+  const layout = doc.getElementById("okf-graph-layout");
+  for (const svg of doc.querySelectorAll("svg")) {
+    h.assert(layout.contains(svg) || svg.closest("#okf-tools") || svg.closest("body > .okf-palette-backdrop"),
+      "an <svg> sits outside the chrome containers");
+  }
+  for (const node of layout.querySelectorAll("*")) {
+    if (node.namespaceURI !== SVG_NS) { continue; }
+    h.assert(SVG_ELEMENTS.has(node.localName), `SVG element <${node.localName}> is outside §12.2`);
+    for (const attr of Array.from(node.attributes)) {
+      h.assert(SVG_ATTRIBUTES.has(attr.name), `attribute ${attr.name} on <${node.localName}> is outside §12.2`);
+      if (attr.name === "id") { h.assert(/^okf-[a-z0-9-]+$/.test(attr.value), `id "${attr.value}" is not a fixed okf- value`); }
+      if (attr.name === "class") {
+        h.assert(attr.value.split(/\s+/).every((c) => /^okf-[a-z0-9-]+$/.test(c)), `class "${attr.value}" is not made of fixed okf- names`);
+      }
+      if (attr.name === "transform") {
+        h.assert(/^translate\(-?[0-9.]+ -?[0-9.]+\) scale\([0-9.]+\)$/.test(attr.value), `transform "${attr.value}"`);
+      }
+    }
+  }
+}
+
+function viewportTransform(doc) {
+  const m = /^translate\((-?[0-9.]+) (-?[0-9.]+)\) scale\(([0-9.]+)\)$/.exec(
+    doc.querySelector("#okf-graph-canvas g.okf-graph-viewport").getAttribute("transform"));
+  return { a: Number(m[1]), b: Number(m[2]), s: Number(m[3]) };
+}
+
+// The geometry of the drawing: view transform, node shapes and label
+// positions, edge ends. Not the roving tabindex, which legitimately depends
+// on where the reader went before.
+function drawingText(doc) {
+  const parts = [doc.querySelector("#okf-graph-canvas g.okf-graph-viewport").getAttribute("transform")];
+  for (const { g, name } of drawnNodes(doc)) {
+    const p = labelPoint(g);
+    parts.push(`${name}@${p.x},${p.y}`);
+  }
+  for (const l of doc.querySelectorAll("#okf-graph-canvas line")) {
+    parts.push(["x1", "y1", "x2", "y2"].map((a) => l.getAttribute(a)).join(","));
+  }
+  return parts.join("|");
+}
+
+// okf-sim.js with NODE_LIMIT lowered, to reach the threshold with the
+// fixture; refuses to run if the line it patches has changed.
+function lowLimitSim(limit) {
+  const source = fs.readFileSync(SIM_FILE, "utf8");
+  const line = "var NODE_LIMIT = 1500;";
+  if (!source.includes(line)) { throw new Error(`okf-sim.js no longer holds "${line}": update lowLimitSim`); }
+  return source.replace(line, `var NODE_LIMIT = ${limit};`);
+}
+
+// okf-sim.js with its default slice of work lowered, so a layout needs many
+// frames; refuses to run if the line it patches has changed.
+function slicedSim(work, source = fs.readFileSync(SIM_FILE, "utf8")) {
+  const line = "sliceWork: 100000,";
+  if (!source.includes(line)) { throw new Error(`okf-sim.js no longer holds "${line}": update slicedSim`); }
+  return source.replace(line, `sliceWork: ${work},`);
+}
+
+// okf-sim.js followed by a wrapper that records each simulation the page
+// creates and whether it was cancelled (window.OKF_TEST_SIMS).
+function recordingSim(source) {
+  return `${source}\n;(function () {
+  var real = window.OkfSim;
+  var made = [];
+  window.OKF_TEST_SIMS = made;
+  window.OkfSim = Object.freeze({
+    NODE_LIMIT: real.NODE_LIMIT,
+    create: function (graph, options) {
+      var sim = real.create(graph, options);
+      if (sim === null) { return null; }
+      var record = { cancelled: false };
+      made.push(record);
+      return Object.freeze({
+        step: function () { return sim.step(); },
+        positions: function () { return sim.positions(); },
+        stats: function () { return sim.stats(); },
+        cancel: function () { record.cancelled = true; return sim.cancel(); },
+      });
+    },
+  });
+})();`;
+}
+
+// jsdom has no layout: the graph canvas gets a client size while it is shown;
+// a hidden element measures 0, as in a browser.
+function sizedCanvas(width, height) {
+  return (w) => {
+    for (const [name, value] of [["clientWidth", width], ["clientHeight", height]]) {
+      Object.defineProperty(w.HTMLElement.prototype, name, {
+        configurable: true,
+        get() { return this.id === "okf-graph-canvas" && !this.hidden ? value : 0; },
+      });
+    }
+  };
+}
+
+// The drawn nodes in canvas pixels: each shape (centre and half size) and its
+// label (about 6.9 px an advance in Space Mono 11.5, ending 20 under the shape).
+function fittedBox(window, doc) {
+  const t = viewportTransform(doc);
+  const index = window.OKF_INDEX;
+  const box = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity, scale: t.s };
+  for (const { g, name } of drawnNodes(doc)) {
+    const ghost = name.startsWith("absent: ");
+    const kind = ghost ? "ghost" : window.OkfShapes.kindOf(index, conceptPos(index, name));
+    const half = window.OkfShapes.SIZES.graph[kind].size / 2;
+    const p = labelPoint(g);
+    const cy = p.y - half - 16;
+    const wide = Math.max(half, g.querySelector("text").textContent.length * 6.9 / 2);
+    box.minX = Math.min(box.minX, t.a + (p.x - wide) * t.s);
+    box.maxX = Math.max(box.maxX, t.a + (p.x + wide) * t.s);
+    box.minY = Math.min(box.minY, t.b + (cy - half) * t.s);
+    box.maxY = Math.max(box.maxY, t.b + (cy + half + 20) * t.s);
+  }
+  return box;
+}
+
+// The fit leaves 56 px around the drawing and touches them on the tighter axis.
+function assertFitted(h, window, doc, width, height, when) {
+  const b = fittedBox(window, doc);
+  const m = 56;
+  const eps = 2;
+  h.assert(b.scale < 1.5, `${when}: the fit hit its 1.5x cap (${b.scale}): the canvas is too large for this check`);
+  h.assert(b.minX >= m - eps && b.maxX <= width - m + eps && b.minY >= m - eps && b.maxY <= height - m + eps,
+    `${when}: the drawing spans x ${b.minX.toFixed(1)}..${b.maxX.toFixed(1)}, y ${b.minY.toFixed(1)}..${b.maxY.toFixed(1)} in a ${width} x ${height} canvas`);
+  h.assert(b.maxX - b.minX >= width - 2 * m - eps || b.maxY - b.minY >= height - 2 * m - eps,
+    `${when}: the drawing fills neither axis of a ${width} x ${height} canvas: it was fitted to another size`);
+}
+
+// The node count of "only p3-graph/d's type" and that type's index: the
+// limit at which that narrowing draws and the whole bundle does not.
+async function narrowedLimit(h) {
+  const probe = (await h.openPage("index.html")).OKF_INDEX;
+  const keepType = probe.concepts[conceptPos(probe, "p3-graph/d")].typeIndex;
+  const kept = probe.concepts.map((c, i) => (c.typeIndex === keepType ? i : -1)).filter((i) => i >= 0);
+  const ghostsKept = new Set(probe.edges.filter((e) => e[3] === 1 && kept.includes(e[0])).map((e) => e[1]));
+  return { keepType, count: kept.length + ghostsKept.size };
+}
+
+// The node count of "only p3-graph/d's type" and that type's index: the
+// limit at which that narrowing draws and the whole bundle does not.
+async function narrowedLimit(h) {
+  const probe = (await h.openPage("index.html")).OKF_INDEX;
+  const keepType = probe.concepts[conceptPos(probe, "p3-graph/d")].typeIndex;
+  const kept = probe.concepts.map((c, i) => (c.typeIndex === keepType ? i : -1)).filter((i) => i >= 0);
+  const ghostsKept = new Set(probe.edges.filter((e) => e[3] === 1 && kept.includes(e[0])).map((e) => e[1]));
+  return { keepType, count: kept.length + ghostsKept.size };
+}
+
+function registerDrawing(h) {
+  h.checkAsync("drawing: the injected scheduler drives the layout to its end; nothing is timed", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    const canvas = doc.getElementById("okf-graph-canvas");
+    h.assert(scheduler.pending() > 0 && canvas.getAttribute("data-okf-layout") === "running", "the layout did not wait for the scheduler");
+    scheduler.flush();
+    h.assert(canvas.getAttribute("data-okf-layout") === "done", "the layout did not end");
+    const index = window.OKF_INDEX;
+    const names = drawnNodes(doc).map((n) => n.name);
+    const want = index.concepts.map((c) => c.id).concat(index.ghosts.map((g) => `absent: ${g.id}`));
+    h.assert(JSON.stringify(names) === JSON.stringify(want), `drawn nodes: ${names.join(" | ")}`);
+    for (const { g, name } of drawnNodes(doc)) {
+      const p = labelPoint(g);
+      h.assert(Number.isFinite(p.x) && Number.isFinite(p.y), `${name} is at a non-finite position`);
+    }
+    assertFixedSvg(h, doc);
+  });
+
+  h.checkAsync("drawing: the page draws okf-sim's layout of the visible graph, nodes and links in index order", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    const index = window.OKF_INDEX;
+    const N = index.concepts.length;
+    const edges = index.edges.filter(([f, t, , g]) => !(g === 0 && f === t)).map(([f, t, , g]) => [f, g === 1 ? N + t : t]);
+    const expected = loadSim().create({ nodeCount: N + index.ghosts.length, edges });
+    runToEnd(h, expected, 100000, "expected layout");
+    const positions = expected.positions();
+    const initial = drawnNodes(doc).map((n) => labelPoint(n.g).x);
+    scheduler.flush();
+    const nodes = drawnNodes(doc);
+    const round = (v) => Math.round(v * 100) / 100;
+    nodes.forEach(({ g, name }, slot) => {
+      const p = labelPoint(g);
+      h.assert(Math.abs(p.x - round(positions[2 * slot])) < 0.006, `${name} is drawn at x ${p.x}, the layout says ${positions[2 * slot]}`);
+      // The label sits at cy + size / 2 + 16 (G11): y checks the layout and the baseline.
+      const size = window.OkfShapes.SIZES.graph[slot < N ? window.OkfShapes.kindOf(index, slot) : "ghost"].size;
+      h.assert(Math.abs(p.y - (round(positions[2 * slot + 1]) + size / 2 + 16)) < 0.02, `${name} is drawn at y ${p.y}, the layout says ${positions[2 * slot + 1]} (+ ${size / 2 + 16})`);
+    });
+    h.assert(nodes.some((n, slot) => n.g && Math.abs(labelPoint(n.g).x - initial[slot]) > 1), "the drawing never left the initial layout");
+  });
+
+  h.checkAsync("drawing: hostile titles stay inert in node names; the SVG keeps its fixed vocabulary", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    scheduler.flush();
+    const g = nodeNamed(doc, "p3-graph/hostile");
+    h.assert(g && g.getAttribute("aria-label").startsWith('<img src=x onerror="window.__pwned=32">Hostile'), "the hostile title is not the node's name");
+    click(window, g);
+    h.assert(doc.getElementById("okf-graph-layout").querySelectorAll("img, [onerror]").length === 0, "an element or handler from bundle text reached the page");
+    h.assert(window.__pwned === undefined, "bundle text executed");
+    assertFixedSvg(h, doc);
+  });
+
+  h.checkAsync("drawing: a layout cut into many frames ends the same as one cut into few, and stays running until its last frame", async () => {
+    const whole = await openGraph(h);
+    whole.scheduler.flush();
+    const wholeFrames = whole.scheduler.ran();
+    const sliced = await openGraph(h, { override: { "assets/okf-sim.js": slicedSim(300) } });
+    const canvas = sliced.doc.getElementById("okf-graph-canvas");
+    let frames = 0;
+    while (sliced.scheduler.pending() > 0) {
+      h.assert(canvas.getAttribute("data-okf-layout") === "running", `the layout read "${canvas.getAttribute("data-okf-layout")}" before its last frame (frame ${frames})`);
+      sliced.scheduler.frames(1);
+      frames++;
+      h.assert(frames < 100000, "the sliced layout did not end");
+    }
+    h.assert(frames >= wholeFrames + 10, `the patched simulation ran ${frames} frames, the default ${wholeFrames}: slicing is not exercised`);
+    h.assert(canvas.getAttribute("data-okf-layout") === "done", "the sliced layout never read done");
+    h.assert(drawingText(whole.doc) === drawingText(sliced.doc), "two slicings of one graph drew two different layouts");
+  });
+
+  h.checkAsync("drawing: rapid filter changes cancel the running layout; the last one wins", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    scheduler.frames(1);
+    const types = facetInputs(doc, "type");
+    for (let k = 0; k < 6; k++) {
+      setChecked(window, types[k % types.length], false);
+      setChecked(window, types[k % types.length], true);
+    }
+    setChecked(window, types[0], false);
+    const before = scheduler.ran();
+    // A stale frame must not touch the page: the layout reads "done" only
+    // once the last layout's own last frame has run.
+    const canvas = doc.getElementById("okf-graph-canvas");
+    while (scheduler.pending() > 0) {
+      scheduler.frames(1);
+      if (canvas.getAttribute("data-okf-layout") === "done") {
+        h.assert(scheduler.pending() === 0, "a cancelled layout's frame marked the layout done");
+      }
+    }
+    const reference = await openGraph(h);
+    setChecked(reference.window, facetInputs(reference.doc, "type")[0], false);
+    const referenceFrames = reference.scheduler.pending();
+    const refBefore = reference.scheduler.ran();
+    reference.scheduler.flush();
+    h.assert(drawingText(doc) === drawingText(reference.doc), "the interrupted page drew another graph than a direct one");
+    // Each cancelled layout returns at its next frame without stepping or
+    // rescheduling: at most one extra callback per cancelled generation.
+    const extra = (scheduler.ran() - before) - (reference.scheduler.ran() - refBefore);
+    h.assert(extra <= 13 && referenceFrames >= 1, `${extra} extra frames ran after twelve cancelled layouts`);
+  });
+
+  h.checkAsync("drawing: edges -- one per merged link, opposite pair offset, ghost links dashed, no self-loop line", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    scheduler.flush();
+    const index = window.OKF_INDEX;
+    const lines = Array.from(doc.querySelectorAll("#okf-graph-canvas line.okf-graph-edge"));
+    const selfLoops = index.edges.filter(([f, t, , g]) => g === 0 && f === t).length;
+    h.assert(lines.length === index.edges.length - selfLoops, `${lines.length} lines for ${index.edges.length} merged links (${selfLoops} self-loop)`);
+    const ghostLines = lines.filter((l) => l.classList.contains("okf-graph-edge-ghost"));
+    h.assert(ghostLines.length === index.edges.filter((e) => e[3] === 1).length, "ghost links are not all marked");
+    for (const l of lines) {
+      h.assert(["x1", "y1", "x2", "y2"].every((a) => Number.isFinite(Number(l.getAttribute(a)))), "an edge has a non-finite end");
+      h.assert(l.getAttribute("marker-end") === "url(#okf-graph-arrow)", "an unselected edge lacks its arrow");
+    }
+    // twin-a <-> twin-b: lines are drawn in index edge order, so the two
+    // opposite links are found by position; they are parallel, 6 apart
+    // (each shifted 3 to its own left).
+    const ta = conceptPos(index, "p3-graph/twin-a");
+    const tb = conceptPos(index, "p3-graph/twin-b");
+    const drawn = index.edges.filter(([f, t, , g]) => !(g === 0 && f === t));
+    const ab = lines[drawn.findIndex(([f, t, , g]) => g === 0 && f === ta && t === tb)];
+    const ba = lines[drawn.findIndex(([f, t, , g]) => g === 0 && f === tb && t === ta)];
+    h.assert(ab && ba, "the twin links are not drawn");
+    const end = (l, n) => Number(l.getAttribute(n));
+    const dx = end(ab, "x2") - end(ab, "x1");
+    const dy = end(ab, "y2") - end(ab, "y1");
+    const length = Math.sqrt(dx * dx + dy * dy);
+    const px = (end(ba, "x1") + end(ba, "x2")) / 2 - end(ab, "x1");
+    const py = (end(ba, "y1") + end(ba, "y2")) / 2 - end(ab, "y1");
+    const gap = Math.abs(px * dy - py * dx) / length;
+    h.assert(Math.abs(gap - 6) < 0.05, `the opposite links are ${gap} apart, not 6`);
+  });
+
+  h.checkAsync("drawing: dim keeps unmatched nodes drawn, dimmed and counted; labels can be hidden", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    scheduler.flush();
+    const index = window.OKF_INDEX;
+    const total = drawnNodes(doc).length;
+    setChecked(window, facetInputs(doc, "display")[1], true);
+    const cType = index.concepts[conceptPos(index, "p3-graph/c")].typeIndex;
+    setChecked(window, facetInputs(doc, "type")[cType], false);
+    scheduler.flush();
+    h.assert(drawnNodes(doc).length === total, "dim mode removed nodes");
+    const dimmed = drawnNodes(doc).filter((n) => n.g.classList.contains("okf-graph-dim")).map((n) => n.name);
+    const want = index.concepts.filter((c) => c.typeIndex === cType).map((c) => c.id);
+    h.assert(JSON.stringify(dimmed) === JSON.stringify(want), `dimmed: ${dimmed.join(", ")}`);
+    const matched = index.concepts.length - want.length;
+    h.assert(doc.getElementById("okf-graph-status").textContent.startsWith(`showing ${matched} of `), "the status does not count matches in dim mode");
+    setChecked(window, facetInputs(doc, "display")[0], false);
+    h.assert(doc.querySelector("#okf-graph-canvas svg").classList.contains("okf-graph-nolabels"), "labels were not hidden");
+  });
+
+  h.checkAsync("drawing: above NODE_LIMIT nothing is drawn, the list stands in, and narrowing draws again", async () => {
+    // The limit is the node count of "only p3-graph/d's type": that
+    // narrowing must draw, the whole bundle must not.
+    const probe = (await h.openPage("index.html")).OKF_INDEX;
+    const keepType = probe.concepts[conceptPos(probe, "p3-graph/d")].typeIndex;
+    const kept = probe.concepts.map((c, i) => (c.typeIndex === keepType ? i : -1)).filter((i) => i >= 0);
+    const ghostsKept = new Set(probe.edges.filter((e) => e[3] === 1 && kept.includes(e[0])).map((e) => e[1]));
+    const limit = kept.length + ghostsKept.size;
+    const all = probe.concepts.length + probe.ghosts.length;
+    h.assert(limit >= 2 && all > limit, `the fixture no longer separates the narrowed graph (${limit}) from the whole (${all})`);
+    const { window, doc, scheduler } = await openGraph(h, { override: { "assets/okf-sim.js": lowLimitSim(limit) } });
+    const index = window.OKF_INDEX;
+    const status = doc.getElementById("okf-graph-status");
+    h.assert(status.textContent === `${all} concepts match ${EMDASH} narrow the filters to draw the graph`, `status: ${status.textContent}`);
+    h.assert(doc.querySelector("#okf-graph-canvas svg") === null && scheduler.pending() === 0, "something was drawn or scheduled above the limit");
+    const list = doc.getElementById("okf-graph-list");
+    const toggle = doc.querySelector("#okf-graph-zoom .okf-graph-list-toggle");
+    h.assert(!list.hidden && toggle.disabled && toggle.getAttribute("aria-pressed") === "true", "the list does not stand in for the drawing");
+    facetInputs(doc, "type").forEach((input, k) => { if (k !== keepType) { setChecked(window, input, false); } });
+    scheduler.flush();
+    h.assert(drawnNodes(doc).length === limit && list.hidden && !toggle.disabled, "narrowing to the limit did not draw");
+  });
+
+  h.checkAsync("drawing: the view is fitted to the canvas's real size, labels included, and again when the canvas comes back from the list", async () => {
+    const W = 340;
+    const H = 260;
+    const { window, doc, scheduler } = await openGraph(h, { beforeParse: sizedCanvas(W, H) });
+    scheduler.flush();
+    assertFitted(h, window, doc, W, H, "after the first layout");
+    // A hidden canvas measures 0: whatever is laid out meanwhile is fitted to
+    // the 800 x 600 fallback, so showing the canvas must fit again.
+    const toggle = doc.querySelector("#okf-graph-zoom .okf-graph-list-toggle");
+    click(window, toggle);
+    h.assert(doc.getElementById("okf-graph-canvas").hidden, "List did not hide the canvas");
+    const index = window.OKF_INDEX;
+    const cType = index.concepts[conceptPos(index, "p3-graph/c")].typeIndex;
+    setChecked(window, facetInputs(doc, "type")[cType], false);
+    scheduler.flush();
+    click(window, toggle);
+    h.assert(!doc.getElementById("okf-graph-canvas").hidden, "List did not show the canvas again");
+    assertFitted(h, window, doc, W, H, "after coming back from the list");
+  });
+
+  h.checkAsync("drawing: the first fit after the node limit is the canvas's real size, not the fallback", async () => {
+    const limit = await narrowedLimit(h);
+    const W = 340;
+    const H = 260;
+    const { window, doc, scheduler } = await openGraph(h, { override: { "assets/okf-sim.js": lowLimitSim(limit.count) }, beforeParse: sizedCanvas(W, H) });
+    facetInputs(doc, "type").forEach((input, k) => { if (k !== limit.keepType) { setChecked(window, input, false); } });
+    h.assert(drawnNodes(doc).length === limit.count, "narrowing to the limit did not draw");
+    // before any frame: the first fit, made while the canvas was still hidden
+    assertFitted(h, window, doc, W, H, "at the first draw after the limit");
+    scheduler.flush();
+    assertFitted(h, window, doc, W, H, "after the layout");
+  });
+
+  h.checkAsync("drawing: a label wider than its shape counts in the fit", async () => {
+    const W = 340;
+    const H = 260;
+    // Two linked concepts whose labels are far wider than their shapes: the
+    // labels, not the shapes, set the horizontal extent.
+    const long = patchIndex((idx) => {
+      idx.concepts = idx.concepts.slice(0, 2);
+      idx.concepts[0].id = `p3-graph/${"a".repeat(34)}`;
+      idx.concepts[1].id = `p3-graph/${"b".repeat(34)}`;
+      idx.ghosts = [];
+      idx.edges = [[0, 1, 1, 0]];
+    });
+    const { window, doc, scheduler } = await openGraph(h, { beforeParse: (w) => { sizedCanvas(W, H)(w); long(w); } });
+    scheduler.flush();
+    h.assert(drawnNodes(doc).length === 2, "the patched bundle does not draw two nodes");
+    const b = fittedBox(window, doc);
+    h.assert(b.minX >= 56 - 2 && b.maxX <= W - 56 + 2, `a label sticks out: the drawing spans x ${b.minX.toFixed(1)}..${b.maxX.toFixed(1)}`);
+  });
+
+  h.checkAsync("drawing: going over the limit mid-layout cancels the simulation and leaves nothing behind; a rebuild cancels the old one", async () => {
+    const limit = await narrowedLimit(h);
+    const { window, doc, scheduler } = await openGraph(h, { override: { "assets/okf-sim.js": recordingSim(slicedSim(40, lowLimitSim(limit.count))) } });
+    const types = facetInputs(doc, "type");
+    types.forEach((input, k) => { if (k !== limit.keepType) { setChecked(window, input, false); } });
+    const sims = window.OKF_TEST_SIMS;
+    h.assert(sims.length === 1 && !sims[0].cancelled, "narrowing to the limit did not start one simulation");
+    scheduler.frames(1);
+    // Another type, then dropped again: new layouts, each old one cancelled.
+    const other = (limit.keepType + 1) % types.length;
+    setChecked(window, types[other], true);
+    setChecked(window, types[other], false);
+    h.assert(sims.length >= 2 && sims.slice(0, -1).every((s) => s.cancelled) && !sims[sims.length - 1].cancelled,
+      `rebuilds left ${sims.filter((s) => !s.cancelled).length} of ${sims.length} simulations running`);
+    scheduler.frames(1);
+    // Over the limit, mid-layout.
+    setChecked(window, types[other], true);
+    setChecked(window, types[(other + 1) % types.length], true);
+    const canvas = doc.getElementById("okf-graph-canvas");
+    h.assert(canvas.querySelector("svg") === null && !canvas.hasAttribute("data-okf-layout"), "the drawing or its layout mark survived the limit");
+    h.assert(sims.every((s) => s.cancelled), "a simulation was left running over the limit");
+    // Stale frames must not touch the page.
+    scheduler.flush();
+    h.assert(canvas.querySelector("svg") === null && !canvas.hasAttribute("data-okf-layout"), "a stale frame drew over the limit");
+  });
+
+  h.checkAsync("drawing: a click selects the node; its out links are blue and end at the target, its in links are blue too, from their own source (G14)", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    scheduler.flush();
+    const index = window.OKF_INDEX;
+    const N = index.concepts.length;
+    const ta = conceptPos(index, "p3-graph/twin-a");
+    click(window, nodeNamed(doc, "p3-graph/twin-a"));
+    const selected = drawnNodes(doc).filter((n) => n.g.classList.contains("okf-selected")).map((n) => n.name);
+    h.assert(JSON.stringify(selected) === JSON.stringify(["p3-graph/twin-a"]), `selected: ${selected.join(", ")}`);
+    const lines = Array.from(doc.querySelectorAll("#okf-graph-canvas line.okf-graph-edge"));
+    const drawn = index.edges.filter(([f, t, , g]) => !(g === 0 && f === t));
+    h.assert(lines.length === drawn.length, "edge count changed");
+    const nodes = drawnNodes(doc);
+    const radius = (key) => window.OkfShapes.SIZES.graph[key < N ? window.OkfShapes.kindOf(index, key) : "ghost"].size / 2;
+    // the shape's centre: the label is 16 under its bottom edge
+    const at = (key) => {
+      const p = labelPoint(nodes[key].g);
+      return { x: p.x, y: p.y - radius(key) - 16 };
+    };
+    let outs = 0;
+    let ins = 0;
+    lines.forEach((l, i) => {
+      const [f, t, , g] = drawn[i];
+      const to = g === 1 ? N + t : t;
+      const out = f === ta;
+      const inward = !out && to === ta;
+      if (out) { outs++; }
+      if (inward) { ins++; }
+      h.assert(l.classList.contains("okf-graph-edge-out") === out, `edge ${i}: out class`);
+      h.assert(l.classList.contains("okf-graph-edge-in") === inward, `edge ${i}: in class`);
+      h.assert(l.getAttribute("marker-end") === (out || inward ? "url(#okf-graph-arrow-sel)" : "url(#okf-graph-arrow)"), `edge ${i}: marker`);
+      const d = (x, y, key) => Math.hypot(x - at(key).x, y - at(key).y);
+      const x1 = Number(l.getAttribute("x1"));
+      const y1 = Number(l.getAttribute("y1"));
+      const x2 = Number(l.getAttribute("x2"));
+      const y2 = Number(l.getAttribute("y2"));
+      // The tail leaves the source's edge, the arrow ends 2 before the target's
+      // (3 aside at most, for an opposite pair).
+      h.assert(d(x2, y2, to) <= radius(to) + 2 + 3.05, `edge ${i}: the arrow end is not at the target`);
+      h.assert(d(x1, y1, f) <= radius(f) + 3.05, `edge ${i}: the tail is not at the source`);
+      h.assert((x2 - x1) * (at(to).x - at(f).x) + (y2 - y1) * (at(to).y - at(f).y) > 0, `edge ${i}: the arrow points away from the target`);
+    });
+    h.assert(outs > 0 && ins > 0, `the fixture gives twin-a ${outs} out and ${ins} in links`);
+    // The list selects the same way; the drawing follows.
+    showList(window, doc);
+    const button = Array.from(doc.querySelectorAll("#okf-graph-list .okf-graph-list-select")).find((b) => b.textContent === "p3-graph/twin-b");
+    click(window, button);
+    const after = drawnNodes(doc).filter((n) => n.g.classList.contains("okf-selected")).map((n) => n.name);
+    h.assert(JSON.stringify(after) === JSON.stringify(["p3-graph/twin-b"]), `selected from the list: ${after.join(", ")}`);
+  });
+
+  h.checkAsync("drawing: ghost nodes wear the ghost classes, concept nodes do not", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    scheduler.flush();
+    const nodes = drawnNodes(doc);
+    const ghosts = nodes.filter((n) => n.name.startsWith("absent: "));
+    h.assert(ghosts.length === window.OKF_INDEX.ghosts.length && ghosts.length > 0, "the ghosts are not all drawn");
+    for (const { g, name } of nodes) {
+      const isGhost = name.startsWith("absent: ");
+      h.assert(g.classList.contains("okf-graph-ghost") === isGhost, `${name}: ghost class`);
+      h.assert(g.querySelector("text").classList.contains("okf-graph-ghost-label") === isGhost, `${name}: ghost label class`);
+    }
+  });
+
+  h.checkAsync("drawing: a double click offers the page through a cancelable okf:navigate; a ghost has none", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    scheduler.flush();
+    const events = [];
+    doc.addEventListener("okf:navigate", (e) => { events.push({ href: e.detail.href, cancelable: e.cancelable }); e.preventDefault(); });
+    const dbl = (target) => target.dispatchEvent(new window.MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+    const g = nodeNamed(doc, "p3-graph/twin-a");
+    click(window, g);
+    const open = doc.querySelector("#okf-graph-detail a.okf-graph-open").getAttribute("href");
+    dbl(g);
+    h.assert(events.length === 1 && events[0].cancelable && events[0].href === open, `events: ${JSON.stringify(events)} for ${open}`);
+    const ghost = drawnNodes(doc).find((n) => n.name.startsWith("absent: ")).g;
+    dbl(ghost);
+    h.assert(events.length === 1, "a ghost offered a page");
+  });
+
+  h.checkAsync("drawing: styling changes (labels, selection) restyle the drawing without laying it out again (R14)", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    scheduler.flush();
+    const canvas = doc.getElementById("okf-graph-canvas");
+    const before = drawnNodes(doc).map((n) => n.g);
+    const text = drawingText(doc);
+    const ran = scheduler.ran();
+    setChecked(window, facetInputs(doc, "display")[0], false);
+    click(window, nodeNamed(doc, "p3-graph/twin-a"));
+    setChecked(window, facetInputs(doc, "display")[0], true);
+    h.assert(scheduler.pending() === 0 && scheduler.ran() === ran, "a style change scheduled a layout");
+    h.assert(canvas.getAttribute("data-okf-layout") === "done", "the layout mark left done");
+    const after = drawnNodes(doc).map((n) => n.g);
+    h.assert(after.length === before.length && after.every((g, i) => g === before[i]), "the nodes were rebuilt");
+    h.assert(drawingText(doc) === text, "the geometry changed with a style");
+  });
+}
+
 function register(h) {
   registerSim(h);
   registerPurity(h);
   registerGraphPage(h);
   registerFacets(h);
+  registerDrawing(h);
 }
 
 module.exports = { register };

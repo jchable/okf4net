@@ -60,7 +60,7 @@
 
   // Later sections plug into these; each runs its functions in the order
   // they were added.
-  var hooks = { beforeRefresh: [], refresh: [], select: [], node: [], drawing: [] };
+  var hooks = { beforeRefresh: [], refresh: [], select: [], node: [], drawing: [], show: [] };
   function run(list, arg) {
     for (var k = 0; k < list.length; k++) { list[k](arg); }
   }
@@ -228,8 +228,10 @@
   // drawing when the reader asks for it, and always above NODE_LIMIT (A6).
   function updateMode() {
     var showList = listMode || view.over;
+    var wasHidden = canvas.hidden;
     listBox.hidden = !showList;
     canvas.hidden = showList;
+    if (wasHidden && !showList) { run(hooks.show); }
     listButton.setAttribute("aria-pressed", showList ? "true" : "false");
     listButton.disabled = view.over;
     if (showList && listStale) {
@@ -570,6 +572,315 @@
     refresh();
     renderDrawer();
   });
+
+  // === drawing ===
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  // Spec §12.5: read once. A clobbered value (an element named
+  // OKF_SCHEDULER) is not a function and is ignored.
+  var schedule = typeof window.OKF_SCHEDULER === "function"
+    ? window.OKF_SCHEDULER
+    : function (callback) { window.requestAnimationFrame(callback); };
+  var REDRAW_EVERY = 25;
+  var drawing = null;
+  var simulation = null;
+  var generation = 0;
+  var transform = { a: 0, b: 0, s: 1 };
+  var userMovedView = false;
+  var intent = -1;
+  var suppressClick = false;
+  var nodeOfElement = new Map();
+
+  function svgEl(name, className) {
+    var created = document.createElementNS(SVG_NS, name);
+    if (className) { created.setAttribute("class", className); }
+    return created;
+  }
+
+  function num(v) {
+    return String(Math.round(v * 100) / 100);
+  }
+
+  function marker(id, size, className) {
+    var m = svgEl("marker");
+    m.setAttribute("id", id);
+    m.setAttribute("viewBox", "0 0 10 10");
+    m.setAttribute("refX", "9");
+    m.setAttribute("refY", "5");
+    m.setAttribute("markerWidth", String(size));
+    m.setAttribute("markerHeight", String(size));
+    m.setAttribute("orient", "auto-start-reverse");
+    var head = svgEl("path", className);
+    head.setAttribute("d", "M0 0 L10 5 L0 10 Z");
+    m.appendChild(head);
+    return m;
+  }
+
+  function open(key) {
+    if (key < 0 || key >= N) { return; }
+    var href = site.resolve(root, index.concepts[key].path);
+    var event = new CustomEvent("okf:navigate", { cancelable: true, detail: { href: href } });
+    if (document.dispatchEvent(event)) { window.location.assign(href); }
+  }
+
+  function makeNode(key) {
+    var kind = kindOf(key);
+    var size = shapes.SIZES.graph[kind];
+    var g = shapes.node(kind, 0, 0, size.size, size);
+    g.setAttribute("tabindex", "-1");
+    g.setAttribute("role", "button");
+    g.setAttribute("aria-label", key < N
+      ? index.concepts[key].title + ", " + shapes.typeLabel(index.concepts[key].type)
+      : nameOf(key));
+    if (key >= N) { g.classList.add("okf-graph-ghost"); }
+    var title = svgEl("title");
+    title.textContent = nameOf(key);
+    g.insertBefore(title, g.firstChild);
+    var label = svgEl("text", key < N ? "okf-graph-label" : "okf-graph-label okf-graph-ghost-label");
+    label.setAttribute("text-anchor", "middle");
+    label.textContent = key < N ? lastSegment(idOf(key)) : nameOf(key);
+    g.appendChild(label);
+    var node = { key: key, kind: kind, size: size, g: g, title: title, label: label, x: 0, y: 0 };
+    g.addEventListener("click", function () {
+      if (suppressClick) {
+        suppressClick = false;
+        return;
+      }
+      select(key, "user");
+    });
+    g.addEventListener("dblclick", function () { open(key); });
+    nodeOfElement.set(g, node);
+    run(hooks.node, node);
+    return node;
+  }
+
+  // The node's shapes are redrawn by OkfShapes at the new centre (absolute
+  // coordinates, no transform); its <g>, <title> and label are kept, so focus
+  // and listeners survive the move.
+  function moveNode(node, x, y) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) { return; }
+    var fresh = shapes.node(node.kind, x, y, node.size.size, node.size);
+    var child = node.title.nextSibling;
+    while (child && child !== node.label) {
+      var next = child.nextSibling;
+      node.g.removeChild(child);
+      child = next;
+    }
+    while (fresh.firstChild) { node.g.insertBefore(fresh.firstChild, node.label); }
+    node.label.setAttribute("x", num(x));
+    node.label.setAttribute("y", num(y + node.size.size / 2 + 16));
+    node.x = x;
+    node.y = y;
+  }
+
+  // G12: from the source's edge to the target's, arrow at the target; two
+  // opposite edges are shifted 3 apart, each to its own left.
+  function placeEdges() {
+    drawing.edges.forEach(function (e) {
+      var a = drawing.nodes[e.from];
+      var b = drawing.nodes[e.to];
+      var dx = b.x - a.x;
+      var dy = b.y - a.y;
+      var d = Math.sqrt(dx * dx + dy * dy);
+      if (!(d > 0) || !Number.isFinite(d)) { return; }
+      var ux = dx / d;
+      var uy = dy / d;
+      var ox = e.reverse ? -uy * 3 : 0;
+      var oy = e.reverse ? ux * 3 : 0;
+      var ra = a.size.size / 2;
+      var rb = b.size.size / 2 + 2;
+      e.line.setAttribute("x1", num(a.x + ux * ra + ox));
+      e.line.setAttribute("y1", num(a.y + uy * ra + oy));
+      e.line.setAttribute("x2", num(b.x - ux * rb + ox));
+      e.line.setAttribute("y2", num(b.y - uy * rb + oy));
+    });
+  }
+
+  // Classes only: selection ring and blue edges (G14), dimmed nodes (G8),
+  // hidden labels (G7). A theme change redraws nothing.
+  function styleDrawing() {
+    if (!drawing) { return; }
+    drawing.svg.classList.toggle("okf-graph-nolabels", !state.labels);
+    drawing.nodes.forEach(function (node) {
+      node.g.classList.toggle("okf-selected", node.key === selected);
+      node.g.classList.toggle("okf-graph-dim", node.key < N && view.matched[node.key] !== 1);
+    });
+    drawing.edges.forEach(function (e) {
+      var out = edgeFrom[e.k] === selected;
+      var inward = !out && edgeTo[e.k] === selected;
+      e.line.classList.toggle("okf-graph-edge-out", out);
+      e.line.classList.toggle("okf-graph-edge-in", inward);
+      e.line.setAttribute("marker-end", out || inward ? "url(#okf-graph-arrow-sel)" : "url(#okf-graph-arrow)");
+    });
+  }
+
+  function canvasSize() {
+    return { w: canvas.clientWidth || 800, h: canvas.clientHeight || 600 };
+  }
+
+  function setTransform(a, b, s) {
+    if (!Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(s) || s <= 0) { return; }
+    transform = { a: a, b: b, s: s };
+    if (drawing) {
+      drawing.viewport.setAttribute("transform",
+        "translate(" + num(a) + " " + num(b) + ") scale(" + String(Math.round(s * 1000) / 1000) + ")");
+    }
+  }
+
+  var MIN_SCALE = 0.05;
+  var MAX_SCALE = 4;
+
+  // Space Mono 11.5 px: about 7 px an advance, to count a label's width.
+  var LABEL_ADVANCE = 7;
+
+  // "Fit": every drawn node, its label (estimated width, 20 below the shape)
+  // inside the canvas with a margin, never above 1.5x.
+  function fit() {
+    if (!drawing || drawing.nodes.length === 0) { return; }
+    var minX = Infinity;
+    var minY = Infinity;
+    var maxX = -Infinity;
+    var maxY = -Infinity;
+    drawing.nodes.forEach(function (node) {
+      var h = node.size.size / 2;
+      var wide = Math.max(h, node.label.textContent.length * LABEL_ADVANCE / 2);
+      minX = Math.min(minX, node.x - wide);
+      maxX = Math.max(maxX, node.x + wide);
+      minY = Math.min(minY, node.y - h);
+      maxY = Math.max(maxY, node.y + h + 20);
+    });
+    var size = canvasSize();
+    var margin = 56;
+    var s = Math.min((size.w - 2 * margin) / Math.max(maxX - minX, 1), (size.h - 2 * margin) / Math.max(maxY - minY, 1));
+    s = Math.max(MIN_SCALE, Math.min(1.5, s));
+    setTransform(size.w / 2 - (minX + maxX) / 2 * s, size.h / 2 - (minY + maxY) / 2 * s, s);
+  }
+
+  function centerOn(key) {
+    var slot = drawing ? drawing.slotOf[key] : -1;
+    if (slot < 0) { return; }
+    var node = drawing.nodes[slot];
+    var size = canvasSize();
+    setTransform(size.w / 2 - node.x * transform.s, size.h / 2 - node.y * transform.s, transform.s);
+  }
+
+  // Until the reader pans or zooms, the view follows the layout: fitted, and
+  // centred on the node a fragment selected.
+  function applyIntent() {
+    if (!drawing || userMovedView) { return; }
+    fit();
+    if (intent >= 0) { centerOn(intent); }
+  }
+
+  function paint(positions) {
+    drawing.nodes.forEach(function (node, slot) { moveNode(node, positions[2 * slot], positions[2 * slot + 1]); });
+    placeEdges();
+    styleDrawing();
+    applyIntent();
+  }
+
+  function stopLayout() {
+    generation++;
+    if (simulation) {
+      simulation.cancel();
+      simulation = null;
+    }
+  }
+
+  function startLayout() {
+    stopLayout();
+    var mine = generation;
+    var current = Sim.create({ nodeCount: drawing.keys.length, edges: drawing.simEdges }, null);
+    if (current === null) { return; }
+    simulation = current;
+    canvas.setAttribute("data-okf-layout", "running");
+    var paintedAt = 0;
+    paint(current.positions());
+    function frame() {
+      if (mine !== generation) { return; }
+      var r = current.step();
+      if (r.done || r.iterations - paintedAt >= REDRAW_EVERY) {
+        paintedAt = r.iterations;
+        paint(current.positions());
+      }
+      if (r.done) {
+        simulation = null;
+        canvas.setAttribute("data-okf-layout", "done");
+        return;
+      }
+      schedule(frame);
+    }
+    schedule(frame);
+  }
+
+  function buildDrawing() {
+    stopLayout();
+    clear(canvas);
+    nodeOfElement = new Map();
+    var keys = view.keys.slice();
+    var slotOf = new Int32Array(total).fill(-1);
+    keys.forEach(function (key, slot) { slotOf[key] = slot; });
+    var svg = svgEl("svg", "okf-graph-svg");
+    svg.setAttribute("role", "group");
+    svg.setAttribute("aria-label", "Graph of " + plural(keys.length, "node", "nodes"));
+    var defs = svgEl("defs");
+    defs.appendChild(marker("okf-graph-arrow", 7, "okf-graph-arrowhead"));
+    defs.appendChild(marker("okf-graph-arrow-sel", 8, "okf-graph-arrowhead-sel"));
+    svg.appendChild(defs);
+    var viewport = svgEl("g", "okf-graph-viewport");
+    var edgeLayer = svgEl("g", "okf-graph-edges");
+    var nodeLayer = svgEl("g", "okf-graph-nodes");
+    viewport.appendChild(edgeLayer);
+    viewport.appendChild(nodeLayer);
+    svg.appendChild(viewport);
+    var edges = [];
+    var simEdges = [];
+    var pairs = new Set();
+    for (var k = 0; k < M; k++) {
+      var f = edgeFrom[k];
+      var t = edgeTo[k];
+      // A self-link is listed (drawer, list) but not drawn; the simulation
+      // takes no loop (§12.5).
+      if (f < 0 || f === t || slotOf[f] < 0 || slotOf[t] < 0) { continue; }
+      var line = svgEl("line", t >= N ? "okf-graph-edge okf-graph-edge-ghost" : "okf-graph-edge");
+      line.setAttribute("marker-end", "url(#okf-graph-arrow)");
+      edgeLayer.appendChild(line);
+      edges.push({ k: k, line: line, from: slotOf[f], to: slotOf[t], reverse: false });
+      simEdges.push([slotOf[f], slotOf[t]]);
+      pairs.add(slotOf[f] * keys.length + slotOf[t]);
+    }
+    edges.forEach(function (e) { e.reverse = pairs.has(e.to * keys.length + e.from); });
+    drawing = { keys: keys, slotOf: slotOf, svg: svg, viewport: viewport, nodes: [], edges: edges, simEdges: simEdges };
+    drawing.nodes = keys.map(function (key) {
+      var node = makeNode(key);
+      nodeLayer.appendChild(node.g);
+      return node;
+    });
+    canvas.appendChild(svg);
+    userMovedView = false;
+    setTransform(transform.a, transform.b, transform.s);
+    run(hooks.drawing);
+    startLayout();
+  }
+
+  hooks.refresh.push(function () {
+    if (view.over) {
+      stopLayout();
+      clear(canvas);
+      canvas.removeAttribute("data-okf-layout");
+      drawing = null;
+      nodeOfElement = new Map();
+      return;
+    }
+    if (drawing && sameKeys(drawing.keys, view.keys)) {
+      styleDrawing();
+      return;
+    }
+    buildDrawing();
+  });
+  hooks.select.push(styleDrawing);
+  // The canvas was hidden (list mode, or above the limit) and is drawn again:
+  // its size was unknown, so fit again unless the reader moved the view.
+  hooks.show.push(applyIntent);
 
   // === start-up ===
   buildFacets();
