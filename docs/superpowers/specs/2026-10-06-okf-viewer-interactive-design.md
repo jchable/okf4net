@@ -1,9 +1,21 @@
 # Viewer interactif (`okf-render`) — design
 
 Date : 2026-10-06
-Statut : révision 7 (2026-10-07) : P1 livré et recetté ; arbitrages A15–A30
-rendus ; plans de P1.1, P2 et P3 rédigés en parallèle depuis la révision 6,
-leurs lacunes de spec tranchées ici ; aucun point ouvert (§13)
+Statut : révision 8 (2026-10-08) : P1 et P1.1 livrés et recettés ; arbitrages
+A15–A30 rendus ; plans de P1.1, P2 et P3 rédigés en parallèle depuis la
+révision 6, leurs lacunes de spec tranchées ici ; aucun point ouvert (§13)
+
+**Révision 8 (revue finale de P1.1, 2026-10-08)** : la spec dit ce que P1.1 a
+livré là où elle le sous-décrivait. Surface publique de `OKF4net.Viewer`
+énumérée (§2.1 : propriétés `init` sur `IndexConcept`, `ViewerIndex`,
+`ViewerFrontmatterEntry`, `ViewerPage`, `ViewerSite` ; records publics
+`ViewerPageHead` et `IndexType`). Ligne de P3 dans `Write` telle que fusionnée,
+`RenderGraph(site, graphPage)` par la surcharge privée de `RenderDocumentStart`,
+et nom de la page du graphe épinglé sur le site par `Write` (§12.0, §12.5).
+Taille du binaire `okf-render` AOT remesurée en tête de P1.1 (§11.0). Les
+archives de publication d'`okf-render` portent ses licences (`NOTICE`,
+`LICENSE`, `LICENSE.GPL-3.0`, `licenses/OFL-*.txt`), arbitrage du
+propriétaire sur la revue finale.
 
 **Révision 7 (alignement sur les trois plans, 2026-10-07)** : les plans de
 P1.1, P2 et P3 ont relevé des trous de la révision 6 et les ont comblés par
@@ -177,8 +189,20 @@ navigateur (§4.4), et la projection doit rester pure.
 Les changements se limitent à `src/OKF4net.Viewer/` (projection, écriture,
 assets, polices), à `tools/viewer-security-check/`, aux tests du viewer, au
 smoke test AOT de `ci.yml`, et à la documentation (`CLAUDE.md`, README, ROADMAP,
-`NOTICE`). Les types publics de `OKF4net.Viewer` (`ViewerSite`, `ViewerPage`)
-gagnent des propriétés `init` ; ce n'est pas le cœur.
+`NOTICE`). La surface publique de `OKF4net.Viewer` (pas le cœur) gagne, en
+P1.1 (révision 8 : liste complète de ce qui a été livré) :
+
+- des propriétés `init` : `IndexConcept.TypeIndex` et `IndexConcept.Description`
+  (§12.1) ; `ViewerIndex.Types` (§12.1) ; `ViewerFrontmatterEntry.Structured`
+  et `ViewerFrontmatterEntry.Extra` (C6, A27) ; `ViewerPage.DisplayBody` (C4)
+  et `ViewerPage.Head` (C5) ; `ViewerSite.BundleName` et
+  `ViewerSite.GraphPagePath` (§12.3, A25) ;
+- deux records publics : `ViewerPageHead(Type, Status, Trust, Verifier,
+  VerifiedDate, MoreVerifications, StaleAfterDate)` (les puces, C5) et
+  `IndexType(Name, Count, Slot)` (une entrée de la table des types, §12.1).
+
+Tout le reste (`HtmlWriter.ViewKind`, `RenderDocumentStart`, `ScriptTag`,
+`GraphPagePathOf`, `ViewerAssets.Text`/`Bytes`…) est `internal`.
 `src/OKF4net.Render/` n'a pas besoin de nouvelle option. Si l'implémentation
 découvre un besoin dans le cœur, c'est un changement de spec, pas un ajout
 silencieux.
@@ -942,6 +966,10 @@ total (budget 300 000 ; Inter et Inter Tight sont servies par Google en un seul
 fichier variable chacune, Space Mono en deux), détail dans
 `src/OKF4net.Viewer/Assets/fonts/README.md` ; binaire `okf-render` AOT
 (win-x64) — 3 802 624 octets avant, 3 945 984 après (+143 360, +3,8 %).
+Remesure (révision 8, 2026-10-08, win-x64, publication locale) : 4 080 128
+octets en tête de P1.1 (`002eeb9`, `okf-sim.js` de P3 compris) ; 4 107 264
+octets sur la branche de correctifs de la revue finale (P2 tâche 1 et P3
+tâche 3 fusionnées en plus).
 Vérification `file://` (recette `--slices p1.1 --only fonts`) : Chrome 154.0.8037.98
 ok, Edge 154.0.4258.37 ok, Firefox de Playwright 155.0 ok (WebKit 26.6 de
 Playwright : ok, hors procédure), Firefox installé 157.0.1 ok (page racine et
@@ -1382,12 +1410,12 @@ créé vide d'avance, aucune page ne charge un script qui n'existe pas encore.
 | `ViewerAssets.cs` : lecture générique, interne, d'une ressource embarquée par son chemin (`Text`, `Bytes`) ; les propriétés publiques de P1 restent | P1.1 | P2 et P3 n'y ajoutent rien |
 | `OKF4net.Viewer.csproj` : `LogicalName` qui garde le chemin relatif sous `Assets/` (séparateurs normalisés en `/` à la lecture), exclusion de `fonts/README.md` | P1.1 | — |
 | `HtmlWriter.WriteAssets` : écrit sous `assets/` **toutes** les ressources embarquées, en ordre ordinal de leur chemin, puis `okf-index.js` (et `okf-fonts.css` si A26 l'exige) | P1.1 | P2, P3 : un fichier ajouté sous `Assets/` est embarqué et écrit sans autre changement |
-| `HtmlWriter.Write` | P1.1, qui y calcule la variable locale `graphPage = GraphPagePathOf(site)` (celle du garde et de l'en-tête) ; P3 insère, sous le repère `// P3: graph page (§12.5)`, la seule ligne qui écrit la page du graphe, exactement `WriteFile(outDir, root, verifiedDirs, graphPage, RenderGraph(site), written);` | — |
+| `HtmlWriter.Write` | P1.1, qui y calcule une fois la variable locale `graphPage = GraphPagePathOf(site)` (celle du garde et de l'en-tête) puis l'épingle sur le site (`site = site with { GraphPagePath = graphPage };`, révision 8 : tout appel ultérieur de `GraphPagePathOf(site)` ne fait plus que valider ce nom explicite, sans reparcourir les pages) ; P3 insère, sous le repère `// P3: graph page (§12.5)`, la seule ligne qui écrit la page du graphe, telle que fusionnée : `WriteFile(outDir, root, verifiedDirs, graphPage, RenderGraph(site, graphPage), written);` (révision 8 ; la révision 7 prescrivait `RenderGraph(site)`) | — |
 | `HtmlWriter.PageScripts` : table des scripts de fin de `<body>` des pages de concept et de l'index (§12.6) | P1.1 ; P2 insère `"okf-local.js"` sous le repère `// P2: local graph`, en fin de table | P3 ne la lit pas |
 | `HtmlWriter.ViewKind` (`internal enum { Page, Index, Graph }`, écrit `page`, `index`, `graph` dans `data-okf-view`) ; `RenderDocumentStart(ViewerSite site, ViewKind view, string title, string rootPrefix, string? conceptId)` (du `<!doctype>` à la fin de l'en-tête, `<head>` compris), `RenderHeader(site, view, rootPrefix, conceptId)` pour les trois vues ; `ScriptTag(string rootPrefix, string name)`, qui rend une ligne entière `<script src="{préfixe}assets/{nom}"></script>` suivie de `\n` (préfixe et nom passés par `HtmlEscape`) pour un fichier écrit sous `assets/` ; `GraphPagePathOf(site)` (valeur explicite validée, sinon `SiteModel.FreeGraphPagePath`) ; `HtmlEscape`, `RootPrefix` — tous `internal static` | P1.1, tests xunit des trois vues compris | P3 (appel) |
 | `HtmlWriter.RenderShell`, `RenderPage`, `RenderIndex`, tête de page, « Referenced by » | P1.1 | — |
 | `HtmlWriter.GuardNoCaseCollisions`, amorcé avec `index.html` et le nom de la page du graphe | P1.1 | — |
-| `HtmlWriter.RenderGraph`, sous le repère `// P3: RenderGraph (§12.5)` placé juste avant `HtmlEscape` | P3 (création) : la **seule** méthode qui écrit `graph.html` et y charge `okf-sim.js` et `okf-graph.js` | — |
+| `HtmlWriter.RenderGraph(ViewerSite site, string graphPage)` (privée), sous le repère `// P3: RenderGraph (§12.5)` placé juste avant `HtmlEscape` | P3 (création) : la **seule** méthode qui écrit `graph.html` et y charge `okf-sim.js` et `okf-graph.js` | — |
 | `Assets/okf-shapes.js`, `okf-page.js`, `fonts/` (et son outil de vendorisation `tools/viewer-fonts/vendor-fonts.js`) ; révisions d'`okf-site.js`, `okf-theme.js`, `okf-explorer.js`, `okf-palette.js`, `okf-toc.js` | P1.1 | P2, P3 (API de §12.2, `OkfSite`) |
 | `Assets/okf-local.js` | P2 (création) | — |
 | `Assets/okf-sim.js`, `Assets/okf-graph.js` | P3 (création) | — |
@@ -1697,11 +1725,14 @@ soi-même n'en est pas un) ; il révèle `#okf-context` si celui-ci était cach�
 
 ### 12.5 `graph.html` (propriétaire : P3)
 
-- Écrite par `HtmlWriter.RenderGraph(site)` (P3, seule méthode qui l'écrit,
-  §12.0) au chemin de la page du graphe (§12.3 : la variable `graphPage` de
-  `Write`, jamais recalculée par P3), racine, préfixe `""` :
-  `RenderDocumentStart(site, HtmlWriter.ViewKind.Graph, "Global graph", "",
-  null)` (P1.1, appelé sans modification), puis le squelette ci-dessous, puis
+- Écrite par `HtmlWriter.RenderGraph(site, graphPage)` (P3, seule méthode qui
+  l'écrit, §12.0) au chemin de la page du graphe (§12.3 : la variable
+  `graphPage` de `Write`, passée en argument, jamais recalculée par P3), racine,
+  préfixe `""` : `RenderDocumentStart(site, graphPage, ViewKind.Graph,
+  "Global graph", "", null)`, la surcharge privée de P1.1 qui reçoit le nom
+  déjà calculé (révision 8 : c'est la ligne fusionnée ; la révision 7
+  prescrivait la surcharge interne sans `graphPage`, qui recalculait le nom et
+  reste l'entrée des tests xunit), puis le squelette ci-dessous, puis
   ses propres balises `ScriptTag("", nom)` — `okf-index.js`, `okf-site.js`,
   `okf-shapes.js`, `okf-palette.js`, `okf-sim.js`, `okf-graph.js` ; sans payload, sans
   `marked`, `viewer.js`, `okf-toc.js`, `okf-explorer.js`, `okf-page.js`,
