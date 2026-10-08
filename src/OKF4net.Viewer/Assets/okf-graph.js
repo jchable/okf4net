@@ -202,6 +202,9 @@
 
   var listMode = false;
   var listButton = el("button", "okf-graph-tool okf-graph-list-toggle", "List");
+  // Zoom in, Zoom out and Fit: they act on the drawing, so they rest while
+  // the list stands in for it.
+  var toolButtons = [];
   listButton.type = "button";
   listButton.setAttribute("aria-pressed", "false");
   listButton.setAttribute("aria-controls", "okf-graph-list");
@@ -234,6 +237,7 @@
     if (wasHidden && !showList) { run(hooks.show); }
     listButton.setAttribute("aria-pressed", showList ? "true" : "false");
     listButton.disabled = view.over;
+    toolButtons.forEach(function (button) { button.disabled = showList; });
     if (showList && listStale) {
       renderList();
       listStale = false;
@@ -591,7 +595,10 @@
   var transform = { a: 0, b: 0, s: 1 };
   var userMovedView = false;
   var intent = -1;
-  var suppressClick = false;
+  // When the pointerup that ended a drag was sent (its timeStamp), or null:
+  // the click that follows that release, within a moment, is the drag's.
+  var suppressedAt = null;
+  var SUPPRESS_WINDOW = 250;
   var nodeOfElement = new Map();
 
   function svgEl(name, className) {
@@ -644,11 +651,10 @@
     label.textContent = key < N ? lastSegment(idOf(key)) : nameOf(key);
     g.appendChild(label);
     var node = { key: key, kind: kind, size: size, g: g, title: title, label: label, x: 0, y: 0 };
-    g.addEventListener("click", function () {
-      if (suppressClick) {
-        suppressClick = false;
-        return;
-      }
+    g.addEventListener("click", function (e) {
+      var swallow = suppressedAt !== null && Math.abs(e.timeStamp - suppressedAt) <= SUPPRESS_WINDOW;
+      suppressedAt = null;
+      if (swallow) { return; }
       select(key, "user");
     });
     g.addEventListener("dblclick", function () { open(key); });
@@ -723,8 +729,18 @@
     return { w: canvas.clientWidth || 800, h: canvas.clientHeight || 600 };
   }
 
+  // No coordinate of the view or of a dragged node goes past this: far
+  // enough for any layout, near enough that num() never prints an exponent.
+  var COORD_LIMIT = 1e6;
+
+  function limited(v) {
+    return Math.max(-COORD_LIMIT, Math.min(COORD_LIMIT, v));
+  }
+
   function setTransform(a, b, s) {
     if (!Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(s) || s <= 0) { return; }
+    a = limited(a);
+    b = limited(b);
     transform = { a: a, b: b, s: s };
     if (drawing) {
       drawing.viewport.setAttribute("transform",
@@ -738,8 +754,20 @@
   // Space Mono 11.5 px: about 7 px an advance, to count a label's width.
   var LABEL_ADVANCE = 7;
 
-  // "Fit": every drawn node, its label (estimated width, 20 below the shape)
-  // inside the canvas with a margin, never above 1.5x.
+  // A node's shape and its label (estimated width, ending 20 below the
+  // shape), in graph coordinates; with `outline`, also its focus contour (G14:
+  // a square of side + 20, centred, its stroke half outside it). The one
+  // measure of what "the node" covers, for the fit and for bringing a focused
+  // node into view.
+  function nodeBox(node, outline) {
+    var h = node.size.size / 2;
+    var reach = outline ? h + 10 + node.size.focus / 2 : h;
+    var wide = Math.max(reach, node.label.textContent.length * LABEL_ADVANCE / 2);
+    return { l: node.x - wide, r: node.x + wide, t: node.y - reach, b: node.y + h + 20 };
+  }
+
+  // "Fit": every drawn node and its label inside the canvas with a margin,
+  // never above 1.5x.
   function fit() {
     if (!drawing || drawing.nodes.length === 0) { return; }
     var minX = Infinity;
@@ -747,12 +775,11 @@
     var maxX = -Infinity;
     var maxY = -Infinity;
     drawing.nodes.forEach(function (node) {
-      var h = node.size.size / 2;
-      var wide = Math.max(h, node.label.textContent.length * LABEL_ADVANCE / 2);
-      minX = Math.min(minX, node.x - wide);
-      maxX = Math.max(maxX, node.x + wide);
-      minY = Math.min(minY, node.y - h);
-      maxY = Math.max(maxY, node.y + h + 20);
+      var box = nodeBox(node);
+      minX = Math.min(minX, box.l);
+      maxX = Math.max(maxX, box.r);
+      minY = Math.min(minY, box.t);
+      maxY = Math.max(maxY, box.b);
     });
     var size = canvasSize();
     var margin = 56;
@@ -926,6 +953,10 @@
     resetFacets();
     intent = key;
     refresh();
+    // The refresh may have restored the focus to a node, and revealing it is
+    // the reader's keyboard talking, not a view they moved: a fragment is
+    // explicit navigation, it fits and centres whatever happened meanwhile.
+    userMovedView = false;
     select(key, "url");
     applyIntent();
   }
@@ -967,6 +998,7 @@
     var node = nodeOfKey(key);
     if (!node) { return; }
     setActive(key);
+    reveal(node);
     node.g.focus();
   }
 
@@ -1081,10 +1113,20 @@
     if (target >= 0) { focusNode(target); }
   }
 
+  // Set by any press, cleared by the next key: the focus a node takes in
+  // between came from the pointer.
+  var pointerFocus = false;
+  document.addEventListener("pointerdown", function () { pointerFocus = true; }, true);
+  document.addEventListener("keydown", function () { pointerFocus = false; }, true);
+
   hooks.node.push(function (node) {
     node.g.addEventListener("focus", function () {
       setActive(node.key);
       node.g.classList.add("okf-focused");
+      // Tab arrives here without focusNode(): the keyboard reveals. A press
+      // (left, right, a tap's compatibility mousedown) focuses the node under
+      // the pointer: that is not navigation, and the reader sees it.
+      if (!pointerFocus) { reveal(node); }
     });
     node.g.addEventListener("blur", function () { node.g.classList.remove("okf-focused"); });
   });
@@ -1147,6 +1189,193 @@
   // name for that.
   canvas.setAttribute("role", "group");
   canvas.setAttribute("aria-label", "Graph");
+
+  // === pan, zoom, drag ===
+  var MINUS = String.fromCharCode(0x2212);
+  // A press that moves under this many pixels is a click.
+  var DRAG_THRESHOLD = 3;
+  // A focused node is kept this far (px) inside the canvas, so its focus
+  // contour is too.
+  var REVEAL_MARGIN = 8;
+
+  // Zoom around (px, py), in canvas pixels. A zoom the clamps refuse, or on a
+  // hidden or absent drawing, moves nothing and does not count as the reader
+  // moving the view.
+  function zoomBy(factor, px, py) {
+    if (!drawing || canvas.hidden || !Number.isFinite(factor) || !Number.isFinite(px) || !Number.isFinite(py)) { return; }
+    var s = Math.max(MIN_SCALE, Math.min(MAX_SCALE, transform.s * factor));
+    if (s === transform.s) { return; }
+    setTransform(px - (px - transform.a) * (s / transform.s), py - (py - transform.b) * (s / transform.s), s);
+    userMovedView = true;
+  }
+
+  function toolButton(text, label, className, onClick) {
+    var button = el("button", className, text);
+    button.type = "button";
+    if (label) { button.setAttribute("aria-label", label); }
+    button.addEventListener("click", function () {
+      if (drawing && !canvas.hidden) { onClick(); }
+    });
+    zoomBox.insertBefore(button, listButton);
+    toolButtons.push(button);
+    return button;
+  }
+
+  toolButton("+", "Zoom in", "okf-graph-tool okf-graph-zoom-step", function () {
+    var size = canvasSize();
+    zoomBy(1.25, size.w / 2, size.h / 2);
+  });
+  toolButton(MINUS, "Zoom out", "okf-graph-tool okf-graph-zoom-step", function () {
+    var size = canvasSize();
+    zoomBy(1 / 1.25, size.w / 2, size.h / 2);
+  });
+  toolButton("Fit", null, "okf-graph-tool", function () {
+    userMovedView = false;
+    intent = -1;
+    applyIntent();
+  });
+
+  // One notch of a wheel (100 px, or 3 lines) is 1.1x, in proportion to the
+  // delta and never more than a notch an event: a trackpad sends many small
+  // ones. A delta of zero or not a number is not a zoom (and not taken: the
+  // page may scroll sideways); every other is, even where the clamps leave
+  // the view as it is, so that the page does not scroll under a reader who
+  // reached the limit.
+  canvas.addEventListener("wheel", function (e) {
+    if (!drawing) { return; }
+    if (!Number.isFinite(e.deltaY)) { return; }
+    var d = Math.max(-1000, Math.min(1000, e.deltaY));
+    if (e.deltaMode === 1) { d *= 33; } else if (e.deltaMode === 2) { d *= 400; }
+    if (!Number.isFinite(d) || d === 0) { return; }
+    e.preventDefault();
+    d = Math.max(-100, Math.min(100, d));
+    var r = canvas.getBoundingClientRect();
+    zoomBy(Math.pow(1.1, -d / 100), e.clientX - r.left, e.clientY - r.top);
+  }, { passive: false });
+
+  // A press that moves DRAG_THRESHOLD px or more drags: the background pans
+  // the view, a node moves alone (after the layout, which the drag stops:
+  // §4.2's determinism covers the initial layout only, and a dragged position
+  // feeds nothing back into it). Both are followed by the increment since the
+  // last event, so a wheel zoom in the middle of a drag cannot make the view
+  // jump back.
+  var gesture = null;
+
+  canvas.addEventListener("pointerdown", function (e) {
+    if (!drawing || e.button !== 0) { return; }
+    // A second pointer (a second finger) is not this drag; the same pointer
+    // pressing again is a new one.
+    if (gesture && gesture.id !== e.pointerId) { return; }
+    suppressedAt = null;
+    var node = null;
+    for (var t = e.target; t && t !== canvas; t = t.parentNode) {
+      if (nodeOfElement.has(t)) {
+        node = nodeOfElement.get(t);
+        break;
+      }
+    }
+    gesture = { id: e.pointerId, node: node, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, moved: false };
+  });
+
+  // Moves and releases are followed on window, not by pointer capture: a
+  // capture taken on press retargets a plain click (and dblclick) to the
+  // canvas, so the node would never be selected or opened.
+  window.addEventListener("pointermove", function (e) {
+    if (!gesture || e.pointerId !== gesture.id) { return; }
+    if (!drawing || (gesture.node && nodeOfElement.get(gesture.node.g) !== gesture.node)) {
+      // The drawing was rebuilt (or taken away) under the drag.
+      gesture = null;
+      return;
+    }
+    // A mouse released outside the window sends no pointerup: its next move
+    // says no button is down.
+    if (e.pointerType === "mouse" && e.buttons === 0) {
+      endGesture(e);
+      return;
+    }
+    if (!Number.isFinite(e.clientX) || !Number.isFinite(e.clientY)) { return; }
+    if (!gesture.moved) {
+      var dx = e.clientX - gesture.x0;
+      var dy = e.clientY - gesture.y0;
+      if (dx * dx + dy * dy < DRAG_THRESHOLD * DRAG_THRESHOLD) { return; }
+      gesture.moved = true;
+      // The view is the reader's from here on: nothing refits it.
+      userMovedView = true;
+      if (gesture.node && simulation) {
+        // The layout moved the node since the last paint: drag it from where
+        // the layout leaves it.
+        paint(simulation.positions());
+        stopLayout();
+        canvas.setAttribute("data-okf-layout", "done");
+      }
+    }
+    var mx = e.clientX - gesture.x;
+    var my = e.clientY - gesture.y;
+    gesture.x = e.clientX;
+    gesture.y = e.clientY;
+    if (gesture.node) {
+      moveNode(gesture.node, limited(gesture.node.x + mx / transform.s), limited(gesture.node.y + my / transform.s));
+      placeEdges();
+    } else {
+      setTransform(transform.a + mx, transform.b + my, transform.s);
+    }
+  });
+
+  // A drag that ends at pointerup swallows the click that follows that
+  // release (a moment after it, see SUPPRESS_WINDOW); a release the page never
+  // saw (outside the window) has no click to swallow.
+  function endGesture(e) {
+    if (!gesture || e.pointerId !== gesture.id) { return; }
+    if (gesture.moved && e.type === "pointerup") { suppressedAt = e.timeStamp; }
+    gesture = null;
+  }
+  // A cancelled pointer is followed by no click.
+  function dropGesture(e) {
+    if (gesture && e.pointerId === gesture.id) { gesture = null; }
+  }
+  // A touch captures the element it lands on, and a node drag redraws the
+  // shape of the node under the finger (moveNode replaces it): the browser
+  // then reports the capture lost, in the middle of a drag that goes on, and
+  // the pointerup or pointercancel still comes. So a node drag does not end
+  // there. A pan redraws nothing under the pointer (the edges are changed in
+  // place): a capture lost during one is not ours, and ends it.
+  function captureLost(e) {
+    if (gesture && !gesture.node) { dropGesture(e); }
+  }
+  // A click after a release over another element lands on their common
+  // ancestor, not on the node: it is the drag's too, once it came.
+  window.addEventListener("click", function () { suppressedAt = null; });
+  window.addEventListener("pointerup", endGesture);
+  window.addEventListener("pointercancel", dropGesture);
+  window.addEventListener("lostpointercapture", captureLost);
+  window.addEventListener("blur", function () { gesture = null; });
+
+  // 2.4.11: a focused node is not left outside the canvas, or under its
+  // edge. The view pans by the least that brings the node's shape, its label
+  // and its focus contour (G14, side + 20, stroke included) inside
+  // REVEAL_MARGIN (a box wider than the canvas is centred), and a view that
+  // moved is the reader's: it counts as one (the layout, the list's return, a
+  // rebuild's fit would otherwise take it back). It is keyboard navigation
+  // (arrows, paging, Tab: see pointerFocus), so a pointer press and a drag
+  // are left alone.
+  function revealShift(lo, hi, extent) {
+    if (hi - lo > extent - 2 * REVEAL_MARGIN) { return extent / 2 - (lo + hi) / 2; }
+    if (lo < REVEAL_MARGIN) { return REVEAL_MARGIN - lo; }
+    if (hi > extent - REVEAL_MARGIN) { return extent - REVEAL_MARGIN - hi; }
+    return 0;
+  }
+
+  function reveal(node) {
+    if (!drawing || canvas.hidden || gesture) { return; }
+    var size = canvasSize();
+    var box = nodeBox(node, true);
+    var s = transform.s;
+    var dx = revealShift(transform.a + box.l * s, transform.a + box.r * s, size.w);
+    var dy = revealShift(transform.b + box.t * s, transform.b + box.b * s, size.h);
+    if (dx === 0 && dy === 0) { return; }
+    setTransform(transform.a + dx, transform.b + dy, s);
+    userMovedView = true;
+  }
 
   // === start-up ===
   buildFacets();
