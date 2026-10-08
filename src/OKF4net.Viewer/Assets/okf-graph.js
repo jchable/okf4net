@@ -595,7 +595,10 @@
   var transform = { a: 0, b: 0, s: 1 };
   var userMovedView = false;
   var intent = -1;
-  var suppressClick = false;
+  // When the pointerup that ended a drag was sent (its timeStamp), or null:
+  // the click that follows that release, within a moment, is the drag's.
+  var suppressedAt = null;
+  var SUPPRESS_WINDOW = 250;
   var nodeOfElement = new Map();
 
   function svgEl(name, className) {
@@ -648,11 +651,10 @@
     label.textContent = key < N ? lastSegment(idOf(key)) : nameOf(key);
     g.appendChild(label);
     var node = { key: key, kind: kind, size: size, g: g, title: title, label: label, x: 0, y: 0 };
-    g.addEventListener("click", function () {
-      if (suppressClick) {
-        suppressClick = false;
-        return;
-      }
+    g.addEventListener("click", function (e) {
+      var swallow = suppressedAt !== null && Math.abs(e.timeStamp - suppressedAt) <= SUPPRESS_WINDOW;
+      suppressedAt = null;
+      if (swallow) { return; }
       select(key, "user");
     });
     g.addEventListener("dblclick", function () { open(key); });
@@ -753,12 +755,15 @@
   var LABEL_ADVANCE = 7;
 
   // A node's shape and its label (estimated width, ending 20 below the
-  // shape), in graph coordinates. The one measure of what "the node" covers,
-  // for the fit and for bringing a focused node into view.
-  function nodeBox(node) {
+  // shape), in graph coordinates; with `outline`, also its focus contour (G14:
+  // a square of side + 20, centred, its stroke half outside it). The one
+  // measure of what "the node" covers, for the fit and for bringing a focused
+  // node into view.
+  function nodeBox(node, outline) {
     var h = node.size.size / 2;
-    var wide = Math.max(h, node.label.textContent.length * LABEL_ADVANCE / 2);
-    return { l: node.x - wide, r: node.x + wide, t: node.y - h, b: node.y + h + 20 };
+    var reach = outline ? h + 10 + node.size.focus / 2 : h;
+    var wide = Math.max(reach, node.label.textContent.length * LABEL_ADVANCE / 2);
+    return { l: node.x - wide, r: node.x + wide, t: node.y - reach, b: node.y + h + 20 };
   }
 
   // "Fit": every drawn node and its label inside the canvas with a margin,
@@ -948,6 +953,10 @@
     resetFacets();
     intent = key;
     refresh();
+    // The refresh may have restored the focus to a node, and revealing it is
+    // the reader's keyboard talking, not a view they moved: a fragment is
+    // explicit navigation, it fits and centres whatever happened meanwhile.
+    userMovedView = false;
     select(key, "url");
     applyIntent();
   }
@@ -1104,13 +1113,20 @@
     if (target >= 0) { focusNode(target); }
   }
 
+  // Set by any press, cleared by the next key: the focus a node takes in
+  // between came from the pointer.
+  var pointerFocus = false;
+  document.addEventListener("pointerdown", function () { pointerFocus = true; }, true);
+  document.addEventListener("keydown", function () { pointerFocus = false; }, true);
+
   hooks.node.push(function (node) {
     node.g.addEventListener("focus", function () {
       setActive(node.key);
       node.g.classList.add("okf-focused");
-      // Tab arrives here without focusNode(); a press of the pointer is not
-      // navigation (reveal() leaves a drag alone).
-      reveal(node);
+      // Tab arrives here without focusNode(): the keyboard reveals. A press
+      // (left, right, a tap's compatibility mousedown) focuses the node under
+      // the pointer: that is not navigation, and the reader sees it.
+      if (!pointerFocus) { reveal(node); }
     });
     node.g.addEventListener("blur", function () { node.g.classList.remove("okf-focused"); });
   });
@@ -1250,7 +1266,7 @@
     // A second pointer (a second finger) is not this drag; the same pointer
     // pressing again is a new one.
     if (gesture && gesture.id !== e.pointerId) { return; }
-    suppressClick = false;
+    suppressedAt = null;
     var node = null;
     for (var t = e.target; t && t !== canvas; t = t.parentNode) {
       if (nodeOfElement.has(t)) {
@@ -1305,28 +1321,43 @@
     }
   });
 
-  // A drag that ends at pointerup swallows the click that follows it, if any
-  // (the next press clears the flag, so one that never comes is no harm).
+  // A drag that ends at pointerup swallows the click that follows that
+  // release (a moment after it, see SUPPRESS_WINDOW); a release the page never
+  // saw (outside the window) has no click to swallow.
   function endGesture(e) {
     if (!gesture || e.pointerId !== gesture.id) { return; }
-    if (gesture.moved) { suppressClick = true; }
+    if (gesture.moved && e.type === "pointerup") { suppressedAt = e.timeStamp; }
     gesture = null;
   }
-  // A cancelled or captured-away pointer is followed by no click.
+  // A cancelled pointer is followed by no click.
   function dropGesture(e) {
     if (gesture && e.pointerId === gesture.id) { gesture = null; }
   }
+  // A touch captures the element it lands on, and a node drag redraws the
+  // shape of the node under the finger (moveNode replaces it): the browser
+  // then reports the capture lost, in the middle of a drag that goes on, and
+  // the pointerup or pointercancel still comes. So a node drag does not end
+  // there. A pan redraws nothing under the pointer (the edges are changed in
+  // place): a capture lost during one is not ours, and ends it.
+  function captureLost(e) {
+    if (gesture && !gesture.node) { dropGesture(e); }
+  }
+  // A click after a release over another element lands on their common
+  // ancestor, not on the node: it is the drag's too, once it came.
+  window.addEventListener("click", function () { suppressedAt = null; });
   window.addEventListener("pointerup", endGesture);
   window.addEventListener("pointercancel", dropGesture);
-  window.addEventListener("lostpointercapture", dropGesture);
+  window.addEventListener("lostpointercapture", captureLost);
   window.addEventListener("blur", function () { gesture = null; });
 
   // 2.4.11: a focused node is not left outside the canvas, or under its
-  // edge. The view pans by the least that brings the node and its label
-  // inside REVEAL_MARGIN (a node wider than the canvas is centred), and a
-  // view that moved is the reader's: it counts as one (the layout, the
-  // list's return, a rebuild's fit would otherwise take it back). It is
-  // navigation, so a pointer drag is left alone.
+  // edge. The view pans by the least that brings the node's shape, its label
+  // and its focus contour (G14, side + 20, stroke included) inside
+  // REVEAL_MARGIN (a box wider than the canvas is centred), and a view that
+  // moved is the reader's: it counts as one (the layout, the list's return, a
+  // rebuild's fit would otherwise take it back). It is keyboard navigation
+  // (arrows, paging, Tab: see pointerFocus), so a pointer press and a drag
+  // are left alone.
   function revealShift(lo, hi, extent) {
     if (hi - lo > extent - 2 * REVEAL_MARGIN) { return extent / 2 - (lo + hi) / 2; }
     if (lo < REVEAL_MARGIN) { return REVEAL_MARGIN - lo; }
@@ -1337,7 +1368,7 @@
   function reveal(node) {
     if (!drawing || canvas.hidden || gesture) { return; }
     var size = canvasSize();
-    var box = nodeBox(node);
+    var box = nodeBox(node, true);
     var s = transform.s;
     var dx = revealShift(transform.a + box.l * s, transform.a + box.r * s, size.w);
     var dy = revealShift(transform.b + box.t * s, transform.b + box.b * s, size.h);

@@ -3249,7 +3249,10 @@ function registerPointer(h) {
       const name = g.querySelector("title").textContent;
       h.assert(Math.abs(after.s - before.s) < 1e-9, `${key} to ${name} changed the scale`);
       h.assert(inside(box), `${key} to ${name}: its box is x ${box.l.toFixed(1)}..${box.r.toFixed(1)}, y ${box.t.toFixed(1)}..${box.b.toFixed(1)} in ${W} x ${H}`);
-      for (const [axis, lo, hi, extent] of [["a", box.l, box.r, W], ["b", box.t, box.b, H]]) {
+      // What the reveal keeps inside: the node, its label and its focus contour.
+      const c = contourBox(doc, g);
+      const u = { l: Math.min(box.l, c.l), r: Math.max(box.r, c.r), t: Math.min(box.t, c.t), b: Math.max(box.b, c.b) };
+      for (const [axis, lo, hi, extent] of [["a", u.l, u.r, W], ["b", u.t, u.b, H]]) {
         if (Math.abs(after[axis] - before[axis]) > 0.01) {
           h.assert(Math.abs(lo - REVEAL_MARGIN) < 2 || Math.abs(hi - (extent - REVEAL_MARGIN)) < 2, `${key} to ${name}: shifted ${axis} beyond what the margin needs (${lo.toFixed(1)}..${hi.toFixed(1)} of ${extent})`);
         }
@@ -3364,6 +3367,333 @@ function registerPointer(h) {
   });
 }
 
+// A canvas whose client size a case changes after the page is drawn.
+function resizableCanvas(size) {
+  return (w) => {
+    for (const [name, key] of [["clientWidth", "w"], ["clientHeight", "h"]]) {
+      Object.defineProperty(w.HTMLElement.prototype, name, {
+        configurable: true,
+        get() { return this.id === "okf-graph-canvas" && !this.hidden ? size[key] : 0; },
+      });
+    }
+  };
+}
+
+// The centre of a drawn node in canvas pixels.
+function nodeCentre(window, doc, g) {
+  const t = viewportTransform(doc);
+  const index = window.OKF_INDEX;
+  const name = g.querySelector("title").textContent;
+  const kind = name.startsWith("absent: ") ? "ghost" : window.OkfShapes.kindOf(index, conceptPos(index, name));
+  const half = window.OkfShapes.SIZES.graph[kind].size / 2;
+  const p = labelPoint(g);
+  return { x: t.a + p.x * t.s, y: t.b + (p.y - half - 16) * t.s };
+}
+
+// The focus contour (G14: side + 20, dashed) of a node in canvas pixels, stroke included.
+function contourBox(doc, g) {
+  const t = viewportTransform(doc);
+  const r = g.querySelector(".okf-node-focus");
+  const [x, y, w, hh, sw] = ["x", "y", "width", "height", "stroke-width"].map((a) => Number(r.getAttribute(a)));
+  return { l: t.a + (x - sw / 2) * t.s, r: t.a + (x + w + sw / 2) * t.s, t: t.b + (y - sw / 2) * t.s, b: t.b + (y + hh + sw / 2) * t.s };
+}
+
+// okf-sim.js followed by a wrapper that records, for each simulation the
+// page creates, where it stood when it was cancelled (window.OKF_TEST_SIMS).
+function snapshotSim(source) {
+  return `${source}\n;(function () {
+  var real = window.OkfSim;
+  var made = [];
+  window.OKF_TEST_SIMS = made;
+  window.OkfSim = Object.freeze({
+    NODE_LIMIT: real.NODE_LIMIT,
+    create: function (graph, options) {
+      var sim = real.create(graph, options);
+      if (sim === null) { return null; }
+      var record = { cancelled: false, atCancel: null };
+      made.push(record);
+      return Object.freeze({
+        step: function () { return sim.step(); },
+        positions: function () { return sim.positions(); },
+        stats: function () { return sim.stats(); },
+        cancel: function () { record.cancelled = true; record.atCancel = Array.from(sim.positions()); return sim.cancel(); },
+      });
+    },
+  });
+})();`;
+}
+
+function keydown(window, doc, key) {
+  doc.dispatchEvent(new window.KeyboardEvent("keydown", { bubbles: true, cancelable: true, key }));
+}
+
+function registerPointerFix(h) {
+  h.checkAsync("fix I1: a fragment fits and centres even while a node has the focus -- with and without a rebuild", async () => {
+    for (const rebuild of [false, true]) {
+      const { window, doc, scheduler } = await openGraph(h);
+      scheduler.flush();
+      const fitted = viewportTransform(doc);
+      const index = window.OKF_INDEX;
+      const cType = index.concepts[conceptPos(index, "p3-graph/c")].typeIndex;
+      if (rebuild) {
+        setChecked(window, facetInputs(doc, "type")[cType], false);
+        scheduler.flush();
+      }
+      const a = nodeNamed(doc, "p3-graph/a");
+      a.focus();
+      // Zoom about the corner farthest from the focused node: the node is pushed out of the canvas.
+      const where = nodeCentre(window, doc, a);
+      const canvas = doc.getElementById("okf-graph-canvas");
+      for (let k = 0; k < 12; k++) { wheel(window, canvas, { deltaY: -100, clientX: where.x < 400 ? 790 : 10, clientY: where.y < 300 ? 590 : 10 }); }
+      const b = screenBox(window, doc, a);
+      h.assert(b.l < 0 || b.r > 800 || b.t < 0 || b.b > 600, `setup (rebuild ${rebuild}): the focused node is still inside`);
+      const target = rebuild ? "p3-graph/c" : "p3-graph/b";
+      const changed = nextHashChange(window);
+      window.location.hash = `#${target}`;
+      await changed;
+      scheduler.flush();
+      const t = viewportTransform(doc);
+      h.assert(Math.abs(t.s - fitted.s) < 0.001, `rebuild ${rebuild}: the fragment left the scale at ${t.s}, the fit is ${fitted.s}`);
+      const c = nodeCentre(window, doc, nodeNamed(doc, target));
+      h.assert(Math.abs(c.x - 400) < 1 && Math.abs(c.y - 300) < 1, `rebuild ${rebuild}: ${target} is drawn at (${c.x.toFixed(1)}, ${c.y.toFixed(1)}), not centred`);
+      h.assert(selectedName(doc) === target, `rebuild ${rebuild}: ${selectedName(doc)} is selected`);
+      h.assert(doc.activeElement && doc.activeElement.matches && doc.activeElement.matches("g.okf-node"), `rebuild ${rebuild}: the focus left the graph`);
+    }
+  });
+
+  h.checkAsync("fix I2: a touch drag on a node goes on although the browser loses the capture of the shape the node redraws", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    scheduler.flush();
+    const c = nodeNamed(doc, "p3-graph/c");
+    const s = viewportTransform(doc).s;
+    const p0 = labelPoint(c);
+    const touch = { pointerType: "touch", pointerId: 7 };
+    pointer(window, c, "pointerdown", 100, 100, touch);
+    for (let k = 1; k <= 5; k++) {
+      pointer(window, c, "pointermove", 100 + 8 * k, 100 + 6 * k, touch);
+      // The shape the touch captured was just replaced: the browser reports the capture lost, at the document.
+      doc.dispatchEvent(new window.PointerEvent("lostpointercapture", { bubbles: true, pointerId: 7, pointerType: "touch" }));
+    }
+    pointer(window, c, "pointerup", 140, 130, touch);
+    const p1 = labelPoint(c);
+    h.assert(Math.abs(p1.x - p0.x - 40 / s) < 0.05 && Math.abs(p1.y - p0.y - 30 / s) < 0.05, `the node moved by (${(p1.x - p0.x) * s}, ${(p1.y - p0.y) * s}) px, not (40, 30)`);
+    click(window, c);
+    h.assert(selectedName(doc) === null, "the dragged node was selected by the click that follows");
+    // A background pan is not redrawn under the pointer: a lost capture there is the browser's own, and ends it.
+    const t = viewportTransform(doc);
+    const svg = doc.querySelector("#okf-graph-canvas svg");
+    pointer(window, svg, "pointerdown", 10, 10, touch);
+    pointer(window, svg, "pointermove", 40, 30, touch);
+    doc.dispatchEvent(new window.PointerEvent("lostpointercapture", { bubbles: true, pointerId: 7, pointerType: "touch" }));
+    pointer(window, svg, "pointermove", 90, 90, touch);
+    h.assert(Math.abs(viewportTransform(doc).a - t.a - 30) < 0.01, "a pan went on after the capture was lost");
+  });
+
+  h.checkAsync("fix M1: the reveal covers the focus contour (G14, side + 20), not only the shape and its label", async () => {
+    const W = 340;
+    const H = 260;
+    const { window, doc, scheduler } = await openGraph(h, {
+      override: { "assets/okf-index.js": hubIndexSource(3), "assets/okf-sim.js": fixedSim(FAR_APART) },
+      beforeParse: sizedCanvas(W, H),
+    });
+    scheduler.flush();
+    for (let k = 0; k < 6; k++) { click(window, zoomButton(doc, "Zoom in")); }
+    tabStops(doc)[0].focus();
+    for (const key of ["Home", "PageDown", "PageDown", "PageDown", "PageUp", "End"]) {
+      h.key(window, doc.activeElement, { key });
+      const g = doc.activeElement;
+      const box = contourBox(doc, g);
+      const name = g.querySelector("title").textContent;
+      h.assert(box.l >= 0 && box.r <= W && box.t >= 0 && box.b <= H, `${key} to ${name}: the focus contour is x ${box.l.toFixed(1)}..${box.r.toFixed(1)}, y ${box.t.toFixed(1)}..${box.b.toFixed(1)} in ${W} x ${H}`);
+    }
+  });
+
+  h.checkAsync("fix M2: a press on a node (right button, touch's compatibility mouse) does not pan the view or make it the reader's; only keyboard focus reveals", async () => {
+    const size = { w: 600, h: 500 };
+    const { window, doc, scheduler } = await openGraph(h, {
+      override: { "assets/okf-index.js": hubIndexSource(3), "assets/okf-sim.js": fixedSim(FAR_APART) },
+      beforeParse: resizableCanvas(size),
+    });
+    scheduler.flush();
+    const fitted = JSON.stringify(viewportTransform(doc));
+    size.w = 200;
+    size.h = 150;
+    const leaf = nodeNamed(doc, "leaf3");
+    const clipped = () => { const b = screenBox(window, doc, leaf); return b.r > 200 || b.b > 150 || b.l < 0 || b.t < 0; };
+    h.assert(clipped(), "setup: leaf3 is inside the shrunk canvas");
+    // Right button: no gesture starts, the browser focuses the node on mousedown.
+    pointer(window, leaf, "pointerdown", 100, 100, { button: 2 });
+    leaf.focus();
+    pointer(window, leaf, "pointerup", 100, 100, { button: 2 });
+    h.assert(JSON.stringify(viewportTransform(doc)) === fitted, "a right-click's focus panned the view");
+    leaf.blur();
+    // A touch tap: pointerdown, pointerup, then the compatibility mousedown focuses the node.
+    pointer(window, leaf, "pointerdown", 100, 100, { pointerType: "touch", pointerId: 3 });
+    pointer(window, leaf, "pointerup", 100, 100, { pointerType: "touch", pointerId: 3 });
+    leaf.focus();
+    h.assert(JSON.stringify(viewportTransform(doc)) === fitted, "a tap's compatibility focus panned the view");
+    leaf.blur();
+    // Nothing made it the reader's view: the list's return fits the canvas as it is now.
+    const toggle = doc.querySelector("#okf-graph-zoom .okf-graph-list-toggle");
+    click(window, toggle);
+    click(window, toggle);
+    h.assert(JSON.stringify(viewportTransform(doc)) !== fitted, "setup: coming back from the list did not fit the shrunk canvas (the press made the view the reader's)");
+    // Keyboard focus (Tab, then the node takes the focus) reveals.
+    for (let k = 0; k < 9; k++) { click(window, zoomButton(doc, "Zoom in")); }
+    h.assert(clipped(), "setup: leaf3 is not clipped after zooming");
+    keydown(window, doc, "Tab");
+    leaf.focus();
+    h.assert(!clipped(), "Tab arrival did not reveal the node");
+  });
+
+  h.checkAsync("fix M2b: a reveal is left alone while a pointer gesture is active, whatever focuses the node", async () => {
+    const W = 340;
+    const H = 260;
+    const { window, doc, scheduler } = await openGraph(h, {
+      override: { "assets/okf-index.js": hubIndexSource(3), "assets/okf-sim.js": fixedSim(FAR_APART) },
+      beforeParse: sizedCanvas(W, H),
+    });
+    scheduler.flush();
+    for (let k = 0; k < 6; k++) { click(window, zoomButton(doc, "Zoom in")); }
+    const leaf = nodeNamed(doc, "leaf3");
+    const held = JSON.stringify(viewportTransform(doc));
+    pointer(window, leaf, "pointerdown", 100, 100);
+    keydown(window, doc, "Shift");
+    leaf.focus();
+    h.assert(JSON.stringify(viewportTransform(doc)) === held, "a node focused under a pointer press moved the view");
+    pointer(window, leaf, "pointerup", 100, 100);
+  });
+
+  h.checkAsync("fix M3: the click swallowed after a drag is the one that follows its release, not a later one", async () => {
+    // (1) a click long after the release (a screen reader's, say) selects.
+    {
+      const { window, doc, scheduler } = await openGraph(h);
+      scheduler.flush();
+      const a = nodeNamed(doc, "p3-graph/a");
+      pointer(window, a, "pointerdown", 100, 100);
+      pointer(window, a, "pointermove", 140, 140);
+      const up = new window.PointerEvent("pointerup", { bubbles: true, cancelable: true, clientX: 140, clientY: 140, button: 0, pointerId: 1 });
+      a.dispatchEvent(up);
+      const late = new window.MouseEvent("click", { bubbles: true, cancelable: true });
+      Object.defineProperty(late, "timeStamp", { value: up.timeStamp + 5000 });
+      a.dispatchEvent(late);
+      h.assert(selectedName(doc) === "p3-graph/a", "a click five seconds after a drag was swallowed");
+    }
+    // (2) released over the background: the click lands on the svg; the next click on a node selects.
+    {
+      const { window, doc, scheduler } = await openGraph(h);
+      scheduler.flush();
+      const a = nodeNamed(doc, "p3-graph/a");
+      const svg = doc.querySelector("#okf-graph-canvas svg");
+      pointer(window, a, "pointerdown", 100, 100);
+      pointer(window, a, "pointermove", 140, 140);
+      pointer(window, svg, "pointerup", 140, 140);
+      click(window, svg);
+      click(window, a);
+      h.assert(selectedName(doc) === "p3-graph/a", "a drag released over the background swallowed the next click on a node");
+    }
+    // (3) a mouse released outside the window: no click will come, so none is swallowed.
+    {
+      const { window, doc, scheduler } = await openGraph(h);
+      scheduler.flush();
+      const a = nodeNamed(doc, "p3-graph/a");
+      pointer(window, a, "pointerdown", 100, 100, { pointerType: "mouse", buttons: 1 });
+      pointer(window, a, "pointermove", 140, 140, { pointerType: "mouse", buttons: 1 });
+      pointer(window, a, "pointermove", 150, 150, { pointerType: "mouse", buttons: 0 });
+      click(window, a);
+      h.assert(selectedName(doc) === "p3-graph/a", "a mouse released outside the window left a click to swallow");
+    }
+  });
+
+  h.checkAsync("fix pins: wheel units, a clamped no-op, Fit forgetting the fragment, the drag's hold on the view, the last paint before the layout stops", async () => {
+    // Wheel units: a line is 33 px, a page 400 (then clamped to a notch).
+    {
+      const { window, doc, scheduler } = await openGraph(h);
+      scheduler.flush();
+      const canvas = doc.getElementById("okf-graph-canvas");
+      for (const [init, want] of [[{ deltaY: -3, deltaMode: 1 }, Math.pow(1.1, 0.99)], [{ deltaY: 3, deltaMode: 1 }, Math.pow(1.1, -0.99)], [{ deltaY: -1, deltaMode: 2 }, 1.1], [{ deltaY: 1, deltaMode: 2 }, 1 / 1.1]]) {
+        const before = viewportTransform(doc).s;
+        wheel(window, canvas, init);
+        const got = viewportTransform(doc).s / before;
+        h.assert(Math.abs(got - want) < 0.003, `wheel ${JSON.stringify(init)} zoomed by ${got}, not ${want}`);
+      }
+    }
+    // A zoom the clamp refuses moves nothing, so the view is still the layout's.
+    {
+      const size = { w: 40, h: 40 };
+      const { window, doc, scheduler } = await openGraph(h, {
+        override: { "assets/okf-index.js": hubIndexSource(3), "assets/okf-sim.js": fixedSim(FAR_APART) },
+        beforeParse: resizableCanvas(size),
+      });
+      scheduler.flush();
+      h.assert(Math.abs(viewportTransform(doc).s - 0.05) < 0.0005, `setup: the fit is ${viewportTransform(doc).s}, not MIN_SCALE`);
+      click(window, zoomButton(doc, "Zoom out"));
+      wheel(window, doc.getElementById("okf-graph-canvas"), { deltaY: 100 });
+      size.w = 800;
+      size.h = 600;
+      const toggle = doc.querySelector("#okf-graph-zoom .okf-graph-list-toggle");
+      click(window, toggle);
+      click(window, toggle);
+      h.assert(viewportTransform(doc).s > 0.5, "a zoom the clamp refused made the view the reader's");
+    }
+    // Fit fits: it forgets the fragment that once centred the view.
+    {
+      const { window, doc, scheduler } = await openGraph(h, { hash: "#p3-graph/b" });
+      scheduler.flush();
+      click(window, zoomButton(doc, "Zoom in"));
+      click(window, fitButton(doc));
+      const reference = await openGraph(h);
+      reference.scheduler.flush();
+      h.assert(sameTransform(viewportTransform(doc), viewportTransform(reference.doc)), "Fit centred on the fragment's node instead of fitting");
+    }
+    // The press that turns into a node drag holds the view, mid-layout and once the layout is over.
+    {
+      const { window, doc, scheduler } = await openGraph(h, { override: { "assets/okf-sim.js": slicedSim(300) } });
+      scheduler.frames(6);
+      const a = nodeNamed(doc, "p3-graph/a");
+      const before = JSON.stringify(viewportTransform(doc));
+      pointer(window, a, "pointerdown", 100, 100);
+      pointer(window, a, "pointermove", 104, 100);
+      h.assert(JSON.stringify(viewportTransform(doc)) === before, "starting a node drag refitted the view");
+      pointer(window, a, "pointerup", 104, 100);
+    }
+    {
+      const { window, doc, scheduler } = await openGraph(h);
+      scheduler.flush();
+      const a = nodeNamed(doc, "p3-graph/a");
+      const s = viewportTransform(doc).s;
+      pointer(window, a, "pointerdown", 100, 100);
+      pointer(window, a, "pointermove", 100 + 300 * s, 100 + 300 * s);
+      pointer(window, a, "pointerup", 100 + 300 * s, 100 + 300 * s);
+      const before = JSON.stringify(viewportTransform(doc));
+      const toggle = doc.querySelector("#okf-graph-zoom .okf-graph-list-toggle");
+      click(window, toggle);
+      click(window, toggle);
+      h.assert(JSON.stringify(viewportTransform(doc)) === before, "coming back from the list refitted a view the reader had dragged a node in");
+    }
+    // The layout stops where it stands, not where it was last drawn.
+    {
+      const { window, doc, scheduler } = await openGraph(h, { override: { "assets/okf-sim.js": snapshotSim(slicedSim(300)) } });
+      scheduler.frames(40);
+      const canvas = doc.getElementById("okf-graph-canvas");
+      h.assert(canvas.getAttribute("data-okf-layout") === "running", "setup: the layout is over");
+      const names = drawnNodes(doc).map((n) => n.name);
+      const e = nodeNamed(doc, "p3-graph/e");
+      const shown = labelPoint(e);
+      const a = nodeNamed(doc, "p3-graph/a");
+      pointer(window, a, "pointerdown", 100, 100);
+      pointer(window, a, "pointermove", 120, 100);
+      pointer(window, a, "pointerup", 120, 100);
+      const record = window.OKF_TEST_SIMS[0];
+      h.assert(record.cancelled && record.atCancel, "setup: the layout was not cancelled");
+      const slot = names.indexOf("p3-graph/e");
+      const now = labelPoint(e);
+      h.assert(Math.abs(now.x - record.atCancel[2 * slot]) < 0.01, `p3-graph/e is drawn at x ${now.x}, the layout stopped at ${record.atCancel[2 * slot]}`);
+      h.assert(Math.abs(now.x - shown.x) > 0.01 || Math.abs(now.y - shown.y) > 0.01, "setup: the layout had not moved since the last drawing");
+    }
+  });
+}
+
 function register(h) {
   registerSim(h);
   registerPurity(h);
@@ -3373,6 +3703,7 @@ function register(h) {
   registerFragment(h);
   registerKeyboard(h);
   registerPointer(h);
+  registerPointerFix(h);
 }
 
 module.exports = { register };
