@@ -989,6 +989,7 @@ Remesure (révision 8, 2026-10-08, win-x64, publication locale) : 4 080 128
 octets en tête de P1.1 (`002eeb9`, `okf-sim.js` de P3 compris) ; 4 107 264
 octets sur la branche de correctifs de la revue finale (P2 tâche 1 et P3
 tâche 3 fusionnées en plus).
+Remesure finale (2026-10-08, win-x64, publication locale de la branche complète, P1 à P3 et correctifs de revue, texte de licence de marked compris) : 4 206 080 octets, soit +403 456 (+10,6 %) sur les 3 802 624 d'avant P1.1.
 Vérification `file://` (recette `--slices p1.1 --only fonts`) : Chrome 154.0.8037.98
 ok, Edge 154.0.4258.37 ok, Firefox de Playwright 155.0 ok (WebKit 26.6 de
 Playwright : ok, hors procédure), Firefox installé 157.0.1 ok (page racine et
