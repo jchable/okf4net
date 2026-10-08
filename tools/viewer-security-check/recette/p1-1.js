@@ -388,7 +388,9 @@ const specials = {
   // the explorer scrolls, and the foot at its bottom. The far page of
   // OKF4net (the last in index order) opens a long branch, so its explorer
   // scrolls at 1440 x 900; the page itself is scrolled past the header first,
-  // so the explorer's whole box is on screen.
+  // so the explorer's whole box is on screen. Measured in the MIDDLE of the
+  // explorer's scroll and at its end: at the end alone, a foot that is not
+  // sticky also sits at the bottom (it is the last thing in the content).
   async E13(ctx) {
     const idx = ctx.lib.readIndex(ctx.siteDir);
     const far = idx.concepts[idx.concepts.length - 1].path;
@@ -397,14 +399,22 @@ const specials = {
     const r = await page.evaluate(() => {
       window.scrollTo(0, 200);
       const nav = document.getElementById("okf-explorer");
-      nav.scrollTop = nav.scrollHeight;
-      const n = nav.getBoundingClientRect();
-      const h = nav.querySelector(".okf-explorer-head").getBoundingClientRect();
-      const f = nav.querySelector(".okf-explorer-foot").getBoundingClientRect();
-      return { scrolled: nav.scrollTop, navTop: n.top, headTop: h.top - Math.max(0, n.top), footBottom: Math.min(innerHeight, n.bottom) - f.bottom, chipsInHead: !!nav.querySelector(".okf-explorer-head .okf-type-chips") };
+      const measure = (scrollTop) => {
+        nav.scrollTop = scrollTop;
+        const n = nav.getBoundingClientRect();
+        const h = nav.querySelector(".okf-explorer-head").getBoundingClientRect();
+        const f = nav.querySelector(".okf-explorer-foot").getBoundingClientRect();
+        return { scrolled: nav.scrollTop, headTop: h.top - Math.max(0, n.top), footBottom: Math.min(innerHeight, n.bottom) - f.bottom };
+      };
+      const room = nav.scrollHeight - nav.clientHeight;
+      const middle = measure(Math.floor(room / 2));
+      const end = measure(nav.scrollHeight);
+      return { room, middle, end, navTop: nav.getBoundingClientRect().top, chipsInHead: !!nav.querySelector(".okf-explorer-head .okf-type-chips") };
     });
     await ctx.shot(page, "E13");
-    return { pass: r.scrolled > 0 && Math.abs(r.headTop) <= 1 && Math.abs(r.footBottom) <= 1 && r.chipsInHead, ...r };
+    const stuck = (m) => m.scrolled > 0 && Math.abs(m.headTop) <= 1 && Math.abs(m.footBottom) <= 1;
+    // The middle needs room to scroll on both sides of it.
+    return { pass: r.room > 2 && r.middle.scrolled > 0 && r.middle.scrolled < r.end.scrolled && stuck(r.middle) && stuck(r.end) && r.chipsInHead, ...r };
   },
   // E12: the legend is "stuck at the bottom of the explorer" in the wide
   // layout; as a page opens (not scrolled) at 1440 x 900, the legend must be

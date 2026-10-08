@@ -80,14 +80,34 @@ function duplicateName(name) {
   return true;
 }
 
+/**
+ * Runs a synchronous case body. Returns null when it passed, else the error.
+ * A body that returns a thenable is a failure: an async function would print
+ * "ok" before its assertions ran, and a rejection after the run ended would
+ * leave the summary green.
+ * @param {() => void} fn
+ */
+function attemptSync(fn) {
+  try {
+    const returned = fn();
+    if (returned && typeof returned.then === "function") {
+      returned.then(undefined, () => {});
+      return new Error("check() received an async function (it returned a promise): use checkAsync");
+    }
+    return null;
+  } catch (err) {
+    return err;
+  }
+}
+
 /** @param {string} name @param {() => void} fn */
 function check(name, fn) {
   if (duplicateName(name)) { return; }
-  try {
-    fn();
+  const err = attemptSync(fn);
+  if (err === null) {
     passed++;
     console.log(`  ok  - ${name}`);
-  } catch (err) {
+  } else {
     failures++;
     console.log(`FAIL  - ${name}`);
     console.log(`        ${err.message}`);
@@ -3764,7 +3784,8 @@ checkAsync("explorer: the real explorer keeps its anchored styles", async () => 
     [doc.querySelector("#okf-explorer .okf-tree-row"), "height", "30px"],
     [doc.querySelector("#okf-explorer .okf-tree-count"), "font-size", "11px"],
     [doc.querySelector("#okf-explorer .okf-tree-folder"), "font-weight", "600"],
-    [doc.querySelector("#okf-explorer .okf-type-chips .okf-chip"), "height", "26px"],
+    // 26 px is the chip's minimum: a long type name makes it grow (final review B).
+    [doc.querySelector("#okf-explorer .okf-type-chips .okf-chip"), "min-height", "26px"],
     [doc.getElementById("okf-tree-filter"), "height", "34px"],
     [doc.querySelector("#okf-explorer .okf-tree-toggle"), "width", "12px"],
     [doc.querySelector("#okf-tools #okf-filters-toggle"), "height", "34px"],
@@ -4362,6 +4383,262 @@ checkAsync("polish: a body h1 is subordinate to the page title and above the bod
   assert(size.v === "26px" && /#okf-body/.test(size.sel), `a body h1 is ${size.v} (${size.sel}): the unanchored 32px rule is still what decides`);
   assert(parseFloat(title.v) > parseFloat(size.v) && parseFloat(size.v) > parseFloat(px(h2, "font-size").v), `the scale is not title ${title.v} > body h1 ${size.v} > body h2 ${px(h2, "font-size").v}`);
   assert(px(h1, "font-weight").v === "600" && px(h1, "font-family").v === "var(--display)", `body h1 weight ${px(h1, "font-weight").v}, family ${px(h1, "font-family").v}`);
+});
+
+// --- P1.1 final review, part B (browser JS, CSS, harness) ---------------------
+
+console.log("\nP1.1 final review, part B:");
+
+check("check() fails a body that returns a promise instead of printing ok before its assertions run", () => {
+  // An async body used with check() would pass at once and, if it rejected
+  // after the run ended, leave "N passed, 0 failed". checkAsync is the helper.
+  const asyncBody = attemptSync(async () => { throw new Error("late"); });
+  assert(asyncBody !== null && /use checkAsync/.test(asyncBody.message), `an async body was accepted by check(): ${asyncBody && asyncBody.message}`);
+  const thenable = attemptSync(() => ({ then() {} }));
+  assert(thenable !== null, "a thenable body was accepted by check()");
+  assert(attemptSync(() => {}) === null && attemptSync(() => 3) === null, "a plain synchronous body was refused");
+  const thrown = attemptSync(() => { throw new Error("plain"); });
+  assert(thrown !== null && thrown.message === "plain", "a synchronous failure lost its message");
+});
+
+// A copy of a rendered page whose markdown body is replaced: the page keeps its
+// real chrome and scripts, the body is whatever the case needs.
+function withBody(rel, name, markdown) {
+  const source = fs.readFileSync(path.join(SITE, rel), "utf8");
+  const open = '<script type="application/json" id="okf-payload">';
+  const start = source.indexOf(open);
+  const end = source.indexOf("</script>", start);
+  if (start < 0 || end < 0) { throw new Error(`${rel}: no payload to replace`); }
+  const payload = JSON.parse(source.slice(start + open.length, end));
+  payload.body = markdown;
+  // HTML-safe JSON, as HtmlSafeJson writes it: < > & as JSON escapes.
+  const backslash = String.fromCharCode(92);
+  const json = JSON.stringify(payload)
+    .replace(/</g, `${backslash}u003c`).replace(/>/g, `${backslash}u003e`).replace(/&/g, `${backslash}u0026`);
+  fs.writeFileSync(path.join(SITE, name), source.slice(0, start + open.length) + json + source.slice(end));
+  return name;
+}
+
+checkAsync("explorer: a long type name wraps whole inside its chip and the panel, and the count stays in the chip", async () => {
+  // jsdom does no layout, so this reads the cascade (the recette measures: no
+  // sideways scroll at 390 and 1440 px). The shared chip is nowrap and 26 px
+  // high: left alone, a long name widens the page or is clipped (E4 shows it whole).
+  const window = await openPage("foo/bar.html");
+  const doc = window.document;
+  const name = "A deliberately very long type name written with spaces so that it must wrap inside its chip";
+  const chip = Array.from(doc.querySelectorAll("#okf-explorer .okf-type-chips .okf-chip"))
+    .find((c) => c.querySelector(".okf-chip-text").textContent === name);
+  assert(chip, "this case needs the fixture's long type among the type chips (rank 0 to 4)");
+  const count = chip.querySelector(".okf-chip-count");
+  assert(count && /^\d+$/.test(count.textContent), "the chip lost its count");
+  const want = { "max-width": "100%", height: "auto", "min-height": "26px", "white-space": "normal", "overflow-wrap": "anywhere" };
+  for (const [prop, value] of Object.entries(want)) {
+    const won = cascadeOf(doc, chip, prop);
+    assert(won && won.value.trim() === value, `explorer type chip ${prop}: ${won && won.value} from ${won && won.selector}, expected ${value}`);
+    assert(won.selector.startsWith("#okf-explorer"), `${prop} is decided by ${won.selector}, not by an explorer-anchored rule`);
+  }
+  const noShrink = cascadeOf(doc, count, "flex");
+  assert(noShrink && /^(none|0 0 auto)$/.test(noShrink.value.trim()), `the count may shrink or wrap inside the chip (flex: ${noShrink && noShrink.value})`);
+});
+
+checkAsync("contents: a fragment naming an element outside the body (the skip link's #okf-main) is the browser's, even beside a heading titled alike", async () => {
+  const probe = withBody("foo.html", "p11-fixb-skip.html", "## Okf: main\n\nfirst\n\n## OKF main\n\nsecond\n\n## Usage\n\nthird");
+  const headings = (doc) => Array.from(doc.querySelectorAll("#okf-body h2"));
+  // On load.
+  const loaded = await openPage(probe, { hash: "#okf-main" });
+  const focusedOnLoad = loaded.document.activeElement;
+  assert(!focusedOnLoad || !focusedOnLoad.closest("#okf-body"), `#okf-main on load focused a body heading: ${focusedOnLoad && focusedOnLoad.textContent}`);
+  // By activating the skip link, as a keyboard reader does.
+  const window = await openPage(probe);
+  const doc = window.document;
+  const ids = headings(doc).map((h) => h.id);
+  assert(ids[0] === "okf-h-okf-main", `this case needs a heading generated as okf-h-okf-main (got ${ids})`);
+  const skip = doc.querySelector("a.okf-skip");
+  assert(skip && skip.getAttribute("href") === "#okf-main", "the skip link is not a #okf-main link");
+  skip.click();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert(window.location.hash === "#okf-main", `the skip link left the fragment at ${window.location.hash}`);
+  const focused = doc.activeElement;
+  assert(!focused || !focused.closest("#okf-body"), `the skip link moved the focus to the body heading "${focused && focused.textContent}"`);
+  // A prefixed fragment still reaches that very heading, and an author one the others.
+  window.location.hash = "okf-h-okf-main";
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert(doc.activeElement === headings(doc)[0], `#okf-h-okf-main focused ${doc.activeElement && doc.activeElement.tagName}`);
+  window.location.hash = "usage";
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert(doc.activeElement === headings(doc)[2], "an author fragment no longer reaches its heading");
+});
+
+checkAsync("explorer: only the path down to the current page is open by default", async () => {
+  const folders = (doc) => Array.from(doc.querySelectorAll("#okf-explorer button.okf-tree-toggle"));
+  const window = await openPage("foo/bar.html");
+  const toggles = folders(window.document);
+  assert(toggles.length >= 3, `this case needs several folders (${toggles.length})`);
+  for (const toggle of toggles) {
+    const item = toggle.closest("li");
+    const label = item.querySelector(".okf-tree-link, .okf-tree-folder").textContent;
+    const holds = item.querySelector('a[aria-current="page"]') !== null;
+    assert(toggle.getAttribute("aria-expanded") === String(holds), `${label}: aria-expanded ${toggle.getAttribute("aria-expanded")}, holds the current page: ${holds}`);
+    const children = item.querySelector(":scope > ul");
+    assert(children.hidden === !holds, `${label}: children shown ${!children.hidden}, holds the current page: ${holds}`);
+  }
+  assert(toggles.filter((t) => t.getAttribute("aria-expanded") === "true").length === 1, "not exactly one folder is open");
+  const home = await openPage("index.html");
+  assert(folders(home.document).every((t) => t.getAttribute("aria-expanded") === "false"), "a folder is open on a page that is in none");
+});
+
+checkAsync("contents: only h2 and h3 are listed, an h4 or deeper is not", async () => {
+  const probe = withBody("foo.html", "p11-fixb-levels.html", "## Two\n\na\n\n### Three\n\nb\n\n#### Four\n\nc\n\n##### Five\n\nd\n\n# One\n\ne");
+  const window = await openPage(probe);
+  const doc = window.document;
+  const listed = Array.from(doc.querySelectorAll("#okf-toc a"), (a) => a.textContent);
+  assert(JSON.stringify(listed) === JSON.stringify(["Two", "Three"]), `the contents list ${JSON.stringify(listed)}, expected only the h2 and the h3`);
+  const deeper = Array.from(doc.querySelectorAll("#okf-body h1, #okf-body h4, #okf-body h5"));
+  assert(deeper.length === 3 && deeper.every((h) => h.id.startsWith("okf-h-")), "this case needs the h1, h4 and h5 in the body, with ids");
+});
+
+checkAsync("palette: '/' typed with Shift (a layout where it needs Shift) opens it outside an editable field", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const backdrop = doc.querySelector(".okf-palette-backdrop");
+  const event = key(window, doc.body, { key: "/", shiftKey: true });
+  assert(!backdrop.hidden && event.defaultPrevented, `Shift+/ opened ${!backdrop.hidden}, prevented ${event.defaultPrevented}`);
+  key(window, doc.getElementById("okf-palette-input"), { key: "Escape" });
+  const filter = doc.getElementById("okf-tree-filter");
+  filter.focus();
+  const typed = key(window, filter, { key: "/", shiftKey: true });
+  assert(backdrop.hidden && !typed.defaultPrevented, "Shift+/ in the tree filter was taken by the palette");
+});
+
+checkAsync("palette: Ctrl+K on a layout whose key is no ASCII letter (Cyrillic, Greek) is matched by the physical key; Dvorak and others by the letter", async () => {
+  const window = await openPage("index.html");
+  const doc = window.document;
+  const backdrop = doc.querySelector(".okf-palette-backdrop");
+  const closeIt = () => { if (!backdrop.hidden) { key(window, doc.getElementById("okf-palette-input"), { key: "Escape" }); } };
+  for (const init of [{ key: "л", code: "KeyK" }, { key: "κ", code: "KeyK" }, { key: "Dead", code: "KeyK" }]) {
+    const event = key(window, doc.body, Object.assign({ ctrlKey: true }, init));
+    assert(!backdrop.hidden && event.defaultPrevented, `Ctrl+${JSON.stringify(init)} did not open the palette`);
+    closeIt();
+  }
+  // Dvorak: the physical K produces "t", and the physical V position produces "k".
+  const dvorakT = key(window, doc.body, { key: "t", code: "KeyK", ctrlKey: true });
+  assert(backdrop.hidden && !dvorakT.defaultPrevented, "Ctrl+T on the physical K key (Dvorak) opened the palette");
+  const dvorakK = key(window, doc.body, { key: "k", code: "KeyV", ctrlKey: true });
+  assert(!backdrop.hidden && dvorakK.defaultPrevented, "Ctrl+K produced by another physical key (Dvorak) did not open the palette");
+  closeIt();
+  // The fallback keeps the exact modifier rule and the editable-field rule.
+  for (const extra of [{ shiftKey: true }, { altKey: true }, { metaKey: true }]) {
+    const event = key(window, doc.body, Object.assign({ key: "л", code: "KeyK", ctrlKey: true }, extra));
+    assert(backdrop.hidden && !event.defaultPrevented, `Ctrl+${JSON.stringify(extra)}+K (Cyrillic) was taken`);
+  }
+  const filter = doc.getElementById("okf-tree-filter");
+  filter.focus();
+  const inField = key(window, filter, { key: "л", code: "KeyK", ctrlKey: true });
+  assert(backdrop.hidden && !inField.defaultPrevented, "Ctrl+K (Cyrillic) in an editable field was taken");
+});
+
+checkAsync("body headings: the focus ring of a heading reached through a fragment is the declared 2 px blue outline, offset 4 px", async () => {
+  const window = await openPage("foo/bar.html");
+  const doc = window.document;
+  const h = doc.querySelector("#okf-body h2");
+  assert(h && h.getAttribute("tabindex") === "-1", "this case needs a generated heading with tabindex -1");
+  const rules = [];
+  walkStyleRules(window, (rule) => {
+    if (rule.selectorText === '#okf-body [tabindex="-1"]:focus') { rules.push(rule); }
+  });
+  assert(rules.length === 1, `${rules.length} rules style #okf-body [tabindex="-1"]:focus, expected one`);
+  const style = rules[0].style;
+  assert(style.getPropertyValue("outline").replace(/\s+/g, " ").trim() === "2px solid var(--blue)", `outline: ${style.getPropertyValue("outline")}`);
+  assert(style.getPropertyValue("outline-offset").trim() === "4px", `outline-offset: ${style.getPropertyValue("outline-offset")}`);
+  // The rule must reach a generated heading.
+  assert(h.matches('#okf-body [tabindex="-1"]'), "a generated heading no longer matches the focus-ring rule");
+});
+
+checkAsync("explorer: the revealed entry sits a third of the band below the sticky head, not at the band's top", async () => {
+  const probe = explorerScrollProbe("auto", true, 2700, { head: 243, foot: 90 });
+  const window = await openPage("foo/bar.html", { beforeParse: probe.beforeParse });
+  const entry = window.document.getElementById("okf-explorer").querySelector('a[aria-current="page"]').getBoundingClientRect();
+  // Visible part 668 (800 high at 100, window 768); band from the head's 243
+  // to the foot's top 578 = 335 high; a third rounds to 112.
+  assert(entry.top === 100 + 243 + 112, `the entry sits at ${entry.top}, expected ${100 + 243 + 112} (a third of the band below its top)`);
+});
+
+checkAsync("body h3 is drawn in the 600 face at 17 px, below h2, never the heavy default", async () => {
+  const window = await openPage("foo/bar.html");
+  const doc = window.document;
+  const h3 = doc.querySelector("#okf-body h3");
+  const h2 = doc.querySelector("#okf-body h2");
+  assert(h3 && h2, "this case needs a body h3 and h2");
+  const value = (el, prop) => { const w = cascadeOf(doc, el, prop); return w ? { v: w.value.trim(), sel: w.selector } : { v: "unset", sel: "" }; };
+  const weight = value(h3, "font-weight");
+  assert(weight.v === "600" && /^#okf-body/.test(weight.sel), `body h3 weight ${weight.v} from ${weight.sel}`);
+  assert(value(h3, "font-family").v === "var(--display)", `body h3 family ${value(h3, "font-family").v}`);
+  assert(value(h3, "font-size").v === "17px" && parseFloat(value(h3, "font-size").v) < parseFloat(value(h2, "font-size").v), `body h3 size ${value(h3, "font-size").v} (h2 ${value(h2, "font-size").v})`);
+  assert(weight.v === value(h2, "font-weight").v, "body h3 and h2 are not in the same face");
+});
+
+// A site index with damage, or one that throws on access, must leave the page
+// working: header, body, contents and theme. The palette and the explorer
+// simply go without what they cannot read.
+function damageIndex(script) {
+  const source = fs.readFileSync(path.join(SITE, "assets", "okf-index.js"), "utf8");
+  return `${source}\n;(function () { var idx = window.OKF_INDEX; ${script} })();`;
+}
+
+function assertChromeWorks(window, what) {
+  const doc = window.document;
+  assert(doc.getElementById("okf-body").textContent.includes("first"), `${what}: the body did not render`);
+  assert(!doc.getElementById("okf-toc").hidden, `${what}: the contents list is gone`);
+  assert(doc.querySelector("body > header.bar"), `${what}: the header is gone`);
+  const toggle = doc.getElementById("okf-theme-toggle");
+  assert(toggle, `${what}: the theme toggle is gone`);
+  const before = toggle.getAttribute("aria-pressed");
+  toggle.click();
+  assert(toggle.getAttribute("aria-pressed") !== before, `${what}: the theme toggle does not toggle`);
+}
+
+checkAsync("a damaged index (null entries, missing tags) degrades: no page error, the chrome works, the palette is never left half-updated", async () => {
+  const override = { "assets/okf-index.js": damageIndex(
+    "var n = idx.concepts.length; idx.concepts.push(null, 5, 'text');"
+    + " idx.tree.push({ name: 'ghost-null', concept: n, children: [] }, { name: 'ghost-number', concept: n + 1, children: [] });"
+    // A null BEFORE the current concept: the explorer's search for it walks past the null.
+    + " idx.concepts[0] = null; delete idx.concepts[2].tags; idx.concepts[3].tags = 'oops';") };
+  const window = await openPage("foo.html", { override });
+  const doc = window.document;
+  assert(!doc.getElementById("okf-explorer").hidden, "the explorer did not draw despite a readable index");
+  for (const name of ["__proto__", "ghost-null", "ghost-number"]) {
+    const ghost = Array.from(doc.querySelectorAll("#okf-explorer .okf-tree-folder")).find((s) => s.textContent === name);
+    assert(ghost && ghost.closest("li").querySelector("a") === null, `${name}: a damaged entry was drawn as a link instead of a plain row`);
+  }
+  assert(doc.querySelector('#okf-explorer a[aria-current="page"]'), "the current entry was lost behind the damaged ones");
+  // The palette: a query that only the tags could match walks every entry.
+  doc.querySelector(".okf-palette-open").click();
+  const input = doc.getElementById("okf-palette-input");
+  type(window, input, "foo");
+  const options = () => Array.from(doc.querySelectorAll(".okf-palette-option"));
+  assert(options().length > 0, "no option for a query that matches");
+  type(window, input, "zz-nothing-matches-this");
+  assert(options().length === 0, `the previous options stayed after a query that matches nothing (${options().length}): Enter would open a stale result`);
+  assert(doc.getElementById("okf-palette-status").textContent === "No matching concept", "the empty result is not announced");
+  doc.querySelector(".okf-palette-close").click();
+  assertChromeWorks(window, "damaged index");
+});
+
+checkAsync("an index whose access throws (a getter, a Proxy trap) is no index: no page error, nothing built from it, the chrome works", async () => {
+  const getter = await openPage("foo.html", {
+    blocked: ["assets/okf-index.js"],
+    beforeParse(w) { Object.defineProperty(w, "OKF_INDEX", { configurable: true, get() { throw new w.Error("boom"); } }); },
+  });
+  assert(getter.document.getElementById("okf-explorer").hidden, "the explorer was built from a throwing getter");
+  assert(getter.document.querySelector(".okf-palette-open") === null, "the palette was built from a throwing getter");
+  assertChromeWorks(getter, "throwing getter");
+  const trap = "var boom = function () { throw new Error('trap'); };"
+    + "window.OKF_INDEX = new Proxy({ version: 2 }, { has: boom, get: boom, ownKeys: boom, getOwnPropertyDescriptor: boom });";
+  const proxy = await openPage("foo.html", { override: { "assets/okf-index.js": trap } });
+  assert(proxy.document.getElementById("okf-explorer").hidden, "the explorer was built from a Proxy that throws");
+  assert(proxy.document.querySelector(".okf-palette-open") === null, "the palette was built from a Proxy that throws");
+  assert(proxy.OkfSite.readIndex(proxy) === null, "readIndex accepted a Proxy that throws");
+  assertChromeWorks(proxy, "throwing Proxy");
 });
 
 // === end of P1.1 cases ===

@@ -295,6 +295,10 @@ svg .okf-node.okf-selected > .okf-node-ring, svg .okf-node.okf-focused > .okf-no
    one, heavier than the title). */
 #okf-body h1 { margin: 0 0 8px; font-family: var(--display); font-weight: 600; font-size: 26px; line-height: 1.2; letter-spacing: -.02em; }
 #okf-body h2 { margin: 0 0 8px; font-family: var(--display); font-weight: 600; font-size: 21px; line-height: 1.25; letter-spacing: -.02em; }
+/* h3: the spec gives no size (C7 stops at h2), so 17 px, a step under h2's 21,
+   in the same 600 face: unstyled it would be drawn with the 900 one, heavier
+   than the page title and h2. */
+#okf-body h3 { margin: 0 0 8px; font-family: var(--display); font-weight: 600; font-size: 17px; line-height: 1.3; letter-spacing: -.02em; }
 #okf-body table { font-size: 13.5px; margin: 0 0 20px; border-collapse: collapse; }
 #okf-body th {
   text-align: left; font-family: var(--mono); font-weight: 400; font-size: 12px; color: var(--gray);
@@ -451,6 +455,16 @@ html[data-okf-js] body > .okf-layout > main > .okf-page-head .okf-fm:not([data-o
 }
 /* E4: the type chips are the shared .okf-chip toggles (Task 3). */
 #okf-explorer .okf-type-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+/* A type name is bundle text of any length and E4 shows it whole: the chip
+   wraps it, never wider than the panel (the page head's chips do the same,
+   Task 12). One class deeper than the shared .okf-chip rule (Task 3), whose
+   nowrap and fixed 26 px would win otherwise. The count is a flex item of its
+   own and stays beside the last line. */
+#okf-explorer .okf-type-chips .okf-chip {
+  max-width: 100%; height: auto; min-height: 26px; padding-top: 4px; padding-bottom: 4px;
+  line-height: 1.3; text-align: left; white-space: normal; overflow-wrap: anywhere;
+}
+#okf-explorer .okf-type-chips .okf-chip-count { flex: none; }
 /* E5 */
 #okf-explorer .okf-tree, #okf-explorer .okf-tree-children { list-style: none; margin: 0; padding: 0; }
 #okf-explorer .okf-tree { border-top: 1px solid var(--hair); padding: 6px 0; }

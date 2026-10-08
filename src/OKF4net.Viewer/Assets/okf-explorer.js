@@ -20,7 +20,8 @@
   var currentId = document.documentElement.getAttribute("data-okf-concept");
   var current = -1;
   for (var i = 0; i < index.concepts.length; i++) {
-    if (index.concepts[i].id === currentId) { current = i; break; }
+    var entry = index.concepts[i];
+    if (entry !== null && typeof entry === "object" && entry.id === currentId) { current = i; break; }
   }
 
   var staleMarks = [];
@@ -87,7 +88,8 @@
     }
 
     var concept = node.concept >= 0 ? index.concepts[node.concept] : null;
-    if (concept) {
+    // A damaged entry (null, not an object) is drawn as a folder.
+    if (concept !== null && typeof concept === "object") {
       rec.slot = shapes.slotOf(index, node.concept);
       var glyph = el("span", "okf-glyph-slot");
       glyph.appendChild(shapes.icon(shapes.KINDS[rec.slot], "icon", shapes.typeLabel(concept.type)));
