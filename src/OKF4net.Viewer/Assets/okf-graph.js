@@ -60,7 +60,7 @@
 
   // Later sections plug into these; each runs its functions in the order
   // they were added.
-  var hooks = { beforeRefresh: [], refresh: [], select: [], node: [], drawing: [] };
+  var hooks = { beforeRefresh: [], refresh: [], select: [], node: [], drawing: [], show: [] };
   function run(list, arg) {
     for (var k = 0; k < list.length; k++) { list[k](arg); }
   }
@@ -228,8 +228,10 @@
   // drawing when the reader asks for it, and always above NODE_LIMIT (A6).
   function updateMode() {
     var showList = listMode || view.over;
+    var wasHidden = canvas.hidden;
     listBox.hidden = !showList;
     canvas.hidden = showList;
+    if (wasHidden && !showList) { run(hooks.show); }
     listButton.setAttribute("aria-pressed", showList ? "true" : "false");
     listButton.disabled = view.over;
     if (showList && listStale) {
@@ -727,7 +729,11 @@
   var MIN_SCALE = 0.05;
   var MAX_SCALE = 4;
 
-  // "Fit": every drawn node and its label inside the canvas, never above 1.5x.
+  // Space Mono 11.5 px: about 7 px an advance, to count a label's width.
+  var LABEL_ADVANCE = 7;
+
+  // "Fit": every drawn node, its label (estimated width, 20 below the shape)
+  // inside the canvas with a margin, never above 1.5x.
   function fit() {
     if (!drawing || drawing.nodes.length === 0) { return; }
     var minX = Infinity;
@@ -736,8 +742,9 @@
     var maxY = -Infinity;
     drawing.nodes.forEach(function (node) {
       var h = node.size.size / 2;
-      minX = Math.min(minX, node.x - h);
-      maxX = Math.max(maxX, node.x + h);
+      var wide = Math.max(h, node.label.textContent.length * LABEL_ADVANCE / 2);
+      minX = Math.min(minX, node.x - wide);
+      maxX = Math.max(maxX, node.x + wide);
       minY = Math.min(minY, node.y - h);
       maxY = Math.max(maxY, node.y + h + 20);
     });
@@ -871,6 +878,9 @@
     buildDrawing();
   });
   hooks.select.push(styleDrawing);
+  // The canvas was hidden (list mode, or above the limit) and is drawn again:
+  // its size was unknown, so fit again unless the reader moved the view.
+  hooks.show.push(applyIntent);
 
   // === start-up ===
   buildFacets();
