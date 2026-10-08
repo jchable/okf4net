@@ -410,6 +410,63 @@
   section.appendChild(head);
   section.appendChild(canvas);
   section.appendChild(foot);
+  // The equivalent list (spec §6, X9): every neighbour, drawn or not, with
+  // its relation to this concept -- the keyboard path through the
+  // neighbourhood (§8), since the drawing has no tab stop.
+  var details = el("details", "okf-local-list");
+  details.id = "okf-local-list";
+  var summary = el("summary", "");
+  var rows = el("ul", "");
+  // The shared list reset (list-style: none) makes Safari/VoiceOver drop the
+  // implicit list role; the explicit one keeps "list, N items" announced.
+  rows.setAttribute("role", "list");
+  details.appendChild(summary);
+  details.appendChild(rows);
+  section.appendChild(details);
+
+  // The relation a row names, from this concept's point of view (X8's
+  // words); a second-hop row names the first direct neighbour, in index
+  // order, it is reached through. A damaged `via` (no readable id) names no
+  // one rather than leaving a dangling "via".
+  function relationText(entry) {
+    if (entry.dist === 2) {
+      var through = idOf(entry.via);
+      return through === "" ? "2 hops" : "2 hops via " + through;
+    }
+    if (entry.rel === 3) { return "links to" + DOT + "referenced by"; }
+    return entry.rel === 1 ? "links to" : "referenced by";
+  }
+
+  // A damaged entry reads as no type, never as the text "undefined".
+  function typeOf(concept) {
+    return concept !== null && typeof concept === "object" && typeof concept.type === "string" ? concept.type : "";
+  }
+
+  // One row of the list. Its link goes through the resolver, like the
+  // drawing's click, but does not dispatch okf:navigate: like the explorer
+  // and Referenced by, a plain link is left to the browser; only the palette
+  // and the drawing (which has no href to follow) dispatch the event.
+  function row(entry) {
+    var item = el("li", "");
+    var line;
+    var concept = entry.key < C ? index.concepts[entry.key] : null;
+    if (concept !== null && typeof concept === "object" && typeof concept.path === "string") {
+      line = el("a", "okf-row");
+      line.setAttribute("href", site.resolve(root, concept.path));
+      line.setAttribute("title", typeof concept.title === "string" ? concept.title : "");
+      line.appendChild(shapes.icon(kindOf(entry.key), "icon", shapes.typeLabel(typeOf(concept))));
+      line.appendChild(el("span", "okf-local-id", idOf(entry.key)));
+    } else {
+      // A ghost is never navigable (spec A10): text, no link. A damaged
+      // concept entry (no path) is listed the same way, as text.
+      line = el("span", entry.key < C ? "okf-row" : "okf-row okf-local-absent");
+      line.appendChild(shapes.icon(kindOf(entry.key), "icon", entry.key < C ? shapes.typeLabel(typeOf(concept)) : "absent concept"));
+      line.appendChild(el("span", "okf-local-id", entry.key < C ? idOf(entry.key) : "absent: " + idOf(entry.key)));
+    }
+    line.appendChild(el("span", "okf-local-rel", relationText(entry)));
+    item.appendChild(line);
+    return item;
+  }
 
   function render(result) {
     for (var b = 0; b < hopButtons.length; b++) {
@@ -417,6 +474,21 @@
     }
     canvas.textContent = "";
     canvas.appendChild(drawing(result));
+    if (result.omitted > 0) {
+      // Over the cap (spec A11): the rest is named in the list, which this
+      // opens.
+      var more = el("button", "okf-local-omitted", "+" + result.omitted + " omitted");
+      more.type = "button";
+      more.setAttribute("aria-controls", "okf-local-list");
+      more.addEventListener("click", function () {
+        details.open = true;
+        summary.focus();
+      });
+      canvas.appendChild(more);
+    }
+    summary.textContent = "List" + DOT + neighboursText(result.total);
+    rows.textContent = "";
+    for (var k = 0; k < result.list.length; k++) { rows.appendChild(row(result.list[k])); }
   }
 
   render(first);
