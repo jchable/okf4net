@@ -106,8 +106,8 @@ export default function Cli() {
             Static HTML site generation moved to a separate binary,{' '}
             <a href="https://github.com/jchable/okf4net/releases">okf-render</a> — <code>okf</code> is meant to stay
             small and dependency-free for CI, and the site generator pulls in a vendored copy of{' '}
-            <a href="https://github.com/markedjs/marked">marked</a> that a CI job running <code>okf validate</code>{' '}
-            never executes.
+            <a href="https://github.com/markedjs/marked">marked</a> and three embedded fonts that a CI job running{' '}
+            <code>okf validate</code> never needs.
           </p>
         </Chapter>
 

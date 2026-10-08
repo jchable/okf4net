@@ -841,13 +841,14 @@ and the packages published to NuGet — `OKF4net`, `OKF4net.Agents`,
 `OKF4net.Mcp` — carry that one licence and include no third-party source
 code.
 
-The one exception anywhere in the build is `OKF4net.Viewer` (not itself
+The exceptions anywhere in the build are both in `OKF4net.Viewer` (not itself
 published to NuGet): it vendors a copy of
 [marked](https://github.com/markedjs/marked) (MIT) for client-side markdown
 rendering, and the Inter, Inter Tight and Space Mono fonts (SIL Open Font
-License 1.1, their licence texts written beside them under `assets/fonts/`),
-all embedded in that library and shipped inside the `okf-render` binary it
-backs; `okf` itself never references them. See [`NOTICE`](NOTICE)
+License 1.1). Their licence texts are written beside them under
+`assets/fonts/` (the fonts') and `assets/licenses/` (marked's) and travel with
+the `okf-render` archives; all of it is embedded in that library and shipped
+inside the `okf-render` binary it backs; `okf` itself never references them. See [`NOTICE`](NOTICE)
 for the full accounting, including those vendored copies and the two kinds of
 Apache-2.0 material also in this repository — the vendored
 [OKF specification](docs/spec/README.md) and the upstream sample bundles

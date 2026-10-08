@@ -27,7 +27,7 @@ Windows RIDs of each binary feed winget:
    produce `okf-<version>-<rid>.zip` and `okf-render-<version>-<rid>.zip`
    (each with its `.exe` at the archive root, which the manifests'
    `RelativeFilePath` names; `okf-render`'s also carries `NOTICE`, `LICENSE`,
-   `LICENSE.GPL-3.0` and `licenses/OFL-*.txt`, see
+   `LICENSE.GPL-3.0`, `licenses/OFL-*.txt` and `licenses/marked-LICENSE.md`, see
    `packaging/New-ReleaseArchive.ps1`); every non-Windows archive (eight
    `.tar.gz`s across both binaries) is ignored by winget packaging. Each
    `winget-submit*` job's `installers-regex` is anchored so it matches only
