@@ -93,7 +93,13 @@ public class IndexScriptTests
     [Fact]
     public void The_tree_renders_nested_nodes_with_fixed_keys()
     {
-        var index = new ViewerIndex([], [], [], [new IndexTreeNode("foo", 0, [new IndexTreeNode("bar", 1, [])])]);
+        // The tree points at positions 0 and 1, so the index must hold two concepts.
+        var index = new ViewerIndex(
+            [Plain("foo"), Plain("foo/bar")],
+            [],
+            [],
+            [new IndexTreeNode("foo", 0, [new IndexTreeNode("bar", 1, [])])])
+        { Types = [new IndexType("Metric", 2, 0)] };
 
         Assert.Contains(
             "\"tree\":[{\"name\":\"foo\",\"concept\":0,\"children\":[{\"name\":\"bar\",\"concept\":1,\"children\":[]}]}]",
@@ -127,6 +133,65 @@ public class IndexScriptTests
 
         Assert.Throws<ArgumentException>(() => IndexScript.Render(index));
         Assert.Throws<ArgumentException>(() => IndexScript.Render(new ViewerIndex([concept], [], [], [])));
+    }
+
+    private static IndexConcept Plain(string id)
+        => new(ConceptId.Parse(id), id, "Metric", [], id + ".html", "unverified", null, null);
+
+    private static ViewerIndex Indexed(IReadOnlyList<IndexGhost> ghosts, IReadOnlyList<IndexEdge> edges, IReadOnlyList<IndexTreeNode> tree)
+        => new([Plain("a"), Plain("b")], ghosts, edges, tree) { Types = [new IndexType("Metric", 2, 0)] };
+
+    [Theory]
+    [InlineData(-1, 1, false)]
+    [InlineData(2, 1, false)]
+    [InlineData(0, -1, false)]
+    [InlineData(0, 2, false)]
+    [InlineData(0, 1, true)] // no ghost at position 1: the index has exactly one
+    [InlineData(0, -1, true)]
+    public void An_edge_pointing_outside_the_concepts_or_the_ghosts_is_refused(int from, int to, bool toGhost)
+    {
+        var index = Indexed([new IndexGhost(ConceptId.Parse("gone"))], [new IndexEdge(from, to, 1, toGhost)], []);
+
+        var ex = Assert.Throws<ArgumentException>(() => IndexScript.Render(index));
+        Assert.Equal("index", ex.ParamName);
+    }
+
+    [Fact]
+    public void An_edge_to_a_ghost_is_checked_against_the_ghosts_not_the_concepts()
+    {
+        // Position 1 is a valid concept but not a ghost; position 0 is a ghost.
+        var ok = Indexed([new IndexGhost(ConceptId.Parse("gone"))], [new IndexEdge(0, 0, 1, true)], []);
+        Assert.Contains("[0,0,1,1]", IndexScript.Render(ok), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(-2)]
+    [InlineData(2)]
+    public void A_top_level_tree_node_pointing_outside_the_concepts_is_refused(int concept)
+    {
+        var index = Indexed([], [], [new IndexTreeNode("x", concept, [])]);
+
+        Assert.Throws<ArgumentException>(() => IndexScript.Render(index));
+    }
+
+    [Fact]
+    public void A_nested_tree_node_pointing_outside_the_concepts_is_refused()
+    {
+        var nested = new IndexTreeNode("dir", -1, [new IndexTreeNode("leaf", 7, [])]);
+
+        Assert.Throws<ArgumentException>(() => IndexScript.Render(Indexed([], [], [nested])));
+    }
+
+    [Fact]
+    public void Valid_references_including_a_folder_with_no_concept_still_render()
+    {
+        var tree = new IndexTreeNode("dir", -1, [new IndexTreeNode("a", 0, []), new IndexTreeNode("b", 1, [])]);
+        var index = Indexed([], [new IndexEdge(0, 1, 2, false)], [tree]);
+
+        var script = IndexScript.Render(index);
+
+        Assert.Contains("[0,1,2,0]", script, StringComparison.Ordinal);
+        Assert.Contains("\"name\":\"dir\",\"concept\":-1", script, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -210,6 +210,14 @@ public class OkfRenderCliTests
     }
 
     [Fact]
+    public void Help_names_the_local_and_global_link_graphs()
+    {
+        // Normalised: the usage text wraps lines, so the phrase may span one.
+        var help = string.Join(' ', Run("--help").Out.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        Assert.Contains("local and global link graphs", help, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Short_help_flag_also_works()
     {
         var r = Run("-h");

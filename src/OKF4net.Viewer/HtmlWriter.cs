@@ -68,7 +68,6 @@ public static class HtmlWriter
 
         WriteFile(outDir, root, verifiedDirs, "index.html", RenderIndex(site, graphPage), written);
 
-        // P3: graph page (§12.5)
         WriteFile(outDir, root, verifiedDirs, graphPage, RenderGraph(site, graphPage), written);
 
         foreach (var page in site.Pages)
@@ -557,16 +556,15 @@ public static class HtmlWriter
         /// <summary>The bundle index, <c>index.html</c>.</summary>
         Index,
 
-        /// <summary>The global graph page (written by P3's <c>RenderGraph</c>).</summary>
+        /// <summary>The global graph page (written by <c>RenderGraph</c>).</summary>
         Graph,
     }
 
     /// <summary>
     /// The scripts at the end of every concept page and of the index, in load
-    /// order (spec §12.6). A script is listed only once it exists under
-    /// <c>Assets/</c>. P2 adds <c>"okf-local.js"</c> under its marker, last;
-    /// <c>graph.html</c> does not use this table (P3's <c>RenderGraph</c>
-    /// writes its own tags).
+    /// order (spec §12.6). Each script listed here exists under
+    /// <c>Assets/</c>. <c>graph.html</c> does not use this table
+    /// (<c>RenderGraph</c> writes its own tags).
     /// </summary>
     internal static readonly string[] PageScripts =
     [
@@ -579,7 +577,6 @@ public static class HtmlWriter
         "okf-palette.js",
         "okf-toc.js",
         "okf-page.js",
-        // P2: local graph
         "okf-local.js",
     ];
 
@@ -839,8 +836,6 @@ public static class HtmlWriter
     /// <param name="linksJson">The already-built links object, including its braces.</param>
     private static string BuildPayload(string body, string linksJson)
         => $"{{\"body\":{HtmlSafeJson.Quote(body)},\"links\":{linksJson}}}";
-
-    // P3: RenderGraph (§12.5)
 
     /// <summary>The scripts at the end of the graph page's body, in this order (spec §12.5, §12.6).</summary>
     private static readonly string[] GraphScripts =

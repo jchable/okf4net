@@ -31,18 +31,15 @@ public static class IndexScript
 
     /// <summary>Renders <paramref name="index"/> as a complete script, ending with <c>;\n</c>.</summary>
     /// <param name="index">The site index.</param>
-    /// <exception cref="ArgumentException">A concept's <see cref="IndexConcept.TypeIndex"/> is outside <see cref="ViewerIndex.Types"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// A concept's <see cref="IndexConcept.TypeIndex"/> is outside <see cref="ViewerIndex.Types"/>,
+    /// an <see cref="IndexEdge"/> points outside <see cref="ViewerIndex.Concepts"/> (or, for a ghost
+    /// edge, outside <see cref="ViewerIndex.Ghosts"/>), or an <see cref="IndexTreeNode.Concept"/>
+    /// is neither -1 nor a position in <see cref="ViewerIndex.Concepts"/>.
+    /// </exception>
     public static string Render(ViewerIndex index)
     {
-        foreach (var concept in index.Concepts)
-        {
-            if ((uint)concept.TypeIndex >= (uint)index.Types.Count)
-            {
-                throw new ArgumentException(
-                    $"Concept '{concept.Id}' has TypeIndex {concept.TypeIndex}, outside the {index.Types.Count} types of the index.",
-                    nameof(index));
-            }
-        }
+        Validate(index);
 
         var sb = new StringBuilder(Prefix);
         sb.Append("{\"version\":2,\"concepts\":[");
@@ -126,6 +123,61 @@ public static class IndexScript
 
         sb.Append("]};\n");
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Refuses an index whose positions point outside the lists they index: the
+    /// scripts would otherwise read a missing concept, ghost or type and render
+    /// a silently broken explorer or graph. <c>SiteIndex.Build</c> never
+    /// produces one; only a hand-built <see cref="ViewerIndex"/> can.
+    /// </summary>
+    private static void Validate(ViewerIndex index)
+    {
+        foreach (var concept in index.Concepts)
+        {
+            if ((uint)concept.TypeIndex >= (uint)index.Types.Count)
+            {
+                throw new ArgumentException(
+                    $"Concept '{concept.Id}' has TypeIndex {concept.TypeIndex}, outside the {index.Types.Count} types of the index.",
+                    nameof(index));
+            }
+        }
+
+        foreach (var edge in index.Edges)
+        {
+            if ((uint)edge.From >= (uint)index.Concepts.Count)
+            {
+                throw new ArgumentException(
+                    $"An edge has From {edge.From}, outside the {index.Concepts.Count} concepts of the index.",
+                    nameof(index));
+            }
+
+            var targets = edge.ToGhost ? index.Ghosts.Count : index.Concepts.Count;
+            if ((uint)edge.To >= (uint)targets)
+            {
+                throw new ArgumentException(
+                    $"An edge from concept {edge.From} has To {edge.To}, outside the {targets} {(edge.ToGhost ? "ghosts" : "concepts")} of the index.",
+                    nameof(index));
+            }
+        }
+
+        ValidateNodes(index.Tree, index.Concepts.Count, index);
+    }
+
+    private static void ValidateNodes(IReadOnlyList<IndexTreeNode> nodes, int conceptCount, ViewerIndex index)
+    {
+        foreach (var node in nodes)
+        {
+            // -1 is a folder with no concept of its own (spec §12.1).
+            if (node.Concept != -1 && (uint)node.Concept >= (uint)conceptCount)
+            {
+                throw new ArgumentException(
+                    $"Tree node '{node.Name}' has Concept {node.Concept}, neither -1 nor a position among the {conceptCount} concepts of the index.",
+                    nameof(index));
+            }
+
+            ValidateNodes(node.Children, conceptCount, index);
+        }
     }
 
     private static void AppendNodes(StringBuilder sb, IReadOnlyList<IndexTreeNode> nodes)
