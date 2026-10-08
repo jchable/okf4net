@@ -60,7 +60,7 @@
 
   // Later sections plug into these; each runs its functions in the order
   // they were added.
-  var hooks = { beforeRefresh: [], refresh: [], select: [], node: [], drawing: [], show: [] };
+  var hooks = { beforeRefresh: [], refresh: [], settled: [], select: [], node: [], drawing: [], show: [] };
   function run(list, arg) {
     for (var k = 0; k < list.length; k++) { list[k](arg); }
   }
@@ -389,6 +389,7 @@
     renderStatus();
     run(hooks.refresh);
     updateMode();
+    run(hooks.settled);
   }
 
   [
@@ -705,6 +706,8 @@
     drawing.svg.classList.toggle("okf-graph-nolabels", !state.labels);
     drawing.nodes.forEach(function (node) {
       node.g.classList.toggle("okf-selected", node.key === selected);
+      // AT: the selection is announced, as it is in the list.
+      if (node.key === selected) { node.g.setAttribute("aria-current", "true"); } else { node.g.removeAttribute("aria-current"); }
       node.g.classList.toggle("okf-graph-dim", node.key < N && view.matched[node.key] !== 1);
     });
     drawing.edges.forEach(function (e) {
@@ -941,6 +944,7 @@
   // One tab stop for the whole graph (roving tabindex), §8.
   var active = -1;
   var focusWasOnNode = false;
+  var focusWasInList = false;
   var previousActive = -1;
   canvas.tabIndex = -1;
   listBox.tabIndex = -1;
@@ -978,16 +982,24 @@
     return slot >= 0 && slot < drawing.keys.length ? drawing.keys[slot] : -1;
   }
 
-  // The nearest neighbour (link in either direction) inside the 90-degree
-  // cone of the arrow; ties go to index order.
-  function neighbourToward(key, arrow) {
+  // The four cones partition the plane: a neighbour belongs to the arrow of
+  // the larger of |dx| and |dy| (the horizontal one on a tie, and for a
+  // neighbour at the very same position, whose angle is 0). So every
+  // neighbour is reachable by exactly one arrow.
+  function coneOf(dx, dy) {
+    if (Math.abs(dx) >= Math.abs(dy)) { return dx >= 0 ? "ArrowRight" : "ArrowLeft"; }
+    return dy > 0 ? "ArrowDown" : "ArrowUp";
+  }
+
+  // The drawn neighbours of `key` (link in either direction) in the cone of
+  // `arrow`: nearest first, then index order.
+  function neighboursToward(key, arrow) {
     var from = nodeOfKey(key);
-    var best = -1;
-    var bestD = Infinity;
+    if (!from) { return []; }
+    var found = [];
     var seen = new Set();
     outOf[key].map(function (k) { return edgeTo[k]; })
       .concat(into[key].map(function (k) { return edgeFrom[k]; }))
-      .sort(function (a, b) { return a - b; })
       .forEach(function (other) {
         if (other === key || seen.has(other)) { return; }
         seen.add(other);
@@ -995,17 +1007,35 @@
         if (!node) { return; }
         var dx = node.x - from.x;
         var dy = node.y - from.y;
-        var ok = arrow === "ArrowRight" ? dx > 0 && dx >= Math.abs(dy)
-          : arrow === "ArrowLeft" ? dx < 0 && -dx >= Math.abs(dy)
-            : arrow === "ArrowDown" ? dy > 0 && dy >= Math.abs(dx)
-              : dy < 0 && -dy >= Math.abs(dx);
-        var d = dx * dx + dy * dy;
-        if (ok && d < bestD) {
-          best = other;
-          bestD = d;
-        }
+        if (coneOf(dx, dy) === arrow) { found.push({ key: other, d: dx * dx + dy * dy }); }
       });
-    return best;
+    found.sort(function (a, b) { return a.d - b.d || a.key - b.key; });
+    return found.map(function (f) { return f.key; });
+  }
+
+  // An arrow reaches the nearest neighbour in its cone; the same arrow pressed
+  // again from there goes on through the origin's other neighbours in that
+  // cone, wrapping to the nearest after the farthest (the cycle is endless, so
+  // the reader is never stuck and no neighbour is out of reach). A cone with a
+  // single neighbour is no cycle: the same arrow then goes on from it.
+  // `cycle` remembers the origin; any other key ends it (a refresh needs not:
+  // the cone is recomputed from the origin on every press).
+  var cycle = null;
+
+  function neighbourToward(key, arrow, prior) {
+    if (prior && prior.arrow === arrow && prior.landed === key) {
+      var around = neighboursToward(prior.origin, arrow);
+      var at = around.indexOf(key);
+      if (around.length > 1 && at >= 0) {
+        var next = around[(at + 1) % around.length];
+        cycle = { origin: prior.origin, arrow: arrow, landed: next };
+        return next;
+      }
+    }
+    var list = neighboursToward(key, arrow);
+    if (list.length === 0) { return -1; }
+    if (list.length > 1) { cycle = { origin: key, arrow: arrow, landed: list[0] }; }
+    return list[0];
   }
 
   function onKey(e) {
@@ -1014,12 +1044,14 @@
     if (!node) { return; }
     var key = node.key;
     var target = -1;
+    var prior = cycle;
+    cycle = null;
     switch (e.key) {
       case "ArrowRight":
       case "ArrowLeft":
       case "ArrowUp":
       case "ArrowDown":
-        target = neighbourToward(key, e.key);
+        target = neighbourToward(key, e.key, prior);
         break;
       case "PageDown":
         target = stepInOrder(key, 1);
@@ -1058,9 +1090,14 @@
   });
   hooks.drawing.push(function () { drawing.svg.addEventListener("keydown", onKey); });
 
+  // The reader who selects (a click, the list, a fragment) lands on the
+  // selection when tabbing back to the graph.
+  hooks.select.push(function () { if (nodeOfKey(selected)) { setActive(selected); } });
+
   hooks.beforeRefresh.push(function () {
     var focused = document.activeElement;
     focusWasOnNode = !!(focused && nodeOfElement.has(focused));
+    focusWasInList = !!(focused && listBox.contains(focused));
     previousActive = active;
   });
 
@@ -1081,19 +1118,35 @@
     }
     active = -1;
     if (target >= 0) { setActive(target); }
+  });
+
+  // The focus moves once updateMode() has shown and hidden the two views: a
+  // hidden element takes no focus. A node that had it keeps it (on the stop);
+  // the list's focus, when the list goes away, goes to the stop, else to the
+  // List toggle; an emptied graph hands the focus to its container.
+  hooks.settled.push(function () {
+    var showList = listMode || view.over;
     if (focusWasOnNode) {
-      if (target >= 0) {
-        focusNode(target);
-      } else if (listMode || view.over) {
-        // updateMode() runs after these hooks, and a hidden element cannot
-        // take focus: show the list first (updateMode will set the same).
-        listBox.hidden = false;
-        listBox.focus();
+      if (active >= 0) {
+        focusNode(active);
       } else {
-        canvas.focus();
+        (showList ? listBox : canvas).focus();
+      }
+    } else if (focusWasInList) {
+      if (showList) {
+        if (!listBox.contains(document.activeElement)) { listBox.focus(); }
+      } else if (active >= 0) {
+        focusNode(active);
+      } else {
+        listButton.focus();
       }
     }
   });
+
+  // The container takes the focus only when the graph is empty: it needs a
+  // name for that.
+  canvas.setAttribute("role", "group");
+  canvas.setAttribute("aria-label", "Graph");
 
   // === start-up ===
   buildFacets();
