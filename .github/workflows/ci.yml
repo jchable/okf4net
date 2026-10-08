@@ -152,11 +152,13 @@ jobs:
           # the binary AT THE ROOT -- install.sh extracts "$BIN" from there and
           # winget's RelativeFilePath points there -- and, for okf-render, the
           # licences that must travel with it: NOTICE, the LGPL and GPL texts,
-          # and the SIL OFL text of each font family OKF4net.Viewer embeds.
+          # the SIL OFL text of each font family OKF4net.Viewer embeds, and the
+          # MIT licence text of the marked it embeds.
           $expected = @{
             'okf'        = @("okf$exe")
             'okf-render' = @("okf-render$exe", 'NOTICE', 'LICENSE', 'LICENSE.GPL-3.0',
-                             'licenses/OFL-Inter.txt', 'licenses/OFL-InterTight.txt', 'licenses/OFL-SpaceMono.txt')
+                             'licenses/OFL-Inter.txt', 'licenses/OFL-InterTight.txt', 'licenses/OFL-SpaceMono.txt',
+                             'licenses/marked-LICENSE.md')
           }
 
           function Get-ArchiveEntries([string]$archive) {
@@ -247,10 +249,11 @@ jobs:
           node tools/viewer-security-check/check-index.js $indexScript
           if ($LASTEXITCODE -ne 0) { throw "$indexScript does not execute as a usable site index" }
           # Embedded assets come out of the NATIVE binary too (GetManifestResourceNames
-          # under AOT): the P1.1 scripts, the font licences, and each of the four
+          # under AOT): the P1.1 scripts, the font and marked licences, and each of the four
           # woff2 fonts by name (spec section 11.0, A26).
           $assets = @("okf-shapes.js", "okf-page.js",
                       "fonts/OFL-Inter.txt", "fonts/OFL-InterTight.txt", "fonts/OFL-SpaceMono.txt",
+                      "licenses/marked-LICENSE.md",
                       "fonts/inter-latin.woff2", "fonts/inter-tight-latin.woff2",
                       "fonts/space-mono-400-latin.woff2", "fonts/space-mono-700-latin.woff2")
           foreach ($asset in $assets) {

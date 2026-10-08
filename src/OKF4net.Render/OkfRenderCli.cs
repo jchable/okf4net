@@ -62,9 +62,9 @@ public static class OkfRenderCli
         "Generates one page per concept (a head with breadcrumb, chips and a\n" +
         "folding frontmatter box, then the rendered body), a generated index,\n" +
         "navigable cross-links with broken links flagged, backlinks, and the\n" +
-        "interactive explorer, palette and contents. The output is\n" +
-        "self-contained and opens straight off the filesystem -- no server\n" +
-        "needed.\n" +
+        "interactive explorer, palette, contents and local and global link\n" +
+        "graphs. The output is self-contained and opens straight off the\n" +
+        "filesystem -- no server needed.\n" +
         "\n" +
         "OPTIONS:\n" +
         "    --out <dir>      Output directory (required)\n" +

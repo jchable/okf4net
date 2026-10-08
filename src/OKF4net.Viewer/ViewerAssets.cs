@@ -29,19 +29,19 @@ public static class ViewerAssets
     public static string ViewerJs { get; } = Text("viewer.js");
 
     /// <summary>Applies the stored theme before first paint and adds the theme toggle (loaded in <c>&lt;head&gt;</c>).</summary>
-    public static string ThemeJs { get; } = Text("okf-theme.js");
+    internal static string ThemeJs { get; } = Text("okf-theme.js");
 
     /// <summary>Side-effect-free helpers shared by the interactive scripts (<c>window.OkfSite</c>).</summary>
-    public static string SiteJs { get; } = Text("okf-site.js");
+    internal static string SiteJs { get; } = Text("okf-site.js");
 
     /// <summary>The tree explorer.</summary>
-    public static string ExplorerJs { get; } = Text("okf-explorer.js");
+    internal static string ExplorerJs { get; } = Text("okf-explorer.js");
 
     /// <summary>The "Jump to" palette.</summary>
-    public static string PaletteJs { get; } = Text("okf-palette.js");
+    internal static string PaletteJs { get; } = Text("okf-palette.js");
 
     /// <summary>Heading anchors, the contents list and fragment resolution.</summary>
-    public static string TocJs { get; } = Text("okf-toc.js");
+    internal static string TocJs { get; } = Text("okf-toc.js");
 
     /// <summary>
     /// Every embedded asset's path relative to <c>Assets/</c>, <c>/</c>-separated,

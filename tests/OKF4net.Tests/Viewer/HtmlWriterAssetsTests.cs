@@ -41,8 +41,8 @@ public class HtmlWriterAssetsTests
         Assert.Equal(assets, written.Take(assets.Count));
         Assert.Equal("assets/okf-index.js", written[assets.Count]);
         Assert.Equal("index.html", written[assets.Count + 1]);
-        // P3 writes the graph page between index.html and the concept pages;
-        // the concept pages still come last.
+        // The graph page is written between index.html and the concept pages;
+        // the concept pages come last.
         Assert.Equal("a.html", written[^1]);
     }
 

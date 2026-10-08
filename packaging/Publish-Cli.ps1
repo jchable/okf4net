@@ -74,7 +74,7 @@ if (-not $isWindowsRid) {
 
 # The archive itself -- the binary at the archive root plus whatever licence
 # files travel with it (okf-render: NOTICE, LICENSE, LICENSE.GPL-3.0 and the
-# fonts' OFL texts under licenses/) -- is New-ReleaseArchive.ps1's job, so
+# fonts' OFL texts and marked's MIT text under licenses/) -- is New-ReleaseArchive.ps1's job, so
 # its layout can be checked without a publish. It writes the .sha256
 # sidecar and returns the hash.
 & (Join-Path $PSScriptRoot 'New-ReleaseArchive.ps1') -Bin $bin -BinName $BinName -Rid $Rid -Version $Version -OutDir $OutDir

@@ -21,13 +21,16 @@
     $ArchiveFiles below, and a binary missing from that table is refused
     rather than archived bare:
       * okf        -- the binary alone (the archive this script always made).
-      * okf-render -- NOTICE, LICENSE, LICENSE.GPL-3.0, and the three SIL OFL
-                      texts of the fonts OKF4net.Viewer embeds, under
-                      licenses/. The OFL (section 2) requires each font's
-                      copyright notice and licence to accompany it when it is
-                      redistributed bundled with software; the embedded copies
-                      inside the binary are not readable by the person who
-                      downloads it, so they ship beside it too.
+      * okf-render -- NOTICE, LICENSE, LICENSE.GPL-3.0, the three SIL OFL
+                      texts of the fonts OKF4net.Viewer embeds, and the MIT
+                      licence text of the marked it embeds, under licenses/.
+                      The OFL (section 2) requires each font's copyright
+                      notice and licence to accompany it when it is
+                      redistributed bundled with software, and the MIT
+                      licence requires its permission notice in all copies of
+                      the software; the embedded copies inside the binary are
+                      not readable by the person who downloads it, so they
+                      ship beside it too.
 
     Windows RIDs are zipped with Compress-Archive; every other RID is
     tar.gz'd, because tar preserves the Unix executable bit and
@@ -70,6 +73,7 @@ $ErrorActionPreference = 'Stop'
 
 # Per binary: archive path => source path relative to the repo root.
 $fontsDir = 'src/OKF4net.Viewer/Assets/fonts'
+$licensesDir = 'src/OKF4net.Viewer/Assets/licenses'
 $ArchiveFiles = @{
     'okf'        = [ordered]@{}
     'okf-render' = [ordered]@{
@@ -79,6 +83,7 @@ $ArchiveFiles = @{
         'licenses/OFL-Inter.txt'      = "$fontsDir/OFL-Inter.txt"
         'licenses/OFL-InterTight.txt' = "$fontsDir/OFL-InterTight.txt"
         'licenses/OFL-SpaceMono.txt'  = "$fontsDir/OFL-SpaceMono.txt"
+        'licenses/marked-LICENSE.md'  = "$licensesDir/marked-LICENSE.md"
     }
 }
 if (-not $ArchiveFiles.ContainsKey($BinName)) {

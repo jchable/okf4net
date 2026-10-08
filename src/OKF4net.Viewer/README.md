@@ -57,4 +57,7 @@ LGPL-3.0-or-later. The generated site embeds a vendored copy of
 [marked](https://github.com/markedjs/marked) (MIT) for client-side markdown
 rendering, and three font families — Inter, Inter Tight and Space Mono (SIL
 Open Font License 1.1), latin woff2 as Google Fonts distributes them — see
-`NOTICE` and `Assets/fonts/README.md`.
+`NOTICE` and `Assets/fonts/README.md`. marked's MIT licence text ships
+verbatim as `Assets/licenses/marked-LICENSE.md` and, like the fonts' OFL
+texts, is written into every generated site (`assets/licenses/`) and travels
+beside the `okf-render` binary in its release archives.

@@ -10,6 +10,10 @@ docs/spec/SPEC.md -text
 # embed different bytes and that test fails. The README itself is not hashed.
 src/OKF4net.Viewer/Assets/fonts/** -text
 
+# marked's LICENSE.md, vendored verbatim beside marked.min.js: the licence text
+# must reach every copy as published, so no checkout rewrites its line endings.
+src/OKF4net.Viewer/Assets/licenses/** -text
+
 # Shell scripts run via `sh` (or piped straight into it, e.g.
 # packaging/install.sh via curl) need LF endings, not the CRLF a Windows
 # contributor's autocrlf=true checkout would otherwise apply -- a `\r` inside

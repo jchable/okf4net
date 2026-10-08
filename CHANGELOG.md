@@ -75,9 +75,24 @@ and this project adheres to
 ### Changed
 
 - **The `okf-render` release archives carry its licences:** `NOTICE`, `LICENSE`,
-  `LICENSE.GPL-3.0` and the embedded fonts' SIL OFL texts (`licenses/OFL-*.txt`)
-  beside the binary, which stays at the archive root; the `okf` archives are
-  unchanged, and CI checks each archive's exact file list.
+  `LICENSE.GPL-3.0`, the embedded fonts' SIL OFL texts (`licenses/OFL-*.txt`)
+  and the MIT licence text of the embedded marked (`licenses/marked-LICENSE.md`,
+  marked's `LICENSE.md` at v15.0.12, verbatim; also written into every generated
+  site under `assets/licenses/`) beside the binary, which stays at the archive
+  root; the `okf` archives are unchanged, and CI checks each archive's exact
+  file list. `packaging/install.sh` now installs these files too (in
+  `<prefix>/share/doc/okf-render` when the destination is `<prefix>/bin`,
+  otherwise `<dir>/okf-render-licenses`) instead of dropping them.
+- **`NOTICE` and the README now state both third-party exceptions:** marked
+  (MIT) and the three embedded font families (SIL OFL 1.1), both only in
+  `OKF4net.Viewer` and the `okf-render` binary, never in `okf`.
+- **`okf-render --help` mentions the local and global link graphs.**
+- **`IndexScript.Render` refuses an index whose edges or tree nodes point
+  outside its concepts (or, for a ghost edge, its ghosts)** with an
+  `ArgumentException`, as it already did for a `TypeIndex` outside the types
+  table; `SiteIndex.Build` never produces one. The viewer's per-script
+  `ViewerAssets` properties other than `Css`, `MarkedJs` and `ViewerJs` are
+  now `internal`.
 - **`okf --help` now lists the bare `help` and `version` commands (#11).** Both
   already worked as aliases of `-h`/`--help` and `-V`/`--version`, but nothing
   said so; a test now pins that each answers exactly like its flag form.
