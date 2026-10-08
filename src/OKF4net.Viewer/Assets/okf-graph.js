@@ -68,32 +68,101 @@
   // === model ===
   // A node is a concept (key 0..N-1, its index position) or a ghost (key
   // N..N+G-1): index order, as the simulation numbers them (§12.5).
+  //
+  // A damaged entry (not an object, or an id that is not a string) keeps its
+  // key but is no node: never matched, drawn, listed or counted, and every
+  // edge that names it is skipped, as okf-local.js and the palette skip one.
+  // Every field is read once, here; one of the wrong type is taken as absent
+  // ("" for a text, no tags, no page). Nothing below reads OKF_INDEX's
+  // entries again, except OkfShapes.kindOf, which has its own guards.
   var N = index.concepts.length;
   var G = index.ghosts.length;
   var total = N + G;
-  var M = index.edges.length;
+
+  function textOf(v) {
+    return typeof v === "string" ? v : "";
+  }
+
+  function idIn(entry) {
+    return entry !== null && typeof entry === "object" && typeof entry.id === "string" ? entry.id : null;
+  }
+
+  var concepts = [];
+  var conceptCount = 0;
   var byId = new Map();
-  for (var c0 = 0; c0 < N; c0++) { byId.set(index.concepts[c0].id, c0); }
+  for (var c0 = 0; c0 < N; c0++) {
+    var raw = index.concepts[c0];
+    var rawId = idIn(raw);
+    if (rawId === null) {
+      concepts.push(null);
+      continue;
+    }
+    var rawTags = raw.tags;
+    concepts.push({
+      id: rawId,
+      title: textOf(raw.title),
+      type: textOf(raw.type),
+      path: textOf(raw.path),
+      trust: typeof raw.trust === "string" ? raw.trust : "unverified",
+      typeIndex: raw.typeIndex,
+      tags: Array.isArray(rawTags) ? rawTags.filter(function (tag) { return typeof tag === "string"; }) : [],
+      staleAfterMs: raw.staleAfterMs,
+      staleAfterDate: typeof raw.staleAfterDate === "string" ? raw.staleAfterDate : null,
+      description: textOf(raw.description),
+    });
+    conceptCount++;
+    byId.set(rawId, c0);
+  }
+  var ghosts = [];
+  for (var g0 = 0; g0 < G; g0++) {
+    var ghostId = idIn(index.ghosts[g0]);
+    ghosts.push(ghostId === null ? null : { id: ghostId });
+  }
+
+  // Only the edges between two entries: edge k of the model is not edge k of
+  // the index once one is skipped.
   var edgeFrom = [];
   var edgeTo = [];
   var outOf = [];
   var into = [];
   for (var k0 = 0; k0 < total; k0++) { outOf.push([]); into.push([]); }
-  for (var e0 = 0; e0 < M; e0++) {
+  for (var e0 = 0; e0 < index.edges.length; e0++) {
     var edge = index.edges[e0];
-    var ok = Array.isArray(edge) && isIndex(edge[0], N)
-      && (edge[3] === 1 ? isIndex(edge[1], G) : isIndex(edge[1], N));
-    var to = ok ? (edge[3] === 1 ? N + edge[1] : edge[1]) : -1;
-    edgeFrom.push(ok ? edge[0] : -1);
+    if (!Array.isArray(edge)) { continue; }
+    var from = edge[0];
+    var target = edge[1];
+    var toGhost = edge[3] === 1;
+    if (!isIndex(from, N) || concepts[from] === null) { continue; }
+    if (toGhost ? !isIndex(target, G) || ghosts[target] === null : !isIndex(target, N) || concepts[target] === null) { continue; }
+    var to = toGhost ? N + target : target;
+    outOf[from].push(edgeFrom.length);
+    into[to].push(edgeFrom.length);
+    edgeFrom.push(from);
     edgeTo.push(to);
-    if (ok) {
-      outOf[edge[0]].push(e0);
-      into[to].push(e0);
-    }
+  }
+  var M = edgeFrom.length;
+
+  // The types' table, each row read once: name, count and slot, or null.
+  var types = [];
+  for (var t0 = 0; t0 < index.types.length; t0++) {
+    var rawType = index.types[t0];
+    types.push(rawType !== null && typeof rawType === "object" ? {
+      name: textOf(rawType.name),
+      count: isIndex(rawType.count, Infinity) ? rawType.count : 0,
+      slot: isIndex(rawType.slot, shapes.KINDS.length) ? rawType.slot : shapes.OTHER_SLOT,
+    } : null);
   }
 
+  // Only ever asked for an entry's key.
   function idOf(key) {
-    return key < N ? index.concepts[key].id : index.ghosts[key - N].id;
+    return key < N ? concepts[key].id : ghosts[key - N].id;
+  }
+
+  // A concept's page, resolved, or null (a ghost, or a concept with no path).
+  function pageOf(key) {
+    return key >= 0 && key < N && concepts[key] !== null && concepts[key].path !== ""
+      ? site.resolve(root, concepts[key].path)
+      : null;
   }
 
   // What the list, the drawer and the node titles call a node.
@@ -155,7 +224,7 @@
 
   function defaultState() {
     return {
-      types: index.types.map(function () { return true; }),
+      types: types.map(function () { return true; }),
       trust: [true, true, true],
       staleOnly: false,
       tags: new Set(),
@@ -166,9 +235,10 @@
   var state = defaultState();
 
   // AND between facets, OR inside one (A10). A typeIndex out of range is
-  // filtered by no type box.
+  // filtered by no type box. A damaged entry matches nothing.
   function matches(i) {
-    var concept = index.concepts[i];
+    var concept = concepts[i];
+    if (concept === null) { return false; }
     if (isIndex(concept.typeIndex, state.types.length) && !state.types[concept.typeIndex]) { return false; }
     if (!state.trust[trustSlot(concept.trust)]) { return false; }
     if (state.staleOnly && !site.isStale(concept.staleAfterMs, nowMs)) { return false; }
@@ -192,7 +262,7 @@
         matched[i] = 1;
         matchedCount++;
       }
-      if (matched[i] === 1 || state.dim) { shown[i] = 1; }
+      if (matched[i] === 1 || (state.dim && concepts[i] !== null)) { shown[i] = 1; }
     }
     var ghostCount = 0;
     for (var g = N; g < total; g++) {
@@ -210,7 +280,7 @@
     }
     var links = 0;
     for (var e = 0; e < M; e++) {
-      if (edgeFrom[e] >= 0 && shown[edgeFrom[e]] === 1 && shown[edgeTo[e]] === 1) { links++; }
+      if (shown[edgeFrom[e]] === 1 && shown[edgeTo[e]] === 1) { links++; }
     }
     return {
       matched: matched, shown: shown, matchedCount: matchedCount, keys: keys,
@@ -226,10 +296,10 @@
       statusLine.textContent = view.keys.length + " concepts match " + EMDASH + " narrow the filters to draw the graph";
       return;
     }
-    var text = "showing " + view.matchedCount + " of " + plural(N, "concept", "concepts");
-    if (view.ghostCount > 0) { text += " + " + view.ghostCount + " absent"; }
-    text += " " + MIDDOT + " " + view.links + " of " + plural(M, "link", "links");
-    statusLine.textContent = text;
+    var line = "showing " + view.matchedCount + " of " + plural(conceptCount, "concept", "concepts");
+    if (view.ghostCount > 0) { line += " + " + view.ghostCount + " absent"; }
+    line += " " + MIDDOT + " " + view.links + " of " + plural(M, "link", "links");
+    statusLine.textContent = line;
   }
 
   var listMode = false;
@@ -248,7 +318,8 @@
 
   // The list is built only while it is shown, and only when the shown set has
   // changed since it was last built: its entries and relations depend on
-  // nothing else (about ten elements per node, so ~16k at NODE_LIMIT).
+  // nothing else (about ten elements per node, so ~16k at NODE_LIMIT, and
+  // the whole bundle above it).
   var listStale = true;
 
   function sameKeys(a, b) {
@@ -276,48 +347,94 @@
     }
   }
 
+  // Entries one task builds. A long list (above NODE_LIMIT, the whole
+  // bundle) is built LIST_CHUNK entries a frame, in index order, so that no
+  // click waits for all of it; the first chunk is built at once.
+  var LIST_CHUNK = 200;
+  // Bumped by every build, and by a change of the shown set: a chunk of an
+  // older build does nothing.
+  var listJob = 0;
+  // The built entries' buttons, by key, and the one marked as the selection.
   var listButtons = new Map();
+  var listMarked = null;
 
-  function renderList() {
-    clear(listBox);
-    listButtons = new Map();
-    listBox.appendChild(el("h2", "okf-section-title", "Concepts and links"));
-    var items = el("ul", "okf-graph-list-items");
-    view.keys.forEach(function (key) {
-      var item = el("li", "okf-graph-list-item");
-      var head = el("div", "okf-graph-list-head");
-      head.appendChild(glyph(key));
-      var button = el("button", "okf-graph-list-select", nameOf(key));
-      button.type = "button";
-      button.addEventListener("click", function () { select(key, "user"); });
-      head.appendChild(button);
-      item.appendChild(head);
-      var relations = el("ul", "okf-graph-list-rel");
-      outOf[key].forEach(function (k) {
-        if (view.shown[edgeTo[k]] === 1) { relations.appendChild(el("li", null, "links to " + nameOf(edgeTo[k]))); }
-      });
-      into[key].forEach(function (k) {
-        if (view.shown[edgeFrom[k]] === 1) { relations.appendChild(el("li", null, "referenced by " + nameOf(edgeFrom[k]))); }
-      });
-      if (relations.firstChild) { item.appendChild(relations); }
-      items.appendChild(item);
-      listButtons.set(key, button);
+  function listEntry(key, shown) {
+    var item = el("li", "okf-graph-list-item");
+    var head = el("div", "okf-graph-list-head");
+    head.appendChild(glyph(key));
+    var button = el("button", "okf-graph-list-select", nameOf(key));
+    button.type = "button";
+    button.addEventListener("click", function () { select(key, "user"); });
+    head.appendChild(button);
+    item.appendChild(head);
+    var relations = el("ul", "okf-graph-list-rel");
+    outOf[key].forEach(function (k) {
+      if (shown[edgeTo[k]] === 1) { relations.appendChild(el("li", null, "links to " + nameOf(edgeTo[k]))); }
     });
-    listBox.appendChild(items);
-    markListSelection();
+    into[key].forEach(function (k) {
+      if (shown[edgeFrom[k]] === 1) { relations.appendChild(el("li", null, "referenced by " + nameOf(edgeFrom[k]))); }
+    });
+    if (relations.firstChild) { item.appendChild(relations); }
+    listButtons.set(key, button);
+    return item;
   }
 
-  function markListSelection() {
-    listButtons.forEach(function (button, key) {
-      var current = key === selected;
-      button.parentElement.parentElement.classList.toggle("okf-graph-list-current", current);
-      if (current) {
-        button.setAttribute("aria-current", "true");
-        if (!listBox.hidden && typeof button.scrollIntoView === "function") { button.scrollIntoView({ block: "nearest" }); }
-      } else {
-        button.removeAttribute("aria-current");
+  function renderList() {
+    var job = ++listJob;
+    clear(listBox);
+    listButtons = new Map();
+    listMarked = null;
+    listBox.appendChild(el("h2", "okf-section-title", "Concepts and links"));
+    var items = el("ul", "okf-graph-list-items");
+    listBox.appendChild(items);
+    var keys = view.keys;
+    var shown = view.shown;
+    var at = 0;
+    function chunk() {
+      if (job !== listJob) { return; }
+      var end = Math.min(keys.length, at + LIST_CHUNK);
+      var part = document.createDocumentFragment();
+      var built = false;
+      for (; at < end; at++) {
+        part.appendChild(listEntry(keys[at], shown));
+        if (keys[at] === selected) { built = true; }
       }
-    });
+      items.appendChild(part);
+      // The selection is marked as soon as its entry exists.
+      if (built) { markListSelection(); }
+      if (at < keys.length) { schedule(chunk); }
+    }
+    chunk();
+  }
+
+  // One entry marked (class and aria-current) at most: the selection's, once
+  // built; brought into the list's view.
+  function markListSelection() {
+    var button = selected >= 0 && listButtons.has(selected) ? listButtons.get(selected) : null;
+    if (listMarked && listMarked !== button) {
+      listMarked.parentElement.parentElement.classList.remove("okf-graph-list-current");
+      listMarked.removeAttribute("aria-current");
+    }
+    listMarked = button;
+    if (!button) { return; }
+    var item = button.parentElement.parentElement;
+    item.classList.add("okf-graph-list-current");
+    button.setAttribute("aria-current", "true");
+    revealEntry(item);
+  }
+
+  // The entry, its relation lines included, in the middle of the list (its
+  // top at the list's top when it is taller), unless it is wholly in view
+  // already. Only the list scrolls: scrollIntoView would scroll the page too.
+  function revealEntry(item) {
+    if (listBox.hidden) { return; }
+    var box = listBox.getBoundingClientRect();
+    var r = item.getBoundingClientRect();
+    var height = listBox.clientHeight;
+    var into = r.top - box.top - listBox.clientTop;
+    if (into >= 0 && into + r.height <= height) { return; }
+    var top = listBox.scrollTop + into - (r.height < height ? (height - r.height) / 2 : 0);
+    listBox.scrollTop = Math.max(0, top);
   }
 
   var selected = -1;
@@ -336,9 +453,12 @@
     keys.forEach(function (key) {
       var item = el("li");
       var row;
-      if (key < N) {
+      var href = pageOf(key);
+      if (href !== null) {
         row = el("a", "okf-row");
-        row.setAttribute("href", site.resolve(root, index.concepts[key].path));
+        row.setAttribute("href", href);
+      } else if (key < N) {
+        row = el("span", "okf-row");
       } else {
         row = el("span", "okf-row okf-graph-absent");
       }
@@ -367,7 +487,7 @@
       detail.appendChild(head);
       return;
     }
-    var concept = index.concepts[selected];
+    var concept = concepts[selected];
     head.appendChild(el("h2", "okf-graph-detail-title", concept.title));
     detail.appendChild(head);
     var chips = el("div", "okf-chips");
@@ -387,22 +507,24 @@
       chips.appendChild(staleChip);
     }
     detail.appendChild(chips);
-    if (typeof concept.description === "string" && concept.description !== "") {
+    if (concept.description !== "") {
       detail.appendChild(el("p", "okf-graph-detail-desc", concept.description));
     }
     detail.appendChild(relationBlock("Links to", outOf[selected].map(function (k) { return edgeTo[k]; }), true));
     detail.appendChild(relationBlock("Referenced by", into[selected].map(function (k) { return edgeFrom[k]; }), false));
-    var openPage = el("a", "okf-graph-open", "Open page");
-    openPage.setAttribute("href", site.resolve(root, concept.path));
-    detail.appendChild(openPage);
+    var page = pageOf(selected);
+    if (page !== null) {
+      var openPage = el("a", "okf-graph-open", "Open page");
+      openPage.setAttribute("href", page);
+      detail.appendChild(openPage);
+    }
   }
 
   // H10, §12.5: "Reading view" leads to the selected concept's page.
   function updateReadingView() {
     if (!readingView) { return; }
-    readingView.setAttribute("href", selected >= 0 && selected < N
-      ? site.resolve(root, index.concepts[selected].path)
-      : site.resolve(root, "index.html"));
+    var page = pageOf(selected);
+    readingView.setAttribute("href", page !== null ? page : site.resolve(root, "index.html"));
   }
 
   // origin: "user" (click, keys, list) or "url" (a fragment).
@@ -421,7 +543,10 @@
     run(hooks.beforeRefresh);
     var previousKeys = view ? view.keys : null;
     view = compute();
-    if (!sameKeys(previousKeys, view.keys)) { listStale = true; }
+    if (!sameKeys(previousKeys, view.keys)) {
+      listStale = true;
+      listJob++;
+    }
     renderStatus();
     run(hooks.refresh);
     updateMode();
@@ -479,7 +604,7 @@
   function staleNowCount() {
     var n = 0;
     for (var i = 0; i < N; i++) {
-      if (site.isStale(index.concepts[i].staleAfterMs, nowMs)) { n++; }
+      if (concepts[i] !== null && site.isStale(concepts[i].staleAfterMs, nowMs)) { n++; }
     }
     return n;
   }
@@ -491,11 +616,12 @@
     details.appendChild(body);
 
     // G3: one row per entry of `types`, index order; the page's type legend.
+    // A damaged entry has no row (its concepts are filtered by no type box).
     var typeSection = facetSection("Type", "type");
     var typeList = el("div", "okf-facet-list");
-    index.types.forEach(function (type, t) {
-      var slot = isIndex(type.slot, shapes.KINDS.length) ? type.slot : shapes.OTHER_SLOT;
-      var r = checkboxRow(true, shapes.icon(shapes.KINDS[slot], "icon"), shapes.typeLabel(type.name), type.count,
+    types.forEach(function (type, t) {
+      if (type === null) { return; }
+      var r = checkboxRow(true, shapes.icon(shapes.KINDS[type.slot], "icon"), shapes.typeLabel(type.name), type.count,
         function (on) { state.types[t] = on; refresh(); });
       facetInputs.types.push(r.input);
       typeList.appendChild(r.row);
@@ -507,7 +633,7 @@
     var trustSection = facetSection("Trust", "trust");
     var trustList = el("div", "okf-facet-list");
     var trustCounts = [0, 0, 0];
-    index.concepts.forEach(function (concept) { trustCounts[trustSlot(concept.trust)]++; });
+    concepts.forEach(function (concept) { if (concept !== null) { trustCounts[trustSlot(concept.trust)]++; } });
     TRUST.forEach(function (tier, t) {
       var kind = shapes.trustKind(tier);
       var r = checkboxRow(true, kind ? shapes.icon(kind, "flag") : emptyMark(), tier, trustCounts[t],
@@ -529,7 +655,8 @@
 
     // G6: tags by count (descending), then ordinal; the first 12, then all.
     var tagCounts = new Map();
-    index.concepts.forEach(function (concept) {
+    concepts.forEach(function (concept) {
+      if (concept === null) { return; }
       new Set(concept.tags).forEach(function (tag) { tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1); });
     });
     var tags = Array.from(tagCounts.keys()).sort(function (a, b) {
@@ -621,7 +748,19 @@
     ? window.OKF_SCHEDULER
     : function (callback) { window.requestAnimationFrame(callback); };
   var REDRAW_EVERY = 25;
+  // Under prefers-reduced-motion the layout runs in the same slices but is
+  // drawn at its start and at its end only: no animation (read every frame,
+  // so a change of the preference applies to the layout running).
+  var calm = typeof window.matchMedia === "function" ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+  // The drawing of the shown set: its keys, slots, nodes and edges.
   var drawing = null;
+  // The <svg> and its layers, made once. A node (by key) and a link (by
+  // model edge) are made once too, the first time they are drawn, and every
+  // later drawing that shows them reuses them: a filter change does not
+  // rebuild what it keeps, and the layout moves nodes, never remakes them.
+  var stage = null;
+  var nodeCache = [];
+  var lineCache = [];
   var simulation = null;
   var generation = 0;
   var transform = { a: 0, b: 0, s: 1 };
@@ -631,6 +770,7 @@
   // the click that follows that release, within a moment, is the drag's.
   var suppressedAt = null;
   var SUPPRESS_WINDOW = 250;
+  // Every node ever made, by its <g>.
   var nodeOfElement = new Map();
 
   function svgEl(name, className) {
@@ -659,12 +799,14 @@
   }
 
   function open(key) {
-    if (key < 0 || key >= N) { return; }
-    var href = site.resolve(root, index.concepts[key].path);
+    var href = pageOf(key);
+    if (href === null) { return; }
     var event = new CustomEvent("okf:navigate", { cancelable: true, detail: { href: href } });
     if (document.dispatchEvent(event)) { window.location.assign(href); }
   }
 
+  // A node's shapes are drawn once by OkfShapes around (0, 0), its label
+  // under them (G11); moveNode places the whole <g>.
   function makeNode(key) {
     var kind = kindOf(key);
     var size = shapes.SIZES.graph[kind];
@@ -672,7 +814,7 @@
     g.setAttribute("tabindex", "-1");
     g.setAttribute("role", "button");
     g.setAttribute("aria-label", key < N
-      ? index.concepts[key].title + ", " + shapes.typeLabel(index.concepts[key].type)
+      ? concepts[key].title + ", " + shapes.typeLabel(concepts[key].type)
       : nameOf(key));
     if (key >= N) { g.classList.add("okf-graph-ghost"); }
     var title = svgEl("title");
@@ -680,9 +822,14 @@
     g.insertBefore(title, g.firstChild);
     var label = svgEl("text", key < N ? "okf-graph-label" : "okf-graph-label okf-graph-ghost-label");
     label.setAttribute("text-anchor", "middle");
+    label.setAttribute("x", "0");
+    label.setAttribute("y", num(size.size / 2 + 16));
     label.textContent = cutLabel(key < N ? lastSegment(idOf(key)) : nameOf(key));
     g.appendChild(label);
-    var node = { key: key, kind: kind, size: size, g: g, title: title, label: label, x: 0, y: 0 };
+    var node = {
+      key: key, kind: kind, size: size, g: g, title: title, label: label,
+      chars: labelChars(label.textContent), x: 0, y: 0,
+    };
     g.addEventListener("click", function (e) {
       var swallow = suppressedAt !== null && Math.abs(e.timeStamp - suppressedAt) <= SUPPRESS_WINDOW;
       suppressedAt = null;
@@ -695,46 +842,48 @@
     return node;
   }
 
-  // The node's shapes are redrawn by OkfShapes at the new centre (absolute
-  // coordinates, no transform); its <g>, <title> and label are kept, so focus
-  // and listeners survive the move.
+  // One attribute: the <g>'s translate (spec §12.2, revision 12). Nothing is
+  // remade: focus and listeners stay, and the browser moves what it drew.
   function moveNode(node, x, y) {
     if (!Number.isFinite(x) || !Number.isFinite(y)) { return; }
-    var fresh = shapes.node(node.kind, x, y, node.size.size, node.size);
-    var child = node.title.nextSibling;
-    while (child && child !== node.label) {
-      var next = child.nextSibling;
-      node.g.removeChild(child);
-      child = next;
-    }
-    while (fresh.firstChild) { node.g.insertBefore(fresh.firstChild, node.label); }
-    node.label.setAttribute("x", num(x));
-    node.label.setAttribute("y", num(y + node.size.size / 2 + 16));
+    node.g.setAttribute("transform", "translate(" + num(x) + " " + num(y) + ")");
     node.x = x;
     node.y = y;
   }
 
+  function nodeFor(key) {
+    if (!nodeCache[key]) { nodeCache[key] = makeNode(key); }
+    return nodeCache[key];
+  }
+
   // G12: from the source's edge to the target's, arrow at the target; two
   // opposite edges are shifted 3 apart, each to its own left.
+  function placeEdge(e) {
+    var a = drawing.nodes[e.from];
+    var b = drawing.nodes[e.to];
+    var dx = b.x - a.x;
+    var dy = b.y - a.y;
+    var d = Math.sqrt(dx * dx + dy * dy);
+    if (!(d > 0) || !Number.isFinite(d)) { return; }
+    var ux = dx / d;
+    var uy = dy / d;
+    var ox = e.reverse ? -uy * 3 : 0;
+    var oy = e.reverse ? ux * 3 : 0;
+    var ra = a.size.size / 2;
+    var rb = b.size.size / 2 + 2;
+    e.line.setAttribute("x1", num(a.x + ux * ra + ox));
+    e.line.setAttribute("y1", num(a.y + uy * ra + oy));
+    e.line.setAttribute("x2", num(b.x - ux * rb + ox));
+    e.line.setAttribute("y2", num(b.y - uy * rb + oy));
+  }
+
   function placeEdges() {
-    drawing.edges.forEach(function (e) {
-      var a = drawing.nodes[e.from];
-      var b = drawing.nodes[e.to];
-      var dx = b.x - a.x;
-      var dy = b.y - a.y;
-      var d = Math.sqrt(dx * dx + dy * dy);
-      if (!(d > 0) || !Number.isFinite(d)) { return; }
-      var ux = dx / d;
-      var uy = dy / d;
-      var ox = e.reverse ? -uy * 3 : 0;
-      var oy = e.reverse ? ux * 3 : 0;
-      var ra = a.size.size / 2;
-      var rb = b.size.size / 2 + 2;
-      e.line.setAttribute("x1", num(a.x + ux * ra + ox));
-      e.line.setAttribute("y1", num(a.y + uy * ra + oy));
-      e.line.setAttribute("x2", num(b.x - ux * rb + ox));
-      e.line.setAttribute("y2", num(b.y - uy * rb + oy));
-    });
+    drawing.edges.forEach(placeEdge);
+  }
+
+  // The links of the node in `slot` (in either direction), and only them.
+  function placeEdgesOf(slot) {
+    drawing.edgesOf[slot].forEach(placeEdge);
   }
 
   // Classes only: selection ring and blue edges (G14), dimmed nodes (G8),
@@ -753,7 +902,10 @@
       var inward = !out && edgeTo[e.k] === selected;
       e.line.classList.toggle("okf-graph-edge-out", out);
       e.line.classList.toggle("okf-graph-edge-in", inward);
-      e.line.setAttribute("marker-end", out || inward ? "url(#okf-graph-arrow-sel)" : "url(#okf-graph-arrow)");
+      // Set only when it changes: a set attribute is a change for the
+      // browser, even to the same value, and every link would be redrawn.
+      var arrow = out || inward ? "url(#okf-graph-arrow-sel)" : "url(#okf-graph-arrow)";
+      if (e.line.getAttribute("marker-end") !== arrow) { e.line.setAttribute("marker-end", arrow); }
     });
   }
 
@@ -796,7 +948,7 @@
   function nodeBox(node, outline) {
     var h = node.size.size / 2;
     var reach = outline ? h + 10 + node.size.focus / 2 : h;
-    var wide = Math.max(reach, labelChars(node.label.textContent) * LABEL_ADVANCE / 2);
+    var wide = Math.max(reach, node.chars * LABEL_ADVANCE / 2);
     return { l: node.x - wide, r: node.x + wide, t: node.y - reach, b: node.y + h + 20 };
   }
 
@@ -805,7 +957,7 @@
   // without moving anything).
   function simBoxes() {
     return drawing.nodes.map(function (node) {
-      var box = nodeBox({ x: 0, y: 0, size: node.size, label: node.label });
+      var box = nodeBox({ x: 0, y: 0, size: node.size, chars: node.chars });
       return [box.r, -box.t, box.b];
     });
   }
@@ -818,7 +970,18 @@
   var FIT_SIDE = 24;
   var FIT_TOP = 56;
 
-  function fit() {
+  // While the layout of a graph of more than PAINT_SLICE nodes runs, its view
+  // keeps its scale as long as the drawing fits in it and is no more than
+  // ZOOM_SLACK times too small for it; one that outgrew it gets ZOOM_ROOM of
+  // the fitting scale, room to grow. A new scale lays every label out again
+  // (about 50 ms of rendering at 1 400 nodes in Chromium), a move does not.
+  // The layout's last paint, and every other fit, is exact.
+  var ZOOM_SLACK = 1.5;
+  var ZOOM_ROOM = 0.8;
+
+  // `size`, when given, is the canvas measured by the caller (see paint);
+  // `running`: a large graph's layout is under way (see ZOOM_SLACK).
+  function fit(size, running) {
     if (!drawing || drawing.nodes.length === 0) { return; }
     var minX = Infinity;
     var minY = Infinity;
@@ -831,33 +994,46 @@
       minY = Math.min(minY, box.t);
       maxY = Math.max(maxY, box.b);
     });
-    var size = canvasSize();
+    if (!size) { size = canvasSize(); }
     var s = Math.min((size.w - 2 * FIT_SIDE) / Math.max(maxX - minX, 1), (size.h - 2 * FIT_TOP) / Math.max(maxY - minY, 1));
     s = Math.max(MIN_SCALE, Math.min(FIT_CAP, s));
+    if (running) {
+      var kept = transform.s;
+      if (s >= kept && s <= kept * ZOOM_SLACK) {
+        s = kept;
+      } else if (s < kept) {
+        s = Math.max(MIN_SCALE, s * ZOOM_ROOM);
+      }
+    }
     setTransform(size.w / 2 - (minX + maxX) / 2 * s, size.h / 2 - (minY + maxY) / 2 * s, s);
   }
 
-  function centerOn(key) {
+  function centerOn(key, size) {
     var slot = drawing ? drawing.slotOf[key] : -1;
     if (slot < 0) { return; }
     var node = drawing.nodes[slot];
-    var size = canvasSize();
+    if (!size) { size = canvasSize(); }
     setTransform(size.w / 2 - node.x * transform.s, size.h / 2 - node.y * transform.s, transform.s);
   }
 
   // Until the reader pans or zooms, the view follows the layout: fitted, and
   // centred on the node a fragment selected.
-  function applyIntent() {
+  function applyIntent(size, running) {
     if (!drawing || userMovedView) { return; }
-    fit();
-    if (intent >= 0) { centerOn(intent); }
+    fit(size, running === true);
+    if (intent >= 0) { centerOn(intent, size); }
   }
 
+  // The whole drawing at once (a drag that stops the layout; the layout's
+  // own paints go through paintSlice). Geometry only: no class changes here,
+  // buildDrawing styles once and styleDrawing runs on every change of state.
+  // The canvas is measured first: measured after the nodes moved, it would
+  // make the browser lay the whole drawing out at once, inside this task.
   function paint(positions) {
+    var size = canvasSize();
     drawing.nodes.forEach(function (node, slot) { moveNode(node, positions[2 * slot], positions[2 * slot + 1]); });
     placeEdges();
-    styleDrawing();
-    applyIntent();
+    applyIntent(size);
   }
 
   function stopLayout() {
@@ -868,23 +1044,76 @@
     }
   }
 
-  function startLayout() {
+  // A layout's paint moves at most PAINT_SLICE nodes a frame (and their
+  // links): the browser restyles, lays out and repaints only what moved, so
+  // a frame of a large graph stays short. The view follows (Fit, a centred
+  // fragment) once every node is placed: in the same frame when one slice
+  // was enough, else in a frame of its own, since a new view repaints all.
+  var PAINT_SLICE = 500;
+
+  // Draws `positions` from slot `from` on, one slice; returns where the
+  // next slice starts (the node count once all are placed).
+  function paintSlice(positions, from) {
+    var end = Math.min(drawing.nodes.length, from + PAINT_SLICE);
+    for (var slot = from; slot < end; slot++) {
+      moveNode(drawing.nodes[slot], positions[2 * slot], positions[2 * slot + 1]);
+    }
+    for (var moved = from; moved < end; moved++) { placeEdgesOf(moved); }
+    return end;
+  }
+
+  // The layout runs a slice of work a frame (okf-sim's budget). Every
+  // REDRAW_EVERY iterations it is drawn, slice by slice, from a copy of its
+  // positions while it goes on; its end is always drawn, and only then is it
+  // "done". Under reduced motion, only its start and its end are drawn.
+  // `size`: the canvas, measured before the drawing was changed.
+  function startLayout(size) {
     stopLayout();
     var mine = generation;
     var current = Sim.create({ nodeCount: drawing.keys.length, edges: drawing.simEdges, boxes: simBoxes() }, null);
     if (current === null) { return; }
     simulation = current;
     canvas.setAttribute("data-okf-layout", "running");
+    var count = drawing.nodes.length;
     var paintedAt = 0;
-    paint(current.positions());
+    var finished = false;
+    var shown = current.positions();
+    var next = 0;
+    var fitDue = false;
+    // One slice of the paint under way, or its fit.
+    function paintStep() {
+      if (next < count) {
+        next = paintSlice(shown, next);
+        if (next < count) { return; }
+        if (count <= PAINT_SLICE) {
+          applyIntent(size);
+        } else {
+          fitDue = true;
+        }
+      } else if (fitDue) {
+        fitDue = false;
+        applyIntent(size, !finished);
+      }
+    }
+    paintStep();
     function frame() {
       if (mine !== generation) { return; }
-      var r = current.step();
-      if (r.done || r.iterations - paintedAt >= REDRAW_EVERY) {
-        paintedAt = r.iterations;
-        paint(current.positions());
+      // Measured before anything moves (see paint).
+      size = canvasSize();
+      if (!finished) {
+        var r = current.step();
+        finished = r.done;
+        var still = calm !== null && calm.matches === true;
+        // The end replaces a paint still under way: it is the one to show.
+        if (r.done || (next === count && !fitDue && !still && r.iterations - paintedAt >= REDRAW_EVERY)) {
+          paintedAt = r.iterations;
+          shown = current.positions();
+          next = 0;
+          fitDue = false;
+        }
       }
-      if (r.done) {
+      paintStep();
+      if (finished && next === count && !fitDue) {
         simulation = null;
         canvas.setAttribute("data-okf-layout", "done");
         return;
@@ -894,16 +1123,9 @@
     schedule(frame);
   }
 
-  function buildDrawing() {
-    stopLayout();
-    clear(canvas);
-    nodeOfElement = new Map();
-    var keys = view.keys.slice();
-    var slotOf = new Int32Array(total).fill(-1);
-    keys.forEach(function (key, slot) { slotOf[key] = slot; });
+  function makeStage() {
     var svg = svgEl("svg", "okf-graph-svg");
     svg.setAttribute("role", "group");
-    svg.setAttribute("aria-label", "Graph of " + plural(keys.length, "node", "nodes"));
     var defs = svgEl("defs");
     defs.appendChild(marker("okf-graph-arrow", 7, "okf-graph-arrowhead"));
     defs.appendChild(marker("okf-graph-arrow-sel", 8, "okf-graph-arrowhead-sel"));
@@ -914,6 +1136,42 @@
     viewport.appendChild(edgeLayer);
     viewport.appendChild(nodeLayer);
     svg.appendChild(viewport);
+    stage = { svg: svg, viewport: viewport, edgeLayer: edgeLayer, nodeLayer: nodeLayer };
+    run(hooks.drawing, stage);
+  }
+
+  // Makes `layer`'s children exactly `wanted`, in that order, given that the
+  // ones already there are in that order too (both follow index order): the
+  // others leave (`left` is told), the kept ones are not moved -- a moved
+  // element is restyled -- and the new ones go in at their place.
+  function syncLayer(layer, wanted, left) {
+    var keep = new Set(wanted);
+    for (var child = layer.firstChild; child !== null;) {
+      var next = child.nextSibling;
+      if (!keep.has(child)) {
+        layer.removeChild(child);
+        if (left) { left(child); }
+      }
+      child = next;
+    }
+    var cursor = layer.firstChild;
+    for (var i = 0; i < wanted.length; i++) {
+      if (wanted[i] === cursor) {
+        cursor = cursor.nextSibling;
+      } else {
+        layer.insertBefore(wanted[i], cursor);
+      }
+    }
+  }
+
+  function buildDrawing() {
+    stopLayout();
+    var size = canvasSize();
+    if (!stage) { makeStage(); }
+    var keys = view.keys.slice();
+    var slotOf = new Int32Array(total).fill(-1);
+    keys.forEach(function (key, slot) { slotOf[key] = slot; });
+    stage.svg.setAttribute("aria-label", "Graph of " + plural(keys.length, "node", "nodes"));
     var edges = [];
     var simEdges = [];
     var pairs = new Set();
@@ -922,26 +1180,32 @@
       var t = edgeTo[k];
       // A self-link is listed (drawer, list) but not drawn; the simulation
       // takes no loop (§12.5).
-      if (f < 0 || f === t || slotOf[f] < 0 || slotOf[t] < 0) { continue; }
-      var line = svgEl("line", t >= N ? "okf-graph-edge okf-graph-edge-ghost" : "okf-graph-edge");
-      line.setAttribute("marker-end", "url(#okf-graph-arrow)");
-      edgeLayer.appendChild(line);
-      edges.push({ k: k, line: line, from: slotOf[f], to: slotOf[t], reverse: false });
+      if (f === t || slotOf[f] < 0 || slotOf[t] < 0) { continue; }
+      if (!lineCache[k]) { lineCache[k] = svgEl("line", t >= N ? "okf-graph-edge okf-graph-edge-ghost" : "okf-graph-edge"); }
+      edges.push({ k: k, line: lineCache[k], from: slotOf[f], to: slotOf[t], reverse: false });
       simEdges.push([slotOf[f], slotOf[t]]);
       pairs.add(slotOf[f] * keys.length + slotOf[t]);
     }
-    edges.forEach(function (e) { e.reverse = pairs.has(e.to * keys.length + e.from); });
-    drawing = { keys: keys, slotOf: slotOf, svg: svg, viewport: viewport, nodes: [], edges: edges, simEdges: simEdges };
-    drawing.nodes = keys.map(function (key) {
-      var node = makeNode(key);
-      nodeLayer.appendChild(node.g);
-      return node;
+    var edgesOf = keys.map(function () { return []; });
+    edges.forEach(function (e) {
+      e.reverse = pairs.has(e.to * keys.length + e.from);
+      edgesOf[e.from].push(e);
+      edgesOf[e.to].push(e);
     });
-    canvas.appendChild(svg);
+    var nodes = keys.map(nodeFor);
+    syncLayer(stage.edgeLayer, edges.map(function (e) { return e.line; }), null);
+    // A node that leaves while focused keeps no contour for its return (a
+    // removed element is not always sent a blur).
+    syncLayer(stage.nodeLayer, nodes.map(function (node) { return node.g; }), function (g) { g.classList.remove("okf-focused"); });
+    if (stage.svg.parentNode !== canvas) {
+      clear(canvas);
+      canvas.appendChild(stage.svg);
+    }
+    drawing = { keys: keys, slotOf: slotOf, svg: stage.svg, viewport: stage.viewport, nodes: nodes, edges: edges, edgesOf: edgesOf, simEdges: simEdges };
     userMovedView = false;
     setTransform(transform.a, transform.b, transform.s);
-    run(hooks.drawing);
-    startLayout();
+    styleDrawing();
+    startLayout(size);
   }
 
   hooks.refresh.push(function () {
@@ -950,7 +1214,6 @@
       clear(canvas);
       canvas.removeAttribute("data-okf-layout");
       drawing = null;
-      nodeOfElement = new Map();
       return;
     }
     if (drawing && sameKeys(drawing.keys, view.keys)) {
@@ -977,7 +1240,7 @@
   // no selection leaves no fragment.
   function writeUrl(origin) {
     if (origin !== "user") { return; }
-    var id = selected >= 0 && selected < N ? index.concepts[selected].id : "";
+    var id = selected >= 0 && selected < N ? concepts[selected].id : "";
     if (decodeFragment(window.location.hash) === id) { return; }
     try {
       window.history.replaceState(null, "", id === "" ? window.location.pathname + window.location.search : "#" + id);
@@ -1016,7 +1279,7 @@
   // reader's move: no flag to run out of, however many fire.
   window.addEventListener("hashchange", function () {
     var id = decodeFragment(window.location.hash);
-    if (id === (selected >= 0 && selected < N ? index.concepts[selected].id : "")) { return; }
+    if (id === (selected >= 0 && selected < N ? concepts[selected].id : "")) { return; }
     followFragment(window.location.hash);
   });
 
@@ -1179,7 +1442,7 @@
     });
     node.g.addEventListener("blur", function () { node.g.classList.remove("okf-focused"); });
   });
-  hooks.drawing.push(function () { drawing.svg.addEventListener("keydown", onKey); });
+  hooks.drawing.push(function (made) { made.svg.addEventListener("keydown", onKey); });
 
   // The reader who selects (a click, the list, a fragment) lands on the
   // selection when tabbing back to the graph.
@@ -1323,7 +1586,7 @@
         break;
       }
     }
-    gesture = { id: e.pointerId, node: node, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, moved: false };
+    gesture = { id: e.pointerId, node: node, drawing: drawing, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, moved: false };
   });
 
   // Moves and releases are followed on window, not by pointer capture: a
@@ -1331,8 +1594,9 @@
   // canvas, so the node would never be selected or opened.
   window.addEventListener("pointermove", function (e) {
     if (!gesture || e.pointerId !== gesture.id) { return; }
-    if (!drawing || (gesture.node && nodeOfElement.get(gesture.node.g) !== gesture.node)) {
-      // The drawing was rebuilt (or taken away) under the drag.
+    if (!drawing || (gesture.node && gesture.drawing !== drawing)) {
+      // The drawing was rebuilt (or taken away) under the node drag: the
+      // node may still be drawn, but where the new layout puts it.
       gesture = null;
       return;
     }
@@ -1364,7 +1628,7 @@
     gesture.y = e.clientY;
     if (gesture.node) {
       moveNode(gesture.node, limited(gesture.node.x + mx / transform.s), limited(gesture.node.y + my / transform.s));
-      placeEdges();
+      placeEdgesOf(drawing.slotOf[gesture.node.key]);
     } else {
       setTransform(transform.a + mx, transform.b + my, transform.s);
     }
@@ -1382,12 +1646,12 @@
   function dropGesture(e) {
     if (gesture && e.pointerId === gesture.id) { gesture = null; }
   }
-  // A touch captures the element it lands on, and a node drag redraws the
-  // shape of the node under the finger (moveNode replaces it): the browser
-  // then reports the capture lost, in the middle of a drag that goes on, and
-  // the pointerup or pointercancel still comes. So a node drag does not end
-  // there. A pan redraws nothing under the pointer (the edges are changed in
-  // place): a capture lost during one is not ours, and ends it.
+  // A touch captures the element it lands on, and a browser may report that
+  // capture lost while the node under the finger moves (it used to be
+  // redrawn; since revision 12 it is translated), in the middle of a drag
+  // that goes on, and the pointerup or pointercancel still comes. So a node
+  // drag does not end there. A pan moves nothing under the pointer: a
+  // capture lost during one is not ours, and ends it.
   function captureLost(e) {
     if (gesture && !gesture.node) { dropGesture(e); }
   }
@@ -1431,5 +1695,9 @@
   refresh();
   renderDrawer();
   updateReadingView();
-  followFragment(window.location.hash);
+  // A fragment naming a concept selects and centres it. Any other leaves the
+  // page as refresh() drew it -- nothing selected, the layout's own fit --
+  // without measuring the canvas again (a layout of the whole new drawing).
+  var startId = decodeFragment(window.location.hash);
+  if (startId !== "" && byId.has(startId)) { followFragment(window.location.hash); }
 })();

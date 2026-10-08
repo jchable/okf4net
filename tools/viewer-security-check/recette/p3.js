@@ -492,7 +492,8 @@ async function run(ctx) {
       await page.mouse.up();
       const t1 = await viewOf(page);
       r.pan = [t1.a - t0.a, t1.b - t0.b];
-      const label = () => page.evaluate(() => Number(document.querySelectorAll("#okf-graph-canvas g.okf-node")[1].querySelector("text").getAttribute("x")));
+      // Where node 1 stands: its <g>'s translate (revision 12: the shapes and the label are drawn once around (0, 0)).
+      const label = () => page.evaluate(() => Number(/translate\((-?[0-9.]+) /.exec(document.querySelectorAll("#okf-graph-canvas g.okf-node")[1].getAttribute("transform"))[1]));
       const x0 = await label();
       const at = await pointOn(page, 1);
       await page.mouse.move(at.x, at.y);
@@ -544,7 +545,7 @@ async function run(ctx) {
     await p.mouse.move(started.x + 24, started.y + 16, { steps: 4 });
     const state = await p.evaluate(() => document.getElementById("okf-graph-canvas").getAttribute("data-okf-layout"));
     await p.mouse.up();
-    const labels = () => p.evaluate(() => Array.from(document.querySelectorAll("#okf-graph-canvas g.okf-node text"), (t) => t.getAttribute("x") + "," + t.getAttribute("y")).join(";"));
+    const labels = () => p.evaluate(() => Array.from(document.querySelectorAll("#okf-graph-canvas g.okf-node"), (g) => g.getAttribute("transform")).join(";"));
     const a = await labels();
     await p.waitForTimeout(800);
     const b = await labels();
@@ -818,7 +819,9 @@ async function run(ctx) {
   const listChecks = async (url, farId, label) => {
     // The equivalent list: a concept far down is marked and inside the visible
     // list once rendered, at 1 440 and at 390 px; no content-visibility on its
-    // items (P3-css-1).
+    // items (P3-css-1). The whole entry, its relation lines included, is in
+    // view (in the middle of the list, revision 12), and only the list
+    // scrolled, never the page.
     const out = {};
     for (const [name, viewport] of [["1440", { width: 1440, height: 900 }], ["390", { width: 390, height: 844 }]]) {
       const p = await newPage({ viewport });
@@ -834,7 +837,10 @@ async function run(ctx) {
         // The marked entry is the button; its item goes on below it with the relations.
         const r0 = current.querySelector("button").getBoundingClientRect();
         const item = document.querySelector("#okf-graph-list .okf-graph-list-item");
-        return { inside: r0.top >= list.top - 1 && r0.bottom <= list.bottom + 1, current: current.querySelector("button").textContent, aria: current.querySelector("button").getAttribute("aria-current"),
+        const whole = current.getBoundingClientRect();
+        return { inside: r0.top >= list.top - 1 && r0.bottom <= list.bottom + 1,
+          whole: whole.height <= list.bottom - list.top ? whole.top >= list.top - 1 && whole.bottom <= list.bottom + 1 : Math.abs(whole.top - list.top) <= 1,
+          pageScroll: [window.scrollX, window.scrollY], entry: [whole.top, whole.bottom], current: current.querySelector("button").textContent, aria: current.querySelector("button").getAttribute("aria-current"),
           items: document.querySelectorAll("#okf-graph-list .okf-graph-list-item").length, cv: getComputedStyle(item).contentVisibility, scrolled: document.getElementById("okf-graph-list").scrollTop > 0,
           list: [list.top, list.bottom], at: [r0.top, r0.bottom], pressed: document.querySelector("#okf-graph-zoom .okf-graph-list-toggle").getAttribute("aria-pressed") };
       });
@@ -849,7 +855,7 @@ async function run(ctx) {
     const ids = ctx.lib.readIndex(ctx.siteDir).concepts.map((c) => c.id);
     const target = ids[ids.length - 5];
     const r = await listChecks(siteGraph, target, "graph-list");
-    const ok = (x) => x.inside && x.aria === "true" && x.cv === "visible" && x.pressed === "true";
+    const ok = (x) => x.inside && x.whole && x.pageScroll[0] === 0 && x.pageScroll[1] === 0 && x.aria === "true" && x.cv === "visible" && x.pressed === "true";
     return { pass: ok(r["1440"]) && ok(r["390"]), target, ...r };
   });
 
@@ -859,6 +865,8 @@ async function run(ctx) {
     const p = await newPage();
     await p.goto(bigGraph);
     await p.waitForSelector("#okf-graph-list:not([hidden])");
+    // The list is built over several frames (revision 12): it ends whole.
+    await p.waitForFunction((n) => document.querySelectorAll("#okf-graph-list .okf-graph-list-item").length >= n, ctx.lib.readIndex(bigSite.dir).concepts.length, { timeout: 30000 });
     const r = await p.evaluate(() => ({
       status: document.getElementById("okf-graph-status").textContent,
       canvasHidden: document.getElementById("okf-graph-canvas").hidden, svg: !!document.querySelector("#okf-graph-canvas svg"),
@@ -883,7 +891,7 @@ async function run(ctx) {
     if (!bigGraph) { return { pass: null, note: "OKF_RECETTE_BIG is not set" }; }
     const ids = ctx.lib.readIndex(bigSite.dir).concepts.map((c) => c.id);
     const r = await listChecks(bigGraph, ids[ids.length - 12], "graph-over-limit-fragment");
-    const ok = (x) => x.inside && x.aria === "true" && x.cv === "visible" && x.scrolled;
+    const ok = (x) => x.inside && x.whole && x.pageScroll[0] === 0 && x.pageScroll[1] === 0 && x.aria === "true" && x.cv === "visible" && x.scrolled;
     return { pass: ok(r["1440"]) && ok(r["390"]), ...r };
   });
 
