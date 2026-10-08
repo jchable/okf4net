@@ -734,6 +734,12 @@ function registerPage(h) {
       blocked,
     });
     assert(nullNeighbour.document.getElementById("okf-local-graph"), "a null neighbour removed the whole neighbourhood");
+    // The list keeps the row (the drawing keeps the node), as text, no link.
+    const nullRows = Array.from(nullNeighbour.document.querySelectorAll("#okf-local-list li"));
+    assert(nullRows.length === 3 && nullRows.every((li) => li.querySelector(".okf-local-rel").textContent !== ""),
+      `a null neighbour changed the list: ${nullRows.length} rows`);
+    assert(nullRows.some((li) => li.firstElementChild.localName === "span" && !li.firstElementChild.classList.contains("okf-local-absent")),
+      "a null neighbour is not listed as plain text");
     // A concept without a path is drawn but cannot be opened (no "../undefined").
     const noPath = await openPage("p2-local/c.html", {
       override: damaged(`i.concepts.forEach(function (c) { if (c.id === "p2-local/a") { delete c.path; } });`),
@@ -745,6 +751,11 @@ function registerPage(h) {
     assert(node, "the concept without a path is not drawn");
     click(noPath, node.lastElementChild);
     assert(vetoed === 0 && navigations(noPath) === 0, "a concept without a path was navigated to");
+    const pathless = Array.from(noPath.document.querySelectorAll("#okf-local-list li"))
+      .find((li) => li.querySelector(".okf-local-id").textContent === "p2-local/a");
+    assert(pathless && pathless.firstElementChild.localName === "span" && !pathless.firstElementChild.hasAttribute("href"),
+      "a concept without a path is listed with a link");
+    assert(noPath.document.getElementById("okf-local-list").textContent.indexOf("undefined") === -1, "the list printed undefined");
   });
 
   checkAsync("local graph: a page whose only content is its neighbourhood un-hides the side panel", async () => {
@@ -777,9 +788,120 @@ function registerPage(h) {
   });
 }
 
+function registerList(h) {
+  const { checkAsync, assert, openPage } = h;
+  const dot = String.fromCharCode(0xb7);
+
+  checkAsync("local graph: over the cap, +N omitted opens the full list, in index order", async () => {
+    const ids = ["p2-local/hub"];
+    const links = [];
+    for (let k = 0; k < 120; k++) {
+      ids.push(`p2-local/n${String(k).padStart(3, "0")}`);
+      links.push(k % 2 ? [k + 1, 0] : [0, k + 1]);
+    }
+    const ghostIds = ["p2-local/zz-0", "p2-local/zz-1", "p2-local/zz-2"];
+    ghostIds.forEach((_, g) => links.push([0, g, "ghost"]));
+    const source = `window.OKF_INDEX = ${JSON.stringify(siteIndex(ids, links, ghostIds))};`;
+    const window = await openPage("p2-local/hub.html", { override: { "assets/okf-index.js": source } });
+    const doc = window.document;
+    const section = doc.getElementById("okf-local-graph");
+    const total = 123;
+    const cap = window.OkfLocal.CAP;
+    const drawn = section.querySelectorAll("svg g.okf-node").length;
+    assert(drawn === cap, `${drawn} nodes drawn`);
+    const more = section.querySelector(".okf-local-canvas > button.okf-local-omitted");
+    assert(more && more.type === "button" && more.textContent === `+${total - (cap - 1)} omitted`, `omitted: ${more && more.textContent}`);
+    assert(more.getAttribute("aria-controls") === "okf-local-list", "+N omitted does not control the list");
+    const details = doc.getElementById("okf-local-list");
+    assert(details && details.localName === "details" && details.classList.contains("okf-local-list") && !details.open, "the list is not a closed <details>");
+    const summary = details.querySelector("summary");
+    assert(summary.textContent === `List ${dot} ${total} neighbours`, `summary: ${summary.textContent}`);
+    const rows = Array.from(details.querySelectorAll("li"));
+    assert(rows.length === total, `${rows.length} rows for ${total} neighbours`);
+    assert(rows[0].querySelector(".okf-local-id").textContent === "p2-local/n000", `first row: ${rows[0].textContent}`);
+    assert(rows[total - 1].querySelector(".okf-local-id").textContent === "absent: p2-local/zz-2", `last row: ${rows[total - 1].textContent}`);
+    more.click();
+    assert(details.open, "+N omitted did not open the list");
+    // jsdom 29 focuses a details' first <summary>; recette X9 checks real browsers.
+    assert(doc.activeElement === summary, `focus after +N omitted: <${doc.activeElement.localName}>`);
+    doc.getElementById("okf-local-hops-2").click();
+    assert(details.open, "redrawing at 2 hops closed the list");
+    assert(details.querySelectorAll("li").length === total, "2 hops changed a list that has no second hop");
+  });
+
+  checkAsync("local graph: hostile titles and ids named after Object.prototype members stay inert and distinct", async () => {
+    const ids = ["__proto__", "a/__proto__", "constructor", "hasOwnProperty", "toString"];
+    const titles = ['<img src=x onerror="window.__pwned=1">Proto', "</title><script>window.__pwned=2</script>", "constructor",
+      '"><svg onload="window.__pwned=3">', "toString"];
+    const links = [[0, 1], [0, 2], [3, 0], [4, 0], [1, 2]];
+    const source = `window.OKF_INDEX = ${JSON.stringify(siteIndex(ids, links, [], titles))};`;
+    const window = await openPage("__proto__.html", { override: { "assets/okf-index.js": source } });
+    const doc = window.document;
+    const section = doc.getElementById("okf-local-graph");
+    assert(section, "no local graph for the concept __proto__");
+    // Spec §7 control 3: inspected after opening AND after redrawing.
+    doc.getElementById("okf-local-hops-2").click();
+    doc.getElementById("okf-local-hops-1").click();
+    const svg = section.querySelector("svg");
+    assertFixedSvg(assert, svg);
+    const drawn = Array.from(svg.querySelectorAll("g.okf-node"), (g) => g.firstElementChild.textContent);
+    assert(JSON.stringify(drawn) === JSON.stringify(ids), `drawn: ${JSON.stringify(drawn)}`);
+    const listed = Array.from(section.querySelectorAll(".okf-local-list .okf-local-id"), (s) => s.textContent);
+    assert(JSON.stringify(listed) === JSON.stringify(ids.slice(1)), `listed: ${JSON.stringify(listed)}`);
+    const rows = Array.from(section.querySelectorAll(".okf-local-list a.okf-row"));
+    rows.forEach((a, k) => assert(a.getAttribute("title") === titles[k + 1], `row ${k}: title attribute ${a.getAttribute("title")}`));
+    const live = doc.getElementById("okf-context").querySelectorAll("img, script, iframe, object, [onerror], [onload]");
+    assert(live.length === 0, `markup from a title became live in #okf-context (${live.length})`);
+    assert(svg.textContent.indexOf("<") === -1, "a title reached the drawing");
+    assert(window.__pwned === undefined, "a hostile title executed");
+  });
+
+  checkAsync("local graph: the drawing is an image with no tab stop; the toggle and the list are the keyboard path", async () => {
+    const window = await openPage("p2-local/c.html");
+    const doc = window.document;
+    const svg = doc.querySelector("#okf-local-graph svg");
+    assert(svg.getAttribute("role") === "img" && svg.getAttribute("focusable") === "false", "the drawing is not a non-focusable image");
+    assert(!svg.hasAttribute("tabindex") && svg.querySelectorAll("[tabindex]").length === 0, "the drawing has a tab stop");
+    const expected = expectedHood(window.OKF_INDEX, positionOf(window, "p2-local/c"), 1);
+    const rows = Array.from(doc.querySelectorAll("#okf-local-list li"));
+    assert(rows.length === expected.total, `${rows.length} rows for ${expected.total} neighbours`);
+    for (const row of rows) {
+      const line = row.firstElementChild;
+      const ghost = line.querySelector(".okf-local-id").textContent.startsWith("absent: ");
+      assert(ghost ? line.localName === "span" : line.localName === "a" && line.hasAttribute("href"), `row "${row.textContent}": <${line.localName}>`);
+      assert(line.classList.contains("okf-row"), "a row is not a shared .okf-row");
+      const glyph = line.firstElementChild;
+      assert(glyph.localName === "svg" && glyph.classList.contains("okf-glyph") && glyph.getAttribute("aria-hidden") === "true",
+        "a row's glyph is not an OkfShapes icon");
+    }
+    const rels = rows.map((r) => r.querySelector(".okf-local-rel").textContent);
+    assert(rels.includes("links to") && rels.includes("referenced by"), `relations: ${JSON.stringify(rels)}`);
+    doc.getElementById("okf-local-hops-2").click();
+    const deep = Array.from(doc.querySelectorAll("#okf-local-list .okf-local-rel"), (s) => s.textContent);
+    assert(deep.some((t) => /^2 hops via p2-local\//.test(t)), `2 hops relations: ${JSON.stringify(deep)}`);
+    assert(doc.querySelector("#okf-local-graph .okf-local-omitted") === null, "+N omitted shown under the cap");
+  });
+
+  checkAsync("local graph: the list names both directions of a two-way link, and absent concepts without a link", async () => {
+    const window = await openPage("p2-local/hub.html");
+    const doc = window.document;
+    const rows = Array.from(doc.querySelectorAll("#okf-local-list li"), (li) => ({
+      id: li.querySelector(".okf-local-id").textContent,
+      rel: li.querySelector(".okf-local-rel").textContent,
+      tag: li.firstElementChild.localName,
+    }));
+    const a = rows.find((r) => r.id === "p2-local/a");
+    assert(a && a.rel === `links to ${dot} referenced by`, `p2-local/a: ${JSON.stringify(a)}`);
+    const absent = rows.filter((r) => r.id.startsWith("absent: "));
+    assert(absent.length > 0 && absent.every((r) => r.tag === "span" && r.rel === "links to"), `absent rows: ${JSON.stringify(absent)}`);
+    assert(!rows.some((r) => r.id === "p2-local/hub"), "the self-link listed the hub as its own neighbour");
+  });
+}
+
 function register(h) {
   registerPure(h);
   registerPage(h);
+  registerList(h);
 }
 
 module.exports = { register };
