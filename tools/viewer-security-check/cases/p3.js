@@ -3364,6 +3364,59 @@ function registerPointer(h) {
   });
 }
 
+function registerStyles(h) {
+  // §12.6: the graph page's real chrome keeps its style (a selector the
+  // engine cannot match would pass the body-content check by styling
+  // nothing), and the same class names worn by body content change nothing.
+  // jsdom cascades viewer.css but does no layout and applies no @media rule,
+  // so the wide-layout rules are checked on a copy with @media unwrapped.
+  h.checkAsync("styles: the graph page's chrome keeps its style; body content wearing its classes does not", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    scheduler.flush();
+    const style = (el, prop) => window.getComputedStyle(el).getPropertyValue(prop);
+    const probes = [
+      [doc.getElementById("okf-graph-status"), "position", "absolute"],
+      [doc.getElementById("okf-graph-status"), "font-size", "12px"],
+      [doc.querySelector("#okf-facets .okf-facet-row"), "height", "32px"],
+      [doc.querySelector("#okf-facets .okf-facet-display .okf-facet-row"), "height", "30px"],
+      [doc.querySelector("#okf-graph-zoom .okf-graph-zoom-step"), "width", "34px"],
+      [doc.getElementById("okf-graph-canvas"), "position", "absolute"],
+      [doc.querySelector("#okf-graph-canvas .okf-graph-label"), "font-size", "11.5px"],
+    ];
+    for (const [el, prop, value] of probes) {
+      h.assert(el, `a chrome element this case needs is missing (${prop}: ${value})`);
+      h.assert(style(el, prop) === value, `<${el.tagName.toLowerCase()} class="${el.getAttribute("class")}"> ${prop}: ${style(el, prop)}, expected ${value}`);
+    }
+    showList(window, doc);
+    click(window, Array.from(doc.querySelectorAll("#okf-graph-list .okf-graph-list-select")).find((b) => b.textContent === "p3-graph/b"));
+    h.assert(style(doc.querySelector("#okf-graph-detail .okf-graph-open"), "height") === "40px", "Open page lost its height");
+    const wide = doc.createElement("style");
+    wide.textContent = h.unwrapMedia(fs.readFileSync(path.join(ASSETS, "viewer.css"), "utf8"));
+    doc.head.appendChild(wide);
+    h.assert(style(doc.getElementById("okf-facets"), "width") === "270px", "the facets panel is not 270 px wide (G2)");
+    h.assert(style(doc.getElementById("okf-graph-detail"), "width") === "340px", "the drawer is not 340 px wide (G17)");
+
+    const page = await h.openPage("p3-chrome-classes.html");
+    const body = page.document.getElementById("okf-body");
+    const reference = body.querySelector("code:not([class])");
+    const worn = Array.from(body.querySelectorAll("code[class]"));
+    h.assert(reference && worn.length >= 2 && worn[0].classList.contains("okf-graph-layout"), "the fixture lost its classed <code> elements");
+    const sheet = page.document.createElement("style");
+    sheet.textContent = h.unwrapMedia(fs.readFileSync(path.join(ASSETS, "viewer.css"), "utf8"));
+    page.document.head.appendChild(sheet);
+    const props = ["position", "display", "width", "height", "font-size", "color", "background", "border", "padding",
+      "margin", "opacity", "overflow", "cursor", "pointer-events", "flex-direction", "inset", "top", "left"];
+    const expected = page.getComputedStyle(reference);
+    for (const el of worn) {
+      const got = page.getComputedStyle(el);
+      for (const prop of props) {
+        h.assert(got.getPropertyValue(prop) === expected.getPropertyValue(prop),
+          `<code class="${el.getAttribute("class")}"> ${prop}: ${got.getPropertyValue(prop)} (an unclassed <code> has ${expected.getPropertyValue(prop)})`);
+      }
+    }
+  });
+}
+
 function register(h) {
   registerSim(h);
   registerPurity(h);
@@ -3373,6 +3426,7 @@ function register(h) {
   registerFragment(h);
   registerKeyboard(h);
   registerPointer(h);
+  registerStyles(h);
 }
 
 module.exports = { register };

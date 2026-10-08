@@ -637,4 +637,130 @@ body > .okf-layout > main > .okf-page-head .okf-fm-toggle {
 #okf-context svg .okf-local-node { cursor: pointer; }
 
 /* === P3: graph page === */
-/* (P3 rules) */
+/* Global graph page (graph.html; spec §11.5, §12.5). Every selector is
+   anchored to body > .okf-graph-layout, so body content wearing these class
+   names on a concept page changes nothing (§12.6). Tokens come from §11.0;
+   shapes and shared components (.okf-chip and its states, .okf-glyph-blank,
+   .okf-row, .okf-section-title) are styled where P1.1 defines them. Buttons
+   inherit their font through longhands (font-family: inherit, ...), never the
+   font shorthand, which jsdom does not expand: it drops what follows it.
+   The shared chip and row rules sit under :is(#okf-explorer, ..., this
+   layout), which counts as an id; where this page must change one of them (a
+   tag chip that wraps, an absent row's colour) the selector goes through the
+   page's own #okf-facets / #okf-graph-detail, still under the layout anchor. */
+body > .okf-graph-layout { display: flex; flex-direction: column; min-width: 0; }
+body > .okf-graph-layout .okf-facets { min-width: 0; padding: 12px 18px; border-bottom: 1px solid var(--hair); }
+body > .okf-graph-layout .okf-facets-summary { cursor: pointer; font-size: 13.5px; font-weight: 500; padding: 4px 0; }
+body > .okf-graph-layout .okf-facets-body { display: flex; flex-direction: column; gap: 20px; padding: 12px 0 18px; }
+body > .okf-graph-layout .okf-facet .okf-section-title { margin: 0 0 10px; }
+body > .okf-graph-layout .okf-facet-list { display: flex; flex-direction: column; gap: 2px; }
+body > .okf-graph-layout .okf-facet-row { display: flex; align-items: center; gap: 10px; height: 32px; font-size: 13.5px; line-height: normal; cursor: pointer; min-width: 0; }
+body > .okf-graph-layout .okf-facet-display .okf-facet-row { height: 30px; }
+body > .okf-graph-layout .okf-facet-row input { flex: none; width: 16px; height: 16px; margin: 0; accent-color: var(--blue); }
+/* A name that does not fit wraps to a second line (the mockup's "Dim unmatched instead of hiding" does at 270 px) and is cut with an ellipsis after that. */
+body > .okf-graph-layout .okf-facet-name { flex: 1; min-width: 0; overflow: hidden; overflow-wrap: anywhere; line-height: 1.2; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+body > .okf-graph-layout .okf-facet-row input:not(:checked) ~ .okf-facet-name { color: var(--gray); }
+body > .okf-graph-layout .okf-facet-count { font-family: var(--mono); font-size: 11px; color: var(--gray); }
+body > .okf-graph-layout .okf-facet-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+body > .okf-graph-layout .okf-facet-tags .okf-chip[hidden] { display: none; }
+/* A tag longer than the panel wraps inside its chip instead of widening the page. */
+body > .okf-graph-layout #okf-facets .okf-facet-tags .okf-chip { height: auto; min-height: 26px; min-width: 0; max-width: 100%; padding-top: 4px; padding-bottom: 4px; white-space: normal; text-align: left; }
+body > .okf-graph-layout .okf-facet-tag-name { min-width: 0; overflow-wrap: anywhere; }
+body > .okf-graph-layout .okf-facet-tag-count { flex: none; }
+body > .okf-graph-layout .okf-facet-more {
+  margin-top: 8px; padding: 0; border: 0; background: none; cursor: pointer;
+  font-family: inherit; line-height: inherit; font-size: 12.5px; font-weight: 600; color: var(--blue);
+}
+body > .okf-graph-layout .okf-graph-main { position: relative; min-width: 0; height: 70vh; min-height: 420px; overflow: hidden; }
+body > .okf-graph-layout .okf-graph-status {
+  position: absolute; z-index: 1; top: 14px; left: 18px; right: 220px; margin: 0;
+  font-family: var(--mono); font-size: 12px; line-height: 1.4; color: var(--gray); pointer-events: none;
+}
+body > .okf-graph-layout .okf-graph-zoom { position: absolute; z-index: 1; top: 12px; right: 18px; display: flex; gap: 6px; }
+body > .okf-graph-layout .okf-graph-tool {
+  height: 34px; min-width: 34px; padding: 0 12px; cursor: pointer;
+  font-family: inherit; font-weight: inherit; line-height: inherit; font-size: 13px; color: var(--ink); background: var(--white); border: 1px solid var(--hair);
+}
+body > .okf-graph-layout .okf-graph-zoom-step { width: 34px; padding: 0; font-size: 18px; line-height: 1; }
+body > .okf-graph-layout .okf-graph-tool[aria-pressed="true"] { border-color: var(--blue); color: var(--blue); }
+body > .okf-graph-layout .okf-graph-tool:disabled { cursor: default; color: var(--gray); opacity: .5; }
+body > .okf-graph-layout .okf-graph-canvas { position: absolute; inset: 0; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+body > .okf-graph-layout .okf-graph-canvas[hidden] { display: none; }
+body > .okf-graph-layout .okf-graph-svg { display: block; width: 100%; height: 100%; }
+/* The list stands in for the drawing, between the status line above (up to three lines
+   at phone width) and the legend below (up to four): it ends where they begin. */
+body > .okf-graph-layout .okf-graph-list {
+  position: absolute; top: 72px; right: 18px; bottom: 96px; left: 18px; overflow-y: auto; background: var(--white);
+}
+body > .okf-graph-layout .okf-graph-list[hidden] { display: none; }
+body > .okf-graph-layout .okf-graph-list-items { list-style: none; margin: 0; padding: 0; }
+body > .okf-graph-layout .okf-graph-list-item { padding: 6px 0; border-bottom: 1px solid var(--hair); content-visibility: auto; contain-intrinsic-size: auto 44px; }
+body > .okf-graph-layout .okf-graph-list-head { display: flex; align-items: center; gap: 9px; min-width: 0; }
+body > .okf-graph-layout .okf-graph-list-select {
+  min-width: 0; padding: 0; border: 0; background: none; cursor: pointer; text-align: left;
+  font-family: var(--mono); font-weight: inherit; line-height: inherit; font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere;
+}
+body > .okf-graph-layout .okf-graph-list-current .okf-graph-list-select { color: var(--blue); font-weight: 700; }
+body > .okf-graph-layout .okf-graph-list-rel {
+  list-style: none; margin: 4px 0 0 21px; padding: 0; font-size: 12.5px; color: var(--gray); overflow-wrap: anywhere;
+}
+body > .okf-graph-layout .okf-graph-legend {
+  position: absolute; z-index: 1; left: 18px; right: 18px; bottom: 16px; margin: 0;
+  display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; line-height: normal; color: var(--gray); pointer-events: none;
+}
+body > .okf-graph-layout .okf-graph-detail {
+  min-width: 0; padding: 20px; display: flex; flex-direction: column; gap: 16px; border-top: 1px solid var(--hair);
+}
+body > .okf-graph-layout .okf-graph-detail > .okf-section-title { margin: 0; }
+body > .okf-graph-layout .okf-graph-empty { margin: 0; font-size: 13.5px; color: var(--gray); }
+body > .okf-graph-layout .okf-graph-detail-id { margin: 0; font-family: var(--mono); font-size: 12px; line-height: normal; color: var(--gray); overflow-wrap: anywhere; }
+body > .okf-graph-layout .okf-graph-detail-title {
+  margin: 6px 0 0; font-family: var(--display); font-weight: 600; font-size: 24px;
+  letter-spacing: -.02em; line-height: 1.2; overflow-wrap: break-word;
+}
+body > .okf-graph-layout .okf-graph-detail .okf-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+body > .okf-graph-layout .okf-graph-detail-desc { margin: 0; font-size: 14px; line-height: 1.6; overflow-wrap: break-word; }
+body > .okf-graph-layout .okf-graph-rel .okf-section-title { margin: 0 0 8px; }
+body > .okf-graph-layout .okf-graph-rel-first { border-top: 1px solid var(--hair); padding-top: 12px; }
+body > .okf-graph-layout .okf-graph-rows { list-style: none; margin: 0; padding: 0; }
+body > .okf-graph-layout #okf-graph-detail .okf-graph-absent { color: var(--ghost); }
+body > .okf-graph-layout .okf-graph-open {
+  display: flex; align-items: center; justify-content: center; height: 40px;
+  background: var(--blue); color: var(--white); font-size: 14px; font-weight: 600; text-decoration: none;
+}
+body > .okf-graph-layout .okf-graph-open:hover { background: var(--blue-hover); color: var(--white); }
+body > .okf-graph-layout svg .okf-node { cursor: pointer; }
+body > .okf-graph-layout svg .okf-node:focus { outline: none; }
+/* The keyboard contour (G14) shows for keyboard focus only: okf-focused is set
+   on any focus, a press of the pointer included, and :focus-visible is what
+   tells the two apart. */
+body > .okf-graph-layout svg .okf-node.okf-focused:not(:focus-visible) > .okf-node-focus { visibility: hidden; }
+body > .okf-graph-layout svg .okf-node.okf-graph-dim { opacity: .25; }
+/* The halo (--white is the page background in both themes) keeps a label legible
+   where an edge crosses it, as P2's local graph does. */
+body > .okf-graph-layout svg .okf-graph-label {
+  font-family: var(--mono); font-size: 11.5px; fill: var(--ink);
+  stroke: var(--white); stroke-width: 3px; stroke-linejoin: round; paint-order: stroke;
+}
+body > .okf-graph-layout svg .okf-graph-ghost-label { fill: var(--ghost); }
+body > .okf-graph-layout svg.okf-graph-nolabels .okf-graph-label { display: none; }
+body > .okf-graph-layout svg .okf-graph-edge { fill: none; stroke: var(--edge); stroke-width: 1.3; }
+body > .okf-graph-layout svg .okf-graph-edge-ghost { stroke: var(--ghost); stroke-width: 1.4; stroke-dasharray: 5 4; }
+body > .okf-graph-layout svg .okf-graph-edge-out { stroke: var(--blue); stroke-width: 2.2; stroke-dasharray: none; }
+body > .okf-graph-layout svg .okf-graph-edge-in { stroke: var(--blue); stroke-width: 2.2; stroke-dasharray: 5 4; }
+body > .okf-graph-layout svg .okf-graph-arrowhead { fill: var(--edge); }
+body > .okf-graph-layout svg .okf-graph-arrowhead-sel { fill: var(--blue); }
+@media (min-width: 1100px) {
+  body > .okf-graph-layout { flex-direction: row; height: calc(100vh - 59px); }
+  body > .okf-graph-layout .okf-facets {
+    flex: none; width: 270px; padding: 18px 18px 0; overflow-y: auto;
+    border-bottom: 0; border-right: 1px solid var(--hair);
+  }
+  body > .okf-graph-layout .okf-facets-summary { display: none; }
+  body > .okf-graph-layout .okf-facets-body { padding-top: 0; }
+  body > .okf-graph-layout .okf-graph-main { flex: 1 1 0; height: auto; min-height: 0; }
+  body > .okf-graph-layout .okf-graph-list { top: 56px; bottom: 76px; }
+  body > .okf-graph-layout .okf-graph-detail {
+    flex: none; width: 340px; overflow-y: auto; border-top: 0; border-left: 1px solid var(--hair);
+  }
+}
