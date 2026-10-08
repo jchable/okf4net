@@ -1012,11 +1012,99 @@ function registerListPins(h) {
   });
 }
 
+// P2's rules are anchored to #okf-context: the real section keeps its style, body <code> wearing the same classes stays plain (spec §12.6).
+function registerChrome(h) {
+  const { checkAsync, assert, openPage, unwrapMedia } = h;
+
+  checkAsync("local graph: its rules are anchored to #okf-context and still style the real section", async () => {
+    // The real section, over the cap so +N omitted exists.
+    const ids = ["p2-local/hub"];
+    const links = [];
+    for (let k = 0; k < 50; k++) { ids.push(`p2-local/m${String(k).padStart(2, "0")}`); links.push([0, k + 1]); }
+    const source = `window.OKF_INDEX = ${JSON.stringify(siteIndex(ids, links))};`;
+    const window = await openPage("p2-local/hub.html", { override: { "assets/okf-index.js": source } });
+    const doc = window.document;
+    const probes = [
+      ["#okf-local-graph .okf-local-canvas", "position", "relative"],
+      ["#okf-local-graph .okf-local-canvas", "height", "250px"],
+      ["#okf-local-graph .okf-hops", "display", "flex"],
+      ["#okf-local-hops-1", "height", "24px"],
+      ["#okf-local-hops-1", "font-size", "12px"],
+      ["#okf-local-graph .okf-local-omitted", "position", "absolute"],
+      ["#okf-local-graph .okf-local-foot", "display", "flex"],
+      ["#okf-local-graph .okf-local-foot", "font-size", "12px"],
+      ["#okf-local-open", "font-weight", "600"],
+      ["#okf-local-list summary", "cursor", "pointer"],
+    ];
+    for (const [selector, prop, value] of probes) {
+      const el = doc.querySelector(selector);
+      assert(el, `${selector} is missing`);
+      const got = window.getComputedStyle(el).getPropertyValue(prop);
+      assert(got === value, `the real ${selector} lost its ${prop}: ${value} (got ${got})`);
+    }
+
+    // The drawing's colours, fonts and cursors, on a small neighbourhood with an absent
+    // neighbour (the cap above leaves no room for one). jsdom keeps var() unresolved, so
+    // this pins that each paint comes from its token: --edge, --ink, --ghost (§11.0).
+    const small = siteIndex(["p2-local/hub", "p2-local/out", "p2-local/in"], [[0, 1], [2, 0], [0, 0, "ghost"]], ["p2-local/gone"]);
+    const drawnWindow = await openPage("p2-local/hub.html", { override: { "assets/okf-index.js": `window.OKF_INDEX = ${JSON.stringify(small)};` } });
+    const drawn = drawnWindow.document;
+    const paints = [
+      [".okf-local-edge:not(.okf-local-edge-in)", "stroke", "var(--edge)"],
+      [".okf-local-edge-in", "stroke", "var(--edge)"],
+      [".okf-local-arrowhead:not(.okf-local-arrowhead-in)", "fill", "var(--edge)"],
+      [".okf-local-arrowhead-in", "fill", "var(--edge)"],
+      ["text.okf-local-label:not(.okf-local-label-center):not(.okf-local-label-ghost)", "fill", "var(--ink)"],
+      ["text.okf-local-label:not(.okf-local-label-center):not(.okf-local-label-ghost)", "font-size", "10px"],
+      [".okf-local-label-center", "font-size", "10.5px"],
+      [".okf-local-label-center", "font-weight", "700"],
+      [".okf-local-label-ghost", "fill", "var(--ghost)"],
+      [".okf-local-node", "cursor", "pointer"],
+      [".okf-local-ghost", "cursor", "auto"],
+      [".okf-local-absent", "color", "var(--ghost)"],
+    ];
+    for (const [selector, prop, value] of paints) {
+      const el = drawn.querySelector(`#okf-local-graph ${selector}`) || drawn.querySelector(`#okf-local-list ${selector}`);
+      assert(el, `${selector} is missing from the drawing`);
+      const got = drawnWindow.getComputedStyle(el).getPropertyValue(prop);
+      assert(got === value, `the drawing's ${selector} lost its ${prop}: ${value} (got ${got})`);
+    }
+
+    // Body <code> wearing the same classes stays a plain <code>.
+    const page = await openPage("p2-chrome-classes.html");
+    const body = page.document.getElementById("okf-body");
+    const reference = body.querySelector("code:not([class])");
+    const worn = Array.from(body.querySelectorAll("code[class]"));
+    assert(reference && worn.length >= 4 && worn[0].classList.contains("okf-local-canvas"),
+      "the fixture lost its classed <code> elements, or the sanitizer dropped class: this case tests nothing");
+    const props = ["position", "display", "height", "width", "border", "border-left", "background", "background-color",
+      "color", "cursor", "font-family", "font-size", "font-weight", "padding", "margin", "margin-left", "right", "bottom",
+      "flex", "list-style", "fill", "stroke", "overflow-wrap", "justify-content", "gap", "text-decoration"];
+    const compare = (when) => {
+      const expected = page.getComputedStyle(reference);
+      for (const el of worn) {
+        const style = page.getComputedStyle(el);
+        for (const prop of props) {
+          assert(style.getPropertyValue(prop) === expected.getPropertyValue(prop),
+            `${when}: <code class="${el.getAttribute("class")}"> ${prop}: ${style.getPropertyValue(prop)} (an unclassed <code> has ${expected.getPropertyValue(prop)})`);
+        }
+      }
+    };
+    compare("as loaded");
+    // jsdom applies no @media rule: compare again with every one unwrapped.
+    const unwrapped = page.document.createElement("style");
+    unwrapped.textContent = unwrapMedia(fs.readFileSync(path.join(__dirname, "..", ".generated", "hostile-site", "assets", "viewer.css"), "utf8"));
+    page.document.head.appendChild(unwrapped);
+    compare("with every @media rule applied");
+  });
+}
+
 function register(h) {
   registerPure(h);
   registerPage(h);
   registerList(h);
   registerListPins(h);
+  registerChrome(h);
 }
 
 module.exports = { register };
