@@ -24,6 +24,18 @@
     if (entry !== null && typeof entry === "object" && entry.id === currentId) { current = i; break; }
   }
 
+  // The tree is bundle data like the rest: a damaged one degrades, it never
+  // throws. A node that is not an object is skipped, children that are not an
+  // array are none, and a node met a second time (a cycle, or a subtree shared
+  // by many parents, which would be built once per path) is drawn once.
+  // Nesting beyond TREE_DEPTH_LIMIT is not drawn (real bundles reach 7; the
+  // palette still finds those concepts). The indent stops growing after
+  // INDENT_LEVELS levels, 12 + 18 * 12 = 228 px, so a deep tree cannot widen
+  // a phone's page; the nesting of the lists still carries the true depth.
+  var TREE_DEPTH_LIMIT = 100;
+  var INDENT_LEVELS = 12;
+  var seenNodes = new Set();
+
   var staleMarks = [];
   var pressed = new Set();   // slots of the pressed type chips
   var filterCount = null;    // the Filters button's visible count
@@ -59,46 +71,48 @@
     rec.toggle.setAttribute("aria-expanded", open ? "true" : "false");
   }
 
-  // E9: the concepts (destinations) below a node, the node itself excluded.
-  function destinationsBelow(node) {
-    var n = 0;
-    for (var k = 0; k < node.children.length; k++) {
-      if (node.children[k].concept >= 0) { n++; }
-      n += destinationsBelow(node.children[k]);
-    }
-    return n;
-  }
-
   // A node can be BOTH a destination (the concept at this path) and a folder
   // (children): foo.md and foo/bar.md coexist legally, so opening (the link)
   // and expanding (the chevron) are separate commands (spec §3.2); such a row
   // has two 12 px slots, chevron then glyph (E6).
+  // Returns null for a node that is not drawn (see TREE_DEPTH_LIMIT above).
   function build(node, depth) {
-    var rec = { li: document.createElement("li"), ul: null, toggle: null, label: "", concept: node.concept, slot: -1, children: [], holdsCurrent: false, defaultOpen: false };
+    if (node === null || typeof node !== "object" || depth > TREE_DEPTH_LIMIT || seenNodes.has(node)) { return null; }
+    seenNodes.add(node);
+    var name = typeof node.name === "string" ? node.name : "";
+    var at = node.concept;
+    at = typeof at === "number" && at >= 0 && at < index.concepts.length && Math.floor(at) === at ? at : -1;
+    var kids = [];
+    var raw = Array.isArray(node.children) ? node.children : [];
+    for (var k = 0; k < raw.length; k++) {
+      var child = build(raw[k], depth + 1);
+      if (child) { kids.push(child); }
+    }
+    var rec = { li: document.createElement("li"), ul: null, toggle: null, label: "", concept: at, slot: -1, children: kids, holdsCurrent: false, defaultOpen: false, below: 0 };
     var row = el("div", "okf-tree-row");
-    row.style.paddingLeft = (12 + 18 * depth) + "px";
+    row.style.paddingLeft = (12 + 18 * Math.min(depth, INDENT_LEVELS)) + "px";
 
-    if (node.children.length > 0) {
+    if (kids.length > 0) {
       var toggle = el("button", "okf-tree-toggle");
       toggle.type = "button";
-      toggle.appendChild(el("span", "okf-sr", "Expand or collapse " + node.name));
+      toggle.appendChild(el("span", "okf-sr", "Expand or collapse " + name));
       toggle.addEventListener("click", function () { setExpanded(rec, rec.ul.hidden); });
       rec.toggle = toggle;
       row.appendChild(toggle);
     }
 
-    var concept = node.concept >= 0 ? index.concepts[node.concept] : null;
+    var concept = at >= 0 ? index.concepts[at] : null;
     // A damaged entry (null, not an object) is drawn as a folder.
     if (concept !== null && typeof concept === "object") {
-      rec.slot = shapes.slotOf(index, node.concept);
+      rec.slot = shapes.slotOf(index, at);
       var glyph = el("span", "okf-glyph-slot");
       glyph.appendChild(shapes.icon(shapes.KINDS[rec.slot], "icon", shapes.typeLabel(concept.type)));
       row.appendChild(glyph);
-      var link = el("a", "okf-tree-link", node.name);
+      var link = el("a", "okf-tree-link", name);
       link.setAttribute("href", site.resolve(root, concept.path));
       link.setAttribute("title", concept.title);
       link.setAttribute("data-okf-id", concept.id);
-      if (node.concept === current) {
+      if (at === current) {
         link.setAttribute("aria-current", "page");
         row.classList.add("okf-tree-current");
         rec.holdsCurrent = true;
@@ -107,21 +121,21 @@
       // The name filter still searches the title and the id.
       rec.label = site.normalize(concept.title + " " + concept.id);
     } else {
-      row.appendChild(el("span", "okf-tree-folder", node.name));
-      rec.label = site.normalize(node.name);
+      row.appendChild(el("span", "okf-tree-folder", name));
+      rec.label = site.normalize(name);
     }
-    if (node.children.length > 0) { row.appendChild(el("span", "okf-tree-count", String(destinationsBelow(node)))); }
+    // E9: the concepts (destinations) below a node, the node itself excluded.
+    for (var d = 0; d < kids.length; d++) { rec.below += (kids[d].concept >= 0 ? 1 : 0) + kids[d].below; }
+    if (kids.length > 0) { row.appendChild(el("span", "okf-tree-count", String(rec.below))); }
     if (concept) { appendFlags(row, concept); }
     rec.li.appendChild(row);
 
-    if (node.children.length > 0) {
+    if (kids.length > 0) {
       rec.ul = el("ul", "okf-tree-children");
       var below = false;
-      for (var k = 0; k < node.children.length; k++) {
-        var child = build(node.children[k], depth + 1);
-        rec.children.push(child);
-        rec.ul.appendChild(child.li);
-        if (child.holdsCurrent) { below = true; }
+      for (var c = 0; c < kids.length; c++) {
+        rec.ul.appendChild(kids[c].li);
+        if (kids[c].holdsCurrent) { below = true; }
       }
       rec.li.appendChild(rec.ul);
       // Only the path down to the current page starts open.
@@ -223,10 +237,18 @@
 
   var list = el("ul", "okf-tree");
   var tops = [];
-  for (var t = 0; t < index.tree.length; t++) {
-    var rec = build(index.tree[t], 0);
-    tops.push(rec);
-    list.appendChild(rec.li);
+  try {
+    for (var t = 0; t < index.tree.length; t++) {
+      var rec = build(index.tree[t], 0);
+      if (rec) {
+        tops.push(rec);
+        list.appendChild(rec.li);
+      }
+    }
+  } catch (e) {
+    // A tree that throws on access (a getter, a Proxy trap) is no tree: the
+    // explorer stays hidden and the page still works.
+    return;
   }
 
   // E12: the legend of the row flags.

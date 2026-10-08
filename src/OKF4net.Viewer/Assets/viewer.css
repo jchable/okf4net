@@ -164,7 +164,9 @@ body > .okf-layout > main { flex: 999 1 560px; min-width: 0; margin: 0; }
      does not scroll through the tree before every page. Visual order only:
      the DOM (and so the reading and tab order) stays explorer, main, context;
      "Skip to content" (H12) jumps the explorer. */
-  #okf-explorer { order: 1; }
+  /* A tree deeper than its indent cap (okf-explorer.js) may still be wider
+     than a phone: it scrolls inside the panel, never the page. */
+  #okf-explorer { order: 1; overflow-x: auto; }
 }
 
 /* (end of the P1 explorer rules: Task 13 removes the block above, Task 14 the one below; nobody edits this line) */
@@ -277,6 +279,13 @@ svg .okf-node.okf-selected > .okf-node-ring, svg .okf-node.okf-focused > .okf-no
    own shape belongs to the chip containers. */
 :is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-chip-type svg :is(.okf-shape-0, .okf-shape-1, .okf-shape-2, .okf-shape-3) { fill: var(--white); }
 :is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-chip-type svg :is(.okf-shape-4, .okf-shape-5) { stroke: var(--white); }
+/* Forced colors (Windows high contrast) replace the chip's ink background with
+   Canvas and its text with CanvasText, so a white glyph would vanish. The
+   glyph follows the chip's text instead. Same chip containers as above. */
+@media (forced-colors: active) {
+  :is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-chip-type svg :is(.okf-shape-0, .okf-shape-1, .okf-shape-2, .okf-shape-3) { fill: CanvasText; }
+  :is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-chip-type svg :is(.okf-shape-4, .okf-shape-5) { stroke: CanvasText; }
+}
 
 /* The hidden attribute wins over every display above (.okf-chip, .okf-row,
    .okf-legend li, .okf-glyph-blank, svg.okf-glyph are all author displays that

@@ -4455,6 +4455,16 @@ function assertWrappingChip(window, name) {
   assert(noShrink && /^(none|0 0 auto)$/.test(noShrink.value.trim()), `the count may shrink or wrap inside the chip (flex: ${noShrink && noShrink.value})`);
 }
 
+// Resolves with the window's next hashchange (the listener is registered last,
+// so the page's own listeners have run by then), or rejects after `ms`: a case
+// that depends on the event fails loudly instead of racing a fixed wait.
+function nextHashChange(window, ms = 5000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`no hashchange within ${ms} ms (hash: ${window.location.hash})`)), ms);
+    window.addEventListener("hashchange", () => { clearTimeout(timer); resolve(); }, { once: true });
+  });
+}
+
 checkAsync("contents: a fragment naming an element outside the body (the skip link's #okf-main) is the browser's, even beside a heading titled alike", async () => {
   const probe = withBody("foo.html", "p11-fixb-skip.html", "## Okf: main\n\nfirst\n\n## OKF main\n\nsecond\n\n## Usage\n\nthird");
   const headings = (doc) => Array.from(doc.querySelectorAll("#okf-body h2"));
@@ -4469,17 +4479,20 @@ checkAsync("contents: a fragment naming an element outside the body (the skip li
   assert(ids[0] === "okf-h-okf-main", `this case needs a heading generated as okf-h-okf-main (got ${ids})`);
   const skip = doc.querySelector("a.okf-skip");
   assert(skip && skip.getAttribute("href") === "#okf-main", "the skip link is not a #okf-main link");
+  let changed = nextHashChange(window);
   skip.click();
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await changed;
   assert(window.location.hash === "#okf-main", `the skip link left the fragment at ${window.location.hash}`);
   const focused = doc.activeElement;
   assert(!focused || !focused.closest("#okf-body"), `the skip link moved the focus to the body heading "${focused && focused.textContent}"`);
   // A prefixed fragment still reaches that very heading, and an author one the others.
+  changed = nextHashChange(window);
   window.location.hash = "okf-h-okf-main";
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await changed;
   assert(doc.activeElement === headings(doc)[0], `#okf-h-okf-main focused ${doc.activeElement && doc.activeElement.tagName}`);
+  changed = nextHashChange(window);
   window.location.hash = "usage";
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await changed;
   assert(doc.activeElement === headings(doc)[2], "an author fragment no longer reaches its heading");
 });
 
@@ -4653,6 +4666,132 @@ checkAsync("an index whose access throws (a getter, a Proxy trap) is no index: n
   assert(proxy.document.querySelector(".okf-palette-open") === null, "the palette was built from a Proxy that throws");
   assert(proxy.OkfSite.readIndex(proxy) === null, "readIndex accepted a Proxy that throws");
   assertChromeWorks(proxy, "throwing Proxy");
+});
+
+/// A damaged `tree` (final review B, item 3): the palette and P2 skip what they
+// cannot read, and so does the explorer. A null or non-object entry is
+// skipped, missing or non-array `children` are none, a node met twice (a
+// cycle, or a shared subtree that would be built once per path) is drawn
+// once, and nesting beyond TREE_DEPTH_LIMIT (100) is not drawn at all: the
+// palette still reaches those concepts.
+function explorerNames(doc) {
+  return Array.from(doc.querySelectorAll("#okf-explorer .okf-tree-folder, #okf-explorer .okf-tree-link")).map((s) => s.textContent);
+}
+
+checkAsync("explorer: a damaged tree (null and non-object entries, missing or non-array children) degrades to what is readable", async () => {
+  const override = { "assets/okf-index.js": damageIndex(
+    "idx.tree.push(null, 5, 'text', { name: 'nochildren', concept: -1 }, { name: 'badchildren', concept: -1, children: 7 },"
+    + " { name: 'strchildren', concept: -1, children: 'abc' },"
+    + " { name: 'holey', concept: -1, children: [null, 3, { name: 'inner', concept: -1, children: [] }] });") };
+  const window = await openPage("foo.html", { override });
+  const doc = window.document;
+  assert(!doc.getElementById("okf-explorer").hidden, "the explorer did not draw despite a readable index");
+  const names = explorerNames(doc);
+  for (const name of ["nochildren", "badchildren", "strchildren", "holey", "inner"]) {
+    assert(names.includes(name), `${name}: not drawn (${names.length} names)`);
+  }
+  const holey = Array.from(doc.querySelectorAll("#okf-explorer .okf-tree-folder")).find((s) => s.textContent === "holey").closest("li");
+  assert(holey.querySelectorAll(":scope > ul > li").length === 1, "the null and number children of holey were drawn");
+  assert(doc.querySelector('#okf-explorer a[aria-current="page"]'), "the current entry was lost behind the damaged ones");
+  assertChromeWorks(window, "damaged tree");
+});
+
+checkAsync("explorer: a cyclic tree (a node its own descendant) draws every node once and never overflows the stack", async () => {
+  const override = { "assets/okf-index.js": damageIndex(
+    "var a = { name: 'cyc-a', concept: -1, children: [] }, b = { name: 'cyc-b', concept: -1, children: [a] };"
+    + " a.children.push(b, a); idx.tree.push(a);") };
+  const window = await openPage("foo.html", { override });
+  const doc = window.document;
+  assert(!doc.getElementById("okf-explorer").hidden, "the explorer stayed hidden behind a cycle");
+  const names = explorerNames(doc);
+  assert(names.filter((n) => n === "cyc-a").length === 1 && names.filter((n) => n === "cyc-b").length === 1, `cycle drawn as: ${names.filter((n) => /^cyc-/.test(n))}`);
+  assert(doc.querySelector('#okf-explorer a[aria-current="page"]'), "the current entry was lost");
+  assertChromeWorks(window, "cyclic tree");
+});
+
+checkAsync("explorer: a 100 000-deep chain stops at the depth limit instead of overflowing the stack", async () => {
+  const override = { "assets/okf-index.js": damageIndex(
+    "var top = { name: 'deep-0', concept: -1, children: [] }, tip = top;"
+    + " for (var d = 1; d < 100000; d++) { var next = { name: 'deep-' + d, concept: -1, children: [] }; tip.children.push(next); tip = next; }"
+    + " idx.tree.push(top);") };
+  const window = await openPage("foo.html", { override });
+  const doc = window.document;
+  assert(!doc.getElementById("okf-explorer").hidden, "the explorer stayed hidden behind a deep chain");
+  const deep = explorerNames(doc).filter((n) => /^deep-\d+$/.test(n));
+  assert(deep.length >= 50 && deep.length <= 101, `${deep.length} levels of the chain were drawn (expected a bounded number, at most 101)`);
+  assert(doc.querySelector('#okf-explorer a[aria-current="page"]'), "the current entry was lost");
+  assertChromeWorks(window, "deep chain");
+});
+
+checkAsync("explorer: a subtree shared by many parents is built once, not once per path", async () => {
+  // 16 levels, each with two children that are the same next level: 2^16 paths.
+  const override = { "assets/okf-index.js": damageIndex(
+    "var next = { name: 'dag-leaf', concept: -1, children: [] };"
+    + " for (var d = 0; d < 16; d++) { next = { name: 'dag-' + d, concept: -1, children: [next, next] }; }"
+    + " idx.tree.push(next);") };
+  const started = Date.now();
+  const window = await openPage("foo.html", { override });
+  const doc = window.document;
+  assert(!doc.getElementById("okf-explorer").hidden, "the explorer stayed hidden behind a shared subtree");
+  const names = explorerNames(doc).filter((n) => /^dag-/.test(n));
+  assert(names.length === 17 && new Set(names).size === 17, `${names.length} dag rows drawn (expected the 17 distinct nodes once each)`);
+  assert(Date.now() - started < 20000, "the shared subtree took long enough to be built per path");
+});
+
+// The indent grows with the depth up to INDENT_LEVELS (12) levels, then stops:
+// 12 + 18 * 12 = 228 px. A deeper tree would otherwise widen the page at 390 px
+// (final review B, item 4). The nesting itself (the <ul> inside <li> chain) keeps
+// the true depth for assistive technology, and the stacked explorer may scroll
+// sideways inside itself.
+checkAsync("explorer: the row indent stops growing after 12 levels while the nesting keeps the true depth", async () => {
+  const override = { "assets/okf-index.js": damageIndex(
+    "var top = { name: 'ind-0', concept: -1, children: [] }, tip = top;"
+    + " for (var d = 1; d < 40; d++) { var next = { name: 'ind-' + d, concept: -1, children: [] }; tip.children.push(next); tip = next; }"
+    + " idx.tree.push(top);") };
+  const window = await openPage("foo.html", { override });
+  const doc = window.document;
+  const rowOf = (n) => Array.from(doc.querySelectorAll("#okf-explorer .okf-tree-folder")).find((s) => s.textContent === "ind-" + n).closest(".okf-tree-row");
+  const pad = (n) => parseFloat(rowOf(n).style.paddingLeft);
+  assert(pad(0) === 12 && pad(1) === 30 && pad(12) === 228, `indent at depth 0, 1, 12: ${pad(0)}, ${pad(1)}, ${pad(12)}`);
+  for (const n of [13, 20, 39]) { assert(pad(n) === 228, `indent at depth ${n}: ${pad(n)} (expected the 228 px cap)`); }
+  const ancestors = (n) => {
+    let count = 0;
+    for (let e = rowOf(n).closest("li").parentElement; e; e = e.parentElement) { if (e.classList.contains("okf-tree-children")) { count++; } }
+    return count;
+  };
+  assert(ancestors(39) === 39 && ancestors(13) === 13, `the nesting lost the true depth: ${ancestors(13)}, ${ancestors(39)}`);
+});
+
+// Smoke check of the stylesheet text, not proof: jsdom lays nothing out and
+// applies no @media rule. The real check is the Chromium and Firefox run of
+// the final review (item 4, a 40-level tree at 390 px: no document scroll).
+checkAsync("explorer: the stacked layout lets the explorer scroll sideways inside itself (static smoke check)", async () => {
+  const window = await openPage("index.html");
+  let found = false;
+  walkStyleRules(window, (rule) => {
+    const media = rule.parentRule && rule.parentRule.media ? rule.parentRule.media.mediaText : "";
+    if (rule.selectorText === "#okf-explorer" && rule.style.getPropertyValue("overflow-x") === "auto" && /not all and \(min-width:\s*1100px\)/.test(media)) { found = true; }
+  });
+  assert(found, "no `#okf-explorer { overflow-x: auto }` in the stacked-layout @media block");
+});
+
+// Forced colors (final review B, item 6): the type chip's ink background
+// becomes Canvas, so a glyph filled white (var(--white)) disappears. Smoke
+// check of the stylesheet text, not proof: jsdom applies no @media rule and
+// has no forced-colors mode. The real check is Chromium and Firefox with
+// forcedColors: 'active' (computed fill/stroke and a screenshot of the chip,
+// page head and graph drawer, light and dark).
+checkAsync("type chip glyph: a forced-colors rule gives the shapes CanvasText, anchored to the chip containers (static smoke check)", async () => {
+  const window = await openPage("index.html");
+  const seen = { fill: false, stroke: false };
+  walkStyleRules(window, (rule) => {
+    const media = rule.parentRule && rule.parentRule.media ? rule.parentRule.media.mediaText : "";
+    if (!/forced-colors:\s*active/.test(media) || !/\.okf-chip-type\s+svg/.test(rule.selectorText)) { return; }
+    if (rule.style.getPropertyValue("fill").toLowerCase() === "canvastext" && /okf-shape-0/.test(rule.selectorText)) { seen.fill = true; }
+    if (rule.style.getPropertyValue("stroke").toLowerCase() === "canvastext" && /okf-shape-4/.test(rule.selectorText)) { seen.stroke = true; }
+  });
+  assert(seen.fill, "no forced-colors rule fills the chip's filled shapes (0 to 3) with CanvasText");
+  assert(seen.stroke, "no forced-colors rule strokes the chip's outline shapes (4, 5) with CanvasText");
 });
 
 // === end of P1.1 cases ===
