@@ -372,6 +372,9 @@
   // origin: "user" (click, keys, list) or "url" (a fragment).
   function select(key, origin) {
     selected = key;
+    // Centring belongs to the fragment that asked for it; after a click, a
+    // rebuild fits the view instead of recentring the node the page opened on.
+    if (origin === "user") { intent = -1; }
     renderDrawer();
     markListSelection();
     updateReadingView();
@@ -883,7 +886,6 @@
   hooks.show.push(applyIntent);
 
   // === fragment and history ===
-  var expectedHash = null;
 
   function decodeFragment(hash) {
     var h = String(hash || "");
@@ -901,7 +903,6 @@
     try {
       window.history.replaceState(null, "", id === "" ? window.location.pathname + window.location.search : "#" + id);
     } catch (err) {
-      expectedHash = id;
       window.location.replace(id === "" ? "#" : "#" + id);
     }
   }
@@ -926,12 +927,13 @@
     applyIntent();
   }
 
+  // The page's own location.replace fires one hashchange per call, so two
+  // selections in one task fire two. A fragment that names what is already
+  // selected is that echo (the URL always states the selection), never a
+  // reader's move: no flag to run out of, however many fire.
   window.addEventListener("hashchange", function () {
-    if (expectedHash !== null) {
-      var mine = decodeFragment(window.location.hash) === expectedHash;
-      expectedHash = null;
-      if (mine) { return; }
-    }
+    var id = decodeFragment(window.location.hash);
+    if (id === (selected >= 0 && selected < N ? index.concepts[selected].id : "")) { return; }
     followFragment(window.location.hash);
   });
 

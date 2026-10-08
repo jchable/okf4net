@@ -2146,6 +2146,77 @@ function registerFragment(h) {
     }
   });
 
+  h.checkAsync("fragment: centring belongs to the fragment that asked for it; a rebuild after a click fits the view", async () => {
+    // Opened on #b, then a click selects a: a later rebuild must not recentre b.
+    const hiding = async (opts) => {
+      const opened = await openGraph(h, opts);
+      opened.scheduler.flush();
+      return opened;
+    };
+    const { window, doc, scheduler } = await hiding({ hash: "#p3-graph/b" });
+    const index = window.OKF_INDEX;
+    const cType = index.concepts[conceptPos(index, "p3-graph/c")].typeIndex;
+    click(window, nodeNamed(doc, "p3-graph/a"));
+    setChecked(window, facetInputs(doc, "type")[cType], false);
+    scheduler.flush();
+    h.assert(window.location.hash === "#p3-graph/a" && selectedName(doc) === "p3-graph/a", "setup: a is not selected");
+    h.assert(nodeNamed(doc, "p3-graph/c") === null, "setup: the facet did not hide p3-graph/c");
+    // The reference: the same facets on a page opened without a fragment (Fit).
+    const fresh = await hiding({});
+    setChecked(fresh.window, facetInputs(fresh.doc, "type")[cType], false);
+    fresh.scheduler.flush();
+    const got = viewportTransform(doc);
+    const want = viewportTransform(fresh.doc);
+    h.assert(Math.abs(got.a - want.a) < 0.01 && Math.abs(got.b - want.b) < 0.01 && Math.abs(got.s - want.s) < 0.001,
+      `the rebuilt view is ${JSON.stringify(got)}, Fit is ${JSON.stringify(want)}`);
+  });
+
+  h.checkAsync("history: with replaceState throwing, two selections in one task leave the page's own hashchanges ignored", async () => {
+    const { window, doc, scheduler } = await openGraph(h, {
+      beforeParse(w) {
+        w.History.prototype.replaceState = function () { throw new w.DOMException("file:// origin", "SecurityError"); };
+      },
+    });
+    scheduler.flush();
+    setChecked(window, facetInputs(doc, "display")[0], false);
+    const before = viewportTransform(doc);
+    let events = 0;
+    window.addEventListener("hashchange", () => { events++; });
+    click(window, nodeNamed(doc, "p3-graph/a"));
+    click(window, nodeNamed(doc, "p3-graph/e"));
+    // Both navigations fire their own hashchange; wait for them.
+    for (let k = 0; k < 50 && events < 2; k++) { await new Promise((resolve) => window.setTimeout(resolve, 0)); }
+    scheduler.flush();
+    h.assert(events === 2, `${events} hashchange events fired, expected 2`);
+    h.assert(window.location.hash === "#p3-graph/e" && selectedName(doc) === "p3-graph/e", `hash ${window.location.hash}, selected ${selectedName(doc)}`);
+    h.assert(!facetInputs(doc, "display")[0].checked, "a hashchange of the page's own reset the facets");
+    const after = viewportTransform(doc);
+    h.assert(after.a === before.a && after.b === before.b && after.s === before.s, `the view moved: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+  });
+
+  h.checkAsync("history: a fragment-driven selection never rewrites the URL, and an unchanged one does not either", async () => {
+    let calls = 0;
+    const count = {
+      beforeParse(w) {
+        const real = w.History.prototype.replaceState;
+        w.History.prototype.replaceState = function (...args) { calls++; return real.apply(this, args); };
+      },
+    };
+    // A fragment that selects nothing stays in the URL: only the reader's selections write it.
+    let opened = await openGraph(h, Object.assign({ hash: "#nowhere" }, count));
+    opened.scheduler.flush();
+    h.assert(opened.window.location.hash === "#nowhere", `a followed fragment was rewritten: ${opened.window.location.hash}`);
+    h.assert(calls === 0, `replaceState was called ${calls} time(s) while following a fragment`);
+    // A selection that leaves the URL as it is writes nothing.
+    calls = 0;
+    opened = await openGraph(h, Object.assign({ hash: "#p3-graph/b" }, count));
+    opened.scheduler.flush();
+    click(opened.window, nodeNamed(opened.doc, "p3-graph/b"));
+    h.assert(calls === 0, `replaceState was called ${calls} time(s) for a selection the URL already states`);
+    click(opened.window, nodeNamed(opened.doc, "p3-graph/a"));
+    h.assert(calls === 1, `a new selection called replaceState ${calls} time(s)`);
+  });
+
   h.checkAsync("fragment: the Global graph link of a concept page leads to that concept, selected", async () => {
     const page = await h.openPage("p3-graph/a.html");
     const href = page.document.getElementById("okf-global-graph").getAttribute("href");
