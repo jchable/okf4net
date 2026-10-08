@@ -52,7 +52,16 @@ style probe and a behaviour, e.g. `H7-H7narrow`). Then, by hand:
 
 ## P2
 
-*(P2 checks)*
+`recette/recette.js --slices p2` measures each line below in Chrome, Edge and Firefox (ids are its result keys, beside §11's X5–X9); what it reports `n/a` (`pass: null`, with its note) is checked by hand or waits for P3.
+
+- [ ] **P2-1** On a concept page with neighbours (acme `computations/gross-margin-period.html`), "Neighbourhood" sits between "On this page" and "Referenced by"; clicking a neighbour opens its page in `file://`; clicking an absent concept (red dashed circle) does nothing.
+- [ ] **P2-2** "1 hop" is pressed on load and after a reload; "2 hops" adds the second ring, arrows point at their targets, links into the page are dashed as the legend says.
+- [ ] **P2-3** Shapes and lines contrast at least 3:1 and labels and the legend 4.5:1 with the page, in the light and the dark theme; switching the theme redraws nothing and keeps the graph readable.
+- [ ] **P2-4** At 390 px wide, the frame fits the panel without horizontal scrolling (a label at the frame's edge may be clipped; the list names it in full).
+- [ ] **P2-5** No request leaves the site while the local graph loads or redraws.
+- [ ] **P2-6** "Open in graph" opens the graph page selected on this concept (from P3 on; before P3 the missing page is expected, spec §9).
+- [ ] **P2-7** Keyboard: Tab from "2 hops" never stops inside the drawing; it reaches "+N omitted" (when shown), "Open in graph", then "List · N neighbours", which Enter opens, and each row.
+- [ ] **P2-8** Side by side at 1440 × 900 with mockup A's Neighbourhood section (captures `shots/<browser>/p2/X5.png` … `X9.png` under the recette's `--out`): toggle, frame, shapes, labels, edges and foot match, or the difference is one of the écarts recorded in the P2 plan's "Fidélité maquette".
 
 ## P3
 
