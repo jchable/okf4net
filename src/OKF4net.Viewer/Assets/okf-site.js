@@ -15,14 +15,19 @@
   // version 2 (spec §12.1), or window.OKF_INDEX is something else --
   // typically a DOM element reached through named access (DOM clobbering).
   function readIndex(win) {
-    var idx;
-    try { idx = win.OKF_INDEX; } catch (e) { return null; }
-    if (!idx || typeof idx !== "object" || "nodeType" in idx) { return null; }
-    if (idx.version !== 2) { return null; }
-    if (!Array.isArray(idx.concepts) || !Array.isArray(idx.ghosts)
-        || !Array.isArray(idx.edges) || !Array.isArray(idx.tree)
-        || !Array.isArray(idx.types)) { return null; }
-    return idx;
+    // Every access sits inside the try: a getter or a Proxy trap that throws
+    // degrades to "no index", never to a script error.
+    try {
+      var idx = win.OKF_INDEX;
+      if (!idx || typeof idx !== "object" || "nodeType" in idx) { return null; }
+      if (idx.version !== 2) { return null; }
+      if (!Array.isArray(idx.concepts) || !Array.isArray(idx.ghosts)
+          || !Array.isArray(idx.edges) || !Array.isArray(idx.tree)
+          || !Array.isArray(idx.types)) { return null; }
+      return idx;
+    } catch (e) {
+      return null;
+    }
   }
 
   // Spec §4.6: trim, collapse internal whitespace, locale-independent lower
@@ -42,6 +47,9 @@
     var hits = [];
     for (var i = 0; i < index.concepts.length; i++) {
       var c = index.concepts[i];
+      // A damaged entry (null, not an object) is never a match; missing tags
+      // are no tags. The palette must not throw halfway through an update.
+      if (c === null || typeof c !== "object") { continue; }
       var id = normalize(c.id);
       var title = normalize(c.title);
       var tier = -1;
@@ -52,8 +60,9 @@
       } else if (id.indexOf(q) !== -1 || title.indexOf(q) !== -1) {
         tier = 2;
       } else {
-        for (var t = 0; t < c.tags.length; t++) {
-          if (normalize(c.tags[t]) === q) { tier = 3; break; }
+        var tags = Array.isArray(c.tags) ? c.tags : [];
+        for (var t = 0; t < tags.length; t++) {
+          if (normalize(tags[t]) === q) { tier = 3; break; }
         }
       }
       if (tier !== -1) { hits.push({ i: i, tier: tier }); }

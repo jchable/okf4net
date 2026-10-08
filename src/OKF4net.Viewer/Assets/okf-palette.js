@@ -228,9 +228,14 @@
     return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable === true;
   }
 
-  // Ctrl+K and nothing else (spec §8, "sans autre modificateur").
+  // Ctrl+K and nothing else (spec §8, "sans autre modificateur"). Matched on
+  // the produced character, so Dvorak (physical K gives "t") is right; a
+  // layout whose key for this chord is no ASCII letter (Cyrillic, Greek) has
+  // no "k" at all and falls back to the physical key.
   function isCtrlK(e) {
-    return e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && (e.key === "k" || e.key === "K");
+    if (!e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) { return false; }
+    if (e.key === "k" || e.key === "K") { return true; }
+    return e.code === "KeyK" && !(typeof e.key === "string" && /^[A-Za-z]$/.test(e.key));
   }
 
   // One listener serves both states, on document, because a click inside the

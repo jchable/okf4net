@@ -82,8 +82,16 @@
   }
 
   // The generated heading a fragment designates, or null. Only elements
-  // inside #okf-body qualify.
+  // inside #okf-body qualify. A fragment that already names an element
+  // outside it ("#okf-main", the skip link's) is the browser's: remapping it
+  // to a heading titled alike ("OKF main" -> okf-h-okf-main) would take the
+  // focus from that element.
   function targetOf(hash) {
+    var raw = String(hash || "");
+    if (raw.charAt(0) === "#") { raw = raw.slice(1); }
+    try { raw = decodeURIComponent(raw); } catch (e) { /* keep it raw */ }
+    var named = raw === "" ? null : document.getElementById(raw);
+    if (named && !body.contains(named)) { return null; }
     var candidates = site.fragmentCandidates(hash);
     for (var c = 0; c < candidates.length; c++) {
       var target = document.getElementById(candidates[c]);
