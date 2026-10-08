@@ -5,6 +5,32 @@ Statut : proposé
 Ticket : [#139](https://github.com/jchable/okf4net/issues/139) (les décisions
 datées ci-dessous y sont consignées en commentaires, du 2026-10-05 au 2026-10-07)
 
+**Révision (revue interne, 2026-10-08)** : une revue de la version 1, faite en
+vérifiant ses affirmations sur le code, a trouvé six constats importants et dix
+modérés. Tous sont intégrés.
+
+Les constats importants :
+
+- **Chemins d'écriture oubliés** : `log.md` (écrit par `OkfBundleTools.AppendLog`
+  hors du writer), la suppression d'un scope mémoire, la création des dossiers
+  parents, et les verbes `parse`/`fmt` qui opèrent sur un fichier isolé.
+- **Affichage des chemins sous Windows** : les tests golden normalisent les `\`
+  et ne peuvent donc pas garantir des octets inchangés. La règle d'affichage est
+  maintenant écrite, et un test non normalisé est exigé.
+- **Surfaces publiques manquantes** dans la liste des changements cassants :
+  `Diagnostic.Path`, `KnowledgeCatalogSource.Path`, le Viewer.
+- **Fraîcheur du catalogue** : une source créée depuis `catalog.json` est
+  maintenant en `OnAccess` par défaut (arbitrage du 2026-10-08).
+- **Périmètre de l'énumération** : il est maintenant défini (arbitrage du
+  2026-10-08).
+- **Alias de casse sur une clé lue hors du listing** : la correspondance doit
+  être exacte en casse et en forme Unicode.
+- **Clés mémoire sous `Strict`** : la partie lisible des identifiants est
+  désormais encodée, avec une note de migration (arbitrage du 2026-10-08).
+
+Parmi les modérés, le plus notable : l'épinglage du code exécuté porte
+maintenant sur la version que l'outil a **montrée**.
+
 ## Contexte et motivation
 
 Aujourd'hui un bundle **est** un répertoire local, et cette hypothèse n'est pas
@@ -93,7 +119,8 @@ Forme (noms provisoires, synchrone jusqu'à #152) :
 ```csharp
 public interface IBundleProvider
 {
-    /// Identité stable et non secrète : clé des verrous en processus, diagnostics.
+    /// Identité stable et non secrète : diagnostics, et clé des verrous en
+    /// processus pour les providers autres que filesystem (§4).
     string Id { get; }
 
     /// Emplacement affichable et non secret (filesystem : la racine telle que donnée).
@@ -108,6 +135,8 @@ public interface IBundleProvider
     BundleVersion GetVersion();
 
     /// Noms bruts relatifs à la racine, éventuellement sous un préfixe.
+    /// Le préfixe s'arrête à une frontière de segment : "a" couvre "a/…",
+    /// jamais "ab/…" (même confusion que celle interdite pour la racine, §2).
     /// Le cœur les valide en BundleKey (§2) : le provider ne valide rien lui-même.
     IEnumerable<BundleListing> Enumerate(BundleKey? prefix = null);
 
@@ -117,7 +146,9 @@ public interface IBundleProvider
     bool Exists(BundleKey key);
 
     /// Écriture et suppression conditionnelles (§4). Interdites si !CanWrite.
-    BundleObjectVersion Write(BundleKey key, ReadOnlySpan<byte> content, BundleWriteCondition condition);
+    /// ReadOnlyMemory et non ReadOnlySpan : la forme doit survivre au passage
+    /// en ValueTask (#152), qui ne peut pas capturer un Span.
+    BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition);
     void Delete(BundleKey key, BundleWriteCondition condition);
 }
 ```
@@ -193,12 +224,41 @@ contenu).**
 
 **Collisions de casse.** Quand la politique les interdit et que deux clés d'un
 même bundle ne diffèrent que par la casse, **toutes** les clés en collision sont
-écartées avec un diagnostic : le cœur ne peut pas savoir laquelle est la bonne.
+écartées : le cœur ne peut pas savoir laquelle est la bonne. Le diagnostic suit
+la règle du périmètre de l'énumération, plus bas.
 
 **Énumération lenient, lecture/écriture stricte**, sur le modèle des deux
 prédicats de `ReparsePoints` : un nom brut invalide trouvé en énumérant est
-ignoré avec un diagnostic ; une clé invalide demandée en lecture ou en écriture
-lève une exception.
+écarté ; une clé invalide demandée en lecture ou en écriture lève une exception.
+
+**Périmètre de l'énumération** (arbitrage du 2026-10-08). Aujourd'hui
+`CollectMarkdown` ne retient que les `.md` et ne regarde pas les autres noms.
+Le comportement devient :
+
+- **La borne d'entrées (§6) compte toutes les entrées énumérées**, quelle que
+  soit leur extension : c'est le coût réel d'un listing. Aucun dossier n'est
+  écarté par son nom (`.git`, `node_modules` comptent), comme aujourd'hui où le
+  parcours y descend aussi.
+- **Les diagnostics de clé ne concernent que deux cas.**
+  - Un nom en `.md` invalide : une entrée dans `Bundle.ParseErrors`, comme un
+    fichier illisible aujourd'hui.
+  - Une ressource référencée par un champ §6.2 dont la clé est invalide : le
+    statut `Unsafe`.
+- **Tout autre nom invalide est écarté sans bruit.** Un fichier non référencé
+  qui n'est pas un concept n'a jamais produit de diagnostic, et n'en produit
+  toujours pas. La sortie de `okf validate` ne change donc pas pour lui.
+
+**Correspondance exacte, y compris hors du listing.** Les collisions de casse
+sont traitées à l'énumération, mais une clé peut aussi être demandée sans y
+figurer : une ressource du §6.2, une cible d'écriture, une cible de `verify`.
+Sur un volume qui ignore la casse ou la forme Unicode (Windows, macOS), une
+ouverture naïve de `References/A.sql` lirait `references/a.sql` : deux clés,
+un seul objet, ce qui viole l'injectivité exigée plus haut. Un provider doit
+donc garantir que `Read`, `Exists`, `Write` et `Delete` ne touchent un objet que
+si son nom correspond **exactement** à la clé, en casse comme en forme Unicode.
+Sinon, l'objet est traité comme absent. Le writer applique déjà cette règle
+pour `verify` (`ExistsWithExactCase` dans `BundleConceptWriter`) ; elle devient
+une exigence du contrat.
 
 **Résolution des champs de chemin du §6.2, dans le cœur, lexicalement sur les
 clés** (elle ne dépend plus d'aucune sémantique de chemin de l'OS) :
@@ -222,9 +282,29 @@ comme n'importe quelle autre.
 - **Toute écriture est vérifiée contre la capacité du provider avant d'être
   tentée.** Sur un provider sans `CanWrite`, elle lève `BundleReadOnlyException`
   sans aucun effet de bord : ni écriture partielle, ni no-op silencieux.
-- Cette garde vit dans le cœur, à chaque point d'entrée d'écriture
-  (`BundleConceptWriter`, `IndexGenerator`, `FileMemoryStore`), et le provider
-  la répète en dernier rempart.
+- Cette garde vit dans le cœur, à chaque point d'entrée d'écriture, et le
+  provider la répète en dernier rempart. Les points d'entrée, recensés dans le
+  code au 2026-10-08 :
+  - `BundleConceptWriter` : écriture et append de concept, `RecordVerifications`.
+  - `IndexGenerator` : `index.md`.
+  - **`log.md`**, aujourd'hui écrit par `OkfBundleTools.AppendLog` lui-même
+    (`File.WriteAllText`), hors du writer. Il **passe dans
+    `BundleConceptWriter`**, qui redevient l'unique chemin d'écriture, avec le
+    nouvel essai des opérations lire-modifier-écrire (§4).
+  - `FileMemoryStore` : écriture d'une entrée, et **suppression d'un scope**,
+    aujourd'hui un `Directory.Delete(subDir, recursive: true)`. Le contrat n'a
+    pas de suppression de dossier : la suppression devient « énumérer le
+    préfixe, puis supprimer objet par objet » (§9).
+- **La création des dossiers parents est implicite** : il n'y a pas de dossier
+  dans un espace de clés. Un provider qui en a besoin (le filesystem) les crée
+  lui-même lors d'un `Write`, et c'est à lui d'y appliquer la garde STRICT des
+  ancêtres que `BundleConceptWriter` applique aujourd'hui avant son
+  `Directory.CreateDirectory`.
+- **Hors couture, explicitement** : `okf parse` et `okf fmt` lisent et écrivent
+  **un fichier isolé** désigné en ligne de commande, qui n'appartient à aucun
+  bundle (`ReadFileStrict`/`WriteFileStrict` dans `OkfCli`). Ils restent sur
+  `System.IO` et ne sont pas concernés par la règle « aucune E/S hors
+  couture ».
 - Outils agents : la permission d'écrire effective est
   `provider.CanWrite && mode != OkfToolMode.ReadOnly`. Quand elle est fausse, les
   outils d'écriture (`OkfBundleTools.WriteToolNames`) ne sont **pas proposés**
@@ -242,8 +322,13 @@ comme n'importe quelle autre.
   **atomiquement si et seulement si** la condition tient, sinon il lève
   `BundleWriteConflictException`.
 - S3 : `If-Match` / `If-None-Match: *`. Filesystem : fichier temporaire dans le
-  même dossier → revérification de la version → `File.Replace`, sous le verrou
-  en processus.
+  même dossier → revérification de la version → remplacement, sous le verrou en
+  processus. Le remplacement dépend de la condition :
+  - `IfMatch` ou `None` sur un objet existant : `File.Replace`, qui exige que la
+    destination existe ;
+  - `MustNotExist`, ou création : `File.Move(temp, dest, overwrite: false)`,
+    qui échoue de façon atomique si la destination est apparue entre-temps.
+    Cet échec est rendu comme un conflit.
 - **Version d'objet sur le filesystem : SHA-256 du contenu**, pas la date de
   modification, dont la résolution est d'1 à 2 s sur certains systèmes de
   fichiers.
@@ -280,7 +365,10 @@ en entier).
 
 - Les opérations lire-modifier-écrire (append, verify, log, régénération
   d'index) réessaient sur conflit : **3 tentatives, délai aléatoire croissant**,
-  en relisant l'état courant à chaque fois.
+  en relisant l'état courant à chaque fois. Tant que le contrat est synchrone,
+  ce délai est un `Thread.Sleep` dans la bibliothèque, sur le thread de
+  l'appelant (souvent un thread d'agent). C'est acceptable pour trois essais
+  courts ; il devient un `Task.Delay` avec #152.
 - Les écritures conditionnées à l'image **ne réessaient jamais
   automatiquement** : réessayer écraserait ce que l'agent n'a pas vu.
 - Après épuisement des essais, `BundleConceptWriter` rend le conflit comme ses
@@ -300,6 +388,14 @@ courante. Il est **partagé** par `OkfBundleTools`, `OkfContextProvider` et
 `OkfBundleKnowledgeSource`, ce qui remplace les deux politiques opposées
 d'aujourd'hui.
 
+- **Le partage est explicite.** Un constructeur commode qui prend une chaîne
+  (`OkfBundleTools(string)`, `OkfBundleKnowledgeSource(string, string)`, …)
+  crée **son propre** handle. Deux consommateurs construits ainsi sur la même
+  racine ont donc deux images. « Une image par source » ne vaut que si l'hôte
+  leur passe le même `BundleHandle`. La documentation le dit.
+- `OkfContextProvider` construit sur des `OkfBundleTools` utilise le handle de
+  ces outils.
+
 - **Un seul chargement à la fois** : des appelants concurrents attendent le
   chargement en cours au lieu d'en lancer chacun un.
 - Le remplacement de l'image est atomique ; un appel ne voit jamais qu'une
@@ -316,11 +412,22 @@ implémente une fois pour tous les providers :
 
 | Politique | Comportement |
 |---|---|
-| `Manual` (**défaut**) | l'hôte appelle `Refresh()` |
-| `OnAccess` | comparaison du jeton avant chaque utilisation de l'image |
+| `Manual` (**défaut général**) | l'hôte appelle `Refresh()` |
+| `OnAccess` (**défaut des sources de `catalog.json`**) | comparaison du jeton avant chaque utilisation de l'image |
 | `Interval(N)` | comparaison au plus toutes les N secondes, à l'accès |
 | `Notify` | un signal marque l'image « à vérifier » ; comparaison à l'accès suivant |
 
+- **Pourquoi deux défauts** (arbitrage du 2026-10-08). Aujourd'hui,
+  `OkfBundleKnowledgeSource.SearchAsync` recharge le bundle à chaque requête :
+  une source de catalogue est toujours fraîche. En `Manual`, elle ne verrait
+  plus jamais un changement externe sans action de l'hôte, ce qui serait une
+  régression silencieuse. Les sources créées depuis `catalog.json` sont donc en
+  `OnAccess` par défaut : elles restent toujours fraîches, et ne rechargent que
+  si le jeton a changé, au lieu de recharger à chaque requête. Un hôte peut
+  choisir une autre politique par source. Le défaut général reste `Manual`,
+  conformément à la décision du 2026-10-05.
+- `FileMemoryStore` ne passe pas par un `BundleHandle` : il continue de charger
+  le scope demandé à chaque lecture, comme aujourd'hui (§9).
 - Toutes les politiques sont **paresseuses** : aucune minuterie ni aucun thread
   d'arrière-plan dans le cœur.
 - `Notify` n'est disponible que si le provider implémente
@@ -331,15 +438,32 @@ implémente une fois pour tous les providers :
   perd des événements).
 - Aucun outil de rafraîchissement n'est exposé au modèle.
 
-**5.4 Épinglage du code exécuté.** L'orchestrateur lit le code sanctionné **dans
-la version de l'image chargée** :
+**5.4 Épinglage du code exécuté.** L'objectif est que le code exécuté soit
+exactement celui que le modèle, et l'humain qui relit ses appels, ont pu voir.
+L'orchestrateur lit le code sanctionné ainsi, par ordre de préférence :
 
-- un objet chargé dans l'image (concept, donc computation en ligne) est déjà
-  figé ;
-- une ressource lue à l'exécution (fichier de computation, attester) est lue
-  avec `expected` = la version donnée par le listing de l'image quand le
-  provider la connaît (S3) ; sinon, le cœur compare la `BundleVersion` avant et
-  après la lecture et refuse s'il y a eu changement (filesystem).
+1. **Un objet chargé dans l'image** (le concept, donc une computation écrite
+   dans le frontmatter) est déjà figé.
+2. **La version montrée.** Quand `okf_get_computation` affiche un fichier de
+   computation ou un attester, il enregistre dans le `BundleHandle` la
+   `BundleObjectVersion` du texte affiché (sur le filesystem, son SHA-256).
+   `okf_run_computation` relit ce fichier avec `expected` = cette version, et
+   refuse si elle a changé. Cette règle est forte sur **tous** les providers, le
+   filesystem compris, et ne coûte qu'un hash du texte déjà lu.
+3. **À défaut de version montrée** (exécution sans lecture préalable dans la
+   même image), la version donnée par le listing de l'image quand le provider la
+   connaît (S3). Sinon, le cœur compare la `BundleVersion` avant et après la
+   lecture et refuse s'il y a eu changement.
+
+Le cas 3 hérite de la faiblesse du jeton de bundle sur le filesystem (§8) : sous
+notre modèle de menace, quiconque écrit dans le bundle peut remplacer un script
+par un autre de même taille dans la même seconde. Le cas 2 ferme ce trou chaque
+fois que le code a été montré. La liste blanche d'empreintes (#154) reste le
+contrôle qui ne dépend pas de qui peut écrire dans la source.
+
+Les versions montrées sont propres à une image : un rafraîchissement les
+efface, et un fichier montré dans une image précédente retombe donc dans le
+cas 3.
 
 ### 6. Bornes par défaut
 
@@ -348,9 +472,10 @@ Finies **pour tous les providers, filesystem compris**.
 | Borne | Défaut | Dépassement |
 |---|---|---|
 | Taille d'un fichier (concept ou ressource) | 16 Mio | concept : entrée dans `Bundle.ParseErrors`, le chargement continue (§11) ; ressource : exception à la lecture |
-| Entrées par bundle | 1 000 000 | chargement interrompu (`BundleLoadException`) |
+| Taille de `index.md` / `log.md` | 16 Mio | ces fichiers sont listés mais lus plus tard (validation, outils) : exception à la lecture, que `BundleValidator` et les outils rapportent comme un fichier illisible, ce qu'ils font déjà aujourd'hui pour une erreur d'E/S |
+| Entrées par bundle (toutes, §2) | 1 000 000 | chargement interrompu (`BundleLoadException`) |
 | Profondeur | 64 | chargement interrompu |
-| Longueur de clé | 1 024 octets UTF-8 | entrée ignorée avec diagnostic |
+| Longueur de clé | 1 024 octets UTF-8 | entrée écartée ; diagnostic selon le périmètre de l'énumération (§2) |
 | Délai par requête (providers réseau) | 30 s | échec de la requête et du chargement |
 | Requêtes simultanées (providers réseau) | 16 | file d'attente |
 
@@ -392,7 +517,21 @@ la source l'est. `catalog.json` est de la configuration d'opérateur.
   STRICT/lenient de `ReparsePoints` (lenient pour l'énumération, STRICT pour la
   lecture et l'écriture), confinement sous la racine, revérification tardive
   avant écriture, registre de verrous.
-- Il déclare ses contraintes natives d'après l'OS (§2).
+- Il déclare ses contraintes natives d'après l'OS (§2), et il garantit la
+  **correspondance exacte** (§2) : sur un volume qui ignore la casse ou la forme
+  Unicode, il compare le nom réel de chaque segment, comme
+  `ExistsWithExactCase` le fait aujourd'hui, avant de lire, d'écrire ou de
+  supprimer.
+- Il crée lui-même les dossiers parents lors d'un `Write`, après la garde STRICT
+  des ancêtres (§3). Une suppression laisse les dossiers vides en place : un
+  dossier vide ne contient aucune clé, donc il n'existe pas pour la couture.
+- **Règle d'affichage d'un chemin** (pour la CLI, le Viewer et
+  `Diagnostic.Path`) : `Location`, puis les segments de la clé joints par le
+  **séparateur de l'OS**, c'est-à-dire exactement ce que `Path.Combine(root, …)`
+  produit aujourd'hui. Sous Windows, `okf validate` affiche donc toujours des
+  `\`. Les tests golden normalisent les `\` (`GoldenParityTests`) et ne peuvent
+  pas garantir cette règle : un test **non normalisé** sous Windows la protège
+  (§11).
 - `GetVersion()` : une empreinte du listing (clé, taille, date de modification).
   Ce jeton est **faible** : deux modifications de même taille dans la même
   seconde peuvent lui échapper. L'effet est une image périmée jusqu'au
@@ -409,18 +548,51 @@ la source l'est. `catalog.json` est de la configuration d'opérateur.
 | Consommateur | Changement |
 |---|---|
 | `Bundle` | `Load(IBundleProvider, BundleLoadOptions?)` ; `Concept.Path` → `Concept.Key` ; `IndexFiles`/`LogFiles` → `BundleKey` ; `ParseErrors` → `(BundleKey Key, string Error)` ; `Root` → `Provider` + `Location` ; `TryResolveResource(..., out BundleKey? key, ...)` ; `ReadResourceText(BundleKey)` |
-| `BundleValidator` | relit `index.md`/`log.md` et teste les ressources via le provider (avec les bornes), plus via `File.*` |
-| `BundleConceptWriter` | constructeur sur `BundleHandle` (ou provider) ; version attendue optionnelle ; garde de capacité ; relectures-réessais ; atomicité via le provider |
+| `ConceptId` | ajoute `ToKey()` et `FromKey(BundleKey)`, que le cœur utilise désormais. `ToPath(string)` et `FromPath(string, string)` restent, comme utilitaires du filesystem : purs calculs de chaînes, rien ne les oblige à disparaître |
+| `BundleValidator` | relit `index.md`/`log.md` et teste les ressources via le provider (avec les bornes), plus via `File.*`. `Diagnostic.Path` (aujourd'hui une chaîne remplie avec `concept.Path`) devient `Diagnostic.Key` (`BundleKey?`) ; le chemin affiché suit la règle du §8 |
+| `BundleConceptWriter` | constructeur sur `BundleHandle` (ou provider) ; version attendue optionnelle ; garde de capacité ; relectures-réessais ; atomicité via le provider ; **reprend l'écriture de `log.md`** (§3). `BundleRoot` est remplacé par le handle |
 | `IndexGenerator` | surcharges sur provider ; garde de capacité ; écritures conditionnelles |
-| `OkfBundleTools` | constructeur sur `BundleHandle` ; plus aucune E/S directe ; filtrage des outils d'écriture selon la permission effective ; écritures conditionnées à l'image |
-| `OkfContextProvider` | partage le `BundleHandle` de ses outils ; plus d'E/S bloquante hors de la couture |
-| `OkfBundleKnowledgeSource` | constructeur sur `BundleHandle` ; ne recharge plus à chaque requête, il suit la politique de la source |
-| `FileMemoryStore` | API publique inchangée ; passe par le provider filesystem ; reste filesystem |
-| Catalog (`catalog.json`) | voir ci-dessous |
+| `OkfBundleTools` | constructeur sur `BundleHandle` ; plus aucune E/S directe. `AppendLog` délègue au writer ; la lecture d'`index.md` passe par le provider en UTF-8 **strict** (aujourd'hui `File.ReadAllText`, qui remplace les octets invalides par U+FFFD) ; filtrage des outils d'écriture selon la permission effective ; écritures conditionnées à l'image ; enregistrement des versions montrées (§5.4) |
+| `OkfContextProvider` | partage le `BundleHandle` de ses outils. Ses chargements passent par la couture, mais restent **bloquants** dans ses méthodes asynchrones tant que le contrat est synchrone ; c'est #152 qui les rend asynchrones |
+| `OkfBundleKnowledgeSource` | constructeur sur `BundleHandle` ; ne recharge plus à chaque requête, il suit la politique de la source (`OnAccess` par défaut pour une source de `catalog.json`, §5.3) |
+| `FileMemoryStore` | API publique inchangée ; reste adossé au filesystem, via le provider ; recharge le scope à chaque lecture, comme aujourd'hui. Voir ci-dessous pour la suppression d'un scope et l'encodage des clés |
+| Catalog (`catalog.json`) | `catalog.json` lui-même reste un fichier local lu par `FileKnowledgeCatalog`. `KnowledgeCatalogSource` gagne le type de provider et ses réglages ; son `Path` ne vaut plus que pour le type `filesystem` (voir ci-dessous) |
 | `AttestationOrchestrator` | lit le code sanctionné via `ReadResourceText(BundleKey)`, épinglé (§5.4) |
-| `okf` / `okf-render` | restent synchrones, sur le provider filesystem ; leurs octets de sortie ne changent pas (c'est la CLI qui compose le chemin affiché à partir de `Location` et de la clé) |
+| Viewer (`SiteModel`, `HtmlWriter`) | `SiteModel` lit aujourd'hui `bundle.Root` et le chemin de `ParseErrors` : il passe à `Location` et au chemin affiché du §8, si bien que le HTML produit par `okf-render` ne change pas |
+| `okf` / `okf-render` | restent synchrones, sur le provider filesystem ; leurs octets de sortie ne changent pas, sous Linux comme sous Windows (règle d'affichage du §8). `parse` et `fmt` restent hors couture (§3) |
 | `okf-mcp` | inchangé (`OKF_BUNDLE_ROOT`, filesystem) |
 | `producers/` | une recherche n'y trouve aucun usage des membres qui changent, mais une recherche ne prouve rien : la vérification est la compilation et les tests de `producers/OkfProducer.sln` en local |
+
+**`FileMemoryStore` : suppression d'un scope.** Aujourd'hui `DeleteScopeAsync`
+fait un `Directory.Delete(subDir, recursive: true)`, et `Directory.Exists(subDir)`
+sert à savoir si un scope existe. Avec la couture :
+
+- la suppression énumère les clés sous le préfixe du scope, puis supprime chaque
+  objet, avec un rapport exact en cas d'échec partiel (§4) ;
+- un scope « existe » s'il contient au moins une clé, et non plus si son dossier
+  existe. Les dossiers vides laissés sur le filesystem (§8) n'ont donc aucun
+  effet.
+
+**`FileMemoryStore` : encodage des clés mémoire** (arbitrage du 2026-10-08).
+`MemoryPath.Encode` garde aujourd'hui l'identifiant brut en minuscules, suivi
+d'un hash de 16 caractères. Deux problèmes :
+
+- un identifiant contenant un caractère refusé par `Strict` (par exemple
+  `acme:eu`) produit un segment invalide. Sous Linux, la mémoire existante de ce
+  scope deviendrait inaccessible après la migration ;
+- un identifiant contenant `/` ajoute des segments. Le hash évite déjà les
+  collisions, mais la partie lisible n'est pas injective. Ce problème existe
+  déjà aujourd'hui.
+
+La partie lisible est désormais encodée : tout caractère qui n'est pas valide
+dans un segment sous `Strict` (`/` compris) est remplacé par `-`. Le hash reste
+calculé sur l'identifiant brut, inchangé, et c'est toujours lui qui garantit
+l'unicité. Seuls les scopes dont l'identifiant contenait un caractère remplacé
+changent de clé. Leurs anciens dossiers, invalides sous `Strict`, sont ignorés.
+Une note de migration, dans le CHANGELOG et le README de `OKF4net.Catalog`,
+indique comment les renommer. Sous Windows, ces identifiants n'ont jamais
+fonctionné, puisque `:` y est interdit dans un nom de dossier : aucune
+migration n'y est nécessaire.
 
 **Catalog : nommer un provider dans `catalog.json`.** Une source peut porter
 `"provider": "<type>"` et un objet `"settings"`. Le type `filesystem` reste le
@@ -437,14 +609,28 @@ le client injecté.
 À consigner au CHANGELOG, dans une même version :
 
 - **Cassants (API)** : `Concept.Path`, `Bundle.Root`, `IndexFiles`, `LogFiles`,
-  `ParseErrors`, `TryResolveResource`, `ReadResourceText` (§9). La migration
+  `ParseErrors`, `TryResolveResource`, `ReadResourceText`, `Diagnostic.Path`,
+  `BundleConceptWriter.BundleRoot`, `KnowledgeCatalogSource` (gagne le type de
+  provider et ses réglages), et les constructeurs qui prennent désormais un
+  `BundleHandle` (les surcharges `string` restent) (§9). La migration
   asynchrone (#152) sera un second changement cassant, accepté.
 - **Comportement, filesystem compris** :
-  - bornes finies par défaut (§6) ;
-  - politique de clés `Strict` (§2) : certains noms légaux sous Linux sont
-    écartés, avec un diagnostic ou le statut `Unsafe`, jamais silencieusement ;
+  - bornes finies par défaut (§6), et la borne d'entrées compte **toutes** les
+    entrées, `.git` et `node_modules` compris (§2) : un très gros dossier peut
+    désormais faire échouer un chargement qui réussissait ;
+  - politique de clés `Strict` (§2) : un `.md` au nom invalide devient une entrée
+    de `ParseErrors`, et une ressource référencée au nom invalide reçoit le
+    statut `Unsafe`. Les autres fichiers n'ont jamais été examinés et ne le sont
+    toujours pas ;
+  - correspondance exacte en casse et en forme Unicode (§2) : sous Windows ou
+    macOS, une ressource référencée avec une autre casse que le fichier réel
+    devient `Missing` au lieu d'être résolue ;
+  - un `\` dans un chemin §6.2 donne `Unsafe` (§2) ;
   - écritures atomiques et conditionnelles (§4) ;
-  - `OkfBundleKnowledgeSource` ne recharge plus à chaque requête (§5).
+  - `OkfBundleKnowledgeSource` ne recharge plus à chaque requête, mais reste
+    toujours frais grâce à `OnAccess` (§5.3) ;
+  - lecture d'`index.md` par les outils agents : UTF-8 strict (§9) ;
+  - clés mémoire : encodage de la partie lisible, avec note de migration (§9).
 - **Inchangé** : les octets de sortie de `okf` et `okf-render`. Aucun nom de
   fichier de `tests/fixtures/` ni de `bundles/` n'est écarté par `Strict`
   (vérifié le 2026-10-06 sur les 146 entrées : ni `:`, ni `.` ou espace final, ni
@@ -458,8 +644,25 @@ le client injecté.
   d'entrée publics (surcharges et valeurs par défaut comprises), pas par un grep
   de symboles.
 - **Lecture seule** : un provider filesystem rétrogradé en lecture seule fait
-  échouer chaque chemin d'écriture avec `BundleReadOnlyException`, sans rien
-  modifier sur disque ; les outils d'écriture ne sont pas proposés.
+  échouer **chaque** point d'entrée d'écriture du §3 avec
+  `BundleReadOnlyException`, sans rien modifier sur disque : écriture et append
+  de concept, `RecordVerifications`, `index.md`, `log.md` (via `AppendLog`),
+  écriture mémoire et suppression d'un scope. Les outils d'écriture ne sont pas
+  proposés.
+- **Affichage** : un test **non normalisé**, exécuté sous Windows, vérifie que
+  `okf validate`, `okf info` et `okf audit` affichent les mêmes chemins (avec des
+  `\`) avant et après la migration. Les tests golden, qui normalisent les `\`,
+  ne le peuvent pas.
+- **Correspondance exacte** : sous Windows et macOS, une ressource référencée
+  avec une autre casse, ou une autre forme Unicode, que le fichier réel n'est
+  ni lue ni écrite.
+- **Mémoire** : un scope dont l'identifiant contient `:` ou `/` est écrit, lu
+  et supprimé sous une clé valide en `Strict` ; deux identifiants qui ne
+  diffèrent que par un caractère remplacé obtiennent deux clés distinctes ; un
+  scope vidé n'« existe » plus.
+- **Épinglage** : un fichier de computation modifié entre `okf_get_computation`
+  et `okf_run_computation`, y compris par un remplacement de même taille dans la
+  même seconde, fait refuser l'exécution.
 - **Concurrence** : le test concurrent de #131 reste vert de façon répétée (s'il
   rougit, c'est une régression, pas un aléa) ; conflit d'une écriture
   conditionnée à l'image → message au modèle et rafraîchissement ; réessais
@@ -516,6 +719,21 @@ prises, mais l'auteur les a tranchés seul.
 11. **`Bundle.Root` remplacé par `Provider` + `Location`**, plutôt qu'un `Root`
     nullable qui ne vaudrait que pour le filesystem.
 
+Ajoutés par la révision du 2026-10-08 :
+
+12. **`ConceptId.ToPath`/`FromPath` sont conservés** comme utilitaires du
+    filesystem, à côté des nouveaux `ToKey`/`FromKey`, plutôt que supprimés.
+13. **`Diagnostic.Path` devient `Diagnostic.Key`**, et le chemin affiché est
+    calculé par l'appelant (§8), plutôt que de garder dans la bibliothèque une
+    chaîne de chemin déjà composée.
+14. **Un `index.md` ou `log.md` trop gros** est traité comme un fichier
+    illisible au moment où on le lit, plutôt qu'écarté dès l'énumération.
+15. **Un scope mémoire existe s'il contient au moins une clé**, plutôt que si
+    son dossier existe.
+16. **Le caractère de remplacement de l'encodage mémoire est `-`.**
+17. **Les versions montrées (§5.4) sont propres à une image** et sont effacées
+    au rafraîchissement, plutôt que conservées d'une image à l'autre.
+
 ## Risques et limites
 
 - **Taille du changement.** Il touche l'API publique du cœur et tous ses
@@ -531,6 +749,15 @@ prises, mais l'auteur les a tranchés seul.
 - **Fenêtre inter-processus sur le filesystem** : acceptée (§4, #178).
 - **Bundles existants sous Linux** dont des noms tombent sous `Strict` :
   diagnostics nouveaux. C'est l'hôte qui choisit de passer en `Native`.
+- **Borne d'entrées et gros dossiers** : comme elle compte toutes les entrées,
+  un bundle placé à la racine d'un dépôt avec un énorme `node_modules` peut ne
+  plus se charger. L'erreur est explicite, et la borne se règle par source.
+- **Migration des clés mémoire** : sous Linux, les scopes dont l'identifiant
+  contenait un caractère désormais remplacé changent de clé. Sans renommage, leur
+  mémoire existante n'est plus lue. La note de migration le dit.
+- **Correspondance exacte** : sous Windows et macOS, un bundle qui référençait
+  une ressource avec la mauvaise casse et « fonctionnait » verra cette ressource
+  passer à `Missing`.
 
 ## Travaux futurs
 
