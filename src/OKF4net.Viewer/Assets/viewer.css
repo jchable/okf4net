@@ -735,7 +735,7 @@ body > .okf-graph-layout svg .okf-node.okf-focused:not(:focus-visible) > .okf-no
 body > .okf-graph-layout svg .okf-node.okf-graph-dim { opacity: .25; }
 /* A hairline halo (--white is the page background in both themes): enough to keep a
    label legible over a dark shape, thin enough that an edge or an arrowhead under
-   it stays visible at the 1.5x Fit (3 px, P2's width, cut both). */
+   it stays visible at the Fit's 1.25x cap (3 px, P2's width, cut both). */
 body > .okf-graph-layout svg .okf-graph-label {
   font-family: var(--mono); font-size: 11.5px; fill: var(--ink);
   stroke: var(--white); stroke-width: 1.2px; stroke-linejoin: round; paint-order: stroke;

@@ -105,6 +105,38 @@
     return id.slice(id.lastIndexOf("/") + 1);
   }
 
+  // G11/G13 (revision 11): a node label longer than LABEL_MAX code points
+  // keeps the first LABEL_MAX - 1 and an ellipsis; the whole name stays in the
+  // node's <title> and accessible name. By code points, so a cut never leaves
+  // half a surrogate pair; reads at most LABEL_MAX + 1 of them, whatever the
+  // length of the text.
+  var LABEL_MAX = 24;
+  var ELLIPSIS = String.fromCharCode(0x2026);
+
+  function isPair(s, at) {
+    var high = s.charCodeAt(at);
+    return high >= 0xd800 && high <= 0xdbff && at + 1 < s.length && (s.charCodeAt(at + 1) & 0xfc00) === 0xdc00;
+  }
+
+  function cutLabel(text) {
+    var units = 0;
+    var points = 0;
+    var keep = 0;
+    while (units < text.length && points <= LABEL_MAX) {
+      if (points === LABEL_MAX - 1) { keep = units; }
+      units += isPair(text, units) ? 2 : 1;
+      points++;
+    }
+    return points > LABEL_MAX ? text.slice(0, keep) + ELLIPSIS : text;
+  }
+
+  // Code points of a (cut) label: its width is counted in them.
+  function labelChars(text) {
+    var points = 0;
+    for (var at = 0; at < text.length; at += isPair(text, at) ? 2 : 1) { points++; }
+    return points;
+  }
+
   function kindOf(key) {
     return key < N ? shapes.kindOf(index, key) : "ghost";
   }
@@ -648,7 +680,7 @@
     g.insertBefore(title, g.firstChild);
     var label = svgEl("text", key < N ? "okf-graph-label" : "okf-graph-label okf-graph-ghost-label");
     label.setAttribute("text-anchor", "middle");
-    label.textContent = key < N ? lastSegment(idOf(key)) : nameOf(key);
+    label.textContent = cutLabel(key < N ? lastSegment(idOf(key)) : nameOf(key));
     g.appendChild(label);
     var node = { key: key, kind: kind, size: size, g: g, title: title, label: label, x: 0, y: 0 };
     g.addEventListener("click", function (e) {
@@ -751,23 +783,41 @@
   var MIN_SCALE = 0.05;
   var MAX_SCALE = 4;
 
-  // Space Mono 11.5 px: about 7 px an advance, to count a label's width.
+  // Space Mono 11.5 px: about 7 px an advance, to count a label's width. An
+  // estimate, never a measure: the layout uses it, and the layout must be the
+  // same in every browser whatever its fonts.
   var LABEL_ADVANCE = 7;
 
   // A node's shape and its label (estimated width, ending 20 below the
   // shape), in graph coordinates; with `outline`, also its focus contour (G14:
   // a square of side + 20, centred, its stroke half outside it). The one
-  // measure of what "the node" covers, for the fit and for bringing a focused
-  // node into view.
+  // measure of what "the node" covers, for the layout's boxes, the fit and
+  // bringing a focused node into view.
   function nodeBox(node, outline) {
     var h = node.size.size / 2;
     var reach = outline ? h + 10 + node.size.focus / 2 : h;
-    var wide = Math.max(reach, node.label.textContent.length * LABEL_ADVANCE / 2);
+    var wide = Math.max(reach, labelChars(node.label.textContent) * LABEL_ADVANCE / 2);
     return { l: node.x - wide, r: node.x + wide, t: node.y - reach, b: node.y + h + 20 };
   }
 
-  // "Fit": every drawn node and its label inside the canvas with a margin,
-  // never above 1.5x.
+  // The boxes okf-sim keeps apart: per node [halfWidth, above, below] around
+  // its centre (§12.5). Labels count whether shown or not (G7 hides them
+  // without moving anything).
+  function simBoxes() {
+    return drawing.nodes.map(function (node) {
+      var box = nodeBox({ x: 0, y: 0, size: node.size, label: node.label });
+      return [box.r, -box.t, box.b];
+    });
+  }
+
+  // "Fit": every drawn node and its label inside the canvas, never above
+  // FIT_CAP, so labels stay near their 11.5 design size: FIT_SIDE beside the
+  // drawing, FIT_TOP above and below it, where the status line, the zoom box
+  // and the legend sit.
+  var FIT_CAP = 1.25;
+  var FIT_SIDE = 24;
+  var FIT_TOP = 56;
+
   function fit() {
     if (!drawing || drawing.nodes.length === 0) { return; }
     var minX = Infinity;
@@ -782,9 +832,8 @@
       maxY = Math.max(maxY, box.b);
     });
     var size = canvasSize();
-    var margin = 56;
-    var s = Math.min((size.w - 2 * margin) / Math.max(maxX - minX, 1), (size.h - 2 * margin) / Math.max(maxY - minY, 1));
-    s = Math.max(MIN_SCALE, Math.min(1.5, s));
+    var s = Math.min((size.w - 2 * FIT_SIDE) / Math.max(maxX - minX, 1), (size.h - 2 * FIT_TOP) / Math.max(maxY - minY, 1));
+    s = Math.max(MIN_SCALE, Math.min(FIT_CAP, s));
     setTransform(size.w / 2 - (minX + maxX) / 2 * s, size.h / 2 - (minY + maxY) / 2 * s, s);
   }
 
@@ -822,7 +871,7 @@
   function startLayout() {
     stopLayout();
     var mine = generation;
-    var current = Sim.create({ nodeCount: drawing.keys.length, edges: drawing.simEdges }, null);
+    var current = Sim.create({ nodeCount: drawing.keys.length, edges: drawing.simEdges, boxes: simBoxes() }, null);
     if (current === null) { return; }
     simulation = current;
     canvas.setAttribute("data-okf-layout", "running");
