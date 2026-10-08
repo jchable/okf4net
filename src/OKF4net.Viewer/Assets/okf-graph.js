@@ -937,6 +937,164 @@
     followFragment(window.location.hash);
   });
 
+  // === keyboard ===
+  // One tab stop for the whole graph (roving tabindex), §8.
+  var active = -1;
+  var focusWasOnNode = false;
+  var previousActive = -1;
+  canvas.tabIndex = -1;
+  listBox.tabIndex = -1;
+
+  function nodeOfKey(key) {
+    if (!drawing || key < 0) { return null; }
+    var slot = drawing.slotOf[key];
+    return slot >= 0 ? drawing.nodes[slot] : null;
+  }
+
+  function setActive(key) {
+    var old = nodeOfKey(active);
+    if (old) { old.g.setAttribute("tabindex", "-1"); }
+    active = key;
+    var now = nodeOfKey(key);
+    if (now) { now.g.setAttribute("tabindex", "0"); }
+  }
+
+  function focusNode(key) {
+    var node = nodeOfKey(key);
+    if (!node) { return; }
+    setActive(key);
+    node.g.focus();
+  }
+
+  // The next drawn node after `key` in index order, else the previous one.
+  function nearestDrawn(key) {
+    for (var k = key + 1; k < total; k++) { if (nodeOfKey(k)) { return k; } }
+    for (var j = key - 1; j >= 0; j--) { if (nodeOfKey(j)) { return j; } }
+    return -1;
+  }
+
+  function stepInOrder(key, delta) {
+    var slot = drawing.slotOf[key] + delta;
+    return slot >= 0 && slot < drawing.keys.length ? drawing.keys[slot] : -1;
+  }
+
+  // The nearest neighbour (link in either direction) inside the 90-degree
+  // cone of the arrow; ties go to index order.
+  function neighbourToward(key, arrow) {
+    var from = nodeOfKey(key);
+    var best = -1;
+    var bestD = Infinity;
+    var seen = new Set();
+    outOf[key].map(function (k) { return edgeTo[k]; })
+      .concat(into[key].map(function (k) { return edgeFrom[k]; }))
+      .sort(function (a, b) { return a - b; })
+      .forEach(function (other) {
+        if (other === key || seen.has(other)) { return; }
+        seen.add(other);
+        var node = nodeOfKey(other);
+        if (!node) { return; }
+        var dx = node.x - from.x;
+        var dy = node.y - from.y;
+        var ok = arrow === "ArrowRight" ? dx > 0 && dx >= Math.abs(dy)
+          : arrow === "ArrowLeft" ? dx < 0 && -dx >= Math.abs(dy)
+            : arrow === "ArrowDown" ? dy > 0 && dy >= Math.abs(dx)
+              : dy < 0 && -dy >= Math.abs(dx);
+        var d = dx * dx + dy * dy;
+        if (ok && d < bestD) {
+          best = other;
+          bestD = d;
+        }
+      });
+    return best;
+  }
+
+  function onKey(e) {
+    if (e.altKey || e.ctrlKey || e.metaKey) { return; }
+    var node = nodeOfElement.get(e.target);
+    if (!node) { return; }
+    var key = node.key;
+    var target = -1;
+    switch (e.key) {
+      case "ArrowRight":
+      case "ArrowLeft":
+      case "ArrowUp":
+      case "ArrowDown":
+        target = neighbourToward(key, e.key);
+        break;
+      case "PageDown":
+        target = stepInOrder(key, 1);
+        break;
+      case "PageUp":
+        target = stepInOrder(key, -1);
+        break;
+      case "Home":
+        target = drawing.keys[0];
+        break;
+      case "End":
+        target = drawing.keys[drawing.keys.length - 1];
+        break;
+      case "Enter":
+        e.preventDefault();
+        open(key);
+        return;
+      case " ":
+      case "Spacebar":
+        e.preventDefault();
+        select(key, "user");
+        return;
+      default:
+        return;
+    }
+    e.preventDefault();
+    if (target >= 0) { focusNode(target); }
+  }
+
+  hooks.node.push(function (node) {
+    node.g.addEventListener("focus", function () {
+      setActive(node.key);
+      node.g.classList.add("okf-focused");
+    });
+    node.g.addEventListener("blur", function () { node.g.classList.remove("okf-focused"); });
+  });
+  hooks.drawing.push(function () { drawing.svg.addEventListener("keydown", onKey); });
+
+  hooks.beforeRefresh.push(function () {
+    var focused = document.activeElement;
+    focusWasOnNode = !!(focused && nodeOfElement.has(focused));
+    previousActive = active;
+  });
+
+  // §8: if a filter hides the active node, the stop (and the focus, if a
+  // node had it) goes to the next drawn node in index order, else the
+  // previous one, else the graph's container.
+  hooks.refresh.push(function () {
+    var target = -1;
+    if (drawing) {
+      drawing.nodes.forEach(function (node) { node.g.setAttribute("tabindex", "-1"); });
+      if (previousActive >= 0) {
+        target = nodeOfKey(previousActive) ? previousActive : nearestDrawn(previousActive);
+      } else if (nodeOfKey(selected)) {
+        target = selected;
+      } else if (drawing.keys.length > 0) {
+        target = drawing.keys[0];
+      }
+    }
+    active = -1;
+    if (target >= 0) { setActive(target); }
+    if (focusWasOnNode) {
+      if (target >= 0) {
+        focusNode(target);
+      } else if (listMode || view.over) {
+        // updateMode() runs after these hooks, and a hidden element cannot
+        // take focus: show the list first (updateMode will set the same).
+        listBox.hidden = false;
+        listBox.focus();
+      } else {
+        canvas.focus();
+      }
+    }
+  });
+
   // === start-up ===
   buildFacets();
   refresh();

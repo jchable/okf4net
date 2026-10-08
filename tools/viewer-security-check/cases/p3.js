@@ -2229,6 +2229,222 @@ function registerFragment(h) {
 }
 
 
+function focusedName(doc) {
+  const el = doc.activeElement;
+  return el && el.matches && el.matches("#okf-graph-canvas g.okf-node") ? el.querySelector("title").textContent : null;
+}
+
+function tabStops(doc) {
+  return Array.from(doc.querySelectorAll('#okf-graph-canvas [tabindex="0"]'));
+}
+
+function registerKeyboard(h) {
+  h.checkAsync("keyboard: the graph is one tab stop (roving tabindex)", async () => {
+    const { doc, scheduler } = await openGraph(h);
+    scheduler.flush();
+    const stops = tabStops(doc);
+    h.assert(stops.length === 1, `${stops.length} tab stops in the drawing`);
+    h.assert(doc.querySelectorAll('#okf-graph-canvas g.okf-node[tabindex="-1"]').length === drawnNodes(doc).length - 1, "the other nodes are not tabindex=-1");
+    stops[0].focus();
+    h.assert(stops[0].classList.contains("okf-focused") && !stops[0].classList.contains("okf-selected"), "focus is not marked apart from selection (G14)");
+  });
+
+  h.checkAsync("keyboard: Page Down/Up and Home/End reach both components and the isolated node in index order (control 9)", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    scheduler.flush();
+    const order = drawnNodes(doc).map((n) => n.name);
+    for (const must of ["p3-graph/a", "p3-graph/d", "p3-graph/isolated"]) { h.assert(order.includes(must), `${must} is not drawn`); }
+    tabStops(doc)[0].focus();
+    h.key(window, doc.activeElement, { key: "Home" });
+    const visited = [focusedName(doc)];
+    for (let k = 1; k < order.length; k++) {
+      const event = h.key(window, doc.activeElement, { key: "PageDown" });
+      h.assert(event.defaultPrevented, "Page Down was not taken");
+      visited.push(focusedName(doc));
+    }
+    h.assert(JSON.stringify(visited) === JSON.stringify(order), `Page Down visited ${visited.join(" > ")}`);
+    h.key(window, doc.activeElement, { key: "PageDown" });
+    h.assert(focusedName(doc) === order[order.length - 1], "Page Down past the last node moved");
+    h.key(window, doc.activeElement, { key: "PageUp" });
+    h.assert(focusedName(doc) === order[order.length - 2], "Page Up did not step back");
+    h.key(window, doc.activeElement, { key: "Home" });
+    h.assert(focusedName(doc) === order[0] && tabStops(doc).length === 1 && tabStops(doc)[0] === doc.activeElement, "Home, or the roving stop");
+    h.key(window, doc.activeElement, { key: "End" });
+    h.assert(focusedName(doc) === order[order.length - 1], "End");
+  });
+
+  h.checkAsync("keyboard: arrows move to a linked neighbour, Space selects, Enter opens the page", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    scheduler.flush();
+    const index = window.OKF_INDEX;
+    const b = nodeNamed(doc, "p3-graph/b");
+    const reached = new Set();
+    for (const arrow of ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]) {
+      b.focus();
+      h.key(window, b, { key: arrow });
+      reached.add(focusedName(doc));
+    }
+    reached.delete("p3-graph/b");
+    h.assert(reached.size > 0, "no arrow left p3-graph/b");
+    for (const name of reached) {
+      h.assert(["p3-graph/a", "p3-graph/c", "p3-graph/hostile"].includes(name), `an arrow reached ${name}, which is not linked to p3-graph/b`);
+    }
+    const isolated = nodeNamed(doc, "p3-graph/isolated");
+    isolated.focus();
+    for (const arrow of ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]) { h.key(window, isolated, { key: arrow }); }
+    h.assert(focusedName(doc) === "p3-graph/isolated", "an arrow left a node that has no link");
+    b.focus();
+    h.key(window, b, { key: " " });
+    h.assert(selectedName(doc) === "p3-graph/b" && window.location.hash === "#p3-graph/b", "Space did not select");
+    const opened = [];
+    doc.addEventListener("okf:navigate", (e) => { opened.push(e.detail.href); e.preventDefault(); });
+    h.key(window, b, { key: "Enter" });
+    h.assert(opened.length === 1 && opened[0] === index.concepts[conceptPos(index, "p3-graph/b")].path, `Enter opened ${opened.join(", ")}`);
+    const ghost = nodeNamed(doc, "absent: nowhere");
+    ghost.focus();
+    h.key(window, ghost, { key: "Enter" });
+    h.assert(opened.length === 1, "Enter on a ghost navigated");
+  });
+
+  h.checkAsync("keyboard: a filter hiding the focused node hands focus to the next drawn node, else the previous, else the container (§8)", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    scheduler.flush();
+    const index = window.OKF_INDEX;
+    const order = () => drawnNodes(doc).map((n) => n.name);
+    // p3-graph/c is followed in index order by other concepts: its successor gets focus.
+    const before = order();
+    nodeNamed(doc, "p3-graph/c").focus();
+    const cType = index.concepts[conceptPos(index, "p3-graph/c")].typeIndex;
+    setChecked(window, facetInputs(doc, "type")[cType], false);
+    scheduler.flush();
+    const next = before.slice(before.indexOf("p3-graph/c") + 1).find((name) => order().includes(name));
+    h.assert(focusedName(doc) === next, `focus went to ${focusedName(doc)}, expected ${next}`);
+    h.assert(tabStops(doc).length === 1 && tabStops(doc)[0] === doc.activeElement, "the roving stop did not follow the focus");
+    // Ghosts come last in index order: hide every type that cites one, so
+    // that a concept is last, then hide that concept -- no successor, so the
+    // focus goes to the previous drawn node.
+    const citing = new Set(index.edges.filter((e) => e[3] === 1).map((e) => index.concepts[e[0]].typeIndex));
+    for (const t of citing) {
+      const input = facetInputs(doc, "type")[t];
+      if (input.checked) { setChecked(window, input, false); }
+    }
+    scheduler.flush();
+    const remaining = order();
+    const last = remaining[remaining.length - 1];
+    h.assert(last !== undefined && !last.startsWith("absent: "), `no concept is last (${last}): this case no longer tests "previous"`);
+    nodeNamed(doc, last).focus();
+    setChecked(window, facetInputs(doc, "type")[index.concepts[conceptPos(index, last)].typeIndex], false);
+    scheduler.flush();
+    const prev = remaining.slice(0, remaining.indexOf(last)).reverse().find((name) => order().includes(name));
+    h.assert(prev !== undefined, "nothing is left before the last node: this case no longer tests \"previous\"");
+    h.assert(focusedName(doc) === prev, `focus went to ${focusedName(doc)}, expected ${prev}`);
+    // Nothing left: the container.
+    facetInputs(doc, "trust").forEach((input) => setChecked(window, input, false));
+    scheduler.flush();
+    h.assert(order().length === 0, "trust facets did not hide everything");
+    h.assert(doc.activeElement === doc.getElementById("okf-graph-canvas"), `focus went to ${doc.activeElement.tagName}#${doc.activeElement.id}`);
+  });
+
+  h.checkAsync("keyboard: changing a facet from its checkbox leaves the focus on the checkbox", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    scheduler.flush();
+    const box = facetInputs(doc, "type")[0];
+    box.focus();
+    setChecked(window, box, false);
+    scheduler.flush();
+    h.assert(doc.activeElement === box, "the facet change moved the focus");
+    h.assert(tabStops(doc).length === 1, "the drawing lost its tab stop");
+  });
+
+  h.checkAsync("keyboard: a modified key is the browser's, not the graph's", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    scheduler.flush();
+    const b = nodeNamed(doc, "p3-graph/b");
+    b.focus();
+    for (const init of [{ key: "ArrowRight", ctrlKey: true }, { key: "PageDown", altKey: true }, { key: "Home", metaKey: true },
+      { key: "Enter", ctrlKey: true }, { key: " ", altKey: true }]) {
+      const event = h.key(window, b, init);
+      h.assert(!event.defaultPrevented, `${JSON.stringify(init)} was taken`);
+    }
+    h.assert(focusedName(doc) === "p3-graph/b" && selectedName(doc) === null, "a modified key moved the focus or selected");
+    const other = h.key(window, b, { key: "a" });
+    h.assert(!other.defaultPrevented, "an unrelated key was taken");
+  });
+
+  h.checkAsync("keyboard: ids named like Object.prototype members are ordinary nodes for focus, selection and Enter (control 7)", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    scheduler.flush();
+    const index = window.OKF_INDEX;
+    const opened = [];
+    doc.addEventListener("okf:navigate", (e) => { opened.push(e.detail.href); e.preventDefault(); });
+    for (const id of ["__proto__", "constructor", "toString"]) {
+      const g = nodeNamed(doc, id);
+      h.assert(g !== null, `${id} is not drawn`);
+      g.focus();
+      h.assert(tabStops(doc).length === 1 && tabStops(doc)[0] === g, `${id}: the roving stop is not on the focused node`);
+      h.key(window, g, { key: " " });
+      h.assert(selectedName(doc) === id && window.location.hash === `#${id}`, `Space on ${id} selected ${selectedName(doc)}`);
+      const before = opened.length;
+      h.key(window, g, { key: "Enter" });
+      h.assert(opened.length === before + 1 && opened[before] === index.concepts[conceptPos(index, id)].path, `Enter on ${id} opened ${opened.slice(before)}`);
+    }
+    // Paging reaches each of them.
+    const order = drawnNodes(doc).map((n) => n.name);
+    nodeNamed(doc, order[0]).focus();
+    const seen = [];
+    for (let k = 0; k < order.length; k++) {
+      seen.push(focusedName(doc));
+      h.key(window, doc.activeElement, { key: "PageDown" });
+    }
+    for (const id of ["__proto__", "constructor", "toString"]) { h.assert(seen.includes(id), `Page Down never reached ${id}`); }
+  });
+
+  h.checkAsync("keyboard: a filter hiding the tab stop moves it without stealing the focus from the checkbox", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    scheduler.flush();
+    const index = window.OKF_INDEX;
+    nodeNamed(doc, "p3-graph/c").focus();
+    const box = facetInputs(doc, "type")[0];
+    box.focus();
+    const cType = index.concepts[conceptPos(index, "p3-graph/c")].typeIndex;
+    setChecked(window, facetInputs(doc, "type")[cType], false);
+    scheduler.flush();
+    h.assert(doc.activeElement === box, `the focus left the checkbox for ${doc.activeElement.tagName}`);
+    h.assert(tabStops(doc).length === 1 && nodeNamed(doc, "p3-graph/c") === null, "the tab stop is lost or c is still drawn");
+  });
+
+  h.checkAsync("keyboard: past the node limit the focus goes to the list, already shown (§8)", async () => {
+    const probe = (await h.openPage("index.html")).OKF_INDEX;
+    const keepType = probe.concepts[conceptPos(probe, "p3-graph/d")].typeIndex;
+    const kept = probe.concepts.map((c, i) => (c.typeIndex === keepType ? i : -1)).filter((i) => i >= 0);
+    const ghostsKept = new Set(probe.edges.filter((e) => e[3] === 1 && kept.includes(e[0])).map((e) => e[1]));
+    const limit = kept.length + ghostsKept.size;
+    const focuses = [];
+    const { window, doc, scheduler } = await openGraph(h, {
+      override: { "assets/okf-sim.js": lowLimitSim(limit) },
+      beforeParse(w) {
+        const real = w.HTMLElement.prototype.focus;
+        w.HTMLElement.prototype.focus = function (...args) {
+          focuses.push({ id: this.id, hidden: this.hidden });
+          return real.apply(this, args);
+        };
+      },
+    });
+    facetInputs(doc, "type").forEach((input, k) => { if (k !== keepType) { setChecked(window, input, false); } });
+    scheduler.flush();
+    drawnNodes(doc)[0].g.focus();
+    focuses.length = 0;
+    facetInputs(doc, "type").forEach((input, k) => { if (k !== keepType) { setChecked(window, input, true); } });
+    scheduler.flush();
+    const list = doc.getElementById("okf-graph-list");
+    h.assert(!list.hidden && doc.querySelector("#okf-graph-canvas svg") === null, "the list does not stand in for the drawing");
+    const toList = focuses.filter((f) => f.id === "okf-graph-list");
+    h.assert(toList.length === 1, `the list received ${toList.length} focus() calls`);
+    h.assert(toList[0].hidden === false, "the list was focused while still hidden: a browser would drop the focus");
+    h.assert(doc.activeElement === list, `focus is on ${doc.activeElement.tagName}#${doc.activeElement.id}`);
+  });
+}
+
 function register(h) {
   registerSim(h);
   registerPurity(h);
@@ -2236,6 +2452,7 @@ function register(h) {
   registerFacets(h);
   registerDrawing(h);
   registerFragment(h);
+  registerKeyboard(h);
 }
 
 module.exports = { register };
