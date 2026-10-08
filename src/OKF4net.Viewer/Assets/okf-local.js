@@ -229,7 +229,9 @@
   var currentId = html.getAttribute("data-okf-concept");
   var centre = -1;
   for (var i = 0; i < index.concepts.length; i++) {
-    if (index.concepts[i].id === currentId) { centre = i; break; }
+    // A damaged entry (null, not an object) is skipped, as okf-page.js does.
+    var entry = index.concepts[i];
+    if (entry !== null && typeof entry === "object" && entry.id === currentId) { centre = i; break; }
   }
   if (centre < 0) { return; }
   // The first ring is computed on load, by scanning the edges (no adjacency
@@ -258,7 +260,11 @@
     return String(round(value));
   }
 
-  function idOf(key) { return key < C ? index.concepts[key].id : index.ghosts[key - C].id; }
+  // A damaged entry reads as an empty id: it draws a blank, never throws.
+  function idOf(key) {
+    var entry = key < C ? index.concepts[key] : index.ghosts[key - C];
+    return entry !== null && typeof entry === "object" && typeof entry.id === "string" ? entry.id : "";
+  }
   function kindOf(key) { return key < C ? shapes.kindOf(index, key) : "ghost"; }
   function hopsText(hops) { return hops === 1 ? "1 hop" : "2 hops"; }
   function neighboursText(n) { return n + (n === 1 ? " neighbour" : " neighbours"); }
@@ -355,7 +361,8 @@
       for (var t = e.target; t && t !== picture; t = t.parentNode) {
         if (nodeKeys.has(t)) {
           var key = nodeKeys.get(t);
-          if (key < C) { navigate(site.resolve(root, index.concepts[key].path)); }
+          var entry = key < C ? index.concepts[key] : null;
+          if (entry !== null && typeof entry === "object" && typeof entry.path === "string") { navigate(site.resolve(root, entry.path)); }
           return; // a ghost is never navigable
         }
       }

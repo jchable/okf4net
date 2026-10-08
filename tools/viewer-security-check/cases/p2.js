@@ -644,6 +644,109 @@ function registerPage(h) {
     assert(doc.getElementById("okf-local-open") === null, "Open in graph was written without a link to repeat");
   });
 
+  checkAsync("local graph: Open in graph repeats whatever href the header's link carries (the header alone names the graph page)", async () => {
+    // Spec §12.3: the header is the only source of the graph page's file name.
+    // Make its link answer a name nothing in okf-local.js could guess.
+    const wanted = "../graph-7.html#p2-local/c";
+    const beforeParse = (w) => {
+      const get = w.Element.prototype.getAttribute;
+      w.Element.prototype.getAttribute = function (name) {
+        return this.id === "okf-global-graph" && name === "href" ? wanted : get.call(this, name);
+      };
+    };
+    const window = await openPage("p2-local/c.html", { beforeParse });
+    const open = window.document.getElementById("okf-local-open");
+    assert(open, "Open in graph is missing");
+    assert(open.getAttribute("href") === wanted, `Open in graph is ${open.getAttribute("href")}, the header's link says ${wanted}`);
+  });
+
+  checkAsync("local graph: arrows stop outside their target; only opposite edges are offset, by 3", async () => {
+    const window = await openPage("p2-local/c.html");
+    const doc = window.document;
+    doc.getElementById("okf-local-hops-2").click();
+    const S = window.OkfShapes;
+    const index = window.OKF_INDEX;
+    const C = index.concepts.length;
+    const result = window.OkfLocal.build(index, positionOf(window, "p2-local/c"), 2);
+    const lines = Array.from(doc.querySelectorAll("#okf-local-graph svg line.okf-local-edge"));
+    assert(lines.length === result.edges.length, `${lines.length} lines for ${result.edges.length} laid-out edges`);
+    let paired = 0;
+    result.edges.forEach((e, k) => {
+      const a = result.nodes[e.from];
+      const b = result.nodes[e.to];
+      const [x1, y1, x2, y2] = ["x1", "y1", "x2", "y2"].map((name) => Number(lines[k].getAttribute(name)));
+      // Signed distance of the line's start from the axis through both centres.
+      const offset = ((b.x - a.x) * (y1 - a.y) - (b.y - a.y) * (x1 - a.x)) / Math.hypot(b.x - a.x, b.y - a.y);
+      const opposite = result.edges.some((o) => o.from === e.to && o.to === e.from);
+      assert(opposite === Boolean(e.paired), `edge ${k}: paired is ${e.paired}, an opposite edge ${opposite ? "exists" : "does not exist"}`);
+      if (opposite) { paired++; }
+      assert(Math.abs(Math.abs(offset) - (opposite ? 3 : 0)) <= 0.05, `edge ${k}: offset ${offset.toFixed(2)} from the axis, expected ${opposite ? "+-3" : "0"}`);
+      const centre = e.to === 0;
+      const kind = b.key < C ? S.kindOf(index, b.key) : "ghost";
+      const size = S.SIZES[centre ? "localCenter" : "local"][kind].size;
+      const gap = Math.hypot(x2 - b.x, y2 - b.y);
+      assert(gap >= size / 2 + (centre ? 6 : 0) - 0.05, `edge ${k}: its arrow ends ${gap.toFixed(2)} from the centre of a ${size} px shape, under the shape`);
+    });
+    assert(paired >= 2, `${paired} opposite edges: the fixture no longer exercises the offset`);
+  });
+
+  checkAsync("local graph: ids reach the drawing as text, never as markup", async () => {
+    const evil = "<img src=x onerror=window.__pwned=1>";
+    const source = fs.readFileSync(path.join(__dirname, "..", ".generated", "hostile-site", "assets", "okf-index.js"), "utf8");
+    const damage = (code) => ({ "assets/okf-index.js": `${source}\n;(function () { var i = window.OKF_INDEX; ${code} })();` });
+    const concept = await openPage("p2-local/c.html", {
+      override: damage(`i.concepts.forEach(function (c) { if (c.id === "p2-local/a") { c.id = "p2-local/${evil}"; } });`),
+    });
+    const ghost = await openPage("p2-local/hub.html", {
+      override: damage(`i.ghosts.forEach(function (g) { if (g.id === "p2-local/gone-1") { g.id = "p2-local/${evil}"; } });`),
+    });
+    for (const [window, id] of [[concept, `p2-local/${evil}`], [ghost, `p2-local/${evil}`]]) {
+      const section = window.document.getElementById("okf-local-graph");
+      const svg = section.querySelector(".okf-local-canvas > svg");
+      assertFixedSvg(assert, svg);
+      const titles = Array.from(svg.querySelectorAll("title")).map((t) => t.textContent);
+      assert(titles.includes(id) || titles.includes(`absent: ${id}`), `no node titled with the literal id: ${JSON.stringify(titles)}`);
+      const labels = Array.from(svg.querySelectorAll("text.okf-local-label")).map((t) => t.textContent);
+      assert(labels.includes(evil), `no label reads the literal markup: ${JSON.stringify(labels)}`);
+      assert(section.querySelector("img") === null && window.__pwned === undefined, "an id became an element");
+    }
+  });
+
+  checkAsync("local graph: a damaged entry (null concept, null ghost, no path) draws less, never throws", async () => {
+    const source = fs.readFileSync(path.join(__dirname, "..", ".generated", "hostile-site", "assets", "okf-index.js"), "utf8");
+    // The explorer and the palette read every entry and are out of this
+    // task's reach (as in run.js's own damaged-index case): only the scripts
+    // that tolerate a null entry load.
+    const blocked = ["assets/okf-explorer.js", "assets/okf-palette.js"];
+    const damaged = (code) => ({ "assets/okf-index.js": `${source}\n;(function () { var i = window.OKF_INDEX; ${code} })();` });
+    // A null in front shifts every position: it is met by the search for the
+    // centre and, through the shifted edges, by the neighbours' ids.
+    const nullFirst = await openPage("p2-local/c.html", { override: damaged("i.concepts.unshift(null);"), blocked });
+    assert(nullFirst.document.getElementById("okf-body").textContent.length > 0, "a null concept emptied the page");
+    // The hub's own absent concept and c's own neighbour are the null ones.
+    const nullGhost = await openPage("p2-local/hub.html", {
+      override: damaged('i.ghosts.forEach(function (g, k) { if (g && g.id === "p2-local/gone-1") { i.ghosts[k] = null; } });'),
+      blocked,
+    });
+    assert(nullGhost.document.getElementById("okf-local-graph"), "a null ghost removed the whole neighbourhood");
+    const nullNeighbour = await openPage("p2-local/c.html", {
+      override: damaged('i.concepts.forEach(function (c, k) { if (c && c.id === "p2-local/a") { i.concepts[k] = null; } });'),
+      blocked,
+    });
+    assert(nullNeighbour.document.getElementById("okf-local-graph"), "a null neighbour removed the whole neighbourhood");
+    // A concept without a path is drawn but cannot be opened (no "../undefined").
+    const noPath = await openPage("p2-local/c.html", {
+      override: damaged(`i.concepts.forEach(function (c) { if (c.id === "p2-local/a") { delete c.path; } });`),
+    });
+    let vetoed = 0;
+    noPath.document.addEventListener("okf:navigate", (e) => { vetoed++; e.preventDefault(); });
+    const node = Array.from(noPath.document.querySelectorAll("#okf-local-graph svg g.okf-local-node"))
+      .find((g) => g.firstElementChild.textContent === "p2-local/a");
+    assert(node, "the concept without a path is not drawn");
+    click(noPath, node.lastElementChild);
+    assert(vetoed === 0 && navigations(noPath) === 0, "a concept without a path was navigated to");
+  });
+
   checkAsync("local graph: a page whose only content is its neighbourhood un-hides the side panel", async () => {
     // outbound.md links out, has no heading and nothing links to it: no
     // contents, no Referenced by, so the panel is hidden until the section opens it.
