@@ -882,9 +882,63 @@
   // its size was unknown, so fit again unless the reader moved the view.
   hooks.show.push(applyIntent);
 
+  // === fragment and history ===
+  var expectedHash = null;
+
+  function decodeFragment(hash) {
+    var h = String(hash || "");
+    if (h.charAt(0) === "#") { h = h.slice(1); }
+    try { return decodeURIComponent(h); } catch (e) { return h; }
+  }
+
+  // §12.5: replaceState, or location.replace when replaceState throws (a
+  // file:// document's null origin); never a new history entry. A ghost or
+  // no selection leaves no fragment.
+  function writeUrl(origin) {
+    if (origin !== "user") { return; }
+    var id = selected >= 0 && selected < N ? index.concepts[selected].id : "";
+    if (decodeFragment(window.location.hash) === id) { return; }
+    try {
+      window.history.replaceState(null, "", id === "" ? window.location.pathname + window.location.search : "#" + id);
+    } catch (err) {
+      expectedHash = id;
+      window.location.replace(id === "" ? "#" : "#" + id);
+    }
+  }
+  hooks.select.push(writeUrl);
+
+  // A concept's id (exact, concepts only): facets back to their defaults,
+  // node selected and centred. Anything else: no selection, Fit.
+  function followFragment(hash) {
+    var id = decodeFragment(hash);
+    var key = id === "" ? undefined : byId.get(id);
+    userMovedView = false;
+    if (key === undefined) {
+      intent = -1;
+      select(-1, "url");
+      applyIntent();
+      return;
+    }
+    resetFacets();
+    intent = key;
+    refresh();
+    select(key, "url");
+    applyIntent();
+  }
+
+  window.addEventListener("hashchange", function () {
+    if (expectedHash !== null) {
+      var mine = decodeFragment(window.location.hash) === expectedHash;
+      expectedHash = null;
+      if (mine) { return; }
+    }
+    followFragment(window.location.hash);
+  });
+
   // === start-up ===
   buildFacets();
   refresh();
   renderDrawer();
   updateReadingView();
+  followFragment(window.location.hash);
 })();
