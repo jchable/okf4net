@@ -86,6 +86,42 @@ public class ViewerFontsTests
         => Assert.Contains("SIL OPEN FONT LICENSE Version 1.1", ViewerAssets.Text(path), StringComparison.OrdinalIgnoreCase);
 
     [Fact]
+    public void Every_embedded_font_file_matches_the_size_and_sha256_its_provenance_readme_records()
+    {
+        // The README is not embedded, so it is read from the repository. Its
+        // two tables (fonts, then licences) end each row with the byte count
+        // and the sha256; ReadAllLines splits on \n or \r\n alike, so the
+        // README's own line endings cannot matter.
+        var readme = Path.Combine(TestPaths.RepoRoot(), "src", "OKF4net.Viewer", "Assets", "fonts", "README.md");
+        var recorded = File.ReadAllLines(readme)
+            .Select(line => Regex.Match(line, @"^\| `([^`]+)` \|.*\| (\d+) \| `([0-9a-f]{64})` \|$"))
+            .Where(m => m.Success)
+            .ToDictionary(
+                m => "fonts/" + m.Groups[1].Value,
+                m => (Bytes: long.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture), Sha256: m.Groups[3].Value));
+
+        // Every embedded file under fonts/ is recorded, and nothing else is.
+        Assert.Equal(
+            ViewerAssets.Paths.Where(p => p.StartsWith("fonts/", StringComparison.Ordinal)).Order(StringComparer.Ordinal),
+            recorded.Keys.Order(StringComparer.Ordinal));
+        Assert.Equal(7, recorded.Count);
+
+        // The EMBEDDED bytes are hashed raw, never line-ending-normalised: the
+        // OFL texts are stored LF and .gitattributes marks fonts/** -text so no
+        // checkout rewrites them. If that rule were lost, an autocrlf checkout
+        // would embed CRLF texts -- exactly the drift this must catch, which
+        // normalising before hashing would hide.
+        foreach (var (path, expected) in recorded)
+        {
+            var bytes = ViewerAssets.Bytes(path);
+            Assert.True(expected.Bytes == bytes.Length, $"{path}: {bytes.Length} bytes embedded, {expected.Bytes} recorded");
+            Assert.True(
+                expected.Sha256 == Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes)),
+                $"{path}: the embedded bytes do not hash to the recorded sha256");
+        }
+    }
+
+    [Fact]
     public void The_written_site_holds_the_fonts_and_the_licences_but_not_the_provenance_readme()
     {
         using var src = new TempDir();
