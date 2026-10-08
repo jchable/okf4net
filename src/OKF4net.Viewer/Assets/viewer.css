@@ -591,7 +591,50 @@ body > .okf-layout > main > .okf-page-head .okf-fm-toggle {
 }
 
 /* === P2: local graph === */
-/* (P2 rules) */
+/* The Neighbourhood section okf-local.js inserts into #okf-context (spec
+   §11.4 X5-X9, §12.4). Every rule is anchored to #okf-context: body <code>
+   wearing these classes changes nothing (p2-chrome-classes.md). Colours come
+   from the §11.0 tokens, so a theme switch redraws nothing. */
+#okf-context .okf-local-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+#okf-context .okf-local-head .okf-section-title { margin: 0; }
+#okf-context .okf-hops { display: flex; flex: none; }
+/* Longhands, not the font shorthand: jsdom drops every declaration that
+   follows the shorthand set to inherit, so the harness would read 16px. */
+#okf-context .okf-hops button {
+  height: 24px; padding: 0 10px; font-family: inherit; font-weight: inherit; line-height: inherit; font-size: 12px; cursor: pointer;
+  border: 1px solid var(--hair); background: var(--white); color: var(--gray);
+}
+#okf-context .okf-hops button + button { border-left-width: 0; }
+#okf-context .okf-hops button[aria-pressed="true"] { border-color: var(--blue); background: var(--blue); color: var(--white); font-weight: 600; }
+#okf-context .okf-local-canvas { position: relative; height: 250px; border: 1px solid var(--hair); }
+#okf-context .okf-local-canvas svg { display: block; width: 100%; height: 248px; }
+#okf-context .okf-local-omitted {
+  position: absolute; right: 6px; bottom: 6px; padding: 1px 6px; cursor: pointer;
+  font-family: var(--mono); font-size: 11px; color: var(--gray); background: var(--white); border: 1px solid var(--hair);
+}
+#okf-context .okf-local-foot { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 8px 0 0; font-size: 12px; color: var(--gray); }
+#okf-context .okf-local-foot a { flex: none; font-weight: 600; color: var(--blue); text-decoration: none; }
+#okf-context .okf-local-foot a:hover { color: var(--blue-hover); }
+#okf-context .okf-local-list { margin-top: 10px; font-size: 12px; }
+#okf-context .okf-local-list summary { cursor: pointer; color: var(--gray); }
+#okf-context .okf-local-list ul { list-style: none; margin: 4px 0 0; padding: 0; }
+#okf-context .okf-local-id { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+/* The relation may be long ("2 hops via <id>"): up to half the row, then it wraps
+   like the id instead of pushing the 340 px panel wider; a short one ("links to")
+   keeps its own width on one line, against the right edge. */
+#okf-context .okf-local-rel { flex: none; max-width: 50%; margin-left: auto; text-align: right; overflow-wrap: anywhere; font-size: 12px; color: var(--gray); }
+#okf-context .okf-local-absent { color: var(--ghost); }
+#okf-context svg .okf-local-edge { fill: none; stroke: var(--edge); }
+#okf-context svg .okf-local-arrowhead { fill: var(--edge); }
+/* The halo (--white is the page background in both themes) keeps a label legible
+   where an edge or a neighbour crosses it. */
+#okf-context svg .okf-local-label {
+  font-family: var(--mono); font-size: 10px; fill: var(--ink);
+  stroke: var(--white); stroke-width: 3px; stroke-linejoin: round; paint-order: stroke;
+}
+#okf-context svg .okf-local-label-center { font-size: 10.5px; font-weight: 700; }
+#okf-context svg .okf-local-label-ghost { fill: var(--ghost); }
+#okf-context svg .okf-local-node { cursor: pointer; }
 
 /* === P3: graph page === */
 /* (P3 rules) */
