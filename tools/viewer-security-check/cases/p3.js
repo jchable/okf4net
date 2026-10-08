@@ -3415,6 +3415,28 @@ function registerStyles(h) {
       }
     }
   });
+  // What the shared chip and row rules (one id's weight, from their :is() anchor)
+  // would otherwise win: this page's own overrides must keep out-ranking them.
+  h.checkAsync("styles: a tag chip wraps instead of widening the panel, an absent row is not drawn like a link, a long facet name clamps to two lines", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    scheduler.flush();
+    const style = (el, prop) => window.getComputedStyle(el).getPropertyValue(prop);
+    const chip = doc.querySelector("#okf-facets .okf-facet-tags .okf-chip");
+    h.assert(chip, "the fixture has no tag chip");
+    h.assert(style(chip, "white-space") === "normal", `a tag chip is white-space: ${style(chip, "white-space")}, so a long tag widens the panel`);
+    h.assert(style(chip, "height") === "auto", `a tag chip is ${style(chip, "height")} high, so a wrapped tag overflows it`);
+    h.assert(style(chip, "max-width") === "100%", "a tag chip may outgrow its panel");
+    const name = doc.querySelector("#okf-facets .okf-facet-row .okf-facet-name");
+    h.assert(style(name, "display") === "-webkit-box" && style(name, "-webkit-line-clamp") === "2", `a facet name is display ${style(name, "display")}, line-clamp ${style(name, "-webkit-line-clamp")}`);
+    showList(window, doc);
+    click(window, Array.from(doc.querySelectorAll("#okf-graph-list .okf-graph-list-select")).find((b) => b.textContent === "p3-graph/hostile"));
+    const rows = Array.from(doc.querySelectorAll("#okf-graph-detail .okf-row"));
+    const absent = rows.find((r) => r.classList.contains("okf-graph-absent"));
+    const link = rows.find((r) => r.tagName === "A");
+    h.assert(absent && link, "the hostile concept lost its absent or linked row");
+    h.assert(style(absent, "color") !== style(link, "color"), `an absent row is drawn in the link colour (${style(absent, "color")})`);
+    h.assert(/ghost|#c0392b|rgb(192, 57, 43)/.test(style(absent, "color")), `an absent row is not in the ghost colour (${style(absent, "color")})`);
+  });
 }
 
 function register(h) {

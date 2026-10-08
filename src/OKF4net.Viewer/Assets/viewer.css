@@ -662,7 +662,6 @@ body > .okf-graph-layout .okf-facet-name { flex: 1; min-width: 0; overflow: hidd
 body > .okf-graph-layout .okf-facet-row input:not(:checked) ~ .okf-facet-name { color: var(--gray); }
 body > .okf-graph-layout .okf-facet-count { font-family: var(--mono); font-size: 11px; color: var(--gray); }
 body > .okf-graph-layout .okf-facet-tags { display: flex; flex-wrap: wrap; gap: 6px; }
-body > .okf-graph-layout .okf-facet-tags .okf-chip[hidden] { display: none; }
 /* A tag longer than the panel wraps inside its chip instead of widening the page. */
 body > .okf-graph-layout #okf-facets .okf-facet-tags .okf-chip { height: auto; min-height: 26px; min-width: 0; max-width: 100%; padding-top: 4px; padding-bottom: 4px; white-space: normal; text-align: left; }
 body > .okf-graph-layout .okf-facet-tag-name { min-width: 0; overflow-wrap: anywhere; }
@@ -685,16 +684,14 @@ body > .okf-graph-layout .okf-graph-zoom-step { width: 34px; padding: 0; font-si
 body > .okf-graph-layout .okf-graph-tool[aria-pressed="true"] { border-color: var(--blue); color: var(--blue); }
 body > .okf-graph-layout .okf-graph-tool:disabled { cursor: default; color: var(--gray); opacity: .5; }
 body > .okf-graph-layout .okf-graph-canvas { position: absolute; inset: 0; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
-body > .okf-graph-layout .okf-graph-canvas[hidden] { display: none; }
 body > .okf-graph-layout .okf-graph-svg { display: block; width: 100%; height: 100%; }
 /* The list stands in for the drawing, between the status line above (up to three lines
    at phone width) and the legend below (up to four): it ends where they begin. */
 body > .okf-graph-layout .okf-graph-list {
   position: absolute; top: 72px; right: 18px; bottom: 96px; left: 18px; overflow-y: auto; background: var(--white);
 }
-body > .okf-graph-layout .okf-graph-list[hidden] { display: none; }
 body > .okf-graph-layout .okf-graph-list-items { list-style: none; margin: 0; padding: 0; }
-body > .okf-graph-layout .okf-graph-list-item { padding: 6px 0; border-bottom: 1px solid var(--hair); content-visibility: auto; contain-intrinsic-size: auto 44px; }
+body > .okf-graph-layout .okf-graph-list-item { padding: 6px 0; border-bottom: 1px solid var(--hair); }
 body > .okf-graph-layout .okf-graph-list-head { display: flex; align-items: center; gap: 9px; min-width: 0; }
 body > .okf-graph-layout .okf-graph-list-select {
   min-width: 0; padding: 0; border: 0; background: none; cursor: pointer; text-align: left;
@@ -736,11 +733,12 @@ body > .okf-graph-layout svg .okf-node:focus { outline: none; }
    tells the two apart. */
 body > .okf-graph-layout svg .okf-node.okf-focused:not(:focus-visible) > .okf-node-focus { visibility: hidden; }
 body > .okf-graph-layout svg .okf-node.okf-graph-dim { opacity: .25; }
-/* The halo (--white is the page background in both themes) keeps a label legible
-   where an edge crosses it, as P2's local graph does. */
+/* A hairline halo (--white is the page background in both themes): enough to keep a
+   label legible over a dark shape, thin enough that an edge or an arrowhead under
+   it stays visible at the 1.5x Fit (3 px, P2's width, cut both). */
 body > .okf-graph-layout svg .okf-graph-label {
   font-family: var(--mono); font-size: 11.5px; fill: var(--ink);
-  stroke: var(--white); stroke-width: 3px; stroke-linejoin: round; paint-order: stroke;
+  stroke: var(--white); stroke-width: 1.2px; stroke-linejoin: round; paint-order: stroke;
 }
 body > .okf-graph-layout svg .okf-graph-ghost-label { fill: var(--ghost); }
 body > .okf-graph-layout svg.okf-graph-nolabels .okf-graph-label { display: none; }

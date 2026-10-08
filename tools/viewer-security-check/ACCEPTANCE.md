@@ -66,3 +66,6 @@ style probe and a behaviour, e.g. `H7-H7narrow`). Then, by hand:
 ## P3
 
 *(P3 checks)*
+
+- [ ] **P3-css-1** Real browser (Chrome and Firefox), OKF4net site (over the node limit, so the list shows), graph.html with a fragment naming a concept far down the list (`#code/csharp/okf4net/tests/okf-document-builder-tests`), at 1440 and at 390 px wide: the marked list entry is inside the visible list once it has rendered, and stays there. A `content-visibility` rule on the list items once pushed it a screen below the fold in Firefox, which no jsdom case can see.
+- [ ] **P3-css-2** Real browser (Chrome, Firefox, Safari), acme graph.html: a mouse click on a node shows no dashed keyboard contour around it; Tab onto a node, and an arrow key between nodes, show it (square, side + 20, dashed 3 3, ink). Only a real browser tells the two apart (`:focus-visible`).
