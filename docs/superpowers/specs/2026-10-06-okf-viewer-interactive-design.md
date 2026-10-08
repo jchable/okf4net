@@ -1,9 +1,11 @@
 # Viewer interactif (`okf-render`) — design
 
 Date : 2026-10-06
-Statut : révision 10 (2026-10-08) : P1 et P1.1 livrés et recettés ; arbitrages
+Statut : révision 11 (2026-10-08) : P1 et P1.1 livrés et recettés ; arbitrages
 A15–A30 rendus ; plans de P1.1, P2 et P3 rédigés en parallèle depuis la
 révision 6, leurs lacunes de spec tranchées ici ; aucun point ouvert (§13)
+
+**Révision 11 (revue visuelle de P3 tâche 9, 2026-10-08)** : à l'ouverture, le graphe global d'acme_retail tenait dans environ 285 × 255 unités dessinées à 1,5× (plafond de « Fit »), libellés de 17 px qui se chevauchaient (mesuré dans Chromium, Firefox et WebKit : 2 à 3 paires libellé/libellé et 8 libellé/forme ; 2 et 1 à 4 sur le fixture des fantômes du harnais), au milieu d'un large vide. La disposition tient désormais compte de ce que chaque nœud dessine (§4.2, §12.5) : `OkfSim.create` accepte `graph.boxes`, une boîte `[demi-largeur, dessus, dessous]` par nœud autour de son centre — sa forme et son libellé, estimé à 7 par point de code et finissant 20 sous la forme, jamais mesuré, pour que la disposition reste la même dans tous les navigateurs — ; deux boîtes à moins de 8 l'une de l'autre se repoussent sur l'axe où elles se recouvrent le moins (10 par unité de recouvrement), un ressort ne tire qu'à travers le jour entre ses deux boîtes (jour² / `SPACING`, rien une fois qu'elles se touchent), et le dernier cinquième des itérations ne fait que séparer les boîtes qui se recouvrent encore (ni répulsion, ni ressort, ni gravité ; chaque membre d'une paire bouge de 0,9 du recouvrement, au plus `SPACING` par itération). Constantes : `SPACING` 60 inchangé ; cellule de grille 120 → 180, découplée de la portée de la répulsion (2 × `SPACING` = 120, inchangée), pour que deux boîtes qui se recouvrent partagent toujours un voisinage 3 × 3 ; chaque côté d'une boîte borné à (180 − 8) / 2 = 86 ; `NODE_LIMIT` 1 500, `maxIterations` 200, `sliceWork` 100 000 et `cellCap` 24 inchangés. Sans `boxes`, la loi de force est celle d'avant (même empreinte pour le graphe « components » du harnais ; les deux empreintes « dense » changent, une cellule plus large listant d'autres membres sous le plafond de cellule). Libellés (G11, G13) : coupés à 24 points de code (23 + « … »), l'id complet restant en `<title>` et dans le nom accessible — la largeur d'une boîte est ainsi bornée. « Fit » (G10) : plafond 1,5 → 1,25 (libellés d'au plus 14,4 px, près des 11,5 de la maquette), marges 24 sur les côtés et 56 en haut et en bas (ligne d'état et zoom au-dessus, légende au-dessous, rien à côté) ; les libellés restent à l'échelle du dessin plutôt que de garder une taille fixe à l'écran, si bien qu'une disposition sans recouvrement le reste à tout zoom. Résultat mesuré dans les trois moteurs : acme_retail et le fixture des fantômes s'ouvrent sans aucun recouvrement, à 1440 × 900 comme à 390 × 844, positions identiques d'un moteur à l'autre. Coût : sur le bundle OKF4net (806 nœuds), 17,3 M unités de travail au lieu de 11,7 M, soit 175 tranches au lieu de 118 (environ 2,9 s au lieu de 2,0 s dans Chromium), la plus longue tranche mesurée autour de 6 ms.
 
 **Révision 10 (revue de P3 tâche 7, 2026-10-08)** : le clavier du graphe global (§8, G-clavier) atteint **tous** les voisins : les quatre cônes partitionnent le plan (égalité à la flèche horizontale ; un voisin à la même position va à droite), et répéter une flèche parcourt les voisins de son cône, du plus proche au plus lointain, en rebouclant. Le nœud sélectionné porte `aria-current="true"` : seul attribut ajouté au vocabulaire SVG fixe de §12.2, valeur `true` et élément `<g>` uniquement, ouvert à la liste blanche du harnais.
 
@@ -390,6 +392,12 @@ Module pur, sans DOM :
   soit le découpage. (Imposer qu'une itération tienne toujours dans une tranche
   est intenable : son coût croît avec le nombre de nœuds, alors que le budget de
   tranche est une constante faite pour garder les frames courtes.)
+- **boîtes** (révision 11) : la page peut donner, par nœud, la boîte que couvre
+  son dessin (forme et libellé) ; la simulation écarte deux boîtes qui se
+  recouvrent, fait tirer les ressorts à travers le jour entre boîtes, et
+  consacre le dernier cinquième des itérations à séparer celles qui se
+  recouvrent encore ; une boîte est bornée pour que deux boîtes qui se
+  recouvrent soient toujours dans des cellules voisines (§12.5) ;
 - graphe vide ou à un nœud : terminé sans itérer ;
 - **annulation** : un changement de filtre invalide la simulation en cours
   (jeton de génération) ;
@@ -1302,19 +1310,22 @@ contrôle ne prouve sa capacité à échouer que par la passe sans polices (éch
 - **G10** Zoom en haut à droite (12, 18), `gap: 6px` : « + » et « − » 34 ×
   34, 18 (`aria-label` « Zoom in », « Zoom out ») ; « Fit » hauteur 34, padding
   0 12, 13 ; plus « List » (`aria-pressed`, hors maquette, §6) qui remplace le
-  dessin par la liste équivalente. → P3
+  dessin par la liste équivalente. « Fit » (révision 11) : tout le dessin,
+  libellés compris, à 24 des côtés et 56 du haut et du bas du canevas, jamais
+  au-delà de 1,25×. → P3
 - **G11** Nœuds : contexte `graph` de §12.2 (cercle 26, carré 30, losange
   31,1, triangle 24 comme B ; anneau 26 trait 3, autre 26 trait 2, hors
   maquette) ; aucune marque de péremption sur un nœud (B n'en a pas ; le
   sablier est dans G5 et G17) ; libellé Space Mono 11,5 `--ink` = dernier
-  segment de l'id (id complet en `<title>`), centré sous la forme, ligne de
+  segment de l'id (id complet en `<title>`), coupé au-delà de 24 points de
+  code à 23 + « … » (révision 11), centré sous la forme, ligne de
   base à `cy + size / 2 + 16`, masqué si « Node labels » est décoché. → P3
 - **G12** Arêtes `--edge` 1,3, flèche 7 `--edge` vers la cible ; deux arêtes
   opposées décalées de ± 3 perpendiculairement ; vers un fantôme : `--ghost`
   1,4, tiretée 5 4, flèche `--edge` comme B. → P3
 - **G13** Fantôme : contexte `graph`, forme `ghost` (cercle de rayon 13 au
   trait comme B), fond `--white`, trait `--ghost` 1,6 tireté 3 3, libellé
-  « absent: `<id>` » `--ghost` 11,5. → P3
+  « absent: `<id>` » `--ghost` 11,5, coupé comme G11. → P3
 - **G14** Sélection : contour carré `--blue` de côté + 12, trait 2,4 (§12.2) ;
   sortantes `--blue` 2,2 pleines, entrantes `--blue` 2,2 tiretées 5 4,
   flèches `--blue` 8 ; focus clavier : contour carré de côté + 20, tireté 3 3
@@ -1803,10 +1814,12 @@ soi-même n'en est pas un) ; il révèle `#okf-context` si celui-ci était cach�
 window.OkfSim = Object.freeze({
   NODE_LIMIT,               // 1500 (§4.2, à calibrer par P3 ; consigné ici)
   create(graph, options),   // → Simulation, ou null si graph.nodeCount > NODE_LIMIT
-  // graph   : { nodeCount, edges }  nœuds 0..nodeCount-1 = nœuds visibles dans l'ordre de
+  // graph   : { nodeCount, edges, boxes? }  nœuds 0..nodeCount-1 = nœuds visibles dans l'ordre de
   //           l'index (concepts par position, puis fantômes par position) ; edges : tableau
-  //           de paires [source, cible] d'entiers dans ces bornes, fusionnées, sans boucle
-  // options : { maxIterations, sliceWork, cellCap } entiers > 0 (défauts fixés par P3)
+  //           de paires [source, cible] d'entiers dans ces bornes, fusionnées, sans boucle ;
+  //           boxes (r11) : absent, ou un [demi-largeur, dessus, dessous] par nœud, nombres
+  //           finis >= 0, chacun borné à 86 ; TypeError sinon (entrées non examinées au-delà de NODE_LIMIT)
+  // options : { maxIterations, sliceWork, cellCap } entiers > 0 (défauts : 200, 100000, 24)
 });
 // Simulation :
 //   step()      → { done, iterations, work }  au plus options.sliceWork unités de travail

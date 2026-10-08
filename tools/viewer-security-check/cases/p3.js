@@ -243,11 +243,14 @@ function minPairDistance(p, n) {
 // the per-cell cap never binds: all pairs, no grid. It restates the force law
 // of spec §4.2 (repulsion K2/d2 inside 2 x SPACING, springs d^2/SPACING,
 // gravity 0.02, step capped by a linearly cooling temperature, clamp), and
-// counts the units the module must count. Summation order differs from the
+// counts the units the module must count: the candidate pairs of a 3 x 3
+// neighbourhood in a grid of 180 (revision 11 widened it from 2 x SPACING, so
+// that two overlapping boxes always share one). Without boxes, as here, there
+// is no collision and no closing fifth. Summation order differs from the
 // module's, so positions are compared to a tolerance, work exactly.
 function referenceRun(initial, n, edges, maxIterations) {
   const SPACING = 60;
-  const CELL = 120;
+  const CELL = 180;
   const limit = bound(n);
   let p = Float64Array.from(initial);
   let work = 0;
@@ -265,7 +268,7 @@ function referenceRun(initial, n, edges, maxIterations) {
         const dx = p[2 * i] - p[2 * j];
         const dy = p[2 * i + 1] - p[2 * j + 1];
         const d2 = dx * dx + dy * dy;
-        if (d2 < CELL * CELL) { fx[i] += dx * SPACING * SPACING / d2; fy[i] += dy * SPACING * SPACING / d2; }
+        if (d2 < 4 * SPACING * SPACING) { fx[i] += dx * SPACING * SPACING / d2; fy[i] += dy * SPACING * SPACING / d2; }
       }
     }
     for (const [s, t] of edges) {
@@ -446,7 +449,7 @@ function registerSim(h) {
   h.check("sim: exact work for a hand-derived graph (pairs, springs and integrations are each counted)", () => {
     const OkfSim = loadSim();
     // Two nodes start at about (-30,-30) and (30,-30), jittered by at most 15:
-    // always in the adjacent cells (-1,-1) and (0,-1) of the 120-wide grid, so
+    // always in the adjacent cells (-1,-1) and (0,-1) of the 180-wide grid, so
     // each node visits itself and the other = 4 pair units per iteration,
     // plus one unit per edge, plus 2 integrations.
     const cases = [
@@ -539,9 +542,13 @@ function registerSim(h) {
   // are the same on every conforming engine; a change to the force law, the
   // constants, the order of operations or the cell scan changes them, and
   // must be a deliberate, reviewed change (re-derive, then update here).
+  // Revision 11 (grid cell 120 -> 180) kept components/40, whose cells never
+  // fill up, and changed the two dense ones (were 5278e311 and de107342):
+  // with larger cells a crowded cell lists other members, so the cap keeps
+  // other pairs.
   const SNAPSHOT_COMPONENTS_40 = "54cbd2f8";
-  const SNAPSHOT_DENSE_24 = "5278e311";
-  const SNAPSHOT_DENSE_1 = "de107342";
+  const SNAPSHOT_DENSE_24 = "b95e30a5";
+  const SNAPSHOT_DENSE_1 = "971155cc";
 
   h.check("sim: same input, same layout -- two loads and five slicings, mid-iteration cuts included", () => {
     const reference = {};
@@ -679,6 +686,180 @@ function registerSim(h) {
       }
       h.assert(s.stats().totalWork === model.work, `${graph.nodeCount} nodes: ${s.stats().totalWork} units, the model counts ${model.work}`);
     }
+  });
+
+  registerSimBoxes(h);
+}
+
+// --- boxes: what each node's drawing covers (spec §12.5, revision 11) --------
+
+// acme_retail's graph as the page hands it to okf-sim: nodes in index order,
+// links merged, and per node [halfWidth, above, below] -- the shape (graph
+// context: square 30, circle 26, diamond 31.1, ring 26, triangle 24) and its
+// label (the last id segment, 7 an advance, ending 20 under the shape).
+const ACME = {
+  nodeCount: 9,
+  edges: [[0, 1], [2, 0], [2, 3], [2, 4], [3, 2], [4, 1], [5, 0], [5, 2], [5, 3], [6, 0], [6, 1], [6, 2], [6, 4], [6, 8]],
+  boxes: [[66.5, 15, 35], [38.5, 15, 35], [42, 13, 33], [66.5, 13, 33], [24.5, 13, 33], [52.5, 15.55, 35.55],
+    [66.5, 15.55, 35.55], [31.5, 13, 33], [21, 12, 32]],
+};
+
+// A graph whose every node has the same box.
+function boxed(graph, box) {
+  return { nodeCount: graph.nodeCount, edges: graph.edges, boxes: Array.from({ length: graph.nodeCount }, () => box.slice()) };
+}
+
+// The pairs whose boxes overlap by more than `slack` on both axes; node i
+// covers x +- boxes[i][0], from y - boxes[i][1] to y + boxes[i][2].
+function boxOverlaps(p, boxes, slack) {
+  const out = [];
+  for (let i = 0; i < boxes.length; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      const ox = boxes[i][0] + boxes[j][0] - Math.abs(p[2 * i] - p[2 * j]);
+      const oy = Math.min(p[2 * i + 1] + boxes[i][2], p[2 * j + 1] + boxes[j][2])
+        - Math.max(p[2 * i + 1] - boxes[i][1], p[2 * j + 1] - boxes[j][1]);
+      if (ox > slack && oy > slack) { out.push(`${i}~${j} (${ox.toFixed(1)} x ${oy.toFixed(1)})`); }
+    }
+  }
+  return out;
+}
+
+function registerSimBoxes(h) {
+  h.check("sim: boxes keep drawings apart -- acme_retail's nine nodes, two stars and a clique end with no box over another; a link rests across the clearance", () => {
+    const OkfSim = loadSim();
+    const cases = [
+      ["acme_retail", ACME],
+      ["star of 16, wide labels", boxed(star(16), [80, 15, 35])],
+      ["star of 30", boxed(star(30), [70, 15, 35])],
+      ["clique of 12", boxed({ nodeCount: 12, edges: completeOnce(12) }, [60, 15, 35])],
+    ];
+    for (const [name, graph] of cases) {
+      const s = OkfSim.create(graph);
+      runToEnd(h, s, 100000, name);
+      const p = s.positions();
+      assertFiniteAndBounded(h, p, graph.nodeCount, name);
+      const over = boxOverlaps(p, graph.boxes, 0);
+      h.assert(over.length === 0, `${name}: ${over.length} pair(s) of boxes overlap: ${over.slice(0, 5).join(", ")}`);
+      const apart = minPairDistance(p, graph.nodeCount);
+      h.assert(apart >= 45, `${name}: two centres ${apart.toFixed(1)} apart (expected at least 45)`);
+    }
+    // A spring pulls across the clearance between its boxes, not across the
+    // centre distance: two linked nodes with wide boxes rest 28 apart box to
+    // box (a centre-distance spring would hold them 14 apart).
+    const pair = OkfSim.create(boxed({ nodeCount: 2, edges: [[0, 1]] }, [80, 15, 35]));
+    runToEnd(h, pair, 100000, "linked pair");
+    const q = pair.positions();
+    const clearance = Math.max(Math.abs(q[0] - q[2]) - 160, Math.abs(q[1] - q[3]) - 50);
+    h.assert(clearance >= 20, `linked pair: ${clearance.toFixed(1)} between the two boxes (expected at least 20)`);
+  });
+
+  h.check("sim: the last fifth of the iterations only separates overlapping boxes -- a layout without overlap stays put", () => {
+    const OkfSim = loadSim();
+    // Two linked nodes with small boxes never overlap: once the last fifth
+    // starts (iteration 160 of 200), no spring, repulsion or gravity moves them.
+    const graph = { nodeCount: 2, edges: [[0, 1]], boxes: [[10, 5, 5], [10, 5, 5]] };
+    const s = OkfSim.create(graph, { maxIterations: 200, sliceWork: 1 });
+    const at = {};
+    for (;;) {
+      const r = s.step();
+      if (at[r.iterations] === undefined) { at[r.iterations] = s.positions(); }
+      if (r.done) { break; }
+    }
+    h.assert(!sameBits(at[159], at[160]), "iteration 159 moved nothing: this case no longer tells the two regimes apart");
+    h.assert(sameBits(at[160], at[200]), "a node moved in the closing fifth although no boxes overlapped");
+    // Without boxes there is no closing fifth: the same graph keeps moving.
+    const plain = OkfSim.create({ nodeCount: 2, edges: [[0, 1]] }, { maxIterations: 200, sliceWork: 1 });
+    const seen = {};
+    for (;;) {
+      const r = plain.step();
+      if (seen[r.iterations] === undefined) { seen[r.iterations] = plain.positions(); }
+      if (r.done) { break; }
+    }
+    h.assert(!sameBits(seen[190], seen[200]), "without boxes the last iterations stopped moving");
+    // Settling, no node moves further than SPACING in one iteration (before,
+    // the cooling temperature bounds it as without boxes).
+    const crowd = OkfSim.create(boxed(star(30), [70, 15, 35]), { maxIterations: 200, sliceWork: 7 });
+    let previous = crowd.positions();
+    let completed = 0;
+    for (;;) {
+      const r = crowd.step();
+      if (r.iterations !== completed) {
+        completed = r.iterations;
+        const p = crowd.positions();
+        let farthest = 0;
+        for (let i = 0; i < p.length; i += 2) { farthest = Math.max(farthest, Math.sqrt((p[i] - previous[i]) ** 2 + (p[i + 1] - previous[i + 1]) ** 2)); }
+        const limit = completed > 160 ? 60 : 60 * (1 - (completed - 1) / 200);
+        h.assert(farthest <= limit + 1e-9, `star of 30: iteration ${completed - 1} moved a node ${farthest}, over ${limit}`);
+        previous = p;
+      }
+      if (r.done) { break; }
+    }
+  });
+
+  h.check("sim: malformed boxes are a TypeError; above NODE_LIMIT they are not examined; an entry is read once; a huge box is clamped", () => {
+    const OkfSim = loadSim();
+    const bad = [
+      "x", {}, [[1, 1, 1]], [[1, 1, 1], [1, 1, 1], [1, 1, 1], [1, 1, 1]], [null, [1, 1, 1], [1, 1, 1]],
+      [[1, 1], [1, 1, 1], [1, 1, 1]], [[1, 1, 1, 1], [1, 1, 1], [1, 1, 1]], [[-1, 1, 1], [1, 1, 1], [1, 1, 1]],
+      [[1, NaN, 1], [1, 1, 1], [1, 1, 1]], [[1, 1, Infinity], [1, 1, 1], [1, 1, 1]], [["1", 1, 1], [1, 1, 1], [1, 1, 1]],
+    ];
+    for (const boxes of bad) {
+      let threw = null;
+      try { OkfSim.create({ nodeCount: 3, edges: [[0, 1]], boxes }); } catch (e) { threw = e; }
+      h.assert(threw && threw.name === "TypeError", `boxes ${JSON.stringify(boxes)} did not throw a TypeError (${threw && threw.name})`);
+    }
+    // Not an array: refused before the limit, like edges. Entries: never
+    // examined above it.
+    let threw = null;
+    try { OkfSim.create({ nodeCount: 5000, edges: [], boxes: "x" }); } catch (e) { threw = e; }
+    h.assert(threw && threw.name === "TypeError", "boxes that are not an array were not refused above NODE_LIMIT");
+    h.assert(OkfSim.create({ nodeCount: 5000, edges: [], boxes: [null] }) === null, "above NODE_LIMIT the box entries were examined");
+    const sparse = inCtx(OkfSim, "new Array(4294967295)");
+    h.assert(OkfSim.create({ nodeCount: 5000, edges: [], boxes: sparse }) === null, "a sparse box list above NODE_LIMIT was not refused with null");
+    // Read once: a getter that changes its answer cannot smuggle in a bad box.
+    const probe = inCtx(OkfSim, "(function () { var b = []; var reads = 0;"
+      + " Object.defineProperty(b, '0', { get: function () { reads++; return reads === 1 ? [5, 5, 5] : [-1, NaN, 1]; }, enumerable: true });"
+      + " b[1] = [5, 5, 5]; return { boxes: b, reads: function () { return reads; } }; })()");
+    const s = OkfSim.create({ nodeCount: 2, edges: [[0, 1]], boxes: probe.boxes }, { maxIterations: 20 });
+    runToEnd(h, s, 100000, "read once");
+    assertFiniteAndBounded(h, s.positions(), 2, "read once");
+    h.assert(probe.reads() === 1, `the box entry was read ${probe.reads()} times`);
+    // A box larger than the grid can see is clamped to (180 - 8) / 2 = 86, the
+    // most two boxes may span and still share a 3 x 3 neighbourhood: the
+    // layout is the one of boxes at that limit, finite and bounded.
+    const huge = OkfSim.create({ nodeCount: 3, edges: [[0, 1]], boxes: [[1e300, 1e300, 1e300], [0, 0, 0], [1e9, 0, 1e9]] });
+    runToEnd(h, huge, 100000, "huge boxes");
+    assertFiniteAndBounded(h, huge.positions(), 3, "huge boxes");
+    const atLimit = OkfSim.create({ nodeCount: 3, edges: [[0, 1]], boxes: [[86, 86, 86], [0, 0, 0], [86, 0, 86]] });
+    runToEnd(h, atLimit, 100000, "boxes at the limit");
+    h.assert(sameBits(huge.positions(), atLimit.positions()), "boxes above the limit are not clamped to 86");
+  });
+
+  // FNV-1a of acme_retail's layout with its boxes, default options (see the
+  // other snapshots: a change here is a reviewed change of the layout).
+  const SNAPSHOT_ACME_BOXED = "3842fc78";
+
+  h.check("sim: with boxes, same input, same layout -- two loads and four slicings; work stays within the per-cell ceiling", () => {
+    const reference = {};
+    const graphs = { acme: ACME, star: boxed(star(16), [80, 15, 35]) };
+    for (const load of [0, 1]) {
+      const OkfSim = loadSim();
+      for (const name of Object.keys(graphs)) {
+        for (const sliceWork of [1, 7, 997, 1000000000]) {
+          const s = OkfSim.create(graphs[name], { sliceWork });
+          drain(h, s, sliceWork, `${name}/${sliceWork}`);
+          const got = { positions: s.positions(), work: s.stats().totalWork };
+          const g = graphs[name];
+          const ceiling = 200 * (g.nodeCount * 9 * 24 + g.edges.length + g.nodeCount);
+          h.assert(got.work <= ceiling, `${name}: ${got.work} units over 200 iterations, above ${ceiling}`);
+          if (!reference[name]) { reference[name] = got; continue; }
+          h.assert(sameBits(got.positions, reference[name].positions), `${name}: load ${load}, sliceWork ${sliceWork} gave another layout`);
+          h.assert(got.work === reference[name].work, `${name}: load ${load}, sliceWork ${sliceWork} counted ${got.work} units, not ${reference[name].work}`);
+        }
+      }
+    }
+    h.assert(layoutHash(reference.acme.positions) === SNAPSHOT_ACME_BOXED,
+      `acme/boxes: layout hash ${layoutHash(reference.acme.positions)}, snapshot ${SNAPSHOT_ACME_BOXED}`);
   });
 }
 
@@ -1545,6 +1726,24 @@ function recordingSim(source) {
 })();`;
 }
 
+// okf-sim.js followed by a wrapper that keeps a JSON copy of every graph the
+// page hands to create().
+function graphRecordingSim(source) {
+  return `${source}
+;(function () {
+  var real = window.OkfSim;
+  var seen = [];
+  window.OKF_TEST_GRAPHS = seen;
+  window.OkfSim = Object.freeze({
+    NODE_LIMIT: real.NODE_LIMIT,
+    create: function (graph, options) {
+      seen.push(JSON.parse(JSON.stringify(graph)));
+      return real.create(graph, options);
+    },
+  });
+})();`;
+}
+
 // jsdom has no layout: the graph canvas gets a client size while it is shown;
 // a hidden element measures 0, as in a browser.
 function sizedCanvas(width, height) {
@@ -1579,16 +1778,88 @@ function fittedBox(window, doc) {
   return box;
 }
 
-// The fit leaves 56 px around the drawing and touches them on the tighter axis.
+// The fit leaves 24 px beside the drawing and 56 above and below it (the
+// status line and zoom box sit above, the legend below, nothing beside), and
+// touches them on the tighter axis.
+const FIT_SIDE = 24;
+const FIT_TOP = 56;
+const FIT_CAP = 1.25;
+
 function assertFitted(h, window, doc, width, height, when) {
   const b = fittedBox(window, doc);
-  const m = 56;
   const eps = 2;
-  h.assert(b.scale < 1.5, `${when}: the fit hit its 1.5x cap (${b.scale}): the canvas is too large for this check`);
-  h.assert(b.minX >= m - eps && b.maxX <= width - m + eps && b.minY >= m - eps && b.maxY <= height - m + eps,
+  h.assert(b.scale < FIT_CAP, `${when}: the fit hit its ${FIT_CAP}x cap (${b.scale}): the canvas is too large for this check`);
+  h.assert(b.minX >= FIT_SIDE - eps && b.maxX <= width - FIT_SIDE + eps && b.minY >= FIT_TOP - eps && b.maxY <= height - FIT_TOP + eps,
     `${when}: the drawing spans x ${b.minX.toFixed(1)}..${b.maxX.toFixed(1)}, y ${b.minY.toFixed(1)}..${b.maxY.toFixed(1)} in a ${width} x ${height} canvas`);
-  h.assert(b.maxX - b.minX >= width - 2 * m - eps || b.maxY - b.minY >= height - 2 * m - eps,
+  h.assert(b.maxX - b.minX >= width - 2 * FIT_SIDE - eps || b.maxY - b.minY >= height - 2 * FIT_TOP - eps,
     `${when}: the drawing fills neither axis of a ${width} x ${height} canvas: it was fitted to another size`);
+}
+
+// G11/G13 as revision 11 cuts them: a label longer than 24 code points keeps
+// its first 23 and an ellipsis (never half a surrogate pair).
+const LABEL_MAX = 24;
+const ELLIPSIS = String.fromCharCode(0x2026);
+
+function cutLabel(text) {
+  const points = Array.from(text);
+  return points.length > LABEL_MAX ? points.slice(0, LABEL_MAX - 1).join("") + ELLIPSIS : text;
+}
+
+// The label a node must carry, from the index alone.
+function expectedLabel(index, slot) {
+  const N = index.concepts.length;
+  if (slot >= N) { return cutLabel(`absent: ${index.ghosts[slot - N].id}`); }
+  const id = index.concepts[slot].id;
+  return cutLabel(id.slice(id.lastIndexOf("/") + 1));
+}
+
+// The boxes the page must hand okf-sim for the whole bundle drawn: per node
+// [halfWidth, above, below], the shape (graph context) and its label (7 an
+// advance per code point, ending 20 under the shape).
+function expectedBoxes(window) {
+  const index = window.OKF_INDEX;
+  const N = index.concepts.length;
+  const out = [];
+  for (let slot = 0; slot < N + index.ghosts.length; slot++) {
+    const kind = slot < N ? window.OkfShapes.kindOf(index, slot) : "ghost";
+    const half = window.OkfShapes.SIZES.graph[kind].size / 2;
+    const chars = Array.from(expectedLabel(index, slot)).length;
+    out.push([Math.max(half, chars * 7 / 2), half, half + 20]);
+  }
+  return out;
+}
+
+// What the drawn nodes cover in graph units, as a browser draws them: each
+// shape (centre, half size) and its label (Space Mono 11.5: 0.612 em = 7.04
+// an advance; from 12.7 above the baseline to 4.4 below it, Chromium's box).
+// Returns the label/label, label/shape and shape/shape pairs that overlap.
+function drawnOverlaps(window, doc) {
+  const index = window.OKF_INDEX;
+  const items = drawnNodes(doc).map(({ g, name }) => {
+    const kind = name.startsWith("absent: ") ? "ghost" : window.OkfShapes.kindOf(index, conceptPos(index, name));
+    const half = window.OkfShapes.SIZES.graph[kind].size / 2;
+    const p = labelPoint(g);
+    const cy = p.y - half - 16;
+    const w = Array.from(g.querySelector("text").textContent).length * 7.04 / 2;
+    return {
+      name,
+      shape: { l: p.x - half, r: p.x + half, t: cy - half, b: cy + half },
+      label: { l: p.x - w, r: p.x + w, t: p.y - 12.7, b: p.y + 4.4 },
+    };
+  });
+  const hit = (a, b) => Math.min(a.r, b.r) - Math.max(a.l, b.l) > 0 && Math.min(a.b, b.b) - Math.max(a.t, b.t) > 0;
+  const found = [];
+  for (let i = 0; i < items.length; i++) {
+    for (let j = 0; j < items.length; j++) {
+      if (i === j) { continue; }
+      const a = items[i];
+      const b = items[j];
+      if (i < j && hit(a.label, b.label)) { found.push(`label ${a.name} / label ${b.name}`); }
+      if (hit(a.label, b.shape)) { found.push(`label ${a.name} / shape ${b.name}`); }
+      if (i < j && hit(a.shape, b.shape)) { found.push(`shape ${a.name} / shape ${b.name}`); }
+    }
+  }
+  return found;
 }
 
 // The node count of "only p3-graph/d's type" and that type's index: the
@@ -1629,12 +1900,13 @@ function registerDrawing(h) {
     assertFixedSvg(h, doc);
   });
 
-  h.checkAsync("drawing: the page draws okf-sim's layout of the visible graph, nodes and links in index order", async () => {
+  h.checkAsync("drawing: the page draws okf-sim's layout of the visible graph, nodes, links and boxes in index order", async () => {
     const { window, doc, scheduler } = await openGraph(h);
     const index = window.OKF_INDEX;
     const N = index.concepts.length;
     const edges = index.edges.filter(([f, t, , g]) => !(g === 0 && f === t)).map(([f, t, , g]) => [f, g === 1 ? N + t : t]);
-    const expected = loadSim().create({ nodeCount: N + index.ghosts.length, edges });
+    const boxes = expectedBoxes(window);
+    const expected = loadSim().create({ nodeCount: N + index.ghosts.length, edges, boxes });
     runToEnd(h, expected, 100000, "expected layout");
     const positions = expected.positions();
     const initial = drawnNodes(doc).map((n) => labelPoint(n.g).x);
@@ -1803,12 +2075,20 @@ function registerDrawing(h) {
     click(window, toggle);
     h.assert(!doc.getElementById("okf-graph-canvas").hidden, "List did not show the canvas again");
     assertFitted(h, window, doc, W, H, "after coming back from the list");
+    // A tall, narrow canvas: the width is the tighter axis, so the drawing
+    // runs from side margin to side margin.
+    const tall = await openGraph(h, { beforeParse: sizedCanvas(300, 900) });
+    tall.scheduler.flush();
+    assertFitted(h, tall.window, tall.doc, 300, 900, "on a tall canvas");
+    const b = fittedBox(tall.window, tall.doc);
+    h.assert(b.maxX - b.minX >= 300 - 2 * FIT_SIDE - 2, `on a tall canvas the drawing spans ${(b.maxX - b.minX).toFixed(1)} px of 300, not side margin to side margin`);
   });
 
   h.checkAsync("drawing: the first fit after the node limit is the canvas's real size, not the fallback", async () => {
     const limit = await narrowedLimit(h);
+    // Low enough that even the first, compact layout is fitted under the cap.
     const W = 340;
-    const H = 260;
+    const H = 180;
     const { window, doc, scheduler } = await openGraph(h, { override: { "assets/okf-sim.js": lowLimitSim(limit.count) }, beforeParse: sizedCanvas(W, H) });
     facetInputs(doc, "type").forEach((input, k) => { if (k !== limit.keepType) { setChecked(window, input, false); } });
     h.assert(drawnNodes(doc).length === limit.count, "narrowing to the limit did not draw");
@@ -1834,7 +2114,64 @@ function registerDrawing(h) {
     scheduler.flush();
     h.assert(drawnNodes(doc).length === 2, "the patched bundle does not draw two nodes");
     const b = fittedBox(window, doc);
-    h.assert(b.minX >= 56 - 2 && b.maxX <= W - 56 + 2, `a label sticks out: the drawing spans x ${b.minX.toFixed(1)}..${b.maxX.toFixed(1)}`);
+    h.assert(b.minX >= FIT_SIDE - 2 && b.maxX <= W - FIT_SIDE + 2, `a label sticks out: the drawing spans x ${b.minX.toFixed(1)}..${b.maxX.toFixed(1)}`);
+  });
+
+  h.checkAsync("drawing: Fit never draws above 1.25x, so a small graph's labels stay near their 11.5 design size", async () => {
+    const W = 1400;
+    const H = 900;
+    const { doc, scheduler } = await openGraph(h, {
+      override: { "assets/okf-index.js": namedIndexSource(["n/a", "n/b"], [[0, 1, 1, 0]]) },
+      beforeParse: sizedCanvas(W, H),
+    });
+    scheduler.flush();
+    h.assert(drawnNodes(doc).length === 2, "setup: two nodes are not drawn");
+    const t = viewportTransform(doc);
+    h.assert(t.s === FIT_CAP, `two nodes on a ${W} x ${H} canvas are drawn at ${t.s}x, not at the ${FIT_CAP}x cap`);
+  });
+
+  h.checkAsync("drawing: the fixture's opening view has no label over another label or a shape, and no shape over another", async () => {
+    const { window, doc, scheduler } = await openGraph(h);
+    scheduler.flush();
+    h.assert(drawnNodes(doc).length === window.OKF_INDEX.concepts.length + window.OKF_INDEX.ghosts.length, "setup: the whole fixture is not drawn");
+    const found = drawnOverlaps(window, doc);
+    h.assert(found.length === 0, `${found.length} overlap(s): ${found.slice(0, 6).join("; ")}`);
+  });
+
+  h.checkAsync("drawing: a label longer than 24 code points keeps 23 and an ellipsis; the <title>, the name and the box follow", async () => {
+    const smile = String.fromCodePoint(0x1F600);
+    const ids = [
+      `n/${"a".repeat(30)}`,
+      `n/${"b".repeat(24)}`,
+      `n/${"c".repeat(22)}${smile}x`,
+      `n/${"d".repeat(22)}${smile}xy`,
+      "n/short",
+    ];
+    const { window, doc, scheduler } = await openGraph(h, {
+      override: {
+        "assets/okf-index.js": namedIndexSource(ids, [[0, 1, 1, 0], [1, 2, 1, 0], [2, 3, 1, 0], [3, 4, 1, 0]]),
+        "assets/okf-sim.js": graphRecordingSim(fs.readFileSync(SIM_FILE, "utf8")),
+      },
+    });
+    scheduler.flush();
+    const want = [
+      `${"a".repeat(23)}${ELLIPSIS}`,
+      "b".repeat(24),
+      `${"c".repeat(22)}${smile}x`,
+      `${"d".repeat(22)}${smile}${ELLIPSIS}`,
+      "short",
+    ];
+    drawnNodes(doc).forEach(({ g, name }, slot) => {
+      const label = g.querySelector("text").textContent;
+      h.assert(label === want[slot], `${ids[slot]}: label ${JSON.stringify(label)}, expected ${JSON.stringify(want[slot])}`);
+      h.assert(name === ids[slot] && g.getAttribute("aria-label").startsWith(`T ${ids[slot]}`), `${ids[slot]}: the title or the name lost the whole id`);
+    });
+    const graphs = window.OKF_TEST_GRAPHS;
+    h.assert(graphs.length === 1, `${graphs.length} simulations started`);
+    const boxes = graphs[0].boxes;
+    const half = window.OkfShapes.SIZES.graph[window.OkfShapes.kindOf(window.OKF_INDEX, 0)].size / 2;
+    const expected = want.map((text) => [Math.max(half, Array.from(text).length * 7 / 2), half, half + 20]);
+    h.assert(JSON.stringify(boxes) === JSON.stringify(expected), `boxes handed to okf-sim: ${JSON.stringify(boxes)}, expected ${JSON.stringify(expected)}`);
   });
 
   h.checkAsync("drawing: going over the limit mid-layout cancels the simulation and leaves nothing behind; a rebuild cancels the old one", async () => {
@@ -2901,7 +3238,10 @@ function registerPointer(h) {
     pointer(window, a, "pointerup", 100 + 20 * t1.s, 100 + 10 * t1.s);
     click(window, a);
     const p1 = labelPoint(a);
-    h.assert(Math.abs(p1.x - p0.x - 20) < 0.02 && Math.abs(p1.y - p0.y - 10) < 0.02, `the node moved by (${p1.x - p0.x}, ${p1.y - p0.y})`);
+    // The transform attribute gives the scale to 3 decimals: 20 * t1.s px is
+    // 20 graph units to within 20 * 0.0005 / s, plus the label's 0.01 rounding.
+    const tol = 0.02 + 20 * 0.0005 / (t1.s * t1.s);
+    h.assert(Math.abs(p1.x - p0.x - 20) < tol && Math.abs(p1.y - p0.y - 10) < tol, `the node moved by (${p1.x - p0.x}, ${p1.y - p0.y})`);
     h.assert(JSON.stringify(labelPoint(nodeNamed(doc, "p3-graph/e"))) === JSON.stringify(e), "another node moved");
     h.assert(selectedName(doc) === null, "the drag selected the node");
     click(window, a);
@@ -3476,7 +3816,9 @@ function registerPointerFix(h) {
     }
     pointer(window, c, "pointerup", 140, 130, touch);
     const p1 = labelPoint(c);
-    h.assert(Math.abs(p1.x - p0.x - 40 / s) < 0.05 && Math.abs(p1.y - p0.y - 30 / s) < 0.05, `the node moved by (${(p1.x - p0.x) * s}, ${(p1.y - p0.y) * s}) px, not (40, 30)`);
+    // s is read to 3 decimals: 40 / s is right to within 40 * 0.0005 / s^2.
+    const tol = 0.05 + 40 * 0.0005 / (s * s);
+    h.assert(Math.abs(p1.x - p0.x - 40 / s) < tol && Math.abs(p1.y - p0.y - 30 / s) < tol, `the node moved by (${(p1.x - p0.x) * s}, ${(p1.y - p0.y) * s}) px, not (40, 30)`);
     click(window, c);
     h.assert(selectedName(doc) === null, "the dragged node was selected by the click that follows");
     // A background pan is not redrawn under the pointer: a lost capture there is the browser's own, and ends it.

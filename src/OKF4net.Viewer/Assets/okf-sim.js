@@ -14,6 +14,13 @@
 // the same sequence of operations. Positions change only when an iteration
 // completes, so the state after k iterations does not depend on how the work
 // was sliced. tools/viewer-security-check/cases/p3.js is the guard.
+//
+// Boxes (spec §12.5, revision 11): a graph may give, per node, the box its
+// drawing covers -- shape and label -- as [halfWidth, above, below] around the
+// centre. Two boxes closer than GAP push each other apart along the axis where
+// they overlap least, a spring pulls only across the clearance between its two
+// boxes, and the last fifth of the iterations does nothing but separate boxes
+// that still overlap. Without boxes the force law is the plain one.
 (function () {
   "use strict";
 
@@ -22,8 +29,13 @@
 
   var SPACING = 60;              // ideal edge length, in graph units
   var K2 = SPACING * SPACING;
-  var CELL = 2 * SPACING;        // grid cell side, and repulsion cut-off
-  var CUTOFF2 = CELL * CELL;
+  var CUTOFF2 = 4 * K2;          // repulsion cut-off: 2 x SPACING
+  var GAP = 8;                   // clearance kept between two boxes
+  var CELL = 180;                // grid cell side: every interaction is shorter
+  var BOX_LIMIT = (CELL - GAP) / 2;  // so two overlapping boxes share a 3 x 3 neighbourhood
+  var COLLIDE = 10;              // push per unit of overlap
+  var SETTLE = 5;                // the last 1/SETTLE of the iterations only separates boxes...
+  var SETTLE_PUSH = 0.9;         // ...each member of a pair moving 0.9 of their overlap
   var MIN_D2 = 0.01;             // below this, two nodes count as coincident
   var GRAVITY = 0.02;
   var JITTER = SPACING / 4;
@@ -107,7 +119,17 @@
     list.push(i);
   }
 
-  function createSimulation(n, edges, opts) {
+  // How far a box reaches from its centre along a direction (ax, ay), both
+  // >= 0 and not both 0: the half-width over ax or the half-height over ay,
+  // whichever wall the direction meets first.
+  function reach(boxes, i, ax, ay) {
+    var halfHeight = (boxes[3 * i + 1] + boxes[3 * i + 2]) / 2;
+    if (ax === 0) { return halfHeight / ay; }
+    if (ay === 0) { return boxes[3 * i] / ax; }
+    return Math.min(boxes[3 * i] / ax, halfHeight / ay);
+  }
+
+  function createSimulation(n, edges, boxes, opts) {
     var edgeCount = edges.length / 2;
     var pos = initialLayout(n, edgeCount);
     var nextPos = new Float64Array(2 * n);
@@ -125,6 +147,9 @@
     var cancelled = false;
     var phase = n <= 1 ? DONE : REPULSE;
     var temperature = SPACING;
+    // From this iteration on, only overlapping boxes move (never without boxes).
+    var settleFrom = boxes === null ? opts.maxIterations : opts.maxIterations - Math.floor(opts.maxIterations / SETTLE);
+    var settling = false;
 
     // REPULSE cursors: node, neighbour cell (0..8), the cell's member list,
     // where the scan of that list starts, how many members to visit in it and
@@ -151,6 +176,29 @@
       inode = 0;
       temperature = SPACING * (1 - iterations / opts.maxIterations);
       phase = iterations === opts.maxIterations ? DONE : REPULSE;
+      settling = iterations >= settleFrom;
+    }
+
+    // The push node i gets from j when their boxes (with GAP) overlap: along
+    // the axis of the smaller overlap, away from j; a tie at the same
+    // coordinate is broken by the pair's order. Settling, each member of a
+    // pair moves SETTLE_PUSH of the overlap (both together: more than all of it).
+    function collide(i, j) {
+      var bx = pos[2 * i] - pos[2 * j];
+      var by = pos[2 * i + 1] - pos[2 * j + 1];
+      var ox = boxes[3 * i] + boxes[3 * j] + GAP - Math.abs(bx);
+      if (ox <= 0) { return; }
+      var oy = by >= 0
+        ? boxes[3 * i + 1] + boxes[3 * j + 2] + GAP - by
+        : boxes[3 * i + 2] + boxes[3 * j + 1] + GAP + by;
+      if (oy <= 0) { return; }
+      var strength = settling ? SETTLE_PUSH : COLLIDE;
+      var away = i < j ? -1 : 1;
+      if (ox <= oy) {
+        ax += strength * ox * (bx > 0 ? 1 : bx < 0 ? -1 : away);
+      } else {
+        ay += strength * oy * (by > 0 ? 1 : by < 0 ? -1 : away);
+      }
     }
 
     function step() {
@@ -167,7 +215,7 @@
               node++;
               if (node === n) {
                 node = 0;
-                phase = edgeCount > 0 ? SPRING : INTEGRATE;
+                phase = edgeCount > 0 && !settling ? SPRING : INTEGRATE;
               }
               continue;
             }
@@ -195,7 +243,7 @@
             var dx = pos[2 * node] - pos[2 * j];
             var dy = pos[2 * node + 1] - pos[2 * j + 1];
             var d2 = dx * dx + dy * dy;
-            if (d2 < CUTOFF2) {
+            if (d2 < CUTOFF2 && !settling) {
               if (d2 < MIN_D2) {
                 // Coincident nodes: a fixed separation decided by the pair's
                 // order, opposite for the two members of the pair.
@@ -208,6 +256,7 @@
               ax += dx * f;
               ay += dy * f;
             }
+            if (boxes !== null) { collide(node, j); }
           }
           if (visited === take) {
             list = null;
@@ -218,7 +267,17 @@
           var t = edges[2 * edge + 1];
           var ex = pos[2 * t] - pos[2 * s];
           var ey = pos[2 * t + 1] - pos[2 * s + 1];
-          var pull = Math.sqrt(ex * ex + ey * ey) / SPACING;
+          var d = Math.sqrt(ex * ex + ey * ey);
+          var pull = d / SPACING;
+          if (boxes !== null && d > 0) {
+            // Across the clearance g between the two boxes (a box's centre sits
+            // (below - above) / 2 under its node's): e * g^2 / (SPACING * d),
+            // that is g^2 / SPACING along the link; nothing once they touch.
+            var ty = ey + (boxes[3 * t + 2] - boxes[3 * t + 1] - boxes[3 * s + 2] + boxes[3 * s + 1]) / 2;
+            var dc = Math.sqrt(ex * ex + ty * ty);
+            var clear = dc > 0 ? dc - reach(boxes, s, Math.abs(ex) / dc, Math.abs(ty) / dc) - reach(boxes, t, Math.abs(ex) / dc, Math.abs(ty) / dc) : 0;
+            pull = clear > 0 ? clear * clear / (SPACING * d) : 0;
+          }
           fx[s] += ex * pull;
           fy[s] += ey * pull;
           fx[t] -= ex * pull;
@@ -232,14 +291,15 @@
         } else {
           var x = pos[2 * inode];
           var y = pos[2 * inode + 1];
-          var vx = fx[inode] - GRAVITY * x;
-          var vy = fy[inode] - GRAVITY * y;
+          var gravity = settling ? 0 : GRAVITY;
+          var vx = fx[inode] - gravity * x;
+          var vy = fy[inode] - gravity * y;
           var m2 = vx * vx + vy * vy;
           var nx = x;
           var ny = y;
           if (m2 > 0) {
             var m = Math.sqrt(m2);
-            var move = Math.min(m, temperature);
+            var move = Math.min(m, settling ? SPACING : temperature);
             nx = x + vx / m * move;
             ny = y + vy / m * move;
           }
@@ -272,19 +332,44 @@
     });
   }
 
-  // graph: { nodeCount, edges: [[source, target], ...] }, nodes numbered in
-  // index order (spec §12.5). Returns null above NODE_LIMIT (A6: the page
-  // then asks the reader to narrow the filters). Order of checks: graph is an
-  // object, nodeCount an integer >= 0, edges an array, options valid (unknown
-  // keys included) -- each a TypeError; then nodeCount > NODE_LIMIT gives null
-  // WITHOUT looking at the edge entries; then every edge entry is validated,
-  // each field read once, before anything is allocated from edges.length.
+  // Each box entry is read once, each of its three fields once; a field above
+  // BOX_LIMIT is clamped to it.
+  function readBoxes(given, n) {
+    if (given.length !== n) { throw new TypeError("OkfSim.create: boxes must have one entry per node"); }
+    var out = new Float64Array(3 * n);
+    for (var k = 0; k < n; k++) {
+      var e = given[k];
+      if (!Array.isArray(e) || e.length !== 3) {
+        throw new TypeError("OkfSim.create: boxes[" + k + "] must be three finite numbers >= 0");
+      }
+      for (var c = 0; c < 3; c++) {
+        var v = e[c];
+        if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+          throw new TypeError("OkfSim.create: boxes[" + k + "] must be three finite numbers >= 0");
+        }
+        out[3 * k + c] = Math.min(BOX_LIMIT, v);
+      }
+    }
+    return out;
+  }
+
+  // graph: { nodeCount, edges: [[source, target], ...], boxes? }, nodes
+  // numbered in index order (spec §12.5); boxes, when given, one
+  // [halfWidth, above, below] per node. Returns null above NODE_LIMIT (A6: the
+  // page then asks the reader to narrow the filters). Order of checks: graph
+  // is an object, nodeCount an integer >= 0, edges an array, boxes absent or an
+  // array, options valid (unknown keys included) -- each a TypeError; then
+  // nodeCount > NODE_LIMIT gives null WITHOUT looking at the edge or box
+  // entries; then every edge entry, then every box entry, is validated, each
+  // field read once, before anything is allocated from edges.length.
   function create(graph, options) {
     if (!graph || typeof graph !== "object") { throw new TypeError("OkfSim.create: graph must be an object"); }
     var n = graph.nodeCount;
     if (!isInt(n) || n < 0) { throw new TypeError("OkfSim.create: nodeCount must be an integer >= 0"); }
     var list = graph.edges;
     if (!Array.isArray(list)) { throw new TypeError("OkfSim.create: edges must be an array"); }
+    var givenBoxes = graph.boxes;
+    if (givenBoxes !== undefined && !Array.isArray(givenBoxes)) { throw new TypeError("OkfSim.create: boxes must be an array"); }
     var opts = readOptions(options);
     if (n > NODE_LIMIT) { return null; }
     var count = list.length;
@@ -301,7 +386,8 @@
       }
       flat.push(s, t);
     }
-    return createSimulation(n, new Int32Array(flat), opts);
+    var boxes = givenBoxes === undefined ? null : readBoxes(givenBoxes, n);
+    return createSimulation(n, new Int32Array(flat), boxes, opts);
   }
 
   window.OkfSim = Object.freeze({
