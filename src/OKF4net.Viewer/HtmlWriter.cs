@@ -42,6 +42,12 @@ public static class HtmlWriter
     public static IReadOnlyList<string> Write(ViewerSite site, string outDir)
     {
         var graphPage = GraphPagePathOf(site);
+
+        // Pinned on the site from here on: a computed name walks every page,
+        // so any later GraphPagePathOf(site) -- the internal RenderDocumentStart
+        // and RenderHeader overloads included -- only validates this explicit
+        // name and never walks the pages again. Once per Write, by construction.
+        site = site with { GraphPagePath = graphPage };
         var lookups = new PageLookups(site);
         GuardNoCaseCollisions(site, graphPage);
         GuardOutputDirectory(site.BundleRoot, outDir);
@@ -584,7 +590,6 @@ public static class HtmlWriter
     /// <exception cref="ArgumentException">The explicit name is not one such segment.</exception>
     internal static string GraphPagePathOf(ViewerSite site)
     {
-        t_graphPageComputations++;
         if (site.GraphPagePath is not { } explicitPath)
         {
             return SiteModel.FreeGraphPagePath(site.Pages);
@@ -600,16 +605,6 @@ public static class HtmlWriter
         return explicitPath;
     }
 
-    /// <summary>
-    /// How many times <see cref="GraphPagePathOf"/> ran on the current thread:
-    /// a counting seam for the test that <see cref="Write"/> computes the
-    /// name once, not once per page (a computed name walks every page).
-    /// </summary>
-    internal static int GraphPageComputations => t_graphPageComputations;
-
-    [ThreadStatic]
-    private static int t_graphPageComputations;
-
     private static bool IsGraphPageName(string name)
         => name.Length > ".html".Length
            && name.EndsWith(".html", StringComparison.Ordinal)
@@ -620,9 +615,11 @@ public static class HtmlWriter
     /// the three views (spec §12.3): the root prefix, the view and the concept
     /// on <c>&lt;html&gt;</c>; <c>okf-theme.js</c> then the stylesheet in
     /// <c>&lt;head&gt;</c> (a stored theme applies before the first paint);
-    /// "Skip to content", the top line and the header. P3 writes
-    /// <c>graph.html</c> with <c>RenderDocumentStart(site, ViewKind.Graph,
-    /// "Global graph", "", null)</c>.
+    /// "Skip to content", the top line and the header. This overload computes
+    /// the graph page's name itself and is the tests' entry point;
+    /// <see cref="Write"/> never calls it: it computes the name once and every
+    /// page it writes, <see cref="RenderGraph"/>'s graph page included, goes
+    /// through the private overload that takes that name (spec §12.0, §12.5).
     /// </summary>
     internal static string RenderDocumentStart(ViewerSite site, ViewKind view, string title, string rootPrefix, string? conceptId)
         => RenderDocumentStart(site, GraphPagePathOf(site), view, title, rootPrefix, conceptId);

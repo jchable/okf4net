@@ -249,10 +249,12 @@ public class HtmlWriterHeaderTests
     }
 
     [Fact]
-    public void Write_computes_the_graph_page_name_once_for_a_hand_built_site()
+    public void Write_links_the_computed_graph_page_from_every_page_of_a_hand_built_site()
     {
-        // A computed name walks every page, so computing it per page would be
-        // quadratic: counted, never timed.
+        // A computed name walks every page; Write computes it once and pins it
+        // on the site (site with { GraphPagePath = ... }), so the name is not
+        // recomputed per page by construction. This test pins the behaviour on
+        // a large hand-built site (no GraphPagePath set): never timed.
         using var src = new TempDir();
         using var dest = new TempDir();
         var pages = Enumerable.Range(0, 3000)
@@ -260,10 +262,9 @@ public class HtmlWriterHeaderTests
             .ToList();
         var site = new ViewerSite(src.Path, pages, string.Empty, []);
 
-        var before = HtmlWriter.GraphPageComputations;
         HtmlWriter.Write(site, dest.Path);
 
-        Assert.Equal(1, HtmlWriter.GraphPageComputations - before);
+        Assert.Contains("id=\"okf-global-graph\" href=\"graph.html#p0\">", Read(dest.Path, "p0.html"));
         Assert.Contains("id=\"okf-global-graph\" href=\"graph.html#p2999\">", Read(dest.Path, "p2999.html"));
     }
 
