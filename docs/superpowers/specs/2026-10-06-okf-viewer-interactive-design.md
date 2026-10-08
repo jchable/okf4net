@@ -1,9 +1,11 @@
 # Viewer interactif (`okf-render`) — design
 
 Date : 2026-10-06
-Statut : révision 9 (2026-10-08) : P1 et P1.1 livrés et recettés ; arbitrages
+Statut : révision 10 (2026-10-08) : P1 et P1.1 livrés et recettés ; arbitrages
 A15–A30 rendus ; plans de P1.1, P2 et P3 rédigés en parallèle depuis la
 révision 6, leurs lacunes de spec tranchées ici ; aucun point ouvert (§13)
+
+**Révision 10 (revue de P3 tâche 7, 2026-10-08)** : le clavier du graphe global (§8, G-clavier) atteint **tous** les voisins : les quatre cônes partitionnent le plan (égalité à la flèche horizontale ; un voisin à la même position va à droite), et répéter une flèche parcourt les voisins de son cône, du plus proche au plus lointain, en rebouclant. Le nœud sélectionné porte `aria-current="true"` : seul attribut ajouté au vocabulaire SVG fixe de §12.2, valeur `true` et élément `<g>` uniquement, ouvert à la liste blanche du harnais.
 
 **Révision 9 (revue de P2 tâche 5, 2026-10-08)** : X7 disait les libellés du
 graphe local toujours centrés sous leur forme ; les rayons finals de la spec
