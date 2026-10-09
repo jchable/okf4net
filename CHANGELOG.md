@@ -54,6 +54,12 @@ and this project adheres to
     Up/Down, Home/End, arrows, Space, Enter). `graph.html#<concept id>` opens
     the graph with that concept selected, and a concept page's link carries
     its id.
+  - *Resizable side panel.* The right-hand column (the context panel, the
+    graph drawer) has a keyboard- and pointer-operable splitter
+    (`okf-resize.js`): drag it, or use the arrow keys (Shift for larger steps,
+    Home/End, Enter to reset). The width, bounded by 240 px, 60% of the window,
+    720 px and a 360 px middle column, is kept in `localStorage`, ignored below
+    1,100 px, and the global graph refits when its canvas changes size.
 - **`samples/agents-quickstart`**, an `OKF4net.Agents` sample that runs with
   `dotnet run` and needs no LLM endpoint, API key or network access (#5). Over
   `bundles/ga4`, it lists the read-only tools, calls `Search` and

@@ -17,8 +17,8 @@ const renderHtml = `$ okf-render bundles/acme_retail --out ./acme-site
  *
  * Wording rule: nothing here names a colour or a shape size, and the
  * numbered lists next to the two annotated screenshots must match the
- * callouts `docs-shots.js` draws. Two spots are reserved, as JSX comments,
- * for paragraphs to add once the work on them has landed.
+ * callouts `docs-shots.js` draws. One spot is reserved, as a JSX comment, for
+ * a paragraph to add once the work on it has landed (the local graph in a modal).
  */
 export default function Viewer() {
   return (
@@ -118,15 +118,54 @@ export default function Viewer() {
             <li>
               <strong>Referenced by</strong>: the concepts whose body links to this one, with a count.
             </li>
+            <li>
+              <strong>The splitter</strong> between the centre column and the right-hand column: drag it to give that
+              column more room. <a href="#splitter">More below.</a>
+            </li>
           </ol>
           <p>
             From 1,100 px of window width the three columns sit side by side; below that they stack, the page first,
             then its context, then the explorer, so nobody scrolls through a tree to reach the text.
           </p>
-          {/*
-            RESERVED (v2-resize) — the splitter between the middle and the right column.
-            Add its paragraph here, with the capture, once that change has merged.
-          */}
+        </Chapter>
+
+        <Chapter id="splitter" title="Resizing the side column" refText="drag it or use the keys — from 1,100 px">
+          <p>
+            The right-hand column — the context panel of a concept page, the detail drawer of the global graph — is
+            340 px wide by default. A thin bar on its left edge, the <strong>splitter</strong>, resizes it, so a graph
+            can have more room. Drag it with a mouse, a finger or a pen: the column follows the pointer, and{' '}
+            <kbd>Esc</kbd> during a drag puts the width back. The explorer and the facets column are not resizable.
+          </p>
+          <Shot {...viewerShots.splitter}>
+            The panel after a drag to the left and one press of <kbd>←</kbd>: the splitter shows its focus ring.
+          </Shot>
+          <ul className="plain">
+            <li>
+              <strong>Keyboard.</strong> The splitter is a tab stop (a <code>separator</code> named{' '}
+              <em>Resize the side panel</em>, with its width in pixels as its value). With it focused, <kbd>←</kbd>{' '}
+              widens the column and <kbd>→</kbd> narrows it by 16 px, 64 px with <kbd>Shift</kbd>; <kbd>Home</kbd> and{' '}
+              <kbd>End</kbd> go to the narrowest and the widest; <kbd>Enter</kbd> or a double click restores the
+              default width. Combinations with <kbd>Alt</kbd>, <kbd>Ctrl</kbd> or <kbd>⌘</kbd> are left to the
+              browser.
+            </li>
+            <li>
+              <strong>Bounds.</strong> At least 240 px; at most the smallest of 60% of the window, 720 px, and what
+              leaves the centre column 360 px.
+            </li>
+            <li>
+              <strong>Remembered.</strong> The width is kept in the browser's local storage, under one key shared by the
+              concept pages and the graph page; where the browser refuses storage, or does not share it between{' '}
+              <code>file://</code> pages, the splitter still works but forgets.
+            </li>
+            <li>
+              <strong>Narrow windows.</strong> Below 1,100 px the columns are stacked, the splitter is hidden and a
+              stored width is ignored.
+            </li>
+            <li>
+              <strong>The graph follows.</strong> When the drawing's area changes size, the global graph fits itself to
+              it again, unless you have already moved the view yourself (then <em>Fit</em> does it).
+            </li>
+          </ul>
         </Chapter>
 
         <Chapter id="explorer" title="The explorer" refText="tree, type chips, filter, marks">
@@ -203,6 +242,10 @@ export default function Viewer() {
               no Neighbourhood.
             </li>
           </ul>
+          {/*
+            RESERVED (local-graph modal) — a paragraph on enlarging the Neighbourhood in a modal, to add
+            here once that change has merged; the wording above names no size and no colour on purpose.
+          */}
         </Chapter>
 
         <Chapter id="graph" title="The global graph" refText="graph.html — §6 links, laid out in the browser">
@@ -233,6 +276,10 @@ export default function Viewer() {
               <strong>The detail drawer</strong> of the selected concept: its id, title, chips, description, the
               concepts it links to and those that reference it, and an <em>Open page</em> button. In the header,{' '}
               <em>Reading view</em> leads to the selected concept's page.
+            </li>
+            <li>
+              <strong>The splitter</strong>, which resizes the drawer: see{' '}
+              <a href="#splitter">Resizing the side column</a>.
             </li>
           </ol>
           <Shot {...viewerShots.graphFacets}>
@@ -266,10 +313,6 @@ export default function Viewer() {
             first and the last, an arrow key goes to the nearest neighbour in that direction, <kbd>Space</kbd> selects
             and <kbd>Enter</kbd> opens the concept's page.
           </p>
-          {/*
-            RESERVED (v2-shapes) — if the graph's node size or the type legend needs a sentence once that
-            change has merged, add it here; the wording above names no size and no colour on purpose.
-          */}
         </Chapter>
 
         <Chapter id="theme" title="Theme and small screens" refText="follows the system, works on a phone">

@@ -29,7 +29,14 @@ export interface ViewerShot {
 export const viewerShots = {
   concept: {
     file: 'viewer-concept.png',
-    alt: 'A concept page of the acme_retail bundle in okf-render, with six numbered callouts: the header, the explorer on the left, the chips under the title, the frontmatter box, the Neighbourhood local graph at two hops and the Referenced by list in the right-hand panel.',
+    alt: 'A concept page of the acme_retail bundle in okf-render, with seven numbered callouts: the header, the explorer on the left, the chips under the title, the frontmatter box, the Neighbourhood local graph at two hops, the Referenced by list and, between the centre column and the right-hand panel, the splitter.',
+    width: 1440,
+    height: 900,
+    maxWidth: 1440,
+  },
+  splitter: {
+    file: 'viewer-splitter.png',
+    alt: 'A concept page whose right-hand column has been dragged wider than its default: the splitter between the centre column and the panel shows its blue focus ring, the frontmatter box is narrower and the Neighbourhood graph sits in the wider panel.',
     width: 1440,
     height: 900,
     maxWidth: 1440,
@@ -57,7 +64,7 @@ export const viewerShots = {
   },
   graph: {
     file: 'viewer-graph.png',
-    alt: 'The global graph page with four numbered callouts: the facets column, the drawing with the selected concept outlined and its links in blue, the zoom, Fit and List buttons, and the detail drawer of the selected concept with its Open page button.',
+    alt: 'The global graph page with five numbered callouts: the facets column, the drawing with the selected concept outlined and its links in blue, the zoom, Fit and List buttons, the detail drawer of the selected concept with its Open page button and, between the drawing and the drawer, the splitter.',
     width: 1440,
     height: 900,
     maxWidth: 1440,

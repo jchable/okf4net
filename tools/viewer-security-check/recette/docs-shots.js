@@ -62,7 +62,8 @@ function render(dest) {
 // padding, corner]: it outlines the element found by the selector, kept inside
 // the viewport, and puts its number on the outline's top-left corner ("tl", the
 // default) or top-right corner ("tr", for a panel whose title starts at the
-// left edge).
+// left edge); "tl@N" sets the number N px lower, for a tall thin outline (the
+// splitter) whose top corner another number already uses.
 async function annotate(page, notes) {
   await page.evaluate((list) => {
     const colour = "#c2255c";
@@ -82,9 +83,10 @@ async function annotate(page, notes) {
       box.style.cssText = `position:fixed;z-index:99999;pointer-events:none;box-sizing:border-box;border:2px solid ${colour};border-radius:4px;left:${left}px;top:${top}px;width:${right - left}px;height:${bottom - top}px`;
       const badge = document.createElement("div");
       badge.textContent = String(n);
-      const side = corner === "tr" ? "right:-2px" : "left:-2px";
-      const shift = corner === "tr" ? "translate(45%,-45%)" : "translate(-45%,-45%)";
-      badge.style.cssText = `position:absolute;${side};top:-2px;transform:${shift};width:22px;height:22px;border-radius:50%;background:${colour};color:#fff;font:700 13px/22px Inter,Arial,sans-serif;text-align:center;box-shadow:0 0 0 2px #fff`;
+      const at = /^(tl|tr)(?:@([0-9]+))?$/.exec(corner || "tl");
+      const side = at[1] === "tr" ? "right:-2px" : "left:-2px";
+      const shift = at[1] === "tr" ? "translate(45%,-45%)" : "translate(-45%,-45%)";
+      badge.style.cssText = `position:absolute;${side};top:${at[2] ? Number(at[2]) : -2}px;transform:${shift};width:22px;height:22px;border-radius:50%;background:${colour};color:#fff;font:700 13px/22px Inter,Arial,sans-serif;text-align:center;box-shadow:0 0 0 2px #fff`;
       box.appendChild(badge);
       document.body.appendChild(box);
     }
@@ -156,7 +158,29 @@ async function graphSettled(page) {
           [4, "#okf-fm", 0],
           [5, "#okf-context .okf-local", 8],
           [6, "#okf-context .okf-backlinks", 8],
+          [7, ".okf-splitter", 0, "tl@330"],
         ]);
+      },
+    });
+
+    // The splitter, used for real: dragged with the mouse, then moved once with the
+    // keyboard so its focus ring shows (a mouse press alone does not draw it).
+    await shot("viewer-splitter", {
+      run: async (page) => {
+        await page.goto(page_("computations/gross-margin-period.html"));
+        await settle(page);
+        await page.getByRole("button", { name: "2 hops" }).click();
+        const box = await page.locator(".okf-splitter").boundingBox();
+        const x = box.x + box.width / 2;
+        const y = box.y + 200;
+        await page.mouse.move(x, y);
+        await page.mouse.down();
+        await page.mouse.move(x - 100, y, { steps: 10 });
+        await page.mouse.move(x - 200, y, { steps: 10 });
+        await page.mouse.up();
+        await page.keyboard.press("ArrowLeft");
+        await page.mouse.move(700, 600);
+        await settle(page);
       },
     });
 
@@ -204,9 +228,10 @@ async function graphSettled(page) {
         await graphSettled(page);
         await annotate(page, [
           [1, "#okf-facets", 0, "tr"],
-          [2, "#okf-graph-canvas", 0, "tr"],
+          [2, "#okf-graph-canvas", 0, "tl@40"],
           [3, "#okf-graph-zoom", 4],
-          [4, "#okf-graph-detail", 0],
+          [4, "#okf-graph-detail", -10],
+          [5, ".okf-splitter", 0, "tl@330"],
         ]);
       },
     });
