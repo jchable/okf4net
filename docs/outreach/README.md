@@ -40,6 +40,7 @@ Do not publish anything until the onramp is in place. Current state:
 | J3 | Reddit | r/dotnet, r/csharp | *(needs a new draft)* | [ ] |
 | J4 | Personal post | LinkedIn + Bluesky/Mastodon | *(needs a new draft)* | [ ] |
 | J5 | Agents angle | dev.to / micro-blog | *(needs a new draft)* | [ ] |
+| With the release that ships the viewer | Viewer launch article (the interactive `okf-render`; a feature launch, **not** the J1 flagship above) | dev.to (canonical → personal site), Medium (`rel=canonical`) | `articles/okf-viewer/article.md` (checklist, claims and social snippets: `articles/okf-viewer/NOTES.md`) | [ ] |
 
 ## Before you publish — placeholders to replace
 
