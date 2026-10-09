@@ -1700,6 +1700,34 @@
     userMovedView = true;
   }
 
+  // === a canvas that changes size ===
+  // The drawing is fitted to the canvas it was built in, and the canvas
+  // changes size when the reader drags the side panel's splitter
+  // (okf-resize.js) or resizes the window. Until the reader pans or zooms, the
+  // view follows the canvas (applyIntent: Fit, a centred fragment); a moved view
+  // stays where it is. The size the drawing was built in is the first one
+  // compared with (the observer's first notification, which reports the size
+  // it was given, refits nothing), and a size that did not change refits
+  // nothing either. A hidden canvas (list mode) is drawn again, and fitted, by
+  // hooks.show.
+  var seenSize = null;
+  function followCanvas() {
+    if (canvas.hidden || !drawing) {
+      seenSize = null;
+      return;
+    }
+    var size = canvasSize();
+    var before = seenSize !== null ? seenSize : builtSize;
+    seenSize = size;
+    if (before === null || (before.w === size.w && before.h === size.h)) { return; }
+    applyIntent(size, simulation !== null);
+  }
+  if (typeof window.ResizeObserver === "function") {
+    new window.ResizeObserver(followCanvas).observe(canvas);
+  } else {
+    window.addEventListener("resize", followCanvas);
+  }
+
   // === start-up ===
   buildFacets();
   refresh();

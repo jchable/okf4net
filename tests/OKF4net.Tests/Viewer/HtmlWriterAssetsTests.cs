@@ -65,7 +65,7 @@ public class HtmlWriterAssetsTests
     [Fact]
     public void The_P1_assets_stay_embedded_and_their_properties_read_them()
     {
-        foreach (var name in new[] { "viewer.css", "viewer.js", "marked.min.js", "okf-theme.js", "okf-site.js", "okf-explorer.js", "okf-palette.js", "okf-toc.js" })
+        foreach (var name in new[] { "viewer.css", "viewer.js", "marked.min.js", "okf-theme.js", "okf-site.js", "okf-explorer.js", "okf-palette.js", "okf-toc.js", "okf-resize.js" })
         {
             Assert.Contains(name, ViewerAssets.Paths);
         }

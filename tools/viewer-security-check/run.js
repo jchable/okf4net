@@ -2086,6 +2086,12 @@ const CHROME_ANCHORS = [
   { chain: [BODY, /^\.okf-layout$/], exact: true },
   { chain: [BODY, /^\.okf-layout$/, /^main$/], exact: true },
   { chain: [BODY, /^\.okf-layout$/, /^main$/, /^\*$/], exact: true },
+  // The side-panel splitter (P4): okf-resize.js makes it a direct child of the
+  // layout, and the layout's two state attributes select the rest. A direct
+  // child of body > .okf-layout is never body content (that lives in main).
+  { chain: [BODY, /^\.okf-layout(?:\[data-okf-resiz(?:ed|ing)\])?$/, /^\.okf-splitter(?![\w-])/] },
+  { chain: [BODY, /^\.okf-layout\[data-okf-resized\]$/, /^#okf-context(?![\w-])/] },
+  { chain: [BODY, /^\.okf-layout\[data-okf-resizing\]$/], exact: true },
 ];
 
 // An optional leading root-state compound (attributes only, never a class).

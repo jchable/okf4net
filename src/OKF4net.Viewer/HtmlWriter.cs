@@ -568,6 +568,7 @@ public static class HtmlWriter
     /// </summary>
     internal static readonly string[] PageScripts =
     [
+        "okf-resize.js",
         "marked.min.js",
         "viewer.js",
         "okf-index.js",
@@ -839,7 +840,7 @@ public static class HtmlWriter
 
     /// <summary>The scripts at the end of the graph page's body, in this order (spec §12.5, §12.6).</summary>
     private static readonly string[] GraphScripts =
-        ["okf-index.js", "okf-site.js", "okf-shapes.js", "okf-palette.js", "okf-sim.js", "okf-graph.js"];
+        ["okf-resize.js", "okf-index.js", "okf-site.js", "okf-shapes.js", "okf-palette.js", "okf-sim.js", "okf-graph.js"];
 
     /// <summary>
     /// The fixed skeleton <c>okf-graph.js</c> fills (spec §12.5). Written with
@@ -863,7 +864,7 @@ public static class HtmlWriter
     /// <summary>
     /// The global graph page (spec §12.5): the shared document start and header
     /// in their <c>graph</c> view, the fixed skeleton <c>okf-graph.js</c> fills,
-    /// and its six scripts. The only method that writes this page or loads
+    /// and its seven scripts. The only method that writes this page or loads
     /// <c>okf-sim.js</c> and <c>okf-graph.js</c> (§12.0). The page sits at the
     /// site root, so its root prefix is empty. It renders no markdown: no
     /// payload, no <c>marked</c>, no <c>viewer.js</c>. <paramref name="graphPage"/>
