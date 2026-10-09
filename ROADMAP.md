@@ -38,19 +38,27 @@ are the concrete entry points.
   exists** (`BundleLoadPerformanceTests`, a 2,001-concept synthetic bundle,
   [#6](https://github.com/jchable/okf4net/issues/6)) — it prints its timings
   and gates only on a pathology ceiling, not on a target.
-- Bundle viewer: **static render shipped** as the standalone `okf-render`
-  binary (`OKF4net.Render`, over `OKF4net.Viewer`) — split out of `okf`
-  itself so the CI-facing validator does not carry the viewer's JavaScript.
+- Bundle viewer: **interactive viewer shipped** (on `dev`, in the next
+  `okf-render` release) as the standalone `okf-render` binary
+  (`OKF4net.Render`, over `OKF4net.Viewer`) — split out of `okf` itself so
+  the CI-facing validator does not carry the viewer's JavaScript. A generated
+  site opens straight from disk and has a tree explorer, a "Jump to" palette, a
+  theme toggle, a contents panel, a local graph for each concept (1–2 hops,
+  enlargeable, with a resizable side column) and a global graph page
+  (`graph.html`: deterministic layout computed in the browser, facets, a
+  detail drawer, keyboard and text equivalents) — see the
+  [interactive viewer design](docs/superpowers/specs/2026-10-06-okf-viewer-interactive-design.md)
+  (the global graph is [#162](https://github.com/jchable/okf4net/issues/162),
+  re-scoped into `okf-render` by design decision A4).
   The live-server half of [#40](https://github.com/jchable/okf4net/issues/40)
-  was **dropped, and the issue closed** — the interactive, always-fresh
-  viewing it was meant to provide is being pursued as a VS Code extension
-  ([#163](https://github.com/jchable/okf4net/issues/163)) instead, which reaches the same goal from inside the editor without
-  a local HTTP server, and reaches full-text search by the same route (an
+  was **dropped, and the issue closed**. What a static site cannot do is
+  always-fresh viewing and full-text search: both are pursued as a VS Code
+  extension ([#163](https://github.com/jchable/okf4net/issues/163)), which
+  reaches them from inside the editor without a local HTTP server (an
   extension host is a process, so it can have the .NET side run
-  `ConceptSearch` rather than mirroring its weights in JavaScript). What the
-  server would have added over `okf-render` alone was one saved command
-  invocation per edit; search was the only capability that genuinely
-  required it, and the extension gets that too.
+  `ConceptSearch` rather than mirroring its weights in JavaScript — the
+  viewer's "Jump to" palette is deliberately not search: it matches titles,
+  ids and tags only).
   - **The client-side XSS defense is guarded by a JS harness, not by xunit.**
     xunit runs on .NET and cannot execute JavaScript, so
     `tests/OKF4net.Tests/Viewer/ViewerAssetsTests.cs` only smoke-checks for
