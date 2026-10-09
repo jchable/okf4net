@@ -1,7 +1,10 @@
 # Viewer interactif (`okf-render`) — design
 
 Date : 2026-10-06
-Statut : révision 15 (2026-10-09) : P1 et P1.1 livrés et recettés ; arbitrages
+Statut : révision 15 (2026-10-09) : P1, P1.1, P2 et P3 livrés et recettés,
+plus trois changements du propriétaire après P3 (formes des graphes à 0,7 et
+carré vert, séparateur de la colonne de droite, graphe local agrandi en
+fenêtre modale : révisions 13 à 15) ; arbitrages
 A15–A30 rendus ; plans de P1.1, P2 et P3 rédigés en parallèle depuis la
 révision 6, leurs lacunes de spec tranchées ici ; aucun point ouvert (§13)
 
@@ -723,7 +726,7 @@ fige en revanche l'ensemble d'arêtes de `okf graph` (A3).
   thème, `assets/okf-index.js` (schéma v1), panneau droit avec sommaire,
   fragments (§5) et backlinks. Documentation (`CLAUDE.md`, README, ROADMAP)
   faite.
-- **P1.1 — fidélité** (A15, A16, A18, A19, A22–A30 ; tout ce que §11 marque
+- **P1.1 — fidélité, livré** (2026-10-08, recette et revue finale) (A15, A16, A18, A19, A22–A30 ; tout ce que §11 marque
   « P1.1 ») : schéma d'index v2 (§12.1) et sa mesure (§3.6) ; module de formes
   et légendes (§12.2) ; en-tête des **trois** vues, y compris celle de
   `graph.html` (§12.3), et nom du fichier du graphe ; colonne centrale (fil
@@ -737,10 +740,10 @@ fige en revanche l'ensemble d'arêtes de `okf graph` (A3).
   pages, repères de P2 et P3, sections réservées dans `viewer.css`, chargeur
   des cas de tranche dans `run.js`, `ACCEPTANCE.md` et recette (§12.7,
   §12.8). P1.1 ne crée **aucun** fichier de P2 ou de P3.
-- **P2 — graphe local** (§4.3, §12.4) : crée `okf-local.js` et l'inscrit dans
+- **P2 — graphe local, livré** (2026-10-08, recette `p2.js`) (§4.3, §12.4) : crée `okf-local.js` et l'inscrit dans
   la table des scripts des pages (une ligne de C#, à son repère) ; sa section
   de `viewer.css`, `cases/p2.js`, ses fixtures `p2-`, sa recette.
-- **P3 — graphe global** (§4.2, §4.3, §12.5) : crée `okf-sim.js` et
+- **P3 — graphe global, livré** (2026-10-08, recette `p3.js`, revues finales) (§4.2, §4.3, §12.5) : crée `okf-sim.js` et
   `okf-graph.js`, écrit `graph.html` par `HtmlWriter.RenderGraph` (la seule
   méthode qui écrit cette page et charge ces deux scripts), sa section de
   `viewer.css`, `cases/p3.js`, ses fixtures `p3-`, sa recette.
@@ -1687,12 +1690,19 @@ window.OkfShapes = Object.freeze({
   par `createElementNS("http://www.w3.org/2000/svg", nom)` ; éléments : `svg`,
   `g`, `circle`, `rect`, `path`, `line`, `text`, `title`, `defs`, `marker` ;
   attributs : `viewBox`, `width`, `height`, `class`, `aria-hidden`,
-  `focusable`, `role`, `aria-label`, `tabindex`, `id` (valeurs fixes `okf-…`
-  seulement), `cx`, `cy`, `r`, `x`, `y`, `x1`, `y1`, `x2`, `y2`, `d`,
-  `stroke-width`, `stroke-dasharray`, `text-anchor`, `dominant-baseline`,
-  `marker-end`, `refX`, `refY`, `markerWidth`, `markerHeight`, `orient`,
-  `transform` (seulement `translate(a b) scale(s)`, pour le pan/zoom). Aucun
-  autre nom.
+  `focusable`, `role`, `aria-label`, `aria-current` (révision 10 : valeur
+  `true`, sur un `<g>` de nœud du graphe global seulement), `tabindex`, `id`
+  (valeurs fixes `okf-…` seulement), `cx`, `cy`, `r`, `x`, `y`, `x1`, `y1`,
+  `x2`, `y2`, `d`, `stroke-width`, `stroke-dasharray`, `text-anchor`,
+  `dominant-baseline`, `marker-end`, `refX`, `refY`, `markerWidth`,
+  `markerHeight`, `orient`, `transform` sous deux formes seulement :
+  `translate(a b) scale(s)` sur le `<g class="okf-graph-viewport">` du
+  pan/zoom, et `translate(x y)` sur le `<g class="okf-node">` d'un nœud du
+  graphe global, dessiné autour de (0, 0) puis placé ainsi (révision 12). Aucun
+  autre nom. Le harnais l'épingle : `assertFixedSvg` de `cases/p2.js` (graphe
+  local et fenêtre de X12, sans `aria-current`) et de `cases/p3.js` (page du
+  graphe : `aria-current="true"` sur un `<g>`, les deux formes de `transform`
+  selon la classe du `<g>`).
 - `d`, `transform`, `stroke-width`, `stroke-dasharray` et toute coordonnée sont
   construits à partir de nombres vérifiés par `Number.isFinite` ; sinon
   `TypeError` (bogue de l'appelant). Aucun texte du bundle ne devient un nom de
