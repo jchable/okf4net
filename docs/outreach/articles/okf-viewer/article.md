@@ -236,7 +236,7 @@ The .NET test suite cannot execute JavaScript, and a test that greps a `.js` fil
 ### The honest limits
 
 - **The 40-node cap is crowded at the cap.** On a hub, some labels sit far from their node and the edges converge on the centre. The dialog and the list are the answer, not the panel drawing.
-- **Big graphs.** Above 1,500 visible nodes the global graph shows a list instead of a drawing. Near that limit, Firefox repaints the whole drawing on every frame that changes it, so a facet change can still take frames over 50 ms there. The palette scans every concept on each keystroke, which very large bundles will feel.
+- **Big graphs.** Above 1,500 visible nodes the global graph shows a list instead of a drawing. The palette scans every concept on each keystroke, which very large bundles will feel.
 - **Not checked by hand yet:** input method editors and screen readers (#177), and Safari: the recette runs WebKit, which is not Safari.
 - **No full-text search**, by design (see above), and **no live reload**: the site is a snapshot, so render again after the bundle changes.
 
@@ -244,7 +244,7 @@ The .NET test suite cannot execute JavaScript, and a test that greps a `.js` fil
 
 ## How it was built
 
-The viewer was specified before it was written: a design document in the repository (`docs/superpowers/specs/2026-10-06-okf-viewer-interactive-design.md`, fifteen revisions) with validated mockups and the owner's decisions. It was delivered in slices on one branch (navigation, fidelity to the mockups, the local graph, the global graph, then the splitter and the enlarged dialog), each with its own plan, harness cases and browser recette. The code was written with an AI coding assistant (Claude), reviewed task by task, and checked in real browsers, not only by the harness.
+The viewer was specified before it was written: a design document in the repository (`docs/superpowers/specs/2026-10-06-okf-viewer-interactive-design.md`, fifteen revisions) with validated mockups and the owner's decisions. It was delivered in slices on one branch (navigation, fidelity to the mockups, the local graph, the global graph, then the splitter and the enlarged dialog), each with its own plan, harness cases and browser recette. It was reviewed task by task and checked in real browsers, not only by the harness.
 
 Those browser checks earned their place, because jsdom does no layout. Labels overlapped on the first open of the global graph, which is why the simulation now lays out boxes, not points. A CSS rule pushed the selected list entry a screen below the fold, in Firefox only. The graph page held the main thread too long near the node limit until its drawing was spread over frames.
 

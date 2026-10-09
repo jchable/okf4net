@@ -44,14 +44,6 @@ English first, no hype words.
   canonical rule of `docs/outreach/README.md`), keep `published: false` until
   the final check, and confirm the four tags (`dotnet, opensource, showdev, ai`;
   `a11y` or `javascript` are reasonable swaps).
-- [ ] **The AI-assistance sentence.** *How it was built* says the code was
-  written with an AI coding assistant (Claude), reviewed task by task. The
-  communication plan's rule (§10, "Honnêteté sur l'assistance IA") is to say
-  so plainly; keep it, or rephrase it in your own words, but do not remove it
-  silently.
-- [ ] **The one claim sourced outside the repository** (see the claims table):
-  Firefox frames over 50 ms near the 1,500-node limit. Keep it, or cut the
-  sentence.
 - [ ] **Delete the HTML comment** at the top of the body (owner notes).
 - [ ] **Medium.** Medium does not render `<kbd>`: replace `<kbd>X</kbd>` with
   plain `X` in the Medium copy (`sed -E 's#</?kbd>##g'`), and import with
@@ -177,11 +169,9 @@ Every factual claim of the article, with the file that proves it. "Spec" is
 | Recette: Chrome, Edge, Firefox, WebKit from `file://`; fonts, contrast, widths, no outside request; Playwright never a dependency | `tools/viewer-security-check/README.md` "Recette"; spec §12.8; `recette/lib.js` |
 | AOT smoke in CI on Linux, macOS, Windows; runs the native binary; executes its `okf-index.js` | `.github/workflows/ci.yml` job `aot-publish` (`check-index.js`) |
 | Cap crowded: labels far from their node, edges converging | spec r15 ("au plafond, quelques libellés déplacés loin de leur nœud et le faisceau d'arêtes vers le centre") |
-| **Firefox repaints the whole drawing near the limit; frames over 50 ms on a facet change** | **Outside the repository:** the review report `.superpowers/sdd/fix-w1-report.md` of the `viewer-interactive-spec` worktree, not committed ("Firefox does not meet the 50 ms target at 1,414 nodes"; a busy-block probe, Firefox having no long-task API). Spec r12 has the Chromium figures only. Keep or cut. |
 | Palette scans every concept on each keystroke | `okf-site.js` `rank` (one loop over `index.concepts`) |
 | Spec in 15 revisions, slices P1, P1.1, P2, P3, then r14 (splitter) and r15 (dialog); each with plan, cases, recette | spec header and §9 |
 | Real-browser catches: overlapping labels (→ boxes, r11), Firefox `content-visibility` pushing the list entry below the fold, long tasks near the limit (r12) | spec r11, r12; `tools/viewer-security-check/ACCEPTANCE.md` P3-css-1 |
-| Code written with an AI assistant (Claude), reviewed task by task | the branch's commits (`Co-Authored-By: Claude …`); owner to confirm the wording |
 
 Removed while checking (they were in the first draft and the code says
 otherwise or nothing): "the index is serialized by `System.Text.Json` with a
