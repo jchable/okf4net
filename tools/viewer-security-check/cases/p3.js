@@ -695,13 +695,13 @@ function registerSim(h) {
 
 // acme_retail's graph as the page hands it to okf-sim: nodes in index order,
 // links merged, and per node [halfWidth, above, below] -- the shape (graph
-// context: square 30, circle 26, diamond 31.1, ring 26, triangle 24) and its
+// context: square 21, circle 18, diamond 22, ring 18, triangle 17) and its
 // label (the last id segment, 7 an advance, ending 20 under the shape).
 const ACME = {
   nodeCount: 9,
   edges: [[0, 1], [2, 0], [2, 3], [2, 4], [3, 2], [4, 1], [5, 0], [5, 2], [5, 3], [6, 0], [6, 1], [6, 2], [6, 4], [6, 8]],
-  boxes: [[66.5, 15, 35], [38.5, 15, 35], [42, 13, 33], [66.5, 13, 33], [24.5, 13, 33], [52.5, 15.55, 35.55],
-    [66.5, 15.55, 35.55], [31.5, 13, 33], [21, 12, 32]],
+  boxes: [[66.5, 10.5, 30.5], [38.5, 10.5, 30.5], [42, 9, 29], [66.5, 9, 29], [24.5, 9, 29], [52.5, 11, 31],
+    [66.5, 11, 31], [31.5, 9, 29], [21, 8.5, 28.5]],
 };
 
 // A graph whose every node has the same box.
@@ -837,7 +837,9 @@ function registerSimBoxes(h) {
 
   // FNV-1a of acme_retail's layout with its boxes, default options (see the
   // other snapshots: a change here is a reviewed change of the layout).
-  const SNAPSHOT_ACME_BOXED = "3842fc78";
+  // 3842fc78 -> 796cb211 with the boxes of the 0.7 shapes (2026-10-09), the
+  // page's own boxes and zero overlaps checked in Chromium, Firefox and WebKit.
+  const SNAPSHOT_ACME_BOXED = "796cb211";
 
   h.check("sim: with boxes, same input, same layout -- two loads and four slicings; work stays within the per-cell ceiling", () => {
     const reference = {};
@@ -2332,7 +2334,7 @@ function registerFragment(h) {
     // jsdom has no layout: the canvas is taken as 800 x 600.
     const t = viewportTransform(doc);
     const p = labelPoint(nodeNamed(doc, "p3-graph/b"));
-    const size = 30; // a square in the graph context (§12.2): label baseline at cy + 15 + 16
+    const size = 21; // a square in the graph context (§12.2): label baseline at cy + 10.5 + 16
     const cx = t.a + p.x * t.s;
     const cy = t.b + (p.y - size / 2 - 16) * t.s;
     h.assert(Math.abs(cx - 400) < 1 && Math.abs(cy - 300) < 1, `the selection is drawn at (${cx}, ${cy}), not centred`);
@@ -3509,7 +3511,7 @@ function registerPointer(h) {
     h.assert(Math.abs(t.s - fitted.s) < 0.001, `the fragment left the zoom at ${t.s}, the fit is ${fitted.s}`);
     const p = labelPoint(nodeNamed(doc, "p3-graph/b"));
     const cx = t.a + p.x * t.s;
-    const cy = t.b + (p.y - 15 - 16) * t.s; // a square in the graph context: label baseline at cy + 15 + 16
+    const cy = t.b + (p.y - 10.5 - 16) * t.s; // a square in the graph context: label baseline at cy + 10.5 + 16
     h.assert(Math.abs(cx - 400) < 1 && Math.abs(cy - 300) < 1, `the fragment's node is drawn at (${cx}, ${cy}), not centred`);
     click(window, zoomButton(doc, "Zoom in"));
     changed = nextHashChange(window);
@@ -3745,7 +3747,7 @@ function nodeCentre(window, doc, g) {
   return { x: t.a + p.x * t.s, y: t.b + (p.y - half - 16) * t.s };
 }
 
-// The focus contour (G14: side + 20, dashed) of a node in canvas pixels, stroke included.
+// The focus contour (G14: side + 16, dashed) of a node in canvas pixels, stroke included.
 function contourBox(doc, g) {
   const t = viewportTransform(doc);
   const r = g.querySelector(".okf-node-focus");
@@ -3855,7 +3857,7 @@ function registerPointerFix(h) {
     h.assert(Math.abs(viewportTransform(doc).a - t.a - 30) < 0.01, "a pan went on after the capture was lost");
   });
 
-  h.checkAsync("fix M1: the reveal covers the focus contour (G14, side + 20), not only the shape and its label", async () => {
+  h.checkAsync("fix M1: the reveal covers the focus contour (G14, side + 16), not only the shape and its label", async () => {
     const W = 340;
     const H = 260;
     const { window, doc, scheduler } = await openGraph(h, {

@@ -353,16 +353,29 @@ function registerPure(h) {
   check("local graph: no drawn shape touches the centre, its selection square or its label, or leaves the view, for every node count up to the cap", () => {
     const { OkfLocal } = okfLocal();
     const { width, height, cx, cy } = OkfLocal.VIEW;
-    // A shape reaches 13 from its centre (the diamond: 25.5 / 2); a label sits
+    // A shape reaches 9 from its centre (the diamond: 18 / 2); a label sits
     // at baseline y + 14 under it, 3 of descender. The centre's selection
-    // square is +- 20 and its label (X7: baseline cy + 14 + 6 + 14, Space Mono
-    // 10.5, up to about 120 wide) fills x 89..209, y 140..156.
-    const half = 13;
-    const band = { x1: 89, x2: 209, y1: 140, y2: 156 };
+    // square is at most +- 15 (the diamond: (22 + 8) / 2) and its label (X7:
+    // baseline cy + size / 2 + 4 + 14, from cy + 26.5 for the triangle to
+    // cy + 29 for the diamond; Space Mono 10.5, up to about 120 wide) fills
+    // x 89..209, y 132..151.
+    const half = 9;
+    const square = 15;
+    const band = { x1: 89, x2: 209, y1: 132, y2: 151 };
+    // Those bounds are the size table's (spec §12.2), read here so a larger
+    // shape cannot slip past them.
+    const shapesWindow = okfLocal();
+    shapesWindow.eval(fs.readFileSync(path.join(path.dirname(LOCAL_JS), "okf-shapes.js"), "utf8"));
+    const S = shapesWindow.OkfShapes;
+    for (const [kind, s] of Object.entries(S.SIZES.local)) { assert(s.size / 2 <= half, `local ${kind} reaches ${s.size / 2}, over ${half}`); }
+    for (const [kind, s] of Object.entries(S.SIZES.localCenter)) {
+      assert((s.size + 8) / 2 <= square, `the centre's selection square of a ${kind} reaches ${(s.size + 8) / 2}, over ${square}`);
+      assert(s.size / 2 + 4 + 14 >= band.y1 + 12 - cy && s.size / 2 + 4 + 14 + 4 <= band.y2 - cy, `the centre label of a ${kind} leaves the band`);
+    }
     const problem = (n) => {
       if (n.x - half < 0 || n.x + half > width || n.y - half < 0 || n.y + half + 14 + 3 > height) { return "leaves the view"; }
       if (n.x + half > band.x1 && n.x - half < band.x2 && n.y + half > band.y1 && n.y - half < band.y2) { return "touches the centre's label"; }
-      if (n.x + half > cx - 20 && n.x - half < cx + 20 && n.y + half > cy - 20 && n.y - half < cy + 20) { return "touches the centre"; }
+      if (n.x + half > cx - square && n.x - half < cx + square && n.y + half > cy - square && n.y - half < cy + square) { return "touches the centre"; }
       return null;
     };
     const star = (direct, second) => {
@@ -565,14 +578,14 @@ function registerPage(h) {
       const size = S.SIZES[centre ? "localCenter" : "local"][kind];
       const label = g.lastElementChild;
       assert(label.localName === "text" && label.textContent === window.OkfLocal.lastSegment(id), `node ${k}: label "${label.textContent}" for ${id}`);
-      // X7: baseline at cy + size / 2 + 14 (centre: + 6 more, under its square) unless
+      // X7: baseline at cy + size / 2 + 14 (centre: + 4 more, under its square) unless
       // another label or shape is there: then a whole number of rows (12) further under
       // or over it, or beside the shape (baseline cy + 4, plus whole rows), or against a
       // margin (OkfLocal.labels; the cases below pin the rule itself).
       const anchor = label.getAttribute("text-anchor");
       assert(anchor === "middle" || anchor === "start" || anchor === "end", `node ${k}: label anchor ${anchor}`);
       const node = hood.nodes[k];
-      const half = size.size / 2 + (centre ? 6 : 0);
+      const half = size.size / 2 + (centre ? 4 : 0);
       const fromUnder = Number(label.getAttribute("y")) - (node.y + half + 14);
       const fromOver = node.y - half - 4 - Number(label.getAttribute("y"));
       const rows = (d) => Math.abs(Math.round(d / 12) * 12 - d) < 0.02 && Math.round(d / 12) >= 0 && Math.round(d / 12) <= 10;
@@ -696,7 +709,7 @@ function registerPage(h) {
       const kind = b.key < C ? S.kindOf(index, b.key) : "ghost";
       const size = S.SIZES[centre ? "localCenter" : "local"][kind].size;
       const gap = Math.hypot(x2 - b.x, y2 - b.y);
-      assert(gap >= size / 2 + (centre ? 6 : 0) - 0.05, `edge ${k}: its arrow ends ${gap.toFixed(2)} from the centre of a ${size} px shape, under the shape`);
+      assert(gap >= size / 2 + (centre ? 4 : 0) - 0.05, `edge ${k}: its arrow ends ${gap.toFixed(2)} from the centre of a ${size} px shape, under the shape`);
     });
     assert(paired >= 2, `${paired} opposite edges: the fixture no longer exercises the offset`);
   });

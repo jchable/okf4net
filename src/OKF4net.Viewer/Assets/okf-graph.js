@@ -945,12 +945,12 @@
 
   // A node's shape and its label (estimated width, ending 20 below the
   // shape), in graph coordinates; with `outline`, also its focus contour (G14:
-  // a square of side + 20, centred, its stroke half outside it). The one
+  // a square of side + 16, centred, its stroke half outside it). The one
   // measure of what "the node" covers, for the layout's boxes, the fit and
   // bringing a focused node into view.
   function nodeBox(node, outline) {
     var h = node.size.size / 2;
-    var reach = outline ? h + 10 + node.size.focus / 2 : h;
+    var reach = outline ? h + 8 + node.size.focus / 2 : h;
     var wide = Math.max(reach, node.chars * LABEL_ADVANCE / 2);
     return { l: node.x - wide, r: node.x + wide, t: node.y - reach, b: node.y + h + 20 };
   }
@@ -1675,7 +1675,7 @@
 
   // 2.4.11: a focused node is not left outside the canvas, or under its
   // edge. The view pans by the least that brings the node's shape, its label
-  // and its focus contour (G14, side + 20, stroke included) inside
+  // and its focus contour (G14, side + 16, stroke included) inside
   // REVEAL_MARGIN (a box wider than the canvas is centred), and a view that
   // moved is the reader's: it counts as one (the layout, the list's return, a
   // rebuild's fit would otherwise take it back). It is keyboard navigation

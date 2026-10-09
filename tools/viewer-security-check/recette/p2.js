@@ -169,7 +169,7 @@ async function run(ctx) {
         return {
           title, kind, centre, expected: s.size - s.stroke, measured: Math.max(box.width, box.height),
           label: { size: ts.fontSize, weight: ts.fontWeight, family: ts.fontFamily },
-          ring: ring ? { side: ring.getBBox().width, expected: s.size + 12, width: rs.strokeWidth, color: rs.stroke } : null,
+          ring: ring ? { side: ring.getBBox().width, expected: s.size + 8, width: rs.strokeWidth, color: rs.stroke } : null,
         };
       });
       const lines = Array.from(svg.querySelectorAll("line.okf-local-edge")).map((l) => {
@@ -280,7 +280,10 @@ async function run(ctx) {
       const id = g.querySelector("title").textContent;
       return { id, path: window.OKF_INDEX.concepts.find((c) => c.id === id).path };
     });
-    await page.locator("#okf-local-graph .okf-local-canvas > svg g.okf-local-node:not(.okf-selected)").first().click();
+    // On the shape itself, as a reader aims: since the shapes are 0.7 of the
+    // mockups' (2026-10-09), the middle of the node's box (shape and label) can
+    // fall in the gap between them, where WebKit hits the svg, not the node.
+    await page.locator("#okf-local-graph .okf-local-canvas > svg g.okf-local-node:not(.okf-selected)").first().locator('[class^="okf-shape-"]').click();
     await page.waitForURL((url) => url.href.endsWith(target.path));
     const landed = page.url();
     await page.goBack();

@@ -14,7 +14,9 @@
 /* === end @font-face === */
 
 :root {
-  /* Tokens (spec §11.0): the light values are the mockups'. */
+  /* Tokens (spec §11.0): the light values are the mockups', but for
+     --okf-type-1, green in both themes rather than ink (owner's request,
+     2026-10-09), so the square is no longer read as text colour. */
   --white: #ffffff;
   --ink: #101014;
   --blue: #1a3fd6;
@@ -27,7 +29,7 @@
   --edge: #8a8a94;
   --stale: #b4540a;
   --okf-type-0: #1a3fd6;
-  --okf-type-1: #101014;
+  --okf-type-1: #1e7d32;
   --okf-type-2: #b4540a;
   --okf-type-3: #6a6a72;
   --okf-type-4: #0b6e69;
@@ -73,7 +75,7 @@ body > .okf-layout > main > .errors h2 { color: var(--red); font-size: 18px; }
 :root[data-theme="dark"] {
   --white: #101014; --ink: #f2f2f5; --blue: #8fa5f5; --blue-hover: #b7c5f8; --blue-soft: #1a1a22;
   --gray: #9a9aa2; --hair: #2a2a33; --red: #ef6b5e; --ghost: #ef6b5e; --edge: #8a8a94; --stale: #e08a3e;
-  --okf-type-0: #8fa5f5; --okf-type-1: #f2f2f5; --okf-type-2: #e08a3e; --okf-type-3: #9a9aa2;
+  --okf-type-0: #8fa5f5; --okf-type-1: #5dc26b; --okf-type-2: #e08a3e; --okf-type-3: #9a9aa2;
   --okf-type-4: #2fb3a8; --okf-type-5: #9a9aa2;
   --backdrop: rgba(0, 0, 0, .55); --shadow: none;
   color-scheme: dark;
@@ -82,7 +84,7 @@ body > .okf-layout > main > .errors h2 { color: var(--red); font-size: 18px; }
   :root:not([data-theme="light"]) {
     --white: #101014; --ink: #f2f2f5; --blue: #8fa5f5; --blue-hover: #b7c5f8; --blue-soft: #1a1a22;
     --gray: #9a9aa2; --hair: #2a2a33; --red: #ef6b5e; --ghost: #ef6b5e; --edge: #8a8a94; --stale: #e08a3e;
-    --okf-type-0: #8fa5f5; --okf-type-1: #f2f2f5; --okf-type-2: #e08a3e; --okf-type-3: #9a9aa2;
+    --okf-type-0: #8fa5f5; --okf-type-1: #5dc26b; --okf-type-2: #e08a3e; --okf-type-3: #9a9aa2;
     --okf-type-4: #2fb3a8; --okf-type-5: #9a9aa2;
     --backdrop: rgba(0, 0, 0, .55); --shadow: none;
     color-scheme: dark;
