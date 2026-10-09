@@ -10,6 +10,58 @@ and this project adheres to
 
 ### Added
 
+- **Interactive `okf-render` pages.** Delivered in slices on one branch (P1,
+  P1.1, P2 and P3 are all in); the OKF4net core API and `viewer.js` are
+  unchanged throughout.
+  - *P1 — navigation.* A tree explorer of the bundle (a concept that is also
+    a folder opens and expands separately; trust tiers and staleness from
+    `ConceptAudit`, staleness evaluated when the page is read), a "Jump to"
+    palette (Ctrl+K or `/`, fixed-tier matching on titles, ids and tags — not
+    full-text search), a light/dark toggle, and a side panel with contents and
+    backlinks. Headings get generated `okf-h-` anchors, so author links such
+    as `#usage` now land. The data comes from a generated
+    `assets/okf-index.js` (`SiteIndex`, `IndexScript`). The jsdom harness
+    loads a site generated from a hostile fixture bundle and needs the .NET SDK.
+  - *P1.1 — the validated mockups.* One header on every page (bundle name,
+    concept and link counts, a "Global graph" link, "Skip to content"); a
+    centre column with a breadcrumb, the title once (a leading H1 that repeats
+    it is dropped), chips for type, `status`, trust with its verifier and
+    date, and staleness, and a folding frontmatter box; types drawn as shapes
+    and colours (`OkfShapes`, ranked by frequency in the index, schema v2,
+    which also carries descriptions), explorer rows by id segment with type
+    chips that filter, a legend, the current section marked in the contents,
+    glyphs and a count on "Referenced by", the palette redrawn; Inter, Inter
+    Tight and Space Mono (SIL OFL 1.1) embedded; a tooled, manual browser
+    recette under `tools/viewer-security-check/recette/`.
+  - *P2 — local graph.* A concept page that has neighbours gets a
+    "Neighbourhood" section in its context panel: the concept and its
+    neighbours at one hop, or two with the "2 hops" button, drawn in rings
+    (at most 40 nodes, "+N omitted" beyond; links to absent concepts as
+    ghosts that never navigate), an equivalent list of every neighbour with
+    its relation to the concept, and an "Open in graph" link. An "Enlarge the
+    neighbourhood" button opens it in a modal dialog with a larger drawing and
+    the list beside it. The drawing's layout is a pure function of the site
+    index (`OkfLocal`), tested directly.
+  - *P3 — global graph.* `graph.html` at the site root (`graph-1.html`… when
+    a concept already uses the name), written by `okf-render` and opened by
+    every page's "Global graph" link, draws the bundle's body links with a
+    force layout computed in the browser by `okf-sim.js`, which is
+    deterministic (same bundle, same initial layout on every conforming
+    engine) and whose work is counted, never timed, and spread over animation
+    frames. Facets by type, trust, freshness and tags (AND between facets,
+    OR within one), a "dim unmatched" option and a labels toggle; pan, wheel
+    and button zoom, "Fit", and draggable nodes; a detail drawer for the
+    selected concept; a "List" equivalent of the drawing, which replaces it
+    above 1,500 visible nodes; and a keyboard contract (one tab stop; Page
+    Up/Down, Home/End, arrows, Space, Enter). `graph.html#<concept id>` opens
+    the graph with that concept selected, and a concept page's link carries
+    its id.
+  - *Resizable side panel.* The right-hand column (the context panel, the
+    graph drawer) has a keyboard- and pointer-operable splitter
+    (`okf-resize.js`): drag it, or use the arrow keys (Shift for larger steps,
+    Home/End, Enter to reset). The width, bounded by 240 px, 60% of the window,
+    720 px and a 360 px middle column, is kept in `localStorage`, ignored below
+    1,100 px, and the global graph refits when its canvas changes size.
 - **`samples/agents-quickstart`**, an `OKF4net.Agents` sample that runs with
   `dotnet run` and needs no LLM endpoint, API key or network access (#5). Over
   `bundles/ga4`, it lists the read-only tools, calls `Search` and
@@ -30,6 +82,25 @@ and this project adheres to
 
 ### Changed
 
+- **The `okf-render` release archives carry its licences:** `NOTICE`, `LICENSE`,
+  `LICENSE.GPL-3.0`, the embedded fonts' SIL OFL texts (`licenses/OFL-*.txt`)
+  and the MIT licence text of the embedded marked (`licenses/marked-LICENSE.md`,
+  marked's `LICENSE.md` at v15.0.12, verbatim; also written into every generated
+  site under `assets/licenses/`) beside the binary, which stays at the archive
+  root; the `okf` archives are unchanged, and CI checks each archive's exact
+  file list. `packaging/install.sh` now installs these files too (in
+  `<prefix>/share/doc/okf-render` when the destination is `<prefix>/bin`,
+  otherwise `<dir>/okf-render-licenses`) instead of dropping them.
+- **`NOTICE` and the README now state both third-party exceptions:** marked
+  (MIT) and the three embedded font families (SIL OFL 1.1), both only in
+  `OKF4net.Viewer` and the `okf-render` binary, never in `okf`.
+- **`okf-render --help` mentions the local and global link graphs.**
+- **`IndexScript.Render` refuses an index whose edges or tree nodes point
+  outside its concepts (or, for a ghost edge, its ghosts)** with an
+  `ArgumentException`, as it already did for a `TypeIndex` outside the types
+  table; `SiteIndex.Build` never produces one. The viewer's per-script
+  `ViewerAssets` properties other than `Css`, `MarkedJs` and `ViewerJs` are
+  now `internal`.
 - **`okf --help` now lists the bare `help` and `version` commands (#11).** Both
   already worked as aliases of `-h`/`--help` and `-V`/`--version`, but nothing
   said so; a test now pins that each answers exactly like its flag form.

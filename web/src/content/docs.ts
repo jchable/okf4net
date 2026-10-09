@@ -25,9 +25,9 @@ export interface DocsTreeEntry {
 }
 
 /**
- * The docs bundle tree, matching `website/docs/index.html`'s
- * `<ul class="tree">` (commit `40fe17f`, lines ~37-47): index,
- * getting-started, guides, library, cli, agents, catalog, mcp, spec.
+ * The docs bundle tree, in sidebar order. It started as `website/docs/index.html`'s
+ * `<ul class="tree">` (commit `40fe17f`, lines ~37-47) and has grown since: index,
+ * getting-started, guides, library, cli, viewer, agents, catalog, mcp, spec.
  */
 export const docsTree: DocsTreeEntry[] = [
   { slug: 'index', label: 'index.md' },
@@ -35,6 +35,7 @@ export const docsTree: DocsTreeEntry[] = [
   { slug: 'guides', label: 'guides.md' },
   { slug: 'library', label: 'library.md' },
   { slug: 'cli', label: 'cli.md' },
+  { slug: 'viewer', label: 'viewer.md' },
   { slug: 'agents', label: 'agents.md' },
   { slug: 'catalog', label: 'catalog.md' },
   { slug: 'mcp', label: 'mcp.md' },

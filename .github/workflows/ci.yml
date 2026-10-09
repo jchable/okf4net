@@ -72,6 +72,12 @@ jobs:
           cache: npm
           cache-dependency-path: tools/viewer-security-check/package-lock.json
 
+      # `npm test`'s pretest step generates the site the interactive-viewer
+      # cases load, with the real okf-render.
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
       - name: Install harness dependencies
         working-directory: tools/viewer-security-check
         run: npm ci
@@ -116,6 +122,11 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      # check-index.js executes the okf-index.js the native okf-render writes.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
       - name: Derive declared version
         shell: pwsh
         run: |
@@ -130,11 +141,38 @@ jobs:
         shell: pwsh
         run: packaging/Publish-Cli.ps1 -Rid ${{ matrix.rid }} -Version $env:DECLARED -OutDir dist -ProjectDir src/OKF4net.Render -BinName okf-render
 
-      - name: Archives exist, are non-empty, and (on Unix) their binaries are executable
+      - name: Archives exist, hold exactly their declared files, and (on Unix) their binaries are executable
         shell: pwsh
         run: |
           $isWin = '${{ matrix.rid }}'.StartsWith('win-')
           $ext = if ($isWin) { 'zip' } else { 'tar.gz' }
+          $exe = if ($isWin) { '.exe' } else { '' }
+
+          # Each archive's files, exactly (packaging/New-ReleaseArchive.ps1):
+          # the binary AT THE ROOT -- install.sh extracts "$BIN" from there and
+          # winget's RelativeFilePath points there -- and, for okf-render, the
+          # licences that must travel with it: NOTICE, the LGPL and GPL texts,
+          # the SIL OFL text of each font family OKF4net.Viewer embeds, and the
+          # MIT licence text of the marked it embeds.
+          $expected = @{
+            'okf'        = @("okf$exe")
+            'okf-render' = @("okf-render$exe", 'NOTICE', 'LICENSE', 'LICENSE.GPL-3.0',
+                             'licenses/OFL-Inter.txt', 'licenses/OFL-InterTight.txt', 'licenses/OFL-SpaceMono.txt',
+                             'licenses/marked-LICENSE.md')
+          }
+
+          function Get-ArchiveEntries([string]$archive) {
+            if ($isWin) {
+              Add-Type -AssemblyName System.IO.Compression.FileSystem
+              $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $archive).Path)
+              try { $names = @($zip.Entries | ForEach-Object { $_.FullName }) } finally { $zip.Dispose() }
+            } else {
+              $names = @(tar tzf $archive)
+              if ($LASTEXITCODE -ne 0) { throw "tar list failed for $archive" }
+            }
+            # Directory entries hold no file; a zip may spell its separator "\".
+            @($names | ForEach-Object { $_ -replace '\\', '/' } | Where-Object { -not $_.EndsWith('/') })
+          }
 
           function Test-Archive([string]$bin) {
             $archive = "dist/$bin-$env:DECLARED-${{ matrix.rid }}.$ext"
@@ -143,6 +181,15 @@ jobs:
             if ($len -eq 0) { throw "archive is empty: $archive" }
             if (-not (Test-Path "$archive.sha256")) { throw "sha256 sidecar not found: $archive.sha256" }
             Write-Host "OK: $archive ($len bytes)"
+
+            $entries = Get-ArchiveEntries $archive
+            $diff = Compare-Object -CaseSensitive -ReferenceObject $expected[$bin] -DifferenceObject $entries
+            if ($diff) {
+              $missing = @($diff | Where-Object SideIndicator -eq '<=' | ForEach-Object InputObject)
+              $extra = @($diff | Where-Object SideIndicator -eq '=>' | ForEach-Object InputObject)
+              throw "$archive does not hold exactly its declared files -- missing: [$($missing -join ', ')]; unexpected: [$($extra -join ', ')]"
+            }
+            Write-Host "OK: $archive holds $($entries -join ', ')"
 
             if (-not $isWin) {
               # The bug this whole packaging change exists to prevent:
@@ -197,7 +244,32 @@ jobs:
           & $env:OKF_RENDER_BIN tests/fixtures/appendix_a --out $outDir
           if ($LASTEXITCODE -ne 0) { throw "okf-render failed" }
           if (-not (Test-Path "$outDir/index.html")) { throw "okf-render did not write $outDir/index.html" }
-          Write-Host "OK: okf-render wrote $outDir/index.html"
+          $indexScript = "$outDir/assets/okf-index.js"
+          if (-not (Test-Path $indexScript)) { throw "okf-render did not write $indexScript" }
+          node tools/viewer-security-check/check-index.js $indexScript
+          if ($LASTEXITCODE -ne 0) { throw "$indexScript does not execute as a usable site index" }
+          # Embedded assets come out of the NATIVE binary too (GetManifestResourceNames
+          # under AOT): the P1.1 scripts, the font and marked licences, and each of the four
+          # woff2 fonts by name (spec section 11.0, A26).
+          $assets = @("okf-shapes.js", "okf-page.js",
+                      "fonts/OFL-Inter.txt", "fonts/OFL-InterTight.txt", "fonts/OFL-SpaceMono.txt",
+                      "licenses/marked-LICENSE.md",
+                      "fonts/inter-latin.woff2", "fonts/inter-tight-latin.woff2",
+                      "fonts/space-mono-400-latin.woff2", "fonts/space-mono-700-latin.woff2")
+          foreach ($asset in $assets) {
+            if (-not (Test-Path "$outDir/assets/$asset")) { throw "okf-render did not write assets/$asset" }
+          }
+          # The graph page (spec section 12.5): found through the index's Global graph
+          # link (graph.html, or graph-1.html... on a name collision, A25).
+          $graphLink = Select-String -Path "$outDir/index.html" -Pattern 'id="okf-global-graph"[^>]*href="([^"#]+)' | Select-Object -First 1
+          if (-not $graphLink) { throw "okf-render wrote no Global graph link in $outDir/index.html" }
+          $graphPage = "$outDir/" + $graphLink.Matches[0].Groups[1].Value
+          if (-not (Test-Path $graphPage)) { throw "okf-render did not write $graphPage" }
+          if (-not (Select-String -Path $graphPage -Pattern 'id="okf-graph-layout"' -Quiet)) { throw "$graphPage lacks the graph skeleton" }
+          foreach ($script in 'okf-resize.js', 'okf-sim.js', 'okf-graph.js', 'okf-local.js') {
+            if (-not (Test-Path "$outDir/assets/$script")) { throw "okf-render did not write assets/$script" }
+          }
+          Write-Host "OK: okf-render wrote $outDir/index.html, an executable $indexScript, the P1.1 scripts, the fonts and the graph page $graphPage"
 
       # `okf --version` / `okf-render --version` each read
       # AssemblyInformationalVersionAttribute at runtime. The in-process

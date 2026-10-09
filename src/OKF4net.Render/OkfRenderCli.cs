@@ -59,9 +59,11 @@ public static class OkfRenderCli
         "USAGE:\n" +
         "    okf-render <bundle> --out <dir>\n" +
         "\n" +
-        "Generates one page per concept (frontmatter table + rendered body), a\n" +
-        "generated index, navigable cross-links with broken links flagged, and\n" +
-        "backlinks. The output is self-contained and opens straight off the\n" +
+        "Generates one page per concept (a head with breadcrumb, chips and a\n" +
+        "folding frontmatter box, then the rendered body), a generated index,\n" +
+        "navigable cross-links with broken links flagged, backlinks, and the\n" +
+        "interactive explorer, palette, contents and local and global link\n" +
+        "graphs. The output is self-contained and opens straight off the\n" +
         "filesystem -- no server needed.\n" +
         "\n" +
         "OPTIONS:\n" +

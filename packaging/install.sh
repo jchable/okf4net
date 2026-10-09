@@ -26,6 +26,12 @@
 # (created if it does not exist yet). This script never invokes sudo -- if
 # neither location is writable, pass --dir yourself.
 #
+# okf-render's archive also carries its licence files (NOTICE, LICENSE,
+# LICENSE.GPL-3.0 and licenses/: the OFL texts of the embedded fonts and the
+# MIT notice of the embedded marked), which must accompany the redistributed
+# binary. They are installed in <prefix>/share/doc/okf-render when the
+# destination is <prefix>/bin, otherwise in <dir>/okf-render-licenses.
+#
 # Supported platforms: Linux and macOS, on x86_64/amd64 or aarch64/arm64.
 # Windows is not supported by this script -- see the winget instructions in
 # the project README, or download a .zip release asset by hand.
@@ -239,11 +245,26 @@ if [ -z "$DEST_DIR" ]; then
 fi
 TARGET="$DEST_DIR/$BIN"
 
+# Where the licence files that travel with a binary are installed (the
+# okf-render archive carries NOTICE, LICENSE, LICENSE.GPL-3.0 and licenses/ --
+# the fonts' OFL texts and marked's MIT notice -- all of which must accompany
+# the redistributed binary; the okf archive carries none). Next to a bin/
+# directory that is <prefix>/share/doc/<bin> (/usr/local/share/doc/okf-render,
+# ~/.local/share/doc/okf-render); for any other --dir it is <dir>/<bin>-licenses,
+# so nothing is ever written outside the directory the user chose.
+case "$(basename "$DEST_DIR")" in
+  bin) DOC_DIR="$(dirname "$DEST_DIR")/share/doc/$BIN" ;;
+  *) DOC_DIR="$DEST_DIR/$BIN-licenses" ;;
+esac
+
 if [ "$DRY_RUN" = 1 ]; then
   info "dry run -- would install '$BIN' $TAG for $RID"
   info "  archive:      $ARCHIVE_URL"
   info "  checksum:     $SHA_URL"
   info "  destination:  $TARGET"
+  if [ "$BIN" = okf-render ]; then
+    info "  licences:     $DOC_DIR"
+  fi
   exit 0
 fi
 
@@ -291,6 +312,31 @@ if ! "$EXTRACTED" --version >/dev/null 2>&1; then
 fi
 
 mkdir -p "$DEST_DIR" || { err "could not create install directory: $DEST_DIR"; exit 1; }
+
+# The licence files first, so a failure here leaves no binary installed
+# without the notices that must accompany it.
+HAVE_LICENCES=0
+for item in NOTICE LICENSE LICENSE.GPL-3.0 licenses; do
+  if [ -e "$WORK_DIR/$item" ]; then
+    HAVE_LICENCES=1
+  fi
+done
+if [ "$HAVE_LICENCES" = 1 ]; then
+  if ! mkdir -p "$DOC_DIR"; then
+    err "could not create the licence directory: $DOC_DIR (pass --dir to install elsewhere)"
+    exit 1
+  fi
+  for item in NOTICE LICENSE LICENSE.GPL-3.0 licenses; do
+    if [ -e "$WORK_DIR/$item" ]; then
+      rm -rf "${DOC_DIR:?}/$item"
+      if ! cp -R "$WORK_DIR/$item" "$DOC_DIR/$item"; then
+        err "could not install $item into $DOC_DIR"
+        exit 1
+      fi
+    fi
+  done
+fi
+
 mv -f "$EXTRACTED" "$TARGET"
 chmod +x "$TARGET"
 
@@ -300,6 +346,9 @@ if ! version_output=$("$TARGET" --version 2>&1); then
 fi
 info "installed: $version_output"
 info "location:  $TARGET"
+if [ "$HAVE_LICENCES" = 1 ]; then
+  info "licences:  $DOC_DIR"
+fi
 
 case ":$PATH:" in
   *":$DEST_DIR:"*) ;;

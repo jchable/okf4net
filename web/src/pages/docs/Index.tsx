@@ -78,6 +78,16 @@ export default function DocsIndex() {
                 ),
               },
               {
+                type: 'Guide',
+                concept: <Link to="/docs/viewer">viewer</Link>,
+                desc: (
+                  <>
+                    Browse a bundle as a static website with <code>okf-render</code> — explorer, <em>Jump to</em>{' '}
+                    palette, trust and staleness badges, local and global link graphs.
+                  </>
+                ),
+              },
+              {
                 type: 'Reference',
                 concept: <Link to="/docs/agents">agents</Link>,
                 desc: 'The Microsoft Agent Framework layer — twelve bundle tools and a budget-bounded context provider.',
@@ -124,6 +134,13 @@ export default function DocsIndex() {
               <Term>use the cli</Term>
               <p>
                 Validate, index, and graph bundles from one AOT binary — drops into CI. → <Link to="/cli">cli.md</Link>
+              </p>
+            </Cell>
+            <Cell>
+              <Term>browse a bundle</Term>
+              <p>
+                Render it as a website you open from the disk — explorer, palette, link graph. →{' '}
+                <Link to="/docs/viewer">viewer.md</Link>
               </p>
             </Cell>
             <Cell>

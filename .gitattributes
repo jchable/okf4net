@@ -3,6 +3,26 @@ bundles/acme_retail/** -text
 bundles/ga4/** -text
 docs/spec/SPEC.md -text
 
+# The viewer's vendored fonts: the woff2 files and the OFL texts are recorded
+# (size and sha256) in fonts/README.md, and ViewerFontsTests hashes the bytes
+# OKF4net.Viewer embeds against that table. Without -text a Windows checkout
+# (autocrlf) turns the stored-LF texts into CRLF, so Windows and Linux builds
+# embed different bytes and that test fails. The README itself is not hashed.
+src/OKF4net.Viewer/Assets/fonts/** -text
+
+# marked's LICENSE.md, vendored verbatim beside marked.min.js: the licence text
+# must reach every copy as published, so no checkout rewrites its line endings.
+src/OKF4net.Viewer/Assets/licenses/** -text
+
+# The viewer's scripts and stylesheet are embedded into okf-render and written to
+# every generated site as-is, and the graph page is written with explicit LF
+# (HtmlWriter), so a Windows checkout (autocrlf) must not turn them into CRLF:
+# the Windows release archives would otherwise build different site bytes than
+# Linux and macOS. Listed by extension, never as Assets/**, so the -text rules
+# for fonts/ and licenses/ above keep winning.
+src/OKF4net.Viewer/Assets/*.js text eol=lf
+src/OKF4net.Viewer/Assets/*.css text eol=lf
+
 # Shell scripts run via `sh` (or piped straight into it, e.g.
 # packaging/install.sh via curl) need LF endings, not the CRLF a Windows
 # contributor's autocrlf=true checkout would otherwise apply -- a `\r` inside

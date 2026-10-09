@@ -8,6 +8,11 @@ obj/
 # Graphify knowledge graph output
 graphify-out/
 
+# Browser-automation and review scratch directories (Playwright MCP, review
+# passes named .review-<slice>-<date>/): never part of a commit.
+.playwright-mcp/
+.review-*/
+
 # Claude Code local state (skills are tracked; worktrees/settings are not)
 .claude/worktrees/
 .claude/settings.local.json

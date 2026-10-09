@@ -1,0 +1,164 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// Side-effect-free helpers shared by the interactive viewer scripts
+// (okf-explorer.js, okf-palette.js, okf-toc.js): reading the site index, the
+// palette ranking, staleness, the one path resolver, heading slugs. Loading
+// this file only defines window.OkfSite, so tools/viewer-security-check/
+// calls every function directly. viewer.js does not use it: viewer.js keeps
+// its { body, links } contract, which the VS Code extension reuses.
+(function () {
+  "use strict";
+
+  var HEADING_PREFIX = "okf-h-";
+
+  // The site index, or null when okf-index.js did not run, is not schema
+  // version 2 (spec §12.1), or window.OKF_INDEX is something else --
+  // typically a DOM element reached through named access (DOM clobbering).
+  function readIndex(win) {
+    // Every access sits inside the try: a getter or a Proxy trap that throws
+    // degrades to "no index", never to a script error.
+    try {
+      var idx = win.OKF_INDEX;
+      if (!idx || typeof idx !== "object" || "nodeType" in idx) { return null; }
+      if (idx.version !== 2) { return null; }
+      if (!Array.isArray(idx.concepts) || !Array.isArray(idx.ghosts)
+          || !Array.isArray(idx.edges) || !Array.isArray(idx.tree)
+          || !Array.isArray(idx.types)) { return null; }
+      return idx;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Spec §4.6: trim, collapse internal whitespace, locale-independent lower
+  // case. Accents are NOT folded.
+  function normalize(text) {
+    return String(text).replace(/\s+/g, " ").trim().toLowerCase();
+  }
+
+  // Palette ranking (spec §4.6). Fixed tiers, no weights -- deliberately not
+  // ConceptSearch: 0 exact id, 1 prefix of the title or id, 2 substring of
+  // the title or id, 3 exact tag. Tiers are tried best first, so a concept
+  // keeps its best one. Ties keep index order, which C# sorted with
+  // ConceptId.CompareTo (spec §3.1). Returns concept positions.
+  function rank(index, query) {
+    var q = normalize(query);
+    if (q === "") { return []; }
+    var hits = [];
+    for (var i = 0; i < index.concepts.length; i++) {
+      var c = index.concepts[i];
+      // A damaged entry (null, not an object) is never a match; missing tags
+      // are no tags. The palette must not throw halfway through an update.
+      if (c === null || typeof c !== "object") { continue; }
+      var id = normalize(c.id);
+      var title = normalize(c.title);
+      var tier = -1;
+      if (id === q) {
+        tier = 0;
+      } else if (id.indexOf(q) === 0 || title.indexOf(q) === 0) {
+        tier = 1;
+      } else if (id.indexOf(q) !== -1 || title.indexOf(q) !== -1) {
+        tier = 2;
+      } else {
+        var tags = Array.isArray(c.tags) ? c.tags : [];
+        for (var t = 0; t < tags.length; t++) {
+          if (normalize(tags[t]) === q) { tier = 3; break; }
+        }
+      }
+      if (tier !== -1) { hits.push({ i: i, tier: tier }); }
+    }
+    hits.sort(function (a, b) { return a.tier - b.tier || a.i - b.i; });
+    return hits.map(function (h) { return h.i; });
+  }
+
+  // Spec §4.4: staleAfterMs is the deadline rounded UP to a whole millisecond
+  // in C#, so this comparison equals Lifecycle.IsStale. It is the only part
+  // of §5.5 redone in JavaScript (an exception recorded in CLAUDE.md).
+  function isStale(staleAfterMs, nowMs) {
+    return typeof staleAfterMs === "number" && nowMs >= staleAfterMs;
+  }
+
+  // This page's way back to the site root, as HtmlWriter wrote it. Anything
+  // but a chain of "../" is refused: the resolver below concatenates it.
+  function rootOf(doc) {
+    var root = doc.documentElement.getAttribute("data-okf-root") || "";
+    return /^(\.\.\/)*$/.test(root) ? root : "";
+  }
+
+  // The only resolver the interactive scripts use (spec §3.5): index paths
+  // are relative to the site root, never to the page or to the script.
+  function resolve(root, path) {
+    return root + path;
+  }
+
+  // Letters, digits and hyphens only; "" when nothing is left.
+  function slugText(text) {
+    return normalize(text).replace(/[^\p{L}\p{N} -]/gu, "").replace(/ /g, "-");
+  }
+
+  // Heading slug (spec §5): letters, digits and hyphens only. A heading with
+  // none of them still needs an id.
+  function slugify(text) {
+    var slug = slugText(text);
+    return slug === "" ? "section" : slug;
+  }
+
+  // Unique slugs in document order. A taken candidate keeps counting, so a
+  // generated suffix never collides with a real heading: "Usage", "Usage",
+  // "Usage 1" -> usage, usage-1, usage-1-1. Each base remembers the next
+  // suffix to try, so n identical headings cost n lookups, not n squared.
+  function uniqueSlugs(texts) {
+    var used = new Set();
+    var next = new Map();
+    var out = [];
+    for (var k = 0; k < texts.length; k++) {
+      var base = slugify(texts[k]);
+      var n = next.get(base) || 0;
+      var slug = n === 0 ? base : base + "-" + n;
+      while (used.has(slug)) { n++; slug = base + "-" + n; }
+      next.set(base, n + 1);
+      used.add(slug);
+      out.push(slug);
+    }
+    return out;
+  }
+
+  // Generated ids a URL fragment may designate, best first: an already
+  // prefixed fragment as is; an author fragment ("#usage", "#Usage") as
+  // written, then slugified. A fragment that slugifies to nothing ("#!!!")
+  // gets no slug candidate: slugify's "section" fallback is for headings,
+  // and would send such a fragment to a heading titled "Section".
+  function fragmentCandidates(hash) {
+    var h = String(hash || "");
+    if (h.charAt(0) === "#") { h = h.slice(1); }
+    try { h = decodeURIComponent(h); } catch (e) { /* keep it raw */ }
+    if (h === "") { return []; }
+    if (h.indexOf(HEADING_PREFIX) === 0) { return [h]; }
+    var candidates = [HEADING_PREFIX + h];
+    var slug = slugText(h);
+    if (slug !== "" && HEADING_PREFIX + slug !== candidates[0]) { candidates.push(HEADING_PREFIX + slug); }
+    return candidates;
+  }
+
+  // Creates an element; text goes through textContent, never markup.
+  function element(doc, tag, className, text) {
+    var el = doc.createElement(tag);
+    if (className) { el.className = className; }
+    if (text !== undefined) { el.textContent = text; }
+    return el;
+  }
+
+  window.OkfSite = Object.freeze({
+    HEADING_PREFIX: HEADING_PREFIX,
+    readIndex: readIndex,
+    normalize: normalize,
+    rank: rank,
+    isStale: isStale,
+    rootOf: rootOf,
+    resolve: resolve,
+    slugify: slugify,
+    uniqueSlugs: uniqueSlugs,
+    fragmentCandidates: fragmentCandidates,
+    element: element,
+  });
+})();
