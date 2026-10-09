@@ -4,8 +4,9 @@ Static HTML site generation for OKF knowledge bundles: one page per concept
 (breadcrumb, title, type/status/trust/staleness chips, a folding frontmatter
 box, the rendered body), a generated index, navigable cross-links, a tree
 explorer with type shapes and filters, a "Jump to" palette, a contents list
-that follows the reading position, "Referenced by" lists, light and dark
-themes, and the Inter, Inter Tight and Space Mono fonts embedded — all of it
+that follows the reading position, "Referenced by" lists, a side panel whose
+width can be dragged or set from the keyboard, light and dark themes, and the
+Inter, Inter Tight and Space Mono fonts embedded — all of it
 working from `file://`, with no server.
 
 Zero third-party runtime dependencies — references only `OKF4net`.
@@ -25,7 +26,11 @@ and are never navigable. Every neighbour, drawn or not, is also in the "List"
 below the drawing, with its relation to the concept (links to, referenced by,
 or the first-hop neighbour a second-hop concept is reached through): that
 list, not the drawing, is the keyboard path. "Open in graph" opens the global
-graph on this concept. A concept with no neighbour has no section.
+graph on this concept. The "Enlarge the neighbourhood" button opens the same
+neighbourhood in a dialog, laid out for the room it has (labels cut at 32
+characters instead of 20 once it is 560 wide), with the full list beside the
+drawing (under it in a narrow window); Escape closes it. A concept with no
+neighbour has no section.
 
 ## Global graph
 

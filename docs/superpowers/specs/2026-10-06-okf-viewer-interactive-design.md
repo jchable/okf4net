@@ -1,9 +1,15 @@
 # Viewer interactif (`okf-render`) — design
 
 Date : 2026-10-06
-Statut : révision 12 (2026-10-08) : P1 et P1.1 livrés et recettés ; arbitrages
+Statut : révision 15 (2026-10-09) : P1 et P1.1 livrés et recettés ; arbitrages
 A15–A30 rendus ; plans de P1.1, P2 et P3 rédigés en parallèle depuis la
 révision 6, leurs lacunes de spec tranchées ici ; aucun point ouvert (§13)
+
+**Révision 15 (demande du propriétaire, 2026-10-09)** : le graphe local d'une page de concept s'agrandit dans une fenêtre modale (X12), pour qu'un voisinage chargé (jusqu'au plafond de 40 nœuds, 2 sauts) ait de la place. Un bouton icône de 24 × 24 (bord `--hair`, glyphe `--gray`, `--blue` au survol), `#okf-local-enlarge`, suit la bascule 1/2 sauts dans la tête de « Neighbourhood » (bascule et bouton poussés à droite du titre ; dans un panneau de 240, L7, ils passent ensemble sous le titre) : nom « Enlarge the neighbourhood » (`aria-label`, repris en `title`), `aria-haspopup="dialog"`, `aria-expanded`. Son glyphe, quatre coins tournés vers l'extérieur, est une constante d'`okf-local.js` dans le vocabulaire de §12.2 tel quel (un `<svg>` de 16 et un `<path>` de commandes `M`/`L` seulement, `stroke-width` 1,5) : **aucun ajout au vocabulaire**. La fenêtre est construite à la première ouverture, ajoutée à `<body>` sous l'id `okf-local-modal` (le sanitizer retire `id` du corps : aucun élément du corps ne peut le porter), puis montrée et cachée : fond `--backdrop` sur toute la fenêtre, boîte `role="dialog"` `aria-modal="true"` de min(92vw, 1100) × min(80vh, 760) (sous 760 px de large : la fenêtre moins 8 de chaque côté, liste sous le dessin), étiquetée par son titre « Neighbourhood of `<titre du concept>` » (texte, à défaut l'id). Elle montre la même chose que le panneau, en plus grand : une bascule 1/2 sauts (ids `okf-local-modal-hops-1/2`) qui partage l'état du panneau dans les deux sens (non mémorisée d'une page à l'autre, X5), le dessin, « +N omitted » au-delà du plafond (une note, pas un bouton : la liste est à côté), la liste équivalente toujours ouverte (« List · N neighbours », tous les voisins, lignes `.okf-row` de X9), la légende et « Open in graph » (lien de l'en-tête repris tel quel), un bouton « Close ». À l'ouverture, le focus va sur la boîte ; Tab et Maj+Tab parcourent ses commandes en rebouclant (le script prend chaque Tab, si bien que les liens de la liste sont atteints et que le focus ne sort pas, même là où le navigateur ne tabule pas vers les liens) ; Échap, « Close » ou un clic sur le fond ferment et rendent le focus au bouton ; tant qu'elle est ouverte, les autres enfants de `<body>` (scripts exceptés) portent `inert` et `aria-hidden="true"` (seulement ceux qui ne les portaient pas : la fermeture rend exactement l'état d'avant ; le séparateur de L7, dans la disposition, est inerte avec elle), la page ne défile pas (`data-okf-modal-open` sur `<html>`, `overflow: hidden`), et `/` et Ctrl K sont empêchés (la palette, qui ignore une touche empêchée, ne s'ouvre pas par-dessus) ; la fermeture retire les deux écouteurs que l'ouverture a posés. Code propre, non partagé avec la palette (dont le piège ne connaît que ses deux arrêts). Disposition (§4.3, §12.4) : `OkfLocal.build(index, centre, hops, viewport)` et `OkfLocal.labels(nodes, texts, halves, viewport)` acceptent une vue `{ width, height }` facultative, de 298 × 248 à 4 096 de côté (sinon `TypeError`) ; sans elle, la disposition du panneau est **identique au bit près** (empreinte d'une batterie de dispositions prise avant le changement, épinglée par `cases/p2-modal.js`). Dans une vue plus grande, le centre garde sa place par rapport au milieu (`width / 2`, `height / 2 − 6`), les rayons des anneaux croissent avec la vue sur chaque axe (rx × width / 298, ry × height / 248 : 127 × 95 ; 106 × 72 et 134 × 98 à l'échelle), formes et polices gardent leur taille, l'estimation de largeur reste 6,2 par caractère (6,5 au centre ; mesuré dans les quatre navigateurs : 6,125 et 6,438 au plus), et un libellé est coupé à 32 points de code (31 + « … ») au lieu de 20 dès que la vue a 560 de large (`OkfLocal.LARGE` : `max` 4 096, `wideFrom` 560, `wideChars` 32). Le dessin de la fenêtre est disposé pour la zone qu'il occupe, mesurée (`clientWidth` / `clientHeight`, bornée à [298 × 248, 4 096]) ; son `viewBox` et sa taille sont cette vue (1 unité = 1 px) ; un redimensionnement de la fenêtre le redispose au plus une fois par frame et seulement si la zone a changé, le `viewBox` mettant l'ancien dessin à l'échelle d'ici là ; une zone plus petite que le panneau garde la vue du panneau, réduite par le `viewBox`. Ses marqueurs de flèche ont leurs propres ids (`okf-local-modal-arrow`, `okf-local-modal-arrow-in`) ; chaque dessin garde sa propre table nœud → concept (un clic sur un nœud ouvre sa page comme dans le panneau ; un fantôme, rien). Balayé par le harnais : dans les vues que la fenêtre produit (de 360 × 300 à 1 098 × 758, et 4 096 × 4 096), jusqu'à 15 voisins à 1 et 2 sauts, fantômes et ids de 4 à 60 caractères compris, aucun libellé ne sort du dessin ni ne recouvre un autre libellé ou une forme (demi-étendues des formes d'avant la réduction à 0,7 de la révision 13) ; au plafond, ils ne sortent jamais du dessin (A11). Mesuré dans Chromium, Edge, Firefox et WebKit : le moyeu du bundle OKF4net au plafond (40 nœuds, 71 voisins) dans 778 × 631 comme dans 372 × 389 (390 × 844), et `gross-margin-period` d'acme_retail à 2 sauts, n'ont aucun recouvrement libellé/libellé ni libellé/forme (hauteur du modèle, largeur mesurée), aucun défilement horizontal à 390 ; au plafond, quelques libellés déplacés loin de leur nœud et le faisceau d'arêtes vers le centre restent les limites lisibles (A11), la liste à côté faisant foi. Ancrage (§12.6) : `#okf-local-modal` rejoint la liste des conteneurs de chrome (et `CHROME_ANCHORS` de `run.js`, §12.7) ; ses règles (et celles du bouton, sous `#okf-context`) forment la sous-section « P2: the enlarged neighbourhood (X12) » de la section P2 de `viewer.css` ; les composants partagés qu'elle montre (titre de section, lignes, glyphes, `[hidden]`), la bascule et les peintures du dessin de P2 y sont **réécrits** sous son ancre, déclarations inchangées, au lieu d'ajouter l'ancre aux listes `:is()` des composants partagés (choix de fusion, à replier plus tard) ; ses classes sont listées dans `p2-chrome-classes.md`. Harnais : `cases/p2-modal.js` (20 cas, 30 mutants tués) ; recette : X12, X12-labels, X12-contrast et X12-resize dans `recette/p2.js`.
+
+**Révision 14 (colonne de droite redimensionnable, 2026-10-09)** : le lecteur peut tirer la largeur de la colonne de droite par rapport à la colonne centrale — le panneau contextuel d'une page de concept ou de l'index, le tiroir de la page du graphe — pour donner de la place à un graphe ; l'explorateur et la colonne des facettes ne sont pas redimensionnables (L7, §8). `okf-resize.js` (nouveau, §4.1) fabrique un séparateur de fenêtre, `div.okf-splitter` (`role="separator"`, `aria-orientation="vertical"`, `aria-label` « Resize the side panel », `aria-controls` = id de la colonne, `tabindex="0"`, `aria-valuemin`/`aria-valuenow`/`aria-valuemax` en pixels et `aria-valuetext` « N px »), enfant direct de la disposition, entre `<main>` et la colonne ; sans JavaScript, rien n'existe. Il retrouve ses colonnes par id (`okf-context` ou `okf-graph-detail`, `okf-main`, `okf-explorer`, `okf-facets` ; jamais par classe) et n'écrit que sa poignée, une propriété et deux attributs de la disposition. Souris, doigt et stylet : événements pointeur (bouton principal, un seul pointeur) avec capture, suivis sur `window` (la capture peut être refusée), `touch-action: none` ; la colonne suit le delta du pointeur, arrondi au pixel (vers la gauche, elle s'élargit) ; la glissière se termine sur `pointerup`, `pointercancel`, `lostpointercapture`, `blur` ou un mouvement de souris sans bouton, en gardant la largeur ; Échap la défait ; un appui sans mouvement n'écrit rien. Clavier, focus sur la poignée seulement : ← élargit et → rétrécit de 16 (Maj : 64), Début et Fin vont aux bornes, Entrée ou double clic remet le défaut (340) et efface la largeur mémorisée ; aucune combinaison avec Alt, Ctrl ou Méta n'est prise (Alt+← reste « Précédent »). Bornes : 240 au moins ; au plus le plus petit de 60 % de la disposition, 720, et ce que laissent les colonnes de gauche une fois la colonne centrale à 360 (à 1 100 : 450 sur une page de concept, 470 sur celle du graphe ; une disposition sans largeur mesurable n'est bornée que par 240 et 720) ; la largeur voulue est gardée à part de la largeur montrée, si bien qu'une fenêtre qui s'agrandit rend la largeur voulue ; les bornes sont remesurées sur `resize` et `load` de la fenêtre, par un `ResizeObserver` sur la disposition, au changement du `matchMedia`, au focus de la poignée et quand le panneau ou l'explorateur change d'attribut `hidden`. La largeur est la propriété `--okf-context-w` sur la disposition, avec l'attribut `data-okf-resized` (tous deux absents à la largeur par défaut), que `viewer.css` ne lit qu'à partir de 1 100 px : en dessous le séparateur est caché, la largeur mémorisée est ignorée (propriété et attribut retirés) et la disposition empilée est celle de L2 ; il est aussi caché tant que sa colonne l'est. Elle est mémorisée dans `localStorage` sous une clé unique, `okf-context-w`, partagée par les pages de concept, l'index et la page du graphe : trois chiffres, de 240 à 720 — tout autre contenu (`NaN`, négatif, décimal, hexadécimal, `400px`, `__proto__`, énorme…) est ignoré et jamais réécrit au chargement — et chaque accès est gardé par `try/catch` (sans stockage, la page marche, sans mémoire). Mesuré : sous `file://`, la largeur survit à un rechargement et se retrouve d'une page à l'autre dans Chrome, Edge, Firefox et WebKit (builds Playwright ; un Firefox installé et Safari ne sont pas mesurés). `okf-resize.js` est le premier script de `PageScripts` et de `graph.html` (§12.5, §12.6) : la largeur est en place avant que les autres scripts remplissent la page (jamais d'image à 340 sur une page de concept, dont le panneau est caché jusque-là ; sur la page du graphe, une exécution de Chromium a montré une image à 340 sur quatre). Quand la taille du canevas change (séparateur, fenêtre), `okf-graph.js` ajuste de nouveau la vue (G10 : `ResizeObserver` sur `#okf-graph-canvas`, à défaut `resize` sur `window`) tant que le lecteur ne l'a pas déplacée ; le graphe local garde 298 × 248 (X6), centré dans un cadre plus large, et ne rétrécit que si son cadre a moins de 298 de large (297 au défaut de 340, 197 à 240 : échelle 0,66) ; à 240, la tête « Neighbourhood » passe à la ligne (`flex-wrap`, la bascule 1/2 sauts sous le titre). Harnais : `cases/p4.js` (27 cas, 50 mutants tués) et trois ancres ajoutées à `CHROME_ANCHORS` de `run.js` (§12.7) ; recette : `recette/p4.js`, V2-1 à V2-19, tranche `p4` de `recette.js` (§12.8).
+
+**Révision 13 (demande du propriétaire, 2026-10-09)** : les formes des deux graphes sont réduites à 0,7 de leur taille et le carré du rang 1 passe de l'encre au vert. Tailles (§12.2, table `SIZES`) : les lignes `local`, `localCenter` et `graph` valent 0,7 fois les précédentes, arrondies à la demi-unité ; leurs traits aussi, jamais plus fins que celui de la même forme dans la ligne `icon` (autre 1,5 ; fantôme 1,2 tireté 2 2) ; le fantôme reste un cercle du rayon du cercle de son contexte, trait centré (rayon 9, bord extérieur à 9,6, d'où 19,2 ; dans le graphe local, rayon 7, d'où 15,2). Les lignes `icon`, `chip` et `flag` (explorateur, palette, puces, légendes, drapeaux), liées à la taille du texte, ne changent pas. Contours de nœud (`node()`) : sélection côté + 8 au lieu de + 12, focus clavier côté + 16 au lieu de + 20, tireté 3 3, traits inchangés (2,4 et 2 dans `graph`, 2 au centre local) — le jour entre la forme et la sélection suit la forme, celui de 1,8 entre le bord extérieur de la sélection et le bord intérieur du focus est gardé. Ce qui en dérive suit : au centre du graphe local, libellé à `cy + size / 2 + 4 + 14` et flèche arrêtée à `size / 2 + 5` ; dans le graphe global, contour de `nodeBox` (révélation d'un nœud focalisé) à `size / 2 + 8 + focus / 2`. Ce qui tient au texte ou aux distances ne change pas : lignes de base des libellés (+ 14 local, + 16 global), boîte de libellé finissant 20 sous la forme, coupe à 24 points de code du graphe global, flèches 7 et 8, rayons des anneaux du graphe local (127 × 95 ; 106 × 72 et 134 × 98 : des formes plus petites ne font qu'élargir chaque jour, ce que `cases/p2.js` vérifie jusqu'au plafond avec les nouvelles bornes, lues dans la table — forme à 9 au plus de son centre, sélection du centre à ± 15, bande du libellé du centre y 132 à 151), constantes d'`okf-sim` (`SPACING` 60, cellule 180, borne 86), « Fit » (plafond 1,25, marges 24 et 56) et marge de révélation. Les boîtes de la disposition rétrécissent avec les formes : la disposition d'acme_retail change (empreinte « boxed » `3842fc78` → `796cb211`) ; mesuré dans Chromium, Firefox et WebKit, à 1440 × 900 et 390 × 844, clair et sombre, acme_retail et le fixture des fantômes s'ouvrent toujours sans aucun recouvrement libellé/libellé, libellé/forme ni forme/forme. Couleur (§11.0, A19) : `--okf-type-1` passe de l'encre (`#101014` / `#f2f2f5`, lue comme du texte) à `#1e7d32` en clair et `#5dc26b` en sombre (dans les deux blocs sombres), vert franc distinct du sarcelle du rang 4 (ΔE2000 20,6 en clair, 20,1 en sombre ; la forme diffère de toute façon, carré plein contre anneau) ; contraste 5,2:1 sur `--white` et 4,6:1 sur `--blue-soft` en clair, 8,5:1 et 7,7:1 en sombre, calculés, puis mesurés par la recette dans les quatre navigateurs. Seule la règle de la classe `okf-shape-1` lit ce jeton (explorateur, palette, légendes, graphes, facettes, tiroir) ; la puce de type (fond `--ink`, texte et glyphe `--white`, pour tout type) n'en lit aucun et ne change pas. Sous protanopie et deutéranopie simulées, ce vert se rapproche de l'orange du losange (et du sarcelle sous tritanopie), comme tout vert de cette clarté essayé : la forme les distingue (A19 : forme et couleur, jamais la couleur seule). Une forme plus petite est aussi une cible de clic plus petite (voisins de 14 à 18 dans le graphe local) ; les listes équivalentes restent le chemin clavier. Écart voulu aux maquettes A et B, qui dessinent ces formes plus grandes et le carré à l'encre (§11.8).
 
 **Révision 12 (revue finale B de P3, 2026-10-08)** : le graphe global ne tient plus de tâche longue à l'approche de `NODE_LIMIT` (mesuré : à 1 414 nœuds, chaque peinture de la disposition faisait 50 à 113 ms et chaque clic de facette 49 à 84 ms de script dans Chromium, 68 à 84 ms dans Firefox ; au-delà de la limite, 5 050 concepts, chaque clic reconstruisait d'un coup une liste de ~64 000 éléments, 211 à 281 ms). Un nœud est dessiné une fois par `OkfShapes` autour de (0, 0), libellé compris, puis placé par `transform="translate(x y)"` sur son `<g>` : seul ajout au vocabulaire de §12.2, où `transform` ne servait qu'au `translate(a b) scale(s)` du pan/zoom (nombres vérifiés finis, arrondis au centième, comme toute coordonnée) ; nœuds et liens sont faits une fois et réutilisés par chaque dessin qui les montre, si bien qu'un changement de filtre ne refait que ce qu'il ajoute et que la disposition déplace, sans jamais refaire. Le début de la disposition est dessiné d'un coup et ajusté dans la tâche qui construit le dessin (aucun nœud n'y reste sans position) ; une repeinture déplace ensuite au plus 500 nœuds (et leurs liens) par frame ; quand il en a fallu plusieurs, la vue suit dans une frame à elle. Tant que la disposition d'un graphe de plus de 500 nœuds tourne, la vue garde son échelle tant que le dessin y tient sans y être plus de 1,5 fois trop petit, et prend sinon 0,8 de l'échelle qui l'ajuste : une nouvelle échelle remet en page tous les libellés (environ 50 ms à 1 400 nœuds dans Chromium), un déplacement non ; la dernière peinture, comme tout autre « Fit », est exacte (G10). Sous `prefers-reduced-motion: reduce` (§6), la disposition tourne dans les mêmes tranches mais seuls son début et sa fin sont dessinés, chacun d'un coup. La liste équivalente se construit par paquets de 200 entrées, le premier tout de suite, les suivants une frame chacun, dans l'ordre de l'index ; un nouvel ensemble montré arrête la construction en cours ; l'entrée sélectionnée est marquée dès qu'elle existe, et amenée au milieu de la liste (son haut en haut si elle est plus haute que la liste) quand elle n'y est pas entièrement visible, relations comprises, en faisant défiler la liste seule, jamais la page (au lieu de `scrollIntoView({ block: "nearest" })`, qui la laissait au bord, ses relations sous le pli). Un index endommagé ne lève plus rien sur la page du graphe : une entrée de concept ou de fantôme qui n'est pas un objet à id chaîne est écartée (ni dessinée, ni listée, ni comptée, ses arêtes avec elle), comme une arête qui n'est pas un tableau nommant deux telles entrées par position ; un champ du mauvais type vaut absent (texte vide, aucune étiquette, aucune page : ni lien, ni « Open page », ni ouverture) ; une ligne de `types` endommagée n'a pas de case ; la ligne d'état compte les concepts et les liens retenus. Un fragment n'est plus suivi au chargement s'il ne nomme aucun concept (rien à sélectionner, la vue est celle de la disposition). Mesuré après (machine au repos) : à 1 414 nœuds, aucune tâche longue pendant la disposition ni pendant les clics de facette dans Chromium (clic 5 à 9 ms de script) ; au chargement il reste une tâche de 50 à 53 ms, l'évaluation d'`okf-graph.js` (92 ms avant), sans ou avec fragment ; clic 5 à 12 ms de script dans Firefox ; au-delà de la limite, aucune tâche longue (clic 11 à 29 ms). `okf-sim.js` est inchangé : positions identiques au bit près avant et après dans Chromium, Firefox et WebKit (acme_retail, fixture du harnais, OKF4net 806 nœuds, synthétique 1 414 nœuds).
 
@@ -361,9 +367,11 @@ Troncature retenue : 200 points de code.
   `okf-explorer.js`, `okf-palette.js`, `okf-toc.js` ; créés par P1.1 —
   `okf-shapes.js` (`OkfShapes`, §12.2), `okf-page.js` (tête de la colonne
   centrale, glyphes des listes) ; créé par P2 — `okf-local.js` ; créés par P3 —
-  `okf-sim.js` (`OkfSim`, §12.5) et `okf-graph.js`. Chaque script est créé par
-  sa tranche propriétaire, jamais en fichier vide d'avance (§12.0). Ordre de
-  chargement : §12.6.
+  `okf-sim.js` (`OkfSim`, §12.5) et `okf-graph.js` ; créé par la révision 14 —
+  `okf-resize.js` (séparateur de la colonne de droite, L7 ; sans dépendance,
+  chargé en premier sur les pages de concept, l'index et `graph.html`). Chaque
+  script est créé par sa tranche propriétaire, jamais en fichier vide d'avance
+  (§12.0). Ordre de chargement : §12.6.
 - `okf-page.js` et `okf-local.js` sont chargés aussi par `index.html` et y
   rendent la main sans rien faire : ils n'agissent que si `<html>` porte
   `data-okf-view="page"`.
@@ -437,7 +445,9 @@ sous V8, pas l'égalité entre moteurs, qui repose sur les contraintes ci-dessus
   opposées A → B et B → A sont décalées de ± 3 perpendiculairement, comme
   G12. La disposition en anneaux peut utiliser `Math.cos`/`Math.sin` : la
   contrainte de déterminisme entre moteurs (§4.2) ne vaut que pour la
-  simulation globale. Contrat DOM : §12.4.
+  simulation globale. `build` et `labels` acceptent une vue facultative
+  `{ width, height }` (révision 15, X12 : la fenêtre agrandie) ; sans elle, la
+  disposition du panneau ne change pas. Contrat DOM : §12.4.
 
 ### 4.4 Péremption (A2, A9)
 
@@ -474,7 +484,7 @@ chemins de l'index via le résolveur (§3.5). Toutes les formes **de type, de
 confiance, de péremption et de fantôme** — explorateur, palette, puces,
 listes, légendes, graphes — sortent d'**un seul** module, `okf-shapes.js`
 (§12.2) ; aucune autre tranche n'en dessine. Les icônes d'interface (lune de
-H11, loupe de J2) sont des constantes du module qui les pose, dans le même
+H11, loupe de J2, quatre coins de X12) sont des constantes du module qui les pose, dans le même
 vocabulaire SVG fixe.
 
 ### 4.6 Palette (A5, A12)
@@ -688,7 +698,18 @@ fige en revanche l'ensemble d'arêtes de `okf graph` (A3).
 - **Graphe local** : le SVG est une image (`role="img"`, nom résumé) cliquable à
   la souris, sans arrêt de tabulation ; le chemin clavier est la liste
   équivalente du panneau (§12.4) et « Referenced by ». Boutons 1/2 sauts en
-  `aria-pressed`.
+  `aria-pressed`. Bouton « Enlarge the neighbourhood » (X12, révision 15) :
+  dialogue modal (modèle WAI-ARIA *dialog modal*) ; à l'ouverture, focus sur
+  la boîte ; Tab et Maj+Tab parcourent ses commandes en rebouclant (le script
+  prend chaque Tab) ; Échap, « Close » ou un clic sur le fond ferment et
+  rendent le focus au bouton ; le reste de la page est `inert` et ne défile
+  pas ; `/` et Ctrl K n'ouvrent pas la palette par-dessus.
+- **Séparateur de la colonne de droite** (L7, révision 14) : un arrêt de
+  tabulation (`role="separator"`, valeur en pixels) ; focus sur lui seulement :
+  ← élargit et → rétrécit de 16 (Maj : 64), Début et Fin vont aux bornes,
+  Entrée (ou double clic) remet le défaut ; les combinaisons avec Alt, Ctrl ou
+  Méta ne sont jamais prises ; pendant une glissière, Échap rend la largeur
+  d'avant.
 - **Facettes** (P3) : vraies cases à cocher et boutons bascule ; un changement
   met à jour la ligne d'état (`role="status"`).
 - **Thème** : bouton à nom d'action explicite ou état annoncé (`aria-pressed`).
@@ -723,6 +744,12 @@ fige en revanche l'ensemble d'arêtes de `okf graph` (A3).
   `okf-graph.js`, écrit `graph.html` par `HtmlWriter.RenderGraph` (la seule
   méthode qui écrit cette page et charge ces deux scripts), sa section de
   `viewer.css`, `cases/p3.js`, ses fixtures `p3-`, sa recette.
+- **Après P3** (révisions 13 à 15, 2026-10-09, même branche) : formes des
+  graphes à 0,7 et carré vert du rang 1 (révision 13, §11.0, §12.2) ;
+  séparateur de la colonne de droite (révision 14, L7), nommé **P4** dans
+  `viewer.css`, le harnais (`cases/p4.js`, `p4-chrome-classes.md`) et la
+  recette (`recette/p4.js`) ; graphe local agrandi en fenêtre modale
+  (révision 15, X12), rattaché à P2 (`cases/p2-modal.js`, `recette/p2.js`).
 
 Dépendances et parallélisme :
 
@@ -805,7 +832,8 @@ Rendus le 2026-10-07, après la recette de P1 :
   §12.1) ; taille mesurée et consignée (§3.6).
 - **A19 — Encodage des types** : les cinq types les plus fréquents (fréquence
   décroissante, départage ordinal du nom) reçoivent dans l'ordre cercle, carré,
-  losange, triangle, anneau et les couleurs des maquettes ; les autres partagent
+  losange, triangle, anneau et les couleurs des maquettes (sauf le carré, vert
+  depuis la révision 13) ; les autres partagent
   une forme « autre » ; légende partout où les formes apparaissent ; classement
   calculé en C# et porté par l'index ; forme et couleur, jamais la couleur
   seule ; en sombre, couleurs adaptées, contraste des formes ≥ 3:1 mesuré.
@@ -884,14 +912,14 @@ toujours écrit « écart » avec sa raison.
 
 Couleurs (custom properties sur `:root`, redéfinies pour le sombre dans les deux
 blocs de P1, `[data-theme="dark"]` et `prefers-color-scheme`). Les valeurs
-claires sont celles des maquettes ; les sombres reprennent P1 et ajoutent celles
+claires sont celles des maquettes, sauf `--okf-type-1` (révision 13) ; les sombres reprennent P1 et ajoutent celles
 qui manquaient. Contrastes calculés (WCAG) contre `--white`, puis contre le fond
 de ligne active `--blue-soft` ; la recette les **mesure** (A19).
 
 | Jeton | Clair | Sombre | Usage | Contraste clair / sombre |
 | --- | --- | --- | --- | --- |
 | `--white` | `#ffffff` | `#101014` | fond | — |
-| `--ink` | `#101014` | `#f2f2f5` | texte, carré | 19,0 / 17,0 |
+| `--ink` | `#101014` | `#f2f2f5` | texte | 19,0 / 17,0 |
 | `--blue` | `#1a3fd6` | `#8fa5f5` | accent, cercle | 7,7 / 8,0 |
 | `--blue-hover` (P1.1) | `#102a96` | `#b7c5f8` | lien survolé | ≥ 4,5 à mesurer |
 | `--blue-soft` | `#eef1fd` | `#1a1a22` | ligne active, tête de boîte, `pre` | — |
@@ -901,7 +929,7 @@ de ligne active `--blue-soft` ; la recette les **mesure** (A19).
 | `--edge` (P1.1) | `#8a8a94` | `#8a8a94` | arêtes, flèches | 3,4 / 5,6 |
 | `--stale` (P1.1) | `#b4540a` | `#e08a3e` | péremption (sablier, A24) | 5,0 / 7,1 |
 | `--okf-type-0` cercle | `#1a3fd6` | `#8fa5f5` | rang 0 | 7,7 / 8,0 |
-| `--okf-type-1` carré | `#101014` | `#f2f2f5` | rang 1 | 19,0 / 17,0 |
+| `--okf-type-1` carré | `#1e7d32` | `#5dc26b` | rang 1 (vert, révision 13) | 5,2 / 8,5 |
 | `--okf-type-2` losange | `#b4540a` | `#e08a3e` | rang 2 | 5,0 / 7,1 |
 | `--okf-type-3` triangle | `#6a6a72` | `#9a9aa2` | rang 3 | 5,4 / 6,8 |
 | `--okf-type-4` anneau | `#0b6e69` | `#2fb3a8` | rang 4 (trait : §12.2) | 6,1 / 7,4 |
@@ -910,7 +938,8 @@ de ligne active `--blue-soft` ; la recette les **mesure** (A19).
 | `--shadow` | `0 18px 50px rgba(16,16,20,.28)` | `none` | boîte de palette | — |
 
 Contre `--blue-soft`, le minimum des formes de type, de confiance et de
-péremption est 4,4:1 en clair (`#b4540a`) et 6,2:1 en sombre : toutes passent
+péremption est 4,4:1 en clair (`#b4540a`) et 6,2:1 en sombre (le carré vert du
+rang 1, révision 13 : 4,6:1 et 7,7:1) : toutes passent
 3:1 ; le sablier `--stale` (A24) fait 5,0 / 4,4:1 en clair et 7,1 / 6,5:1 en
 sombre (fond / ligne active). Constat au passage : P1 ne redéfinit pas
 `--red` en sombre (`#c0392b` sur `#101014` = 3,5:1, sous le seuil texte pour
@@ -1219,7 +1248,8 @@ contrôle ne prouve sa capacité à échouer que par la passe sans polices (éch
 
 ### 11.4 Panneau contextuel (A)
 
-- **X1** Panneau de 340 à partir de 1 100, filet gauche `--hair`, padding
+- **X1** Panneau de 340 par défaut à partir de 1 100 (redimensionnable de 240
+  à 720, L7, révision 14), filet gauche `--hair`, padding
   20 20 0, sections espacées de 22 (P1 : 260 à 320) ; trois colonnes sans
   retour à la ligne : L6. → P1 → P1.1
 - **X2** Titres de section (§11.0). → P1
@@ -1234,15 +1264,22 @@ contrôle ne prouve sa capacité à échouer que par la passe sans polices (éch
 - **X5** « Neighbourhood » + bascule « 1 hop » / « 2 hops » : boutons accolés,
   hauteur 24, padding 0 10, 12 ; pressé fond `--blue`, texte `--white` 600 ;
   non pressé fond `--white`, bord `--hair`, texte `--gray` ; 1 saut par défaut,
-  non mémorisé. → P2
-- **X6** Cadre : bord `--hair`, hauteur 250, SVG pleine largeur. → P2
+  non mémorisé. Suivie, dans la tête, du bouton d'agrandissement (X12) ;
+  bascule et bouton sont poussés à droite du titre et, quand la tête est trop
+  étroite (panneau de 240, L7), passent ensemble à la ligne. → P2
+- **X6** Cadre : bord `--hair`, hauteur 250, SVG pleine largeur (`viewBox`
+  298 × 248, hauteur 248) : dans un panneau élargi (L7), le dessin garde
+  298 × 248, centré ; il ne rétrécit que dans un cadre de moins de 298 de large
+  (297 au défaut de 340 ; échelle 0,66 à 240). → P2
 - **X7** Rendu : centre = forme de son type, contexte `localCenter` de §12.2
-  (carré 28 comme A), contour de sélection toujours visible (côté + 12, trait
+  (carré 19,5, 0,7 du carré 28 de A, révision 13), contour de sélection
+  toujours visible (côté + 8, trait
   2, `--blue`), libellé Space Mono 10,5 700 `--ink` ; voisins : contexte
-  `local` (cercle 20, losange 25,5, triangle 22 comme A), libellé = dernier
+  `local` (cercle 14, losange 18, triangle 15,5 : 0,7 de A, révision 13),
+  libellé = dernier
   segment de l'id, Space Mono 10 `--ink`, id complet en `<title>` ; fantôme :
   contexte `local`, forme `ghost`. Libellés : place par défaut
-  centrée sous la forme, ligne de base à `cy + size / 2 + 14` (centre : `+ 6 + 14`,
+  centrée sous la forme, ligne de base à `cy + size / 2 + 14` (centre : `+ 4 + 14`,
   sous le contour) ; `OkfLocal.labels()` (pure, déterministe, bornée) peut
   déplacer un libellé qui en recouvrirait un autre ou une forme vers la première
   ligne libre, au-dessus ou au-dessous (12 par ligne), l'ancrer au début ou à
@@ -1250,7 +1287,9 @@ contrôle ne prouve sa capacité à échouer que par la passe sans polices (éch
   à 4 de bord du dessin, et le couper à 20 caractères (19 + « … », comptés en
   points de code ; l'id complet reste en `<title>`). Au plafond de 40 nœuds les libellés peuvent se recouvrir (A11) mais
   ne sortent jamais du dessin ; largeur estimée à 6,2 par caractère (6,5 pour
-  le centre), jamais mesurée. Arêtes
+  le centre), jamais mesurée (dans la fenêtre agrandie, X12 : même rendu,
+  anneaux à l'échelle de la vue, coupe à 32 points de code dès 560 de large).
+  Arêtes
   (§4.3) `--edge` 1,4, flèche 7 vers la cible ; **pleine** si la cible n'est
   pas plus proche du centre que la source (« links to »), **tiretée 4 3** si
   elle pointe vers le centre (« referenced by »). → P2
@@ -1265,7 +1304,9 @@ contrôle ne prouve sa capacité à échouer que par la passe sans polices (éch
   « 2 hops via `<id>` », `<id>` = le premier voisin direct (ordre de l'index)
   par lequel il est atteint ; fantôme : id écrit « absent: `<id>` », texte
   sans lien. Les arêtes entre deux voisins sont dessinées, pas énoncées dans
-  la liste (elles figurent sur la page de chacun). → P2
+  la liste (elles figurent sur la page de chacun). Dans la fenêtre agrandie
+  (X12), la même liste est toujours ouverte, sous le titre « List · N
+  neighbours ». → P2
 - **X10** « Referenced by · N » : compte écrit en C# ; lignes (classe
   partagée `.okf-row`, §12.6) : lien en ligne flexible, 13,5, sans
   soulignement, padding 6 0, filet bas `--hair`, `gap: 9px`, glyphe de type
@@ -1274,6 +1315,19 @@ contrôle ne prouve sa capacité à échouer que par la passe sans polices (éch
 - **X11** Légende des formes sur une page de concept : les puces de type de
   l'explorateur (E4) ; chaque glyphe porte aussi un `<title>` au nom du type.
   → P1.1
+- **X12** Agrandir (hors maquette, demande du propriétaire, révision 15) :
+  bouton icône 24 × 24 `#okf-local-enlarge` après la bascule de X5 (bord
+  `--hair`, glyphe 16 `--gray` à trait 1,5, `--blue` au survol ; `aria-label`
+  et `title` « Enlarge the neighbourhood », `aria-haspopup="dialog"`,
+  `aria-expanded`) ; fenêtre modale `#okf-local-modal` sous `<body>` : fond
+  `--backdrop`, boîte `role="dialog"` `aria-modal="true"` de min(92vw, 1100)
+  × min(80vh, 760), fond `--white`, bord 1 `--ink`, ombre `--shadow` ; tête :
+  titre « Neighbourhood of `<titre>` » (Inter Tight 600 18 `--ink`), bascule
+  1/2 sauts partagée avec X5, bouton « Close » (12, 600, bord `--hair`) ;
+  dessin disposé pour sa zone (§4.3, `viewport`), « +N omitted » (note) ;
+  liste équivalente toujours ouverte à droite (320 de large) ; pied de X8.
+  Sous 760 de large : la fenêtre moins 8 de chaque côté, la liste sous le
+  dessin (55 % / 45 %). Focus, Tab, Échap, fond, `inert` : §8. → P2
 
 ### 11.5 Page `graph.html` (B, A17)
 
@@ -1315,10 +1369,12 @@ contrôle ne prouve sa capacité à échouer que par la passe sans polices (éch
   0 12, 13 ; plus « List » (`aria-pressed`, hors maquette, §6) qui remplace le
   dessin par la liste équivalente. « Fit » (révision 11) : tout le dessin,
   libellés compris, à 24 des côtés et 56 du haut et du bas du canevas, jamais
-  au-delà de 1,25×. → P3
-- **G11** Nœuds : contexte `graph` de §12.2 (cercle 26, carré 30, losange
-  31,1, triangle 24 comme B ; anneau 26 trait 3, autre 26 trait 2, hors
-  maquette) ; aucune marque de péremption sur un nœud (B n'en a pas ; le
+  au-delà de 1,25×. Quand la taille du canevas change (séparateur de L7,
+  fenêtre ; révision 14), la vue suit (« Fit », ou nœud du fragment centré)
+  tant que le lecteur ne l'a pas déplacée. → P3
+- **G11** Nœuds : contexte `graph` de §12.2 (cercle 18, carré 21, losange
+  22, triangle 17 : 0,7 de B, révision 13 ; anneau 18 trait 2, autre 18 trait
+  1,5, hors maquette) ; aucune marque de péremption sur un nœud (B n'en a pas ; le
   sablier est dans G5 et G17) ; libellé Space Mono 11,5 `--ink` = dernier
   segment de l'id (id complet en `<title>`), coupé au-delà de 24 points de
   code à 23 + « … » (révision 11), centré sous la forme, ligne de
@@ -1326,13 +1382,15 @@ contrôle ne prouve sa capacité à échouer que par la passe sans polices (éch
 - **G12** Arêtes `--edge` 1,3, flèche 7 `--edge` vers la cible ; deux arêtes
   opposées décalées de ± 3 perpendiculairement ; vers un fantôme : `--ghost`
   1,4, tiretée 5 4, flèche `--edge` comme B. → P3
-- **G13** Fantôme : contexte `graph`, forme `ghost` (cercle de rayon 13 au
-  trait comme B), fond `--white`, trait `--ghost` 1,6 tireté 3 3, libellé
+- **G13** Fantôme : contexte `graph`, forme `ghost` (cercle de rayon 9 au
+  trait, 0,7 de B, révision 13), fond `--white`, trait `--ghost` 1,2 tireté
+  2 2, libellé
   « absent: `<id>` » `--ghost` 11,5, coupé comme G11. → P3
-- **G14** Sélection : contour carré `--blue` de côté + 12, trait 2,4 (§12.2) ;
+- **G14** Sélection : contour carré `--blue` de côté + 8, trait 2,4 (§12.2) ;
   sortantes `--blue` 2,2 pleines, entrantes `--blue` 2,2 tiretées 5 4,
-  flèches `--blue` 8 ; focus clavier : contour carré de côté + 20, tireté 3 3
-  `--ink` 2, distinct de la sélection. → P3
+  flèches `--blue` 8 ; focus clavier : contour carré de côté + 16, tireté 3 3
+  `--ink` 2, distinct de la sélection (+ 12 et + 20 jusqu'à la révision 13).
+  → P3
 - **G15** Légende en bas à gauche (16, 18), 12 `--gray`, `gap: 14px` : « Edge
   = body link (§6), as in okf graph · arrow points at the target », « Red
   dashed = broken link to an absent concept », « Blue = selection and its
@@ -1340,7 +1398,8 @@ contrôle ne prouve sa capacité à échouer que par la passe sans polices (éch
 - **G16** Interactions : glisser le fond = déplacer la vue ; molette = zoom
   autour du pointeur ; glisser un nœud = le déplacer ; clic = sélection ;
   double-clic ou Entrée = ouvrir la page. → P3
-- **G17** Tiroir « Selected » : 340, filet gauche, padding 20, `gap: 16px` ;
+- **G17** Tiroir « Selected » : 340 par défaut (redimensionnable, L7,
+  révision 14), filet gauche, padding 20, `gap: 16px` ;
   « SELECTED » ; id Space Mono 12 `--gray`, puis titre H2 (§11.0) à 6
   au-dessous ; puces (`.okf-chip`, C5) type, confiance sans vérificateur et,
   s'il y a lieu, péremption (« stale after » ou « stale since », sablier, A24 ;
@@ -1395,11 +1454,23 @@ contrôle ne prouve sa capacité à échouer que par la passe sans polices (éch
 - **L5** Les maquettes sont des captures de 1 440 × 900 à zones défilant
   seules : la mise en page reste fluide ; la recette compare à 1 440 × 900. → P1
 - **L6** À partir de 1 100 : trois colonnes **sans retour à la ligne**
-  (`flex-wrap: nowrap` sur `.okf-layout`, explorateur 290 et panneau 340 en
-  `flex: none`, `main` en `flex: 1 1 0` avec `min-width: 0`), alors que les
+  (`flex-wrap: nowrap` sur `.okf-layout`, explorateur 290 et panneau 340 par
+  défaut en `flex: none` — le panneau suit `--okf-context-w` quand le lecteur
+  l'a changée, L7 —, `main` en `flex: 1 1 0` avec `min-width: 0`), alors que les
   bases de P1 (260 + 260 + `main` 560) faisaient passer le panneau sous la page
   entre 1 100 et 1 190 une fois E1 et X1 appliqués. La recette mesure à 1 100,
   1 190 et 1 440. → P1.1
+- **L7** Séparateur de la colonne de droite (hors maquette, révision 14), entre
+  `main` et le panneau (pages de concept, index) ou le tiroir (G17) : à partir
+  de 1 100 seulement ; largeur de 240 au plus petit de 60 % de la disposition,
+  720 et ce que laissent les colonnes de gauche à une colonne centrale de 360 ;
+  340 par défaut ; mémorisée (`okf-context-w`, une clé pour toutes les pages) ;
+  poignée de 10 de large centrée sur le filet (largeur nette nulle), curseur
+  `col-resize`, trait de 2 (`--blue` au survol, au focus et pendant la
+  glissière, transparent sinon) et prise de 4 × 36 à 96 du haut en `--edge`
+  (3,4:1 en clair, 5,6:1 en sombre ; `--blue` au survol, au focus et pendant la
+  glissière) ; anneau de focus 2 `--blue` ; couleurs système en
+  `forced-colors` ; aucune animation. Clavier : §8. → P4 (révision 14)
 
 ### 11.8 Écartés et écarts approuvés
 
@@ -1419,7 +1490,9 @@ type de rang 3.
 
 Autres écarts, motivés à leur ligne : E4 (glyphe dans la puce), E6 (deux
 emplacements pour un nœud destination et dossier), E2 (titre qui n'est pas un
-`<label>`), G1 (bouton de palette), G6 (couleur des puces non pressées).
+`<label>`), G1 (bouton de palette), G6 (couleur des puces non pressées), X7,
+G11, G13 et G14 (formes et contours des graphes à 0,7, révision 13),
+`--okf-type-1` (carré du rang 1 vert au lieu de l'encre, §11.0, révision 13).
 
 ## 12. Contrats entre tranches
 
@@ -1442,7 +1515,7 @@ créé vide d'avance, aucune page ne charge un script qui n'existe pas encore.
 | `OKF4net.Viewer.csproj` : `LogicalName` qui garde le chemin relatif sous `Assets/` (séparateurs normalisés en `/` à la lecture), exclusion de `fonts/README.md` | P1.1 | — |
 | `HtmlWriter.WriteAssets` : écrit sous `assets/` **toutes** les ressources embarquées, en ordre ordinal de leur chemin, puis `okf-index.js` (et `okf-fonts.css` si A26 l'exige) | P1.1 | P2, P3 : un fichier ajouté sous `Assets/` est embarqué et écrit sans autre changement |
 | `HtmlWriter.Write` | P1.1, qui y calcule une fois la variable locale `graphPage = GraphPagePathOf(site)` (celle du garde et de l'en-tête) puis l'épingle sur le site (`site = site with { GraphPagePath = graphPage };`, révision 8 : tout appel ultérieur de `GraphPagePathOf(site)` ne fait plus que valider ce nom explicite, sans reparcourir les pages) ; P3 insère, sous le repère `// P3: graph page (§12.5)`, la seule ligne qui écrit la page du graphe, telle que fusionnée : `WriteFile(outDir, root, verifiedDirs, graphPage, RenderGraph(site, graphPage), written);` (révision 8 ; la révision 7 prescrivait `RenderGraph(site)`) | — |
-| `HtmlWriter.PageScripts` : table des scripts de fin de `<body>` des pages de concept et de l'index (§12.6) | P1.1 ; P2 insère `"okf-local.js"` sous le repère `// P2: local graph`, en fin de table | P3 ne la lit pas |
+| `HtmlWriter.PageScripts` : table des scripts de fin de `<body>` des pages de concept et de l'index (§12.6) | P1.1 ; P2 insère `"okf-local.js"` sous le repère `// P2: local graph`, en fin de table ; la révision 14 met `"okf-resize.js"` en tête | P3 ne la lit pas |
 | `HtmlWriter.ViewKind` (`internal enum { Page, Index, Graph }`, écrit `page`, `index`, `graph` dans `data-okf-view`) ; `RenderDocumentStart(ViewerSite site, ViewKind view, string title, string rootPrefix, string? conceptId)` (du `<!doctype>` à la fin de l'en-tête, `<head>` compris), `RenderHeader(site, view, rootPrefix, conceptId)` pour les trois vues ; `ScriptTag(string rootPrefix, string name)`, qui rend une ligne entière `<script src="{préfixe}assets/{nom}"></script>` suivie de `\n` (préfixe et nom passés par `HtmlEscape`) pour un fichier écrit sous `assets/` ; `GraphPagePathOf(site)` (valeur explicite validée, sinon `SiteModel.FreeGraphPagePath`) ; `HtmlEscape`, `RootPrefix` — tous `internal static` | P1.1, tests xunit des trois vues compris | P3 (appel) |
 | `HtmlWriter.RenderShell`, `RenderPage`, `RenderIndex`, tête de page, « Referenced by » | P1.1 | — |
 | `HtmlWriter.GuardNoCaseCollisions`, amorcé avec `index.html` et le nom de la page du graphe | P1.1 | — |
@@ -1450,6 +1523,8 @@ créé vide d'avance, aucune page ne charge un script qui n'existe pas encore.
 | `Assets/okf-shapes.js`, `okf-page.js`, `fonts/` (et son outil de vendorisation `tools/viewer-fonts/vendor-fonts.js`) ; révisions d'`okf-site.js`, `okf-theme.js`, `okf-explorer.js`, `okf-palette.js`, `okf-toc.js` | P1.1 | P2, P3 (API de §12.2, `OkfSite`) |
 | `Assets/okf-local.js` | P2 (création) | — |
 | `Assets/okf-sim.js`, `Assets/okf-graph.js` | P3 (création) | — |
+| `Assets/okf-resize.js`, section P4 de `viewer.css`, `cases/p4.js`, `fixtures/hostile-bundle/p4-chrome-classes.md`, `recette/p4.js` | révision 14 (séparateur, « P4 ») ; la même révision met `okf-resize.js` en tête de `PageScripts` et des scripts de `RenderGraph`, ajoute ses ancres à `run.js` (§12.7) et le réajustement de la vue à `okf-graph.js` (G10) | — |
+| sous-section X12 de la section P2 de `viewer.css`, fenêtre agrandie d'`okf-local.js`, `cases/p2-modal.js` | révision 15 (P2) ; la même révision ajoute l'ancre `#okf-local-modal` à `run.js` (§12.7) | — |
 | `viewer.css` | chaque tranche dans sa section (§12.6) | — |
 | `run.js` (helpers, chargeur des cas, cas de P1 et de P1.1), `check-index.js`, README du harnais | P1.1 | P2, P3 (helpers reçus par `register(h)`, §12.7) |
 | `cases/p2.js` ; `cases/p3.js` | P2 ; P3 | — |
@@ -1560,35 +1635,39 @@ window.OkfShapes = Object.freeze({
   des listes et des facettes (A, B, C) ; `chip` = puce de type (carré 8 de A) ;
   `flag` = drapeaux et légende de l'explorateur, facettes Trust et Freshness ;
   `local` = voisins du graphe local (A) ; `localCenter` = son centre (carré 28
-  de A) ; `graph` = nœuds de B. Les cases en *italique* ne figurent dans aucune
-  maquette (choix de rédaction, §13).
+  de A, ici 19,5) ; `graph` = nœuds de B. Les lignes `local`, `localCenter` et
+  `graph` valent 0,7 fois les relevés (révision 13), à la demi-unité ; leurs
+  traits aussi, jamais plus fins que ceux de la ligne `icon`. Les cases en
+  *italique* ne figurent dans aucune maquette (choix de rédaction, §13).
 
   | Contexte (boîte) | circle | square | diamond | triangle | ring | other | human | machine | stale | ghost |
   | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
   | `icon` (12) | 10 | 9 | 11,3 | 11 | 10 / 2 | *9 / 1,5* | — | — | — | *10 / 1,2, 2 2* |
   | `chip` (10) | *8* | 8 | *9* | *9* | *8 / 1,5* | *8 / 1,5* | — | — | — | — |
   | `flag` (10) | — | — | — | — | — | — | 8 | 8 / 2 | 10 | — |
-  | `local` | 20 | *23* | 25,5 | 22 | *20 / 2,5* | *20 / 1,5* | — | — | — | *21,2 / 1,4, 3 3* |
-  | `localCenter`, `ring` 2 | *26* | 28 | *31,1* | *24* | *26 / 3* | *26 / 2* | — | — | — | — |
-  | `graph`, `ring` 2,4, `focus` 2 | 26 | 30 | 31,1 | 24 | *26 / 3* | *26 / 2* | — | — | — | 27,6 / 1,6, 3 3 |
+  | `local` | 14 | *16* | 18 | 15,5 | *14 / 2* | *14 / 1,5* | — | — | — | *15,2 / 1,2, 2 2* |
+  | `localCenter`, `ring` 2 | *18* | 19,5 | *22* | *17* | *18 / 2* | *18 / 1,5* | — | — | — | — |
+  | `graph`, `ring` 2,4, `focus` 2 | 18 | 21 | 22 | 17 | *18 / 2* | *18 / 1,5* | — | — | — | 19,2 / 1,2, 2 2 |
 
   Lecture d'une case : `size`, puis `/ stroke`, puis `dash` ; une case sans
   trait a `stroke` 0 et `dash` `null` ; `ring` et `focus` d'une ligne valent
   pour toutes ses formes, 0 dans les autres lignes. Virgule décimale du texte,
   point dans le code (`11.3`). Écarts de mesure
   assumés : le triangle de l'explorateur fait 11 × 11
-  (maquette 11 × 10) ; le losange de A et B est un carré tourné de 8, 18 et 22,
-  soit les diagonales 11,3, 25,5 et 31,1 ; le fantôme de B (cercle de rayon 13,
-  trait 1,6 centré) a son bord extérieur à 13,8, d'où 27,6.
+  (maquette 11 × 10) ; le losange de l'explorateur est un carré tourné de 8,
+  soit la diagonale 11,3 ; ceux des graphes valent 0,7 des diagonales 25,5 et
+  31,1 de A et B (carrés tournés de 18 et 22), arrondis à 18 et 22 (révision
+  13) ; le fantôme du graphe (cercle de rayon 9, trait 1,2 centré) a son bord
+  extérieur à 9,6, d'où 19,2, et celui du graphe local (rayon 7) 15,2.
 - **Exemples travaillés** (à reproduire tels quels par le contrôle 10) :
   `icon` en (6, 6) — losange `M6 0.35 L11.65 6 L6 11.65 L0.35 6 Z`, triangle
   `M6 0.5 L11.5 11.5 L0.5 11.5 Z`, autre `x="2.25" y="2.25" width="7.5"
   height="7.5" stroke-width="1.5"`, anneau `r="4" stroke-width="2"` ; `flag`
   en (5, 5) — sablier `M0.5 0 L9.5 0 L5 5 L9.5 10 L0.5 10 L5 5 Z`, machine
-  `r="3" stroke-width="2"` ; `graph` en (100, 100) — carré `x="85" y="85"
-  width="30" height="30"`, losange `M100 84.45 L115.55 100 L100 115.55
-  L84.45 100 Z`, triangle `M100 88 L112 112 L88 112 Z`, fantôme `r="13"
-  stroke-width="1.6" stroke-dasharray="3 3"`.
+  `r="3" stroke-width="2"` ; `graph` en (100, 100) — carré `x="89.5"
+  y="89.5" width="21" height="21"`, losange `M100 89 L111 100 L100 111
+  L89 100 Z`, triangle `M100 91.5 L108.5 108.5 L91.5 108.5 Z`, fantôme
+  `r="9" stroke-width="1.2" stroke-dasharray="2 2"`.
 - **`icon(kind, context, title)`** : `<svg class="okf-glyph" width="B"
   height="B" viewBox="0 0 B B" aria-hidden="true" focusable="false">`, B =
   `BOXES[context]`, forme centrée en (B/2, B/2) aux valeurs de
@@ -1597,8 +1676,9 @@ window.OkfShapes = Object.freeze({
   `human`, `machine`, `stale` en contexte `flag`, y compris dans les puces.
 - **`node(kind, cx, cy, size, options)`** : `<g class="okf-node">` contenant,
   dans l'ordre, si `options.focus` > 0 un `rect.okf-node-focus` (carré de côté
-  size + 20, trait `focus`, `stroke-dasharray` 3 3), si `options.ring` > 0 un
-  `rect.okf-node-ring` (carré de côté size + 12, trait `ring`), puis la forme.
+  size + 16, trait `focus`, `stroke-dasharray` 3 3), si `options.ring` > 0 un
+  `rect.okf-node-ring` (carré de côté size + 8, trait `ring`), puis la forme
+  (+ 20 et + 12 jusqu'à la révision 13).
   Ces contours ne sont visibles que si le `<g>` porte `okf-focused` ou
   `okf-selected`, classes fixes que l'appelant bascule par `classList`. `node`
   ne pose **ni `<title>` ni `<text>`** : l'appelant insère `<title>` (id
@@ -1638,7 +1718,7 @@ window.OkfShapes = Object.freeze({
   `unverified`) ; `stale` → sablier `flag` + « stale (now ≥ `stale_after`) »
   (`stale_after` en Space Mono) ; `ghost` → `icon` + « absent concept ».
 - Utilisateurs : explorateur (E4, E6, E10, E12), palette (J4), puces et listes
-  (`okf-page.js` : C5, X10), graphe local (P2 : X7, X9), page graphe (P3 : G3
+  (`okf-page.js` : C5, X10), graphe local (P2 : X7, X9, X12), page graphe (P3 : G3
   à G5, G11 à G14, G17). Aucun ne dessine une forme de type, de confiance, de
   péremption ou de fantôme sans ce module.
 
@@ -1730,6 +1810,10 @@ soi-même n'en est pas un) ; il révèle `#okf-context` si celui-ci était cach�
       <button type="button" id="okf-local-hops-1" aria-pressed="true">1 hop</button>
       <button type="button" id="okf-local-hops-2" aria-pressed="false">2 hops</button>
     </div>
+    <button type="button" id="okf-local-enlarge" class="okf-local-enlarge" aria-label="Enlarge the neighbourhood"
+      title="Enlarge the neighbourhood" aria-haspopup="dialog" aria-expanded="false">
+      <svg class="okf-local-enlarge-icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="…" stroke-width="1.5"/></svg>
+    </button>
   </div>
   <div class="okf-local-canvas"><svg role="img" aria-label="…">…</svg></div>
   <p class="okf-local-foot"><span>solid = links to · dashed = referenced by</span>
@@ -1746,12 +1830,29 @@ soi-même n'en est pas un) ; il révèle `#okf-context` si celui-ci était cach�
 - Arêtes : §4.3 (toutes celles entre nœuds montrés, opposées décalées de
   ± 3) ; formes : `OkfShapes.node` aux contextes `local` et `localCenter`
   (§12.2), centre marqué `okf-selected` ; libellés : X7.
-- Marqueurs de flèche : `id` fixes `okf-local-arrow`, `okf-local-arrow-in`.
+- Marqueurs de flèche : `id` fixes `okf-local-arrow`, `okf-local-arrow-in` ;
+  dans la fenêtre agrandie, `okf-local-modal-arrow`, `okf-local-modal-arrow-in`.
+- Fenêtre agrandie (X12, révision 15) : `#okf-local-modal`, ajouté à `<body>`
+  à la première ouverture puis montré et caché, est un
+  `div.okf-local-backdrop` qui contient la boîte
+  `div.okf-local-dialog[role=dialog][aria-modal=true][aria-labelledby=okf-local-modal-title][tabindex=-1]` ;
+  celle-ci contient `.okf-local-modal-head` (`h2#okf-local-modal-title`,
+  `.okf-hops` à ids `okf-local-modal-hops-1/2`, `button.okf-local-modal-close`),
+  `.okf-local-modal-body` (`.okf-local-modal-canvas` : le dessin et
+  `p.okf-local-modal-omitted` ; `.okf-local-modal-side` :
+  `h3#okf-local-modal-count`, `ul.okf-local-modal-rows[role=list]`) et
+  `p.okf-local-modal-foot` (`a#okf-local-modal-open`). Son dessin a pour
+  `viewBox`, `width` et `height` la vue mesurée (`clientWidth` /
+  `clientHeight` de la zone, bornés à [298 × 248, 4 096]) ; un
+  redimensionnement de la fenêtre le redispose au plus une fois par frame, et
+  seulement si la zone a changé. Chaque dessin a sa propre table nœud →
+  concept.
 - « Open in graph » : `href` de `#okf-global-graph` repris **tel quel**,
   fragment compris ; lien omis s'il manque.
 - Clic sur un nœud concept : navigation par le résolveur (§3.5) ; fantôme :
   rien.
-- Toute requête DOM part de `#okf-context` (§12.6) ; rien sur une page qui
+- Toute requête DOM part de `#okf-context` (§12.6) ou d'un élément de la
+  fenêtre agrandie que le script a créé ; rien sur une page qui
   n'a pas `data-okf-view="page"`.
 
 ### 12.5 `graph.html` (propriétaire : P3)
@@ -1764,7 +1865,8 @@ soi-même n'en est pas un) ; il révèle `#okf-context` si celui-ci était cach�
   déjà calculé (révision 8 : c'est la ligne fusionnée ; la révision 7
   prescrivait la surcharge interne sans `graphPage`, qui recalculait le nom et
   reste l'entrée des tests xunit), puis le squelette ci-dessous, puis
-  ses propres balises `ScriptTag("", nom)` — `okf-index.js`, `okf-site.js`,
+  ses propres balises `ScriptTag("", nom)` — `okf-resize.js` (révision 14),
+  `okf-index.js`, `okf-site.js`,
   `okf-shapes.js`, `okf-palette.js`, `okf-sim.js`, `okf-graph.js` ; sans payload, sans
   `marked`, `viewer.js`, `okf-toc.js`, `okf-explorer.js`, `okf-page.js`,
   `okf-local.js`.
@@ -1849,12 +1951,14 @@ window.OkfSim = Object.freeze({
 
 - **Pages de concept et index** — `<head>` : `okf-theme.js`, `viewer.css`
   (puis `okf-fonts.css` si A26 l'exige) ; fin de `<body>` : `#okf-payload`,
-  puis la table `PageScripts` : `marked.min.js`, `viewer.js`, `okf-index.js`,
+  puis la table `PageScripts` : `okf-resize.js` (en tête, révision 14),
+  `marked.min.js`, `viewer.js`, `okf-index.js`,
   `okf-site.js`, `okf-shapes.js`, `okf-explorer.js`, `okf-palette.js`,
   `okf-toc.js`, `okf-page.js`, et, ajouté par P2 à son repère,
   `okf-local.js`.
 - **`graph.html`** (P3, `RenderGraph`) — `<head>` : idem, par
-  `RenderDocumentStart` ; fin de `<body>` : `okf-index.js`, `okf-site.js`,
+  `RenderDocumentStart` ; fin de `<body>` : `okf-resize.js` (révision 14),
+  `okf-index.js`, `okf-site.js`,
   `okf-shapes.js`, `okf-palette.js`, `okf-sim.js`, `okf-graph.js`.
 - **Assets écrits** par `HtmlWriter.WriteAssets` (§12.0) : toutes les
   ressources embarquées d'`Assets/`, en ordre ordinal de leur chemin, puis
@@ -1867,8 +1971,12 @@ window.OkfSim = Object.freeze({
   autre script hors des contrats de §12.
 - **CSS** : un seul `viewer.css`, en sections dans cet ordre : `@font-face`
   (P1.1) ; jetons et base (P1, révisés par P1.1) ; chrome P1/P1.1, composants
-  partagés compris ; `/* === P2: local graph === */` ;
-  `/* === P3: graph page === */`. P1.1 crée ces deux dernières, chacune avec
+  partagés compris ; `/* === P2: local graph === */` (à sa fin, la
+  sous-section `/* --- P2: the enlarged neighbourhood (X12) --- */`, révision
+  15) ; `/* === P3: graph page === */` ; `/* === P4: side-panel splitter === */`
+  (révision 14 ; la seule règle qui lit `--okf-context-w` est dans le bloc
+  `min-width: 1100px`, sous `[data-okf-resized]`). P1.1 crée les sections P2
+  et P3, chacune avec
   sous son titre une ligne de remplacement (`/* (P2 rules) */`,
   `/* (P3 rules) */`) que la tranche remplace, une ligne vide les séparant ;
   chaque tranche n'écrit que dans la sienne ; P2 et P3 n'ajoutent pas de jeton
@@ -1892,12 +2000,20 @@ window.OkfSim = Object.freeze({
   compris `.okf-local`), `body > .okf-layout > main > .okf-page-head`,
   `body > .okf-graph-layout` (par exemple `:is(#okf-explorer, #okf-context,
   body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout)
-  .okf-chip`). P2 et P3 emploient ces classes sans réécrire leurs règles.
+  .okf-chip`). P2 et P3 emploient ces classes sans réécrire leurs règles —
+  exception (révision 15) : la sous-section X12 réécrit sous
+  `#okf-local-modal`, déclarations inchangées, les règles du titre de section,
+  des lignes, des glyphes et de `[hidden]` qu'elle emploie, au lieu d'ajouter
+  son ancre aux listes `:is()` (choix de fusion, à replier plus tard).
 - **Ancrage, propriété de sécurité** (revue finale de P1) : le sanitizer garde
   `class` sur `<code>` (et rien d'autre : ni `id`, ni `name`, ni `data-*`),
   donc le corps peut porter n'importe quelle classe de chrome, jamais un
   attribut `data-okf-*`. **CSS** : tout sélecteur de chrome est ancré à un
   conteneur de chrome : `#okf-tools`, `#okf-explorer`, `#okf-context`,
+  `#okf-local-modal` (X12, révision 15 : ajouté à `<body>` par `okf-local.js` ;
+  id que le sanitizer retire du corps), `.okf-splitter` enfant direct de
+  `body > .okf-layout` ou `body > .okf-graph-layout` (révision 14, avec les
+  états `[data-okf-resized]` et `[data-okf-resizing]` de la disposition),
   `body > .okf-palette-backdrop`, `body > .okf-layout > main > .okf-page-head`,
   `body > .okf-layout > main > :is(.meta, .errors)` (index, C8),
   `body > header.bar`, `body > .okf-skip`, `body > .okf-graph-layout`, ou un
@@ -1906,11 +2022,14 @@ window.OkfSim = Object.freeze({
   `table.frontmatter` disparaît avec C6. **JS** : tout `querySelector` /
   `querySelectorAll` d'`okf-page.js`, `okf-local.js` et `okf-graph.js` part
   d'un conteneur de chrome obtenu par `getElementById` ou par un sélecteur
-  `body > …`, jamais de `document` ; une sélection par classe ne retient que
+  `body > …`, ou d'un élément que le script a lui-même créé (la fenêtre de
+  X12), jamais de `document` ; `okf-resize.js` ne trouve ses colonnes que par
+  `getElementById` ; une sélection par classe ne retient que
   les éléments qui portent aussi l'attribut `data-okf-*` attendu.
 - **Classes de chrome du harnais** : chaque tranche liste ses classes de chrome
   dans **son** fichier, `fixtures/hostile-bundle/p11-chrome-classes.md`,
-  `p2-chrome-classes.md`, `p3-chrome-classes.md`, et ajoute une sonde qui
+  `p2-chrome-classes.md` (classes de X12 comprises), `p3-chrome-classes.md`,
+  `p4-chrome-classes.md` (séparateur, révision 14), et ajoute une sonde qui
   vérifie que son vrai chrome garde son style ; le cas existant (P1.1 le
   généralise) parcourt toutes les pages `*chrome-classes.html` et compare les
   styles calculés du contenu portant ces classes, `@media` dépliés compris. Le
@@ -1919,13 +2038,21 @@ window.OkfSim = Object.freeze({
 ### 12.7 Harnais (`tools/viewer-security-check/run.js`)
 
 - **`run.js` appartient à P1.1** ; P2 et P3 n'y écrivent jamais. Leurs cas
-  vivent dans `tools/viewer-security-check/cases/p2.js` et `cases/p3.js`, qui
+  vivent dans `tools/viewer-security-check/cases/p2.js` et `cases/p3.js` (puis
+  `cases/p4.js`, révision 14, et `cases/p2-modal.js`, révision 15), qui
   exportent `register(h)` ; `h` est l'objet gelé des helpers. Le chargeur,
   **première tâche du plan P1.1**, appelle `register(h)` pour chaque
   `cases/*.js` présent, en ordre ordinal du nom, avant le décompte final ; un
   fichier absent n'est pas une erreur. `cases/p3.js` peut donc exister avant le
   chargeur (il n'est alors simplement pas exécuté). Contrôles synchrones d'un
   module pur (`OkfSim`) par `h.check`, asynchrones par `h.checkAsync`.
+- Exceptions documentées à « `run.js` appartient à P1.1 », sans lesquelles le
+  cas statique d'ancrage refuserait le nouveau chrome : la révision 14 ajoute
+  trois ancres à `CHROME_ANCHORS` (le séparateur, enfant direct de
+  `body > .okf-layout`, éventuellement avec `[data-okf-resized]` ou
+  `[data-okf-resizing]` ; `body > .okf-layout[data-okf-resized] > #okf-context` ;
+  `body > .okf-layout[data-okf-resizing]` seul), la révision 15 une
+  (`#okf-local-modal`).
 - Helpers figés (signatures inchangées, passés dans `h`) : `check`, `assert`,
   `checkAsync`, `okfSite`, `siteResources`, `openPage` (ses options `now`,
   `storage`, `storedTheme`, `hash`, `mount`, `blocked`, `override`,
@@ -1956,14 +2083,14 @@ window.OkfSim = Object.freeze({
 
 - Emplacement : `tools/viewer-security-check/recette/` — `recette.js` (pilote :
   `--site <dir> --acme <dir> [--out <dir>] [--browsers chrome,edge,firefox,webkit]
-  [--slices p1,p1.1,p2,p3] [--only id,id]` ; un fichier de tranche absent est
+  [--slices p1,p1.1,p2,p3,p4] [--only id,id]` ; un fichier de tranche absent est
   compté « ignoré »), `lib.js` (lancement, contrastes, sondes de styles
   calculés, captures), et **un fichier par tranche** : `p1.js` (portage par
   P1.1 des contrôles de la recette de P1, numérotés C1–C11 dans `RECETTE.md`
   et renommés **RC1–RC11** ici, pour ne pas les confondre avec C1–C8 de
-  §11.3), `p1-1.js`, `p2.js`, `p3.js`, chacun exportant
+  §11.3), `p1-1.js`, `p2.js`, `p3.js`, `p4.js` (révision 14), chacun exportant
   `async function run(ctx)` qui rend `{ [id]: { pass, … } }`, résultats
-  indexés par identifiant de §11 (H1…L6, RC1…RC11), par contrôle nommé
+  indexés par identifiant de §11 (H1…L7, RC1…RC11 ; V2-1…V2-19 pour `p4.js`), par contrôle nommé
   (`fonts`…) et par ligne d'`ACCEPTANCE.md`. `p1-1.js` porte aussi
   le contrôle `fonts` (procédure de §11.0) ; `p3.js` vérifie H9 et H10 sur la
   page du graphe.
@@ -1971,7 +2098,8 @@ window.OkfSim = Object.freeze({
   est le seul argument : `browserName` (`chrome`, `edge`, `firefox`,
   `webkit`) ; `site`, `acme` (URL `file://` des deux sites, terminées par
   `/`) ; `siteDir`, `acmeDir` (leurs dossiers) ; `wanted(id)` (faux si
-  `--only` exclut `id`) ; `newPage({ viewport, colorScheme })` (une page
+  `--only` exclut `id`) ; `newPage({ viewport, colorScheme, forcedColors,
+  reducedMotion })` (une page
   Playwright neuve, 1 440 × 900 et thème clair par défaut, dont
   `okfTracked` liste `errors`, `outside`, `failed`) ; `shot(page, id)`
   (capture sous `--out`, rangée par navigateur et tranche) ; `close()`
@@ -2012,15 +2140,20 @@ Choix de rédaction non dictés par une maquette ni par un arbitrage, appliqués
 par le texte et contestables :
 
 1. **Tailles de forme hors maquette** : les cases en italique de la table
-   `SIZES` (§12.2), notamment le carré local 23 (rapport 30 / 26 de B appliqué
-   au cercle 20 de A), le centre local aux tailles de B sauf le carré 28 de A,
-   l'anneau 26 trait 3 et la forme « autre » de B.
+   `SIZES` (§12.2), notamment le carré local (23 avant la révision 13 :
+   rapport 30 / 26 de B appliqué au cercle 20 de A), le centre local aux
+   tailles de B sauf le carré 28 de A, l'anneau et la forme « autre ».
+   Révision 13 : toutes les tailles des graphes à 0,7, demande du
+   propriétaire ; l'arrondi à la demi-unité et le plancher des traits (ceux de
+   la ligne `icon`), choix de rédaction.
 2. **Point de confiance humaine et cercle du rang 0** : deux disques
    `--blue` dans une même ligne de l'explorateur (glyphe de type 10 à gauche,
    drapeau 8 à droite) ; gardés tels que la maquette A les dessine — colonne,
    taille, texte masqué et légende les distinguent.
-3. **Contours de nœud** : sélection à côté + 12 (relevé dans A et B), focus
-   clavier à côté + 20, tireté 3 3 (G14 ne donne pas de taille).
+3. **Contours de nœud** : sélection à côté + 8 (+ 12 relevé dans A et B,
+   ramené avec les formes, révision 13), focus clavier à côté + 16, tireté 3 3
+   (G14 ne donne pas de taille ; le jour de 1,8 entre les deux contours est
+   gardé).
 4. **Ligne d'un nœud destination et dossier** : deux emplacements, chevron puis
    glyphe (E6) ; cible du chevron de 12 de large conforme à WCAG 2.5.8 par
    l'exception d'espacement (E7).
@@ -2029,3 +2162,11 @@ par le texte et contestables :
 6. **Flèche d'un lien cassé** : `--edge` comme B, sur une arête `--ghost` (G12).
 7. **Masquage sans saut du frontmatter** sous `html[data-okf-js]` (C6) : si
    `okf-page.js` manquait, les entrées repliées resteraient masquées.
+8. **Séparateur** (L7, révision 14) : bornes 240 et 720, 60 % de la
+   disposition, colonne centrale d'au moins 360, pas de 16 et 64, une seule clé
+   de stockage pour toutes les pages ; le graphe local n'est pas agrandi dans
+   un panneau élargi (X6).
+9. **Fenêtre agrandie** (X12, révision 15) : min(92vw, 1100) × min(80vh, 760),
+   liste de 320 à côté, coupe des libellés à 32 dès 560 de large, « +N
+   omitted » en note ; règles des composants partagés réécrites sous son
+   ancre (§12.6).
