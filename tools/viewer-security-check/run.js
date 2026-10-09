@@ -2070,6 +2070,9 @@ const CHROME_ANCHORS = [
   { chain: [/^#okf-tools(?![\w-])/] },
   { chain: [/^#okf-explorer(?![\w-])/] },
   { chain: [/^#okf-context(?![\w-])/] },
+  // The enlarged neighbourhood (P2, X12): a dialog okf-local.js appends to
+  // <body>; the sanitizer strips id, so no body content can carry this one.
+  { chain: [/^#okf-local-modal(?![\w-])/] },
   { chain: [BODY, /^\.okf-palette-backdrop(?![\w-])/] },
   { chain: [BODY, /^\.okf-layout$/, /^main$/, /^\.okf-page-head(?![\w-])/] },
   // The page head again, through main's id: only so a chip rule outweighs the

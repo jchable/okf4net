@@ -868,7 +868,8 @@ function registerList(h) {
     // Spec §7 control 3: inspected after opening AND after redrawing.
     doc.getElementById("okf-local-hops-2").click();
     doc.getElementById("okf-local-hops-1").click();
-    const svg = section.querySelector("svg");
+    // The drawing, not the opener's glyph in the head (X12, also an svg).
+    const svg = section.querySelector(".okf-local-canvas > svg");
     assertFixedSvg(assert, svg);
     const drawn = Array.from(svg.querySelectorAll("g.okf-node"), (g) => g.firstElementChild.textContent);
     assert(JSON.stringify(drawn) === JSON.stringify(ids), `drawn: ${JSON.stringify(drawn)}`);
@@ -885,7 +886,7 @@ function registerList(h) {
   checkAsync("local graph: the drawing is an image with no tab stop; the toggle and the list are the keyboard path", async () => {
     const window = await openPage("p2-local/c.html");
     const doc = window.document;
-    const svg = doc.querySelector("#okf-local-graph svg");
+    const svg = doc.querySelector("#okf-local-graph .okf-local-canvas > svg");
     assert(svg.getAttribute("role") === "img" && svg.getAttribute("focusable") === "false", "the drawing is not a non-focusable image");
     assert(!svg.hasAttribute("tabindex") && svg.querySelectorAll("[tabindex]").length === 0, "the drawing has a tab stop");
     const expected = expectedHood(window.OKF_INDEX, positionOf(window, "p2-local/c"), 1);
@@ -1325,4 +1326,5 @@ function register(h) {
   registerLabels(h);
 }
 
-module.exports = { register };
+// The helpers cases/p2-modal.js shares (the enlarged neighbourhood is P2's too).
+module.exports = { register, okfLocal, siteIndex, assertFixedSvg, expectedHood, positionOf, click };

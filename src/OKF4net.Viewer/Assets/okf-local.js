@@ -5,9 +5,9 @@
 // pure (no DOM, no clock, no randomness): from the site index alone it
 // computes the drawn nodes and their ring positions, every index edge between
 // them and the full neighbour list. tools/viewer-security-check calls it
-// directly (cases/p2.js). The page part, which draws the result into
-// #okf-context on a concept page, is added to this file by a later task of
-// the slice.
+// directly (cases/p2.js, cases/p2-modal.js). The page part draws the result
+// into #okf-context on a concept page, and again, larger, in the modal dialog
+// its "Enlarge the neighbourhood" button opens (spec X12).
 //
 // Node keys: a concept is its position in index.concepts; a ghost (an absent
 // link target, never navigable) is concepts.length + its position in
@@ -33,6 +33,28 @@
   // shrank to 0.7 of them: smaller shapes only widen every clearance.
   var ONE_RING = Object.freeze([Object.freeze({ rx: 127, ry: 95 })]);
   var TWO_RINGS = Object.freeze([Object.freeze({ rx: 106, ry: 72 }), Object.freeze({ rx: 134, ry: 98 })]);
+  // The enlarged neighbourhood (spec X12): the same layout in a larger view,
+  // `viewport` { width, height } given to build() and labels(), from the
+  // panel's 298 x 248 up to `max` on each side. The centre keeps its place
+  // relative to the middle (6 above it), the ring radii grow with the view on
+  // each axis (rx with the width, ry with the height), so every clearance the
+  // panel's sweep pins grows with them; shapes and fonts keep their sizes. In a
+  // view at least `wideFrom` wide a label is cut at `wideChars` code points
+  // instead of LABEL.maxChars (cases/p2-modal.js sweeps it).
+  var LARGE = Object.freeze({ max: 4096, wideFrom: 560, wideChars: 32 });
+
+  // The view a viewport asks for: VIEW itself when there is none, so the
+  // panel's layout is computed exactly as before (cases/p2-modal.js pins it).
+  function viewOf(viewport) {
+    if (viewport === undefined) { return VIEW; }
+    if (viewport === null || typeof viewport !== "object") { throw new TypeError("okf-local: viewport is not an object"); }
+    var w = viewport.width;
+    var h = viewport.height;
+    if (typeof w !== "number" || typeof h !== "number" || !(w >= VIEW.width && w <= LARGE.max) || !(h >= VIEW.height && h <= LARGE.max)) {
+      throw new TypeError("okf-local: viewport is not a finite size between the panel's and " + LARGE.max);
+    }
+    return { width: w, height: h, cx: w / 2, cy: h / 2 - (VIEW.height / 2 - VIEW.cy) };
+  }
 
   // To hundredths; a magnitude too large to hold hundredths (and to multiply
   // by 100 without overflowing) is returned as it is.
@@ -59,8 +81,12 @@
   // undirected (links out and in); edges keep their direction. The second hop
   // never starts from a ghost; a self-link is no neighbour. At most four
   // passes over the edges and one over the nodes per hop: `work` counts them
-  // (spec §7: counted, never timed).
-  function build(index, centre, hops) {
+  // (spec §7: counted, never timed). `viewport`, optional: the enlarged
+  // view (LARGE above); without it, the panel's.
+  function build(index, centre, hops, viewport) {
+    var view = viewOf(viewport);
+    var sx = view.width / VIEW.width;
+    var sy = view.height / VIEW.height;
     var C = index.concepts.length;
     var G = index.ghosts.length;
     var N = C + G;
@@ -119,7 +145,7 @@
     // first in it). Their order on each ring is key order.
     var shown = list.slice(0, CAP - 1);
     var slot = new Int32Array(N).fill(-1);
-    var nodes = [{ key: centre, dist: 0, x: VIEW.cx, y: VIEW.cy }];
+    var nodes = [{ key: centre, dist: 0, x: view.cx, y: view.cy }];
     slot[centre] = 0;
     var rings = [[], []];
     for (k = 0; k < shown.length; k++) { rings[shown[k].dist - 1].push(shown[k].key); }
@@ -135,8 +161,9 @@
         nodes.push({
           key: rings[r][j],
           dist: r + 1,
-          x: round(VIEW.cx + radii[r].rx * Math.cos(angle)),
-          y: round(VIEW.cy + radii[r].ry * Math.sin(angle)),
+          // sx and sy are exactly 1 in the panel's view: its positions are unchanged.
+          x: round(view.cx + radii[r].rx * sx * Math.cos(angle)),
+          y: round(view.cy + radii[r].ry * sy * Math.sin(angle)),
         });
       }
     }
@@ -226,7 +253,8 @@
   // order, all deterministic (node order, no clock, no randomness):
   //  1. a label stays 4 inside the view: its box is clamped, and a text of more
   //     than 20 code points is cut to 19 plus an ellipsis (never inside a
-  //     surrogate pair; the node's <title> and the list carry the whole id);
+  //     surrogate pair; the node's <title> and the list carry the whole id) --
+  //     in a view LARGE.wideFrom wide or more, 32 and 31 (LARGE.wideChars);
   //  2. a label that would cover another label, or a shape, takes the first free
   //     place of a fixed, bounded search: for each of 21 rows (the default,
   //     then 12 further under and above, alternately), centred, then starting
@@ -245,33 +273,36 @@
   var ELLIPSIS = String.fromCharCode(0x2026);
 
   // By code points, not UTF-16 units: a cut never leaves half a surrogate pair.
-  // Reads at most maxChars + 1 code points, whatever the length of the text.
-  function cut(text) {
+  // Reads at most max + 1 code points, whatever the length of the text.
+  function cut(text, max) {
     var s = String(text);
     var units = 0;
     var points = 0;
     var keep = 0; // the length, in units, of the first maxChars - 1 code points
-    while (units < s.length && points <= LABEL.maxChars) {
-      if (points === LABEL.maxChars - 1) { keep = units; }
+    while (units < s.length && points <= max) {
+      if (points === max - 1) { keep = units; }
       var high = s.charCodeAt(units);
       var pair = high >= 0xd800 && high <= 0xdbff && units + 1 < s.length && (s.charCodeAt(units + 1) & 0xfc00) === 0xdc00;
       units += pair ? 2 : 1;
       points++;
     }
-    return points > LABEL.maxChars ? s.slice(0, keep) + ELLIPSIS : s;
+    return points > max ? s.slice(0, keep) + ELLIPSIS : s;
   }
 
   function overlaps(a, b) { return a.x1 < b.x2 && b.x1 < a.x2 && a.y1 < b.y2 && b.y1 < a.y2; }
 
   // nodes: build()'s nodes (the centre first); texts: each node's label text;
   // halves: each node's half-extent (the centre's counts its selection square).
-  // Returns, per node, { text, x, y, anchor, truncated, box }.
-  function labels(nodes, texts, halves) {
+  // viewport: optional, build()'s (the enlarged view). Returns, per node,
+  // { text, x, y, anchor, truncated, box }.
+  function labels(nodes, texts, halves, viewport) {
     if (!Array.isArray(nodes) || !Array.isArray(texts) || !Array.isArray(halves) || texts.length !== nodes.length || halves.length !== nodes.length) {
       throw new TypeError("okf-local: labels needs one text and one half-extent per node");
     }
-    var w = VIEW.width;
-    var h = VIEW.height;
+    var view = viewOf(viewport);
+    var w = view.width;
+    var h = view.height;
+    var maxChars = w >= LARGE.wideFrom ? LARGE.wideChars : LABEL.maxChars;
     var m = LABEL.margin;
     var shapes = [];
     var k;
@@ -349,7 +380,7 @@
     }
 
     for (var j = 0; j < nodes.length; j++) {
-      var text = cut(texts[j]);
+      var text = cut(texts[j], maxChars);
       var width = text.length * (j === 0 ? LABEL.centreChar : LABEL.char);
       var chosen = search(j, width, true) || search(j, width, false);
       if (!chosen) {
@@ -371,7 +402,7 @@
   }
 
   window.OkfLocal = Object.freeze({
-    CAP: CAP, VIEW: VIEW, LABEL: LABEL, build: build, segment: segment, lastSegment: lastSegment, labels: labels,
+    CAP: CAP, VIEW: VIEW, LABEL: LABEL, LARGE: LARGE, build: build, segment: segment, lastSegment: lastSegment, labels: labels,
   });
 
   // --- page part: a concept page only (spec §4.1, §12.4) -------------------
@@ -400,7 +431,9 @@
   var DOT = " " + String.fromCharCode(0xb7) + " "; // " · ", built at run time
   var C = index.concepts.length;
   var root = site.rootOf(document);
-  var nodeKeys = new Map(); // drawn <g> -> node key, replaced with each drawing
+  // The enlarge glyph (spec X12): four corners pointing out, a constant of
+  // this module in the fixed vocabulary of §12.2 (one path, M and L only).
+  var ENLARGE = "M2 6 L2 2 L6 2 M10 2 L14 2 L14 6 M14 10 L14 14 L10 14 M6 14 L2 14 L2 10";
 
   function el(tag, className, text) { return site.element(document, tag, className, text); }
 
@@ -447,18 +480,26 @@
     return m;
   }
 
-  function drawing(result) {
+  // The drawing of `result`. `large`: absent for the panel (298 x 248, its
+  // arrow markers okf-local-arrow*); for the modal, { viewport } -- the view
+  // build() laid the result out in, which is also the svg's own size and
+  // viewBox -- with markers okf-local-modal-arrow*, so the two drawings never
+  // share an id.
+  function drawing(result, large) {
+    var width = large ? large.viewport.width : VIEW.width;
+    var height = large ? large.viewport.height : VIEW.height;
+    var arrow = large ? "okf-local-modal-arrow" : "okf-local-arrow";
     var picture = svg("svg");
-    picture.setAttribute("viewBox", "0 0 " + VIEW.width + " " + VIEW.height);
-    picture.setAttribute("width", "100%");
-    picture.setAttribute("height", String(VIEW.height));
+    picture.setAttribute("viewBox", "0 0 " + num(width) + " " + num(height));
+    picture.setAttribute("width", large ? num(width) : "100%");
+    picture.setAttribute("height", num(height));
     picture.setAttribute("role", "img");
     picture.setAttribute("focusable", "false");
     picture.setAttribute("aria-label", "Local graph of " + idOf(centre) + ", " + hopsText(result.hops) + ": "
-      + (result.nodes.length - 1) + " of " + neighboursText(result.total) + " drawn; the list below names them all");
+      + (result.nodes.length - 1) + " of " + neighboursText(result.total) + " drawn; the list " + (large ? "beside" : "below") + " names them all");
     var defs = svg("defs");
-    defs.appendChild(marker("okf-local-arrow", "okf-local-arrowhead"));
-    defs.appendChild(marker("okf-local-arrow-in", "okf-local-arrowhead okf-local-arrowhead-in"));
+    defs.appendChild(marker(arrow, "okf-local-arrowhead"));
+    defs.appendChild(marker(arrow + "-in", "okf-local-arrowhead okf-local-arrowhead-in"));
     picture.appendChild(defs);
 
     var sizes = [];
@@ -485,7 +526,7 @@
       line.setAttribute("y2", num(seg.y2));
       line.setAttribute("stroke-width", "1.4");
       if (edge.dashed) { line.setAttribute("stroke-dasharray", "4 3"); }
-      line.setAttribute("marker-end", edge.dashed ? "url(#okf-local-arrow-in)" : "url(#okf-local-arrow)");
+      line.setAttribute("marker-end", edge.dashed ? "url(#" + arrow + "-in)" : "url(#" + arrow + ")");
       lines.appendChild(line);
     }
     picture.appendChild(lines);
@@ -498,9 +539,11 @@
       texts.push(lastSegment(idOf(result.nodes[t].key)));
       halves.push(sizes[t].size / 2 + (t === 0 ? 4 : 0));
     }
-    var places = labels(result.nodes, texts, halves);
+    var places = labels(result.nodes, texts, halves, large ? large.viewport : undefined);
 
-    nodeKeys = new Map();
+    // Each drawing keeps its own map, so the panel's and the modal's clicks
+    // never read each other's nodes.
+    var nodeKeys = new Map(); // drawn <g> -> node key
     for (var j = 0; j < result.nodes.length; j++) {
       var node = result.nodes[j];
       var ghost = node.key >= C;
@@ -524,9 +567,9 @@
     // Mouse only: the drawing is an image with no tab stop; the keyboard
     // path is the list and Referenced by (spec §8).
     picture.addEventListener("click", function (e) {
-      for (var t = e.target; t && t !== picture; t = t.parentNode) {
-        if (nodeKeys.has(t)) {
-          var key = nodeKeys.get(t);
+      for (var target = e.target; target && target !== picture; target = target.parentNode) {
+        if (nodeKeys.has(target)) {
+          var key = nodeKeys.get(target);
           var entry = key < C ? index.concepts[key] : null;
           if (entry !== null && typeof entry === "object" && typeof entry.path === "string") { navigate(site.resolve(root, entry.path)); }
           return; // a ghost is never navigable
@@ -536,13 +579,70 @@
     return picture;
   }
 
-  function hopButton(hops) {
-    var button = el("button", "", hopsText(hops));
-    button.type = "button";
-    button.id = "okf-local-hops-" + hops;
-    button.setAttribute("aria-pressed", hops === 1 ? "true" : "false");
-    button.addEventListener("click", function () { render(build(index, centre, hops)); });
-    return button;
+  // The depth shown, shared by the panel and the modal: pressing a depth in
+  // either redraws both (spec X12). Not remembered across pages (X5).
+  var current = first;
+
+  function setHops(hops) {
+    current = build(index, centre, hops);
+    render();
+  }
+
+  function hopGroup(prefix) {
+    var group = el("div", "okf-hops");
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-label", "Neighbourhood depth");
+    var buttons = [];
+    for (var hops = 1; hops <= 2; hops++) {
+      var button = el("button", "", hopsText(hops));
+      button.type = "button";
+      button.id = prefix + hops;
+      button.setAttribute("aria-pressed", hops === 1 ? "true" : "false");
+      button.addEventListener("click", setHops.bind(null, hops));
+      group.appendChild(button);
+      buttons.push(button);
+    }
+    return { group: group, buttons: buttons };
+  }
+
+  function pressHops(buttons, hops) {
+    for (var b = 0; b < buttons.length; b++) {
+      buttons[b].setAttribute("aria-pressed", b + 1 === hops ? "true" : "false");
+    }
+  }
+
+  function enlargeIcon() {
+    var glyph = svg("svg", "okf-local-enlarge-icon");
+    glyph.setAttribute("width", "16");
+    glyph.setAttribute("height", "16");
+    glyph.setAttribute("viewBox", "0 0 16 16");
+    glyph.setAttribute("aria-hidden", "true");
+    glyph.setAttribute("focusable", "false");
+    var path = svg("path");
+    path.setAttribute("d", ENLARGE);
+    path.setAttribute("stroke-width", "1.5");
+    glyph.appendChild(path);
+    return glyph;
+  }
+
+  // "Open in graph" repeats the header's own link, fragment included: the
+  // header is the only source of the graph page's name (spec §12.3).
+  var tools = document.getElementById("okf-tools");
+  var globalLink = tools ? tools.querySelector("#okf-global-graph") : null;
+  var graphHref = globalLink ? globalLink.getAttribute("href") : null;
+
+  // The foot of X8: the legend of the edges, then "Open in graph" if the
+  // header has a graph link.
+  function foot(className, linkId) {
+    var p = el("p", className);
+    p.appendChild(el("span", "", "solid = links to" + DOT + "dashed = referenced by"));
+    if (graphHref) {
+      var openLink = el("a", "", "Open in graph");
+      openLink.id = linkId;
+      openLink.setAttribute("href", graphHref);
+      p.appendChild(openLink);
+    }
+    return p;
   }
 
   var section = el("section", "okf-local");
@@ -551,31 +651,23 @@
   var head = el("div", "okf-local-head");
   var heading = el("h2", "okf-section-title", "Neighbourhood");
   heading.id = "okf-local-title";
-  var group = el("div", "okf-hops");
-  group.setAttribute("role", "group");
-  group.setAttribute("aria-label", "Neighbourhood depth");
-  var hopButtons = [hopButton(1), hopButton(2)];
-  group.appendChild(hopButtons[0]);
-  group.appendChild(hopButtons[1]);
+  var panelHops = hopGroup("okf-local-hops-");
+  // X12: the opener of the enlarged view, an icon button after the depth.
+  var enlarge = el("button", "okf-local-enlarge");
+  enlarge.type = "button";
+  enlarge.id = "okf-local-enlarge";
+  enlarge.setAttribute("aria-label", "Enlarge the neighbourhood");
+  enlarge.setAttribute("title", "Enlarge the neighbourhood");
+  enlarge.setAttribute("aria-haspopup", "dialog");
+  enlarge.setAttribute("aria-expanded", "false");
+  enlarge.appendChild(enlargeIcon());
   head.appendChild(heading);
-  head.appendChild(group);
+  head.appendChild(panelHops.group);
+  head.appendChild(enlarge);
   var canvas = el("div", "okf-local-canvas");
-  var foot = el("p", "okf-local-foot");
-  foot.appendChild(el("span", "", "solid = links to" + DOT + "dashed = referenced by"));
-  // "Open in graph" repeats the header's own link, fragment included: the
-  // header is the only source of the graph page's name (spec §12.3).
-  var tools = document.getElementById("okf-tools");
-  var globalLink = tools ? tools.querySelector("#okf-global-graph") : null;
-  var graphHref = globalLink ? globalLink.getAttribute("href") : null;
-  if (graphHref) {
-    var openLink = el("a", "", "Open in graph");
-    openLink.id = "okf-local-open";
-    openLink.setAttribute("href", graphHref);
-    foot.appendChild(openLink);
-  }
   section.appendChild(head);
   section.appendChild(canvas);
-  section.appendChild(foot);
+  section.appendChild(foot("okf-local-foot", "okf-local-open"));
   // The equivalent list (spec §6, X9): every neighbour, drawn or not, with
   // its relation to this concept -- the keyboard path through the
   // neighbourhood (§8), since the drawing has no tab stop.
@@ -634,10 +726,13 @@
     return item;
   }
 
-  function render(result) {
-    for (var b = 0; b < hopButtons.length; b++) {
-      hopButtons[b].setAttribute("aria-pressed", b + 1 === result.hops ? "true" : "false");
-    }
+  function fillRows(list, result) {
+    list.textContent = "";
+    for (var k = 0; k < result.list.length; k++) { list.appendChild(row(result.list[k])); }
+  }
+
+  function renderPanel(result) {
+    pressHops(panelHops.buttons, result.hops);
     canvas.textContent = "";
     canvas.appendChild(drawing(result));
     if (result.omitted > 0) {
@@ -653,11 +748,208 @@
       canvas.appendChild(more);
     }
     summary.textContent = "List" + DOT + neighboursText(result.total);
-    rows.textContent = "";
-    for (var k = 0; k < result.list.length; k++) { rows.appendChild(row(result.list[k])); }
+    fillRows(rows, result);
   }
 
-  render(first);
+  // --- the enlarged neighbourhood: a modal dialog (spec X12) ---------------
+  // Built on first open, appended to <body> as #okf-local-modal (the sanitizer
+  // strips id from body content, so no body element can take that id), then
+  // shown and hidden. While it is open: the rest of <body> is inert and
+  // aria-hidden, the page does not scroll (data-okf-modal-open on <html>),
+  // Tab and Shift+Tab cycle inside it, Escape or a click on the backdrop
+  // closes it and focus goes back to the opener. Its own code, not the
+  // palette's: the palette's trap knows its two stops only.
+  var modal = null;
+
+  function conceptTitle() {
+    var entry = index.concepts[centre];
+    return entry !== null && typeof entry === "object" && typeof entry.title === "string" && entry.title !== "" ? entry.title : idOf(centre);
+  }
+
+  function buildModal() {
+    var backdrop = el("div", "okf-local-backdrop");
+    backdrop.id = "okf-local-modal";
+    backdrop.hidden = true;
+    var dialog = el("div", "okf-local-dialog");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("aria-labelledby", "okf-local-modal-title");
+    // Focusable but not a tab stop: focus lands here on open, and a click on
+    // the dialog's own text keeps it inside.
+    dialog.tabIndex = -1;
+    var top = el("div", "okf-local-modal-head");
+    var title = el("h2", "okf-local-modal-title", "Neighbourhood of " + conceptTitle());
+    title.id = "okf-local-modal-title";
+    var hops = hopGroup("okf-local-modal-hops-");
+    var close = el("button", "okf-local-modal-close", "Close");
+    close.type = "button";
+    top.appendChild(title);
+    top.appendChild(hops.group);
+    top.appendChild(close);
+    var body = el("div", "okf-local-modal-body");
+    var area = el("div", "okf-local-modal-canvas");
+    var side = el("div", "okf-local-modal-side");
+    var count = el("h3", "okf-section-title");
+    count.id = "okf-local-modal-count";
+    var list = el("ul", "okf-local-modal-rows");
+    list.setAttribute("role", "list");
+    list.setAttribute("aria-labelledby", "okf-local-modal-count");
+    side.appendChild(count);
+    side.appendChild(list);
+    body.appendChild(area);
+    body.appendChild(side);
+    dialog.appendChild(top);
+    dialog.appendChild(body);
+    dialog.appendChild(foot("okf-local-modal-foot", "okf-local-modal-open"));
+    backdrop.appendChild(dialog);
+    close.addEventListener("click", closeModal);
+    backdrop.addEventListener("click", function (e) { if (e.target === backdrop) { closeModal(); } });
+    document.body.appendChild(backdrop);
+    return { backdrop: backdrop, dialog: dialog, hops: hops.buttons, area: area, count: count, list: list, viewport: null, frame: 0, inerted: [] };
+  }
+
+  // The drawing area's size, in the bounds build() accepts: never smaller
+  // than the panel's view (a smaller area shows the drawing scaled down by
+  // its viewBox), never larger than LARGE.max.
+  function measure() {
+    var w = Math.floor(modal.area.clientWidth);
+    var h = Math.floor(modal.area.clientHeight);
+    return {
+      width: Math.min(Math.max(Number.isFinite(w) ? w : 0, VIEW.width), LARGE.max),
+      height: Math.min(Math.max(Number.isFinite(h) ? h : 0, VIEW.height), LARGE.max),
+    };
+  }
+
+  // The modal's drawing of the current depth, laid out for `viewport`, by
+  // default the area as it is now.
+  function drawModal(viewport) {
+    viewport = viewport || measure();
+    modal.viewport = viewport;
+    var result = build(index, centre, current.hops, viewport);
+    modal.area.textContent = "";
+    modal.area.appendChild(drawing(result, { viewport: viewport }));
+    if (result.omitted > 0) {
+      // A note, not a button: every neighbour is in the list beside.
+      modal.area.appendChild(el("p", "okf-local-modal-omitted", "+" + result.omitted + " omitted"));
+    }
+  }
+
+  function renderModal() {
+    pressHops(modal.hops, current.hops);
+    drawModal();
+    modal.count.textContent = "List" + DOT + neighboursText(current.total);
+    fillRows(modal.list, current);
+  }
+
+  function render() {
+    renderPanel(current);
+    if (modal && !modal.backdrop.hidden) { renderModal(); }
+  }
+
+  // A window resize lays the drawing out again for the new area, at most
+  // once a frame and only when the area changed; meanwhile the viewBox scales
+  // the previous drawing into the area.
+  function onResize() {
+    if (modal.frame) { return; }
+    var later = typeof window.requestAnimationFrame === "function" ? window.requestAnimationFrame.bind(window) : function (fn) { fn(); return 0; };
+    modal.frame = later(function () {
+      modal.frame = 0;
+      if (modal.backdrop.hidden) { return; }
+      var size = measure();
+      if (size.width !== modal.viewport.width || size.height !== modal.viewport.height) { drawModal(size); }
+    }) || 0;
+  }
+
+  // The tab stops of the dialog, in document order.
+  function stops() {
+    var found = modal.dialog.querySelectorAll("button, a[href], [tabindex]");
+    var out = [];
+    for (var k = 0; k < found.length; k++) {
+      var stop = found[k];
+      if (stop.disabled || stop.tabIndex < 0) { continue; }
+      out.push(stop);
+    }
+    return out;
+  }
+
+  function isCtrlK(e) {
+    return e.ctrlKey && !e.altKey && !e.metaKey && (e.key === "k" || e.key === "K" || e.code === "KeyK");
+  }
+
+  // Captured on document, before the palette's own listener: while the
+  // modal is open, Escape closes it, Tab stays inside it, and the palette's
+  // shortcuts ("/" and Ctrl+K) are refused, prevented so the palette (which
+  // ignores a prevented key) does not open over it.
+  function onKey(e) {
+    if (modal.backdrop.hidden || e.isComposing || e.keyCode === 229) { return; }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeModal();
+    } else if (e.key === "Tab") {
+      // Every Tab is taken and moved along the dialog's own stops, rebouncing
+      // at either end: left to the browser, a Tab from the last button would
+      // skip the list's links where Tab does not reach links (Safari) and
+      // leave the dialog.
+      e.preventDefault();
+      var list = stops();
+      if (list.length === 0) {
+        modal.dialog.focus();
+        return;
+      }
+      var at = list.indexOf(document.activeElement);
+      var next = at === -1 ? (e.shiftKey ? list.length - 1 : 0) : (at + (e.shiftKey ? list.length - 1 : 1)) % list.length;
+      list[next].focus();
+    } else if ((e.key === "/" && !e.ctrlKey && !e.altKey && !e.metaKey) || isCtrlK(e)) {
+      e.preventDefault();
+    }
+  }
+
+  function openModal() {
+    if (modal && !modal.backdrop.hidden) { return; } // already open: nothing twice
+    if (!modal) { modal = buildModal(); }
+    modal.backdrop.hidden = false;
+    // The rest of the page: inert and hidden from assistive technology,
+    // remembering what this changed so closing restores exactly that.
+    modal.inerted = [];
+    for (var child = document.body.firstElementChild; child; child = child.nextElementSibling) {
+      if (child === modal.backdrop || child.localName === "script") { continue; }
+      var change = { node: child, inert: !child.hasAttribute("inert"), hidden: !child.hasAttribute("aria-hidden") };
+      if (change.inert) { child.setAttribute("inert", ""); }
+      if (change.hidden) { child.setAttribute("aria-hidden", "true"); }
+      modal.inerted.push(change);
+    }
+    html.setAttribute("data-okf-modal-open", "");
+    enlarge.setAttribute("aria-expanded", "true");
+    renderModal();
+    document.addEventListener("keydown", onKey, true);
+    window.addEventListener("resize", onResize);
+    modal.dialog.focus();
+  }
+
+  function closeModal() {
+    if (!modal || modal.backdrop.hidden) { return; }
+    modal.backdrop.hidden = true;
+    document.removeEventListener("keydown", onKey, true);
+    window.removeEventListener("resize", onResize);
+    if (modal.frame && typeof window.cancelAnimationFrame === "function") { window.cancelAnimationFrame(modal.frame); }
+    modal.frame = 0;
+    for (var k = 0; k < modal.inerted.length; k++) {
+      var change = modal.inerted[k];
+      if (change.inert) { change.node.removeAttribute("inert"); }
+      if (change.hidden) { change.node.removeAttribute("aria-hidden"); }
+    }
+    modal.inerted = [];
+    // The drawing and the list are rebuilt on the next open.
+    modal.area.textContent = "";
+    modal.list.textContent = "";
+    html.removeAttribute("data-okf-modal-open");
+    enlarge.setAttribute("aria-expanded", "false");
+    enlarge.focus();
+  }
+
+  enlarge.addEventListener("click", openModal);
+
+  render();
   var toc = document.getElementById("okf-toc");
   context.insertBefore(section, toc && toc.parentNode === context ? toc.nextSibling : context.firstChild);
   context.hidden = false;
