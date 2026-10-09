@@ -166,7 +166,7 @@ function context({ browser, name, opts, slice }) {
     lib: module.exports,
     wanted: (id) => !opts.only || opts.only.has(id),
     async newPage(o = {}) {
-      const ctx = await browser.newContext({ viewport: o.viewport || { width: 1440, height: 900 }, colorScheme: o.colorScheme || "light" });
+      const ctx = await browser.newContext({ viewport: o.viewport || { width: 1440, height: 900 }, colorScheme: o.colorScheme || "light", forcedColors: o.forcedColors, reducedMotion: o.reducedMotion });
       const page = await ctx.newPage();
       page.okfTracked = track(page, [site, acme]);
       opened.push(ctx);

@@ -108,8 +108,8 @@ public class HtmlWriterHeaderTests
         HtmlWriter.Write(Acme(src), dest.Path);
 
         Assert.Equal(
-            new[] { "marked.min.js", "viewer.js", "okf-index.js", "okf-site.js", "okf-shapes.js", "okf-explorer.js", "okf-palette.js", "okf-toc.js", "okf-page.js" },
-            HtmlWriter.PageScripts.Take(9));
+            new[] { "okf-resize.js", "marked.min.js", "viewer.js", "okf-index.js", "okf-site.js", "okf-shapes.js", "okf-explorer.js", "okf-palette.js", "okf-toc.js", "okf-page.js" },
+            HtmlWriter.PageScripts.Take(10));
         foreach (var (rel, prefix) in new[] { ("tables/users.html", "../"), ("index.html", string.Empty) })
         {
             var page = Read(dest.Path, rel);

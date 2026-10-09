@@ -6,7 +6,7 @@
 // writes results.json plus captures named by §11 id.
 //
 //   node tools/viewer-security-check/recette/recette.js --site <okf4net-site> --acme <acme-site>
-//        [--out <dir>] [--browsers chrome,edge,firefox,webkit] [--slices p1,p1.1,p2,p3] [--only id,id]
+//        [--out <dir>] [--browsers chrome,edge,firefox,webkit] [--slices p1,p1.1,p2,p3,p4] [--only id,id]
 //
 // The two sites are built by the commands of ../ACCEPTANCE.md. A slice whose
 // file does not exist yet is reported as skipped.
@@ -16,8 +16,8 @@ const os = require("os");
 const path = require("path");
 const lib = require("./lib");
 
-const SLICE_FILES = { p1: "p1.js", "p1.1": "p1-1.js", p2: "p2.js", p3: "p3.js" };
-const USAGE = "usage: recette.js --site <okf4net-site> --acme <acme-site> [--out <dir>] [--browsers chrome,edge,firefox,webkit] [--slices p1,p1.1,p2,p3] [--only id,id]";
+const SLICE_FILES = { p1: "p1.js", "p1.1": "p1-1.js", p2: "p2.js", p3: "p3.js", p4: "p4.js" };
+const USAGE = "usage: recette.js --site <okf4net-site> --acme <acme-site> [--out <dir>] [--browsers chrome,edge,firefox,webkit] [--slices p1,p1.1,p2,p3,p4] [--only id,id]";
 
 function parseArgs(argv) {
   const out = { browsers: ["chrome", "edge", "firefox"], slices: ["p1", "p1.1"], only: null };

@@ -773,3 +773,78 @@ body > .okf-graph-layout svg .okf-graph-arrowhead-sel { fill: var(--blue); }
     flex: none; width: 340px; overflow-y: auto; border-top: 0; border-left: 1px solid var(--hair);
   }
 }
+
+/* === P4: side-panel splitter === */
+/* okf-resize.js puts one .okf-splitter between the middle column and the
+   right-hand column (the context panel; the graph page's drawer) and, once
+   the reader has set a width, --okf-context-w and data-okf-resized on the
+   layout. Both rules that read the variable are inside the 1 100 px block:
+   stacked, the splitter is display: none and a stored width changes nothing.
+   Every selector starts from body > .okf-layout or body > .okf-graph-layout:
+   body <code> wearing the class is not a direct child of either
+   (p4-chrome-classes.md). Colours are the section 11.0 tokens, so a theme
+   switch needs nothing; nothing here moves, so reduced motion needs nothing. */
+body > .okf-layout > .okf-splitter,
+body > .okf-graph-layout > .okf-splitter { display: none; }
+body > .okf-layout > .okf-splitter[hidden],
+body > .okf-graph-layout > .okf-splitter[hidden] { display: none; }
+@media (min-width: 1100px) {
+  body > .okf-layout[data-okf-resized] > #okf-context,
+  body > .okf-graph-layout[data-okf-resized] > .okf-graph-detail { width: var(--okf-context-w); }
+  /* A 10 px hit area centred on the seam (net layout width 0), over both
+     panels' own 1 px rules; the line and the grip are drawn inside it. */
+  body > .okf-layout > .okf-splitter,
+  body > .okf-graph-layout > .okf-splitter {
+    display: block; position: relative; z-index: 2; flex: none; align-self: stretch;
+    width: 10px; margin: 0 -5px; cursor: col-resize; touch-action: none;
+  }
+  body > .okf-layout > .okf-splitter::before,
+  body > .okf-graph-layout > .okf-splitter::before {
+    content: ""; position: absolute; top: 0; bottom: 0; left: 4px; width: 2px; background: transparent;
+  }
+  /* The grip: a 4 x 36 pill under the header, --edge on --white (3.4:1 in
+     light, more in dark), so the handle can be found before it is hovered. */
+  body > .okf-layout > .okf-splitter::after,
+  body > .okf-graph-layout > .okf-splitter::after {
+    content: ""; position: absolute; top: 96px; left: 3px; width: 4px; height: 36px; border-radius: 2px; background: var(--edge);
+  }
+  body > .okf-layout > .okf-splitter:hover::before,
+  body > .okf-graph-layout > .okf-splitter:hover::before,
+  body > .okf-layout > .okf-splitter:focus-visible::before,
+  body > .okf-graph-layout > .okf-splitter:focus-visible::before,
+  body > .okf-layout[data-okf-resizing] > .okf-splitter::before,
+  body > .okf-graph-layout[data-okf-resizing] > .okf-splitter::before { background: var(--blue); }
+  body > .okf-layout > .okf-splitter:hover::after,
+  body > .okf-graph-layout > .okf-splitter:hover::after,
+  body > .okf-layout > .okf-splitter:focus-visible::after,
+  body > .okf-graph-layout > .okf-splitter:focus-visible::after,
+  body > .okf-layout[data-okf-resizing] > .okf-splitter::after,
+  body > .okf-graph-layout[data-okf-resizing] > .okf-splitter::after { background: var(--blue); }
+  body > .okf-layout > .okf-splitter:focus-visible,
+  body > .okf-graph-layout > .okf-splitter:focus-visible { outline: 2px solid var(--blue); outline-offset: -1px; }
+  /* A drag must not select text under the pointer. */
+  body > .okf-layout[data-okf-resizing],
+  body > .okf-graph-layout[data-okf-resizing] { user-select: none; -webkit-user-select: none; }
+}
+/* The narrowest the panel gets is 240 (198 inside its padding): the Neighbourhood
+   title and its 1 hop / 2 hops toggle are wider than that, and the toggle would
+   run into the padding. They wrap instead (the toggle on a second line). */
+#okf-context .okf-local-head { flex-wrap: wrap; row-gap: 6px; }
+@media (forced-colors: active) {
+  body > .okf-layout > .okf-splitter::after,
+  body > .okf-graph-layout > .okf-splitter::after { background: ButtonText; }
+  body > .okf-layout > .okf-splitter:hover::before,
+  body > .okf-graph-layout > .okf-splitter:hover::before,
+  body > .okf-layout > .okf-splitter:focus-visible::before,
+  body > .okf-graph-layout > .okf-splitter:focus-visible::before,
+  body > .okf-layout[data-okf-resizing] > .okf-splitter::before,
+  body > .okf-graph-layout[data-okf-resizing] > .okf-splitter::before,
+  body > .okf-layout > .okf-splitter:hover::after,
+  body > .okf-graph-layout > .okf-splitter:hover::after,
+  body > .okf-layout > .okf-splitter:focus-visible::after,
+  body > .okf-graph-layout > .okf-splitter:focus-visible::after,
+  body > .okf-layout[data-okf-resizing] > .okf-splitter::after,
+  body > .okf-graph-layout[data-okf-resizing] > .okf-splitter::after { background: Highlight; }
+  body > .okf-layout > .okf-splitter:focus-visible,
+  body > .okf-graph-layout > .okf-splitter:focus-visible { outline-color: Highlight; }
+}

@@ -129,7 +129,7 @@ which the harness above never sees.
 ## Slice case files
 
 `run.js` belongs to P1.1 (spec §12.0, §12.7). The later slices add their
-cases without editing it: `cases/p2.js` and `cases/p3.js` each export
+cases without editing it: `cases/p2.js`, `cases/p3.js` and `cases/p4.js` each export
 `register(h)`, where `h` is a frozen object holding exactly `check`, `assert`,
 `checkAsync`, `okfSite`, `okfShapes`, `siteResources`, `openPage`,
 `navigations`, `key`, `type`, `unwrapMedia`, `isShown`, `paletteOptions` and
@@ -153,12 +153,12 @@ requests leaving the site — checked in real browsers on the two sites of
     OKF_PLAYWRIGHT=<path to a playwright-core module> \
       node tools/viewer-security-check/recette/recette.js \
         --site <okf4net-site> --acme <acme-site> \
-        [--out <dir>] [--browsers chrome,edge,firefox,webkit] [--slices p1,p1.1,p2,p3] [--only id,id]
+        [--out <dir>] [--browsers chrome,edge,firefox,webkit] [--slices p1,p1.1,p2,p3,p4] [--only id,id]
 
 Playwright is **not** a dependency of this repository: `recette/lib.js`
 resolves `OKF_PLAYWRIGHT`, else `require("playwright-core")`, and stops with
 a clear message when neither exists. `npm test` and CI never run the
-recette. Each slice has its own file: `p1.js`, `p1-1.js`, `p2.js` and `p3.js` (a
+recette. Each slice has its own file: `p1.js`, `p1-1.js`, `p2.js`, `p3.js` and `p4.js` (a
 missing file is reported as skipped). Each one exports `async function run(ctx)`, whose results are keyed by the ids of
 spec §11 (`H1`…`L6`), by the ported P1 checks `RC1`…`RC11`, or by a named
 control (`fonts`, `tokens`, `requests`). A result is `pass: true`, `false`,

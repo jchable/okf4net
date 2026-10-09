@@ -266,7 +266,7 @@ jobs:
           $graphPage = "$outDir/" + $graphLink.Matches[0].Groups[1].Value
           if (-not (Test-Path $graphPage)) { throw "okf-render did not write $graphPage" }
           if (-not (Select-String -Path $graphPage -Pattern 'id="okf-graph-layout"' -Quiet)) { throw "$graphPage lacks the graph skeleton" }
-          foreach ($script in 'okf-sim.js', 'okf-graph.js', 'okf-local.js') {
+          foreach ($script in 'okf-resize.js', 'okf-sim.js', 'okf-graph.js', 'okf-local.js') {
             if (-not (Test-Path "$outDir/assets/$script")) { throw "okf-render did not write assets/$script" }
           }
           Write-Host "OK: okf-render wrote $outDir/index.html, an executable $indexScript, the P1.1 scripts, the fonts and the graph page $graphPage"

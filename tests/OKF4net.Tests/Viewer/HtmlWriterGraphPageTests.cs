@@ -13,7 +13,7 @@ public class HtmlWriterGraphPageTests
 {
     private static readonly string[] GraphScripts =
     [
-        "assets/okf-index.js", "assets/okf-site.js", "assets/okf-shapes.js",
+        "assets/okf-resize.js", "assets/okf-index.js", "assets/okf-site.js", "assets/okf-shapes.js",
         "assets/okf-palette.js", "assets/okf-sim.js", "assets/okf-graph.js",
     ];
 
@@ -49,7 +49,7 @@ public class HtmlWriterGraphPageTests
     }
 
     [Fact]
-    public void The_graph_page_loads_exactly_its_six_scripts_in_order()
+    public void The_graph_page_loads_exactly_its_seven_scripts_in_order()
     {
         using var src = new TempDir();
         using var dest = new TempDir();

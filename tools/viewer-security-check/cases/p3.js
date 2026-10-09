@@ -1140,7 +1140,7 @@ function registerPurity(h) {
 // U+00B7, built at run time (an escape typed into a file is decoded on write).
 const MIDDOT = String.fromCharCode(0xb7);
 const EMDASH = String.fromCharCode(0x2014);
-const GRAPH_SCRIPTS = ["okf-index.js", "okf-site.js", "okf-shapes.js", "okf-palette.js", "okf-sim.js", "okf-graph.js"];
+const GRAPH_SCRIPTS = ["okf-resize.js", "okf-index.js", "okf-site.js", "okf-shapes.js", "okf-palette.js", "okf-sim.js", "okf-graph.js"];
 
 // The page's path, from the "Global graph" link of index.html with its
 // fragment removed: never a hard-coded name (§12.7, A25).
@@ -1262,7 +1262,7 @@ function conceptPos(index, id) {
 }
 
 function registerGraphPage(h) {
-  h.checkAsync("graph page: reached by the Global graph link, it loads exactly its six scripts", async () => {
+  h.checkAsync("graph page: reached by the Global graph link, it loads exactly its seven scripts, okf-resize.js first", async () => {
     const { doc, rel } = await openGraph(h);
     h.assert(doc.documentElement.getAttribute("data-okf-view") === "graph", `${rel} is not the graph view`);
     const scripts = Array.from(doc.querySelectorAll("body script[src]"), (s) => s.getAttribute("src"));
