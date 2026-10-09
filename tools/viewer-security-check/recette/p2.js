@@ -69,6 +69,77 @@ function measureLabels() {
   return out;
 }
 
+// X12, measured in the page: the enlarged drawing in #okf-local-modal. Its
+// view is its viewBox (laid out for the drawing area, 1 unit = 1 px unless the
+// area is smaller than the panel's view). Label boxes: real width (getBBox),
+// the module's height model (8 above the baseline, 3 below) -- `model` -- and
+// the whole glyph box -- `full`, informational (a font's line box is taller
+// than the model). Overlaps: label with label, label with another node's shape
+// (the centre's with its selection square); `edges`: labels an edge crosses
+// (informational, the halo keeps them legible). `perChar`: the widest real
+// advance per character, against the 6.2 / 6.5 estimates.
+function measureModal() {
+  const ELLIPSIS = String.fromCharCode(0x2026);
+  const svg = document.querySelector("#okf-local-modal .okf-local-modal-canvas > svg");
+  const vb = svg.getAttribute("viewBox").split(" ").map(Number);
+  const W = vb[2];
+  const H = vb[3];
+  const maxChars = W >= 560 ? 32 : 20;
+  const nodes = Array.from(svg.querySelectorAll("g.okf-node")).map((g) => {
+    const text = g.querySelector("text");
+    const shape = text.previousElementSibling;
+    const ring = g.querySelector(".okf-node-ring");
+    const tb = text.getBBox();
+    const y = Number(text.getAttribute("y"));
+    const b = (ring || shape).getBBox();
+    const title = g.querySelector("title").textContent.replace(/^absent: /, "");
+    return {
+      title, text: text.textContent, centre: g.classList.contains("okf-selected"),
+      model: { x0: tb.x, x1: tb.x + tb.width, y0: y - 8, y1: y + 3 },
+      full: { x0: tb.x, x1: tb.x + tb.width, y0: tb.y, y1: tb.y + tb.height },
+      obstacle: { x0: b.x, x1: b.x + b.width, y0: b.y, y1: b.y + b.height },
+      advance: text.getComputedTextLength() / Math.max(1, text.textContent.length),
+    };
+  });
+  const hit = (a, b) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+  const out = { view: [W, H], count: nodes.length, outside: [], badCut: [], model: { label: 0, shape: 0 }, full: { label: 0, shape: 0 }, pairs: [], edges: 0, perChar: { node: 0, centre: 0 } };
+  nodes.forEach((n, i) => {
+    const b = n.model;
+    if (b.x0 < 4 - 0.05 || b.x1 > W - 4 + 0.05 || b.y0 < 4 - 0.05 || b.y1 > H - 4 + 0.05) { out.outside.push(n.title); }
+    const seg = n.title.slice(n.title.lastIndexOf("/") + 1);
+    const points = Array.from(seg);
+    const expected = points.length > maxChars ? points.slice(0, maxChars - 1).join("") + ELLIPSIS : seg;
+    if (n.text !== expected) { out.badCut.push({ title: n.title, text: n.text, expected }); }
+    const key = n.centre ? "centre" : "node";
+    out.perChar[key] = Math.max(out.perChar[key], Math.round(n.advance * 1000) / 1000);
+    nodes.forEach((o, j) => {
+      if (j > i && hit(b, o.model)) { out.model.label++; out.pairs.push([n.text, o.text, "label"]); }
+      if (j !== i && hit(b, o.obstacle)) { out.model.shape++; out.pairs.push([n.text, o.text, "shape"]); }
+      if (j > i && hit(n.full, o.full)) { out.full.label++; }
+      if (j !== i && hit(n.full, o.obstacle)) { out.full.shape++; }
+    });
+  });
+  // An edge crosses a label when its segment meets the label's model box.
+  const crosses = (l, b) => {
+    const x1 = Number(l.getAttribute("x1")); const y1 = Number(l.getAttribute("y1"));
+    const x2 = Number(l.getAttribute("x2")); const y2 = Number(l.getAttribute("y2"));
+    for (let t = 0; t <= 1; t += 0.02) {
+      const x = x1 + (x2 - x1) * t; const y = y1 + (y2 - y1) * t;
+      if (x > b.x0 && x < b.x1 && y > b.y0 && y < b.y1) { return true; }
+    }
+    return false;
+  };
+  const lines = Array.from(svg.querySelectorAll("line.okf-local-edge"));
+  out.edges = nodes.filter((n) => lines.some((l) => crosses(l, n.model))).length;
+  // The same overlaps in screen pixels (getBoundingClientRect), labels only.
+  const rects = Array.from(svg.querySelectorAll("text.okf-local-label"), (t) => t.getBoundingClientRect());
+  let screen = 0;
+  rects.forEach((a, i) => rects.forEach((b, j) => { if (j > i && a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom) { screen++; } }));
+  out.screenLabelPairs = screen;
+  out.pairs = out.pairs.slice(0, 12);
+  return out;
+}
+
 async function run(ctx) {
   const { site, acme } = ctx;
   const { rgb, contrast } = ctx.lib;
@@ -418,6 +489,161 @@ async function run(ctx) {
     });
     const pass = stops.every((s) => !s.inSvg) && stops.some((s) => s.tag === "SUMMARY") && row.open && row.tag === "A" && row.row;
     return { pass, stops, row };
+  });
+
+  // --- X12: the enlarged neighbourhood ---------------------------------------
+  const openModal = async (p) => {
+    await p.click("#okf-local-enlarge");
+    await p.waitForSelector("#okf-local-modal .okf-local-modal-canvas > svg");
+  };
+  // The OKF4net site's hub at the cap: the page the brief names, else the
+  // concept with the most neighbours.
+  const hubPage = async () => {
+    const idx = ctx.lib.readIndex(ctx.siteDir);
+    const named = idx.concepts.find((c) => c.path === "code/csharp/okf4net.html");
+    if (named) { return named.path; }
+    const C = idx.concepts.length;
+    const sets = idx.concepts.map(() => new Set());
+    for (const [from, to, , ghost] of idx.edges) {
+      const key = ghost ? C + to : to;
+      if (from !== key) { sets[from].add(key); if (!ghost) { sets[to].add(from); } }
+    }
+    let best = 0;
+    sets.forEach((s, k) => { if (s.size > sets[best].size) { best = k; } });
+    return idx.concepts[best].path;
+  };
+
+  await check("X12", async () => {
+    // Opener, dialog, focus, keys, backdrop, in light at 1 440 x 900.
+    await open(acme + ACME_PAGE);
+    const opener = await page.evaluate(() => {
+      const b = document.getElementById("okf-local-enlarge");
+      const r = b.getBoundingClientRect();
+      const hops = document.querySelector("#okf-local-graph .okf-hops").getBoundingClientRect();
+      const head = document.querySelector("#okf-local-graph .okf-local-head").getBoundingClientRect();
+      return { w: r.width, h: r.height, name: b.getAttribute("aria-label"), popup: b.getAttribute("aria-haspopup"), expanded: b.getAttribute("aria-expanded"),
+        afterHops: r.left >= hops.right, inHead: r.right <= head.right + 0.5 && Math.abs(r.top + r.height / 2 - (hops.top + hops.height / 2)) < 1 };
+    });
+    await openModal(page);
+    const opened = await page.evaluate(() => {
+      const backdrop = document.getElementById("okf-local-modal");
+      const dialog = backdrop.querySelector("[role=dialog]");
+      const rect = dialog.getBoundingClientRect();
+      const area = backdrop.querySelector(".okf-local-modal-canvas");
+      const svg = backdrop.querySelector(".okf-local-modal-canvas > svg");
+      return {
+        modal: dialog.getAttribute("aria-modal"), label: document.getElementById(dialog.getAttribute("aria-labelledby")).textContent,
+        focusInside: dialog.contains(document.activeElement), expanded: document.getElementById("okf-local-enlarge").getAttribute("aria-expanded"),
+        dialog: [Math.round(rect.width), Math.round(rect.height)], area: [area.clientWidth, area.clientHeight], viewBox: svg.getAttribute("viewBox"),
+        bodyScroll: getComputedStyle(document.documentElement).overflow,
+        inert: Array.from(document.body.children).filter((c) => c !== backdrop && c.localName !== "script").every((c) => c.inert === true),
+      };
+    });
+    await shot("X12-open");
+    // Tab cycles inside: the dialog's stops plus two, forward then back.
+    const count = await page.evaluate(() => document.querySelectorAll("#okf-local-modal [role=dialog] :is(button, a[href])").length);
+    const walk = [];
+    for (let k = 0; k < count + 2; k++) {
+      await page.keyboard.press("Tab");
+      walk.push(await page.evaluate(() => document.getElementById("okf-local-modal").contains(document.activeElement) && document.activeElement !== document.querySelector("#okf-local-modal [role=dialog]")));
+    }
+    for (let k = 0; k < 3; k++) {
+      await page.keyboard.press("Shift+Tab");
+      walk.push(await page.evaluate(() => document.getElementById("okf-local-modal").contains(document.activeElement)));
+    }
+    // Escape: closed, focus back on the opener.
+    await page.keyboard.press("Escape");
+    const escaped = await page.evaluate(() => ({ hidden: document.getElementById("okf-local-modal").hidden, focus: document.activeElement.id, scroll: getComputedStyle(document.documentElement).overflow }));
+    // The backdrop (a corner of it, outside the dialog) closes too.
+    await openModal(page);
+    await page.mouse.click(5, 5);
+    const backdropClosed = await page.evaluate(() => ({ hidden: document.getElementById("okf-local-modal").hidden, focus: document.activeElement.id }));
+    // The depth is one state: 2 hops in the dialog is 2 hops in the panel.
+    await openModal(page);
+    await page.click("#okf-local-modal-hops-2");
+    const synced = await page.evaluate(() => [document.getElementById("okf-local-hops-2").getAttribute("aria-pressed"),
+      document.querySelectorAll("#okf-local-modal svg g.okf-node").length, document.querySelectorAll("#okf-local-graph .okf-local-canvas svg g.okf-node").length]);
+    await page.keyboard.press("Escape");
+    const pass = opener.w === 24 && opener.h === 24 && opener.name === "Enlarge the neighbourhood" && opener.popup === "dialog" && opener.expanded === "false" && opener.afterHops && opener.inHead
+      && opened.modal === "true" && opened.label.startsWith("Neighbourhood of ") && opened.focusInside && opened.expanded === "true" && opened.bodyScroll === "hidden" && opened.inert
+      && opened.viewBox === `0 0 ${opened.area[0]} ${opened.area[1]}`
+      && walk.every(Boolean) && escaped.hidden && escaped.focus === "okf-local-enlarge" && escaped.scroll !== "hidden"
+      && backdropClosed.hidden && backdropClosed.focus === "okf-local-enlarge" && synced[0] === "true" && synced[1] === synced[2];
+    return { pass, opener, opened, walk, escaped, backdropClosed, synced };
+  });
+
+  await check("X12-labels", async () => {
+    // The enlarged drawings, measured: acme's gross-margin-period at 2 hops
+    // (under the cap: no overlap allowed) and the OKF4net hub at the cap
+    // (overlaps allowed by A11, counted), each in light, dark and at 390 px.
+    const hub = await hubPage();
+    const out = {};
+    let pass = true;
+    for (const [name, url, hops, strict] of [["acme", acme + ACME_PAGE, 2, true], ["hub", site + hub, 1, false], ["hub-2", site + hub, 2, false]]) {
+      for (const [variant, viewport, theme] of [["light", { width: 1440, height: 900 }, "light"], ["dark", { width: 1440, height: 900 }, "dark"], ["390", { width: 390, height: 844 }, "light"]]) {
+        const p = await ctx.newPage({ viewport });
+        await open(url, theme, p);
+        if (hops === 2) { await p.click("#okf-local-hops-2"); }
+        await openModal(p);
+        const m = await p.evaluate(measureModal);
+        const scroll = await p.evaluate(() => ({ page: document.documentElement.scrollWidth, inner: window.innerWidth, dialog: document.querySelector("#okf-local-modal [role=dialog]").scrollWidth, dialogClient: document.querySelector("#okf-local-modal [role=dialog]").clientWidth }));
+        await shot(`X12-${name}-${variant}`, p);
+        const ok = m.outside.length === 0 && m.badCut.length === 0 && (!strict || (m.model.label === 0 && m.model.shape === 0))
+          && scroll.page <= scroll.inner && scroll.dialog <= scroll.dialogClient && m.perChar.node <= 6.2 && m.perChar.centre <= 6.5;
+        out[`${name}-${variant}`] = { ok, ...m, scroll };
+        pass = pass && ok;
+      }
+    }
+    return { pass, hub, ...out };
+  });
+
+  await check("X12-contrast", async () => {
+    const measured = {};
+    let pass = true;
+    for (const theme of ["light", "dark"]) {
+      await open(acme + ACME_PAGE, theme);
+      await openModal(page);
+      const c = await page.evaluate(() => {
+        const q = (s) => document.querySelector(s);
+        const st = (s) => getComputedStyle(q(s));
+        const bg = getComputedStyle(q("#okf-local-modal [role=dialog]")).backgroundColor;
+        return {
+          bg,
+          title: st("#okf-local-modal-title").color, close: st("#okf-local-modal .okf-local-modal-close").color,
+          count: st("#okf-local-modal-count").color, foot: st("#okf-local-modal .okf-local-modal-foot").color,
+          link: st("#okf-local-modal-open").color, row: st("#okf-local-modal .okf-local-modal-rows a.okf-row").color,
+          pressed: [st("#okf-local-modal-hops-1").color, st("#okf-local-modal-hops-1").backgroundColor],
+          unpressed: [st("#okf-local-modal-hops-2").color, st("#okf-local-modal-hops-2").backgroundColor],
+          labels: Array.from(document.querySelectorAll("#okf-local-modal svg text.okf-local-label:not(.okf-local-label-ghost)"), (t) => getComputedStyle(t).fill),
+          border: getComputedStyle(q("#okf-local-modal [role=dialog]")).borderTopColor,
+        };
+      });
+      const r = {
+        title: contrast(c.title, c.bg), close: contrast(c.close, c.bg), count: contrast(c.count, c.bg), foot: contrast(c.foot, c.bg),
+        link: contrast(c.link, c.bg), row: contrast(c.row, c.bg), pressed: contrast(c.pressed[0], c.pressed[1]), unpressed: contrast(c.unpressed[0], c.unpressed[1]),
+        labels: Math.min(...c.labels.map((f) => contrast(f, c.bg))), border: contrast(c.border, c.bg),
+      };
+      measured[theme] = r;
+      pass = pass && Object.entries(r).every(([k, v]) => v >= (k === "border" ? 3 : 4.5));
+      await shot(`X12-contrast-${theme}`);
+      await page.keyboard.press("Escape");
+    }
+    return { pass, ...measured };
+  });
+
+  await check("X12-resize", async () => {
+    const p = await ctx.newPage({ viewport: { width: 1440, height: 900 } });
+    await open(acme + ACME_PAGE, "light", p);
+    await openModal(p);
+    const before = await p.evaluate(() => document.querySelector("#okf-local-modal .okf-local-modal-canvas > svg").getAttribute("viewBox"));
+    await p.setViewportSize({ width: 900, height: 700 });
+    await p.waitForFunction((b) => document.querySelector("#okf-local-modal .okf-local-modal-canvas > svg").getAttribute("viewBox") !== b, before, { timeout: 3000 });
+    const after = await p.evaluate(() => {
+      const area = document.querySelector("#okf-local-modal .okf-local-modal-canvas");
+      return { viewBox: document.querySelector("#okf-local-modal .okf-local-modal-canvas > svg").getAttribute("viewBox"), area: [area.clientWidth, area.clientHeight] };
+    });
+    const m = await p.evaluate(measureModal);
+    return { pass: after.viewBox === `0 0 ${after.area[0]} ${after.area[1]}` && m.model.label === 0 && m.model.shape === 0 && m.outside.length === 0, before, after, overlaps: m.model };
   });
 
   if (ctx.wanted("P2-8")) {
