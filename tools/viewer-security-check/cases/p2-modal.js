@@ -678,6 +678,83 @@ function registerChrome(h) {
     assert(css(backdrop, "display") === "none" && css(doc.documentElement, "overflow") !== "hidden", "closed, the dialog shows or the page stays locked");
   });
 
+  // The dialog shares the panel's rules instead of restating them (spec
+  // §12.6, written once): the shared components list it among their containers
+  // and P2's toggle, row text, foot link and drawing paint are anchored to
+  // :is(#okf-context, #okf-local-modal). So the same element kind computes the
+  // same in both places (equal to the panel's, and to the literal pinned here,
+  // which a declaration changed in the one shared rule moves too; jsdom drops a
+  // shorthand holding var(), so borders, backgrounds and fill: none are pinned
+  // by the real-browser comparison, not here), and only the
+  // real differences (a section title's margin, sizes) are the dialog's own.
+  checkAsync("enlarged neighbourhood: the shared rules compute alike in the dialog and the panel, and a hidden part stays hidden", async () => {
+    const window = await openPage("p2-local/hub.html");
+    const doc = window.document;
+    const css = (el, prop) => window.getComputedStyle(el).getPropertyValue(prop);
+    doc.getElementById("okf-local-enlarge").click();
+    const modal = doc.getElementById("okf-local-modal");
+    const panel = doc.getElementById("okf-local-graph");
+    const one = (root, sel, what) => {
+      const el = root.querySelector(sel);
+      assert(el, `${what}: nothing matches ${sel}`);
+      return el;
+    };
+    // [what, selector under the panel, selector under the dialog, [[prop, literal]...]]
+    const table = [
+      ["section title", ".okf-section-title", "#okf-local-modal-count", [
+        ["font-family", "var(--mono)"], ["font-size", "11px"], ["font-weight", "400"], ["letter-spacing", "0.06em"],
+        ["line-height", "1.4"], ["text-transform", "uppercase"], ["color", "var(--gray)"]]],
+      ["link row", ".okf-local-list a.okf-row", ".okf-local-modal-rows a.okf-row", [
+        ["display", "flex"], ["align-items", "center"], ["gap", "9px"], ["padding-top", "6px"], ["padding-bottom", "6px"],
+        ["min-width", "0px"], ["font-size", "13.5px"], ["line-height", "normal"], ["color", "var(--blue)"], ["text-decoration", "none"], ["overflow-wrap", "anywhere"]]],
+      ["absent row", ".okf-local-list .okf-row.okf-local-absent", ".okf-local-modal-rows .okf-row.okf-local-absent", [
+        ["display", "flex"], ["gap", "9px"], ["font-size", "13.5px"], ["color", "var(--ghost)"]]],
+      ["row glyph", ".okf-local-list a.okf-row svg.okf-glyph", ".okf-local-modal-rows a.okf-row svg.okf-glyph", [
+        ["flex-grow", "0"], ["flex-shrink", "0"], ["display", "block"], ["overflow", "visible"]]],
+      ["row id", ".okf-local-list a.okf-row .okf-local-id", ".okf-local-modal-rows a.okf-row .okf-local-id", [
+        ["flex-grow", "1"], ["flex-shrink", "1"], ["min-width", "0px"], ["overflow-wrap", "anywhere"]]],
+      ["row relation", ".okf-local-list a.okf-row .okf-local-rel", ".okf-local-modal-rows a.okf-row .okf-local-rel", [
+        ["flex-grow", "0"], ["flex-shrink", "0"], ["max-width", "50%"], ["margin-left", "auto"], ["text-align", "right"],
+        ["overflow-wrap", "anywhere"], ["font-size", "12px"], ["color", "var(--gray)"]]],
+      ["depth group", ".okf-hops", ".okf-hops", [["display", "flex"], ["flex-grow", "0"], ["flex-shrink", "0"]]],
+      ["depth button", ".okf-hops button[aria-pressed=false]", ".okf-hops button[aria-pressed=false]", [
+        ["height", "24px"], ["padding-left", "10px"], ["padding-right", "10px"], ["font-size", "12px"], ["cursor", "pointer"],
+        ["color", "var(--gray)"]]],
+      ["second depth button", ".okf-hops button + button", ".okf-hops button + button", [["border-left-width", "0px"]]],
+      ["pressed depth button", ".okf-hops button[aria-pressed=true]", ".okf-hops button[aria-pressed=true]", [
+        ["color", "var(--white)"], ["font-weight", "600"]]],
+      ["foot link", ".okf-local-foot a", ".okf-local-modal-foot a", [
+        ["flex-grow", "0"], ["flex-shrink", "0"], ["font-weight", "600"], ["color", "var(--blue)"], ["text-decoration", "none"]]],
+      ["edge", "svg .okf-local-edge", "svg .okf-local-edge", [["stroke", "var(--edge)"]]],
+      ["arrowhead", "svg .okf-local-arrowhead", "svg .okf-local-arrowhead", [["fill", "var(--edge)"]]],
+      ["label", "svg .okf-local-label:not(.okf-local-label-center):not(.okf-local-label-ghost)", "svg .okf-local-label:not(.okf-local-label-center):not(.okf-local-label-ghost)", [
+        ["font-family", "var(--mono)"], ["font-size", "10px"], ["fill", "var(--ink)"], ["stroke", "var(--white)"],
+        ["stroke-width", "3px"], ["stroke-linejoin", "round"], ["paint-order", "stroke"]]],
+      ["centre label", "svg .okf-local-label-center", "svg .okf-local-label-center", [["font-size", "10.5px"], ["font-weight", "700"]]],
+      ["ghost label", "svg .okf-local-label-ghost", "svg .okf-local-label-ghost", [["fill", "var(--ghost)"]]],
+      ["node", "svg .okf-local-node", "svg .okf-local-node", [["cursor", "pointer"]]],
+    ];
+    const bad = [];
+    for (const [what, inPanel, inDialog, props] of table) {
+      const p = one(panel, inPanel, `the panel's ${what}`);
+      const m = one(modal, inDialog, `the dialog's ${what}`);
+      for (const [prop, literal] of props) {
+        if (css(m, prop) !== literal) { bad.push(`the dialog's ${what} computes ${prop}: ${css(m, prop)}, not ${literal}`); }
+        if (css(p, prop) !== css(m, prop)) { bad.push(`the ${what} computes ${prop} ${css(p, prop)} in the panel, ${css(m, prop)} in the dialog`); }
+      }
+    }
+    assert(bad.length === 0, bad.join("; "));
+    // The dialog's own differences stay its own.
+    assert(css(one(modal, "#okf-local-modal-count", "the count"), "margin-bottom") === "6px", "the dialog's section title keeps its own 6px margin");
+    // [hidden] beats the author display of a shared component, here too.
+    for (const sel of [".okf-local-modal-rows a.okf-row", ".okf-local-modal-rows svg.okf-glyph"]) {
+      const el = one(modal, sel, "a hideable part");
+      el.setAttribute("hidden", "");
+      assert(css(el, "display") === "none", `a hidden ${sel} in the dialog still computes display ${css(el, "display")}`);
+      el.removeAttribute("hidden");
+    }
+  });
+
   checkAsync("enlarged neighbourhood: p2-chrome-classes lists every class the dialog and its opener wear", async () => {
     const window = await openPage("p2-local/hub.html");
     const doc = window.document;

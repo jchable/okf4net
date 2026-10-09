@@ -194,13 +194,14 @@ body > .okf-layout > main { flex: 999 1 560px; min-width: 0; margin: 0; }
 /* --- Task 3: shared components (spec §12.6), shapes (§12.2), #okf-body content (C7) --- */
 /* Shared components (spec §12.6), written once and anchored to every
    container that uses them, present and future: the explorer, the context
-   panel (P2's local graph included), the page head, the graph page (P3) and
-   the palette. P2 and P3 use these classes without restyling them. */
+   panel (P2's local graph included), the page head, the graph page (P3), the
+   palette and the enlarged neighbourhood dialog (P2, X12). P2 and P3 use
+   these classes without restyling them. */
 /* :where(): the container anchors cost no specificity, so this default is one
    class and any local rule (a frontmatter head's or a palette line's own
    margin) wins by its own weight. With :is() the id in the list made it
    (1,1,0), above every class-anchored local rule. */
-:where(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-section-title {
+:where(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop, #okf-local-modal) .okf-section-title {
   font-family: var(--mono); font-size: 11px; font-weight: 400; letter-spacing: .06em; line-height: 1.4;
   text-transform: uppercase; color: var(--gray); margin: 0 0 8px;
 }
@@ -234,13 +235,13 @@ body > .okf-layout > main { flex: 999 1 560px; min-width: 0; margin: 0; }
 :is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-chip-glyph {
   flex: none; display: inline-flex; align-items: center;
 }
-:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-row {
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop, #okf-local-modal) .okf-row {
   display: flex; align-items: center; gap: 9px; padding: 6px 0; min-width: 0;
   border-bottom: 1px solid var(--hair); font-size: 13.5px; line-height: normal; color: var(--ink); text-decoration: none; overflow-wrap: anywhere;
 }
 /* A link row is a link (the mockup's <a> keeps the link colour); a row of plain text stays ink. */
-:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) a.okf-row { color: var(--blue); }
-:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) a.okf-row:hover { color: var(--blue-hover); }
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop, #okf-local-modal) a.okf-row { color: var(--blue); }
+:is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop, #okf-local-modal) a.okf-row:hover { color: var(--blue-hover); }
 :is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-legend {
   list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; font-size: 12px; line-height: normal; color: var(--gray);
 }
@@ -254,7 +255,7 @@ body > .okf-layout > main { flex: 999 1 560px; min-width: 0; margin: 0; }
 :is(#okf-explorer, #okf-context, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, body > .okf-palette-backdrop) .okf-glyph-blank {
   flex: none; display: inline-block; width: 10px; height: 10px;
 }
-:is(#okf-tools, #okf-explorer, #okf-context, body > .okf-palette-backdrop, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout) svg.okf-glyph {
+:is(#okf-tools, #okf-explorer, #okf-context, body > .okf-palette-backdrop, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, #okf-local-modal) svg.okf-glyph {
   flex: none; display: block; overflow: visible;
 }
 
@@ -293,7 +294,7 @@ svg .okf-node.okf-selected > .okf-node-ring, svg .okf-node.okf-focused > .okf-no
    .okf-legend li, .okf-glyph-blank, svg.okf-glyph are all author displays that
    would out-rank the user agent's [hidden] rule), so P2 and P3 can hide a
    shared component with the attribute. */
-:is(#okf-tools, #okf-explorer, #okf-context, body > .okf-palette-backdrop, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout) [hidden] { display: none !important; }
+:is(#okf-tools, #okf-explorer, #okf-context, body > .okf-palette-backdrop, body > .okf-layout > main > .okf-page-head, body > .okf-graph-layout, #okf-local-modal) [hidden] { display: none !important; }
 
 /* Body content (C7): rules for the markdown viewer.js renders, under the
    #okf-body id, never chrome. Same rules for every element of a kind, with or
@@ -603,20 +604,22 @@ body > .okf-layout > main > .okf-page-head .okf-fm-toggle {
 
 /* === P2: local graph === */
 /* The Neighbourhood section okf-local.js inserts into #okf-context (spec
-   §11.4 X5-X9, §12.4). Every rule is anchored to #okf-context: body <code>
-   wearing these classes changes nothing (p2-chrome-classes.md). Colours come
-   from the §11.0 tokens, so a theme switch redraws nothing. */
+   §11.4 X5-X9, §12.4). Every rule is anchored to #okf-context (or, for what
+   the enlarged dialog X12 shares with it, to :is(#okf-context,
+   #okf-local-modal)): body <code> wearing these classes changes nothing
+   (p2-chrome-classes.md). Colours come from the §11.0 tokens, so a theme
+   switch redraws nothing. */
 #okf-context .okf-local-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 #okf-context .okf-local-head .okf-section-title { margin: 0; }
-#okf-context .okf-hops { display: flex; flex: none; }
+:is(#okf-context, #okf-local-modal) .okf-hops { display: flex; flex: none; }
 /* Longhands, not the font shorthand: jsdom drops every declaration that
    follows the shorthand set to inherit, so the harness would read 16px. */
-#okf-context .okf-hops button {
+:is(#okf-context, #okf-local-modal) .okf-hops button {
   height: 24px; padding: 0 10px; font-family: inherit; font-weight: inherit; line-height: inherit; font-size: 12px; cursor: pointer;
   border: 1px solid var(--hair); background: var(--white); color: var(--gray);
 }
-#okf-context .okf-hops button + button { border-left-width: 0; }
-#okf-context .okf-hops button[aria-pressed="true"] { border-color: var(--blue); background: var(--blue); color: var(--white); font-weight: 600; }
+:is(#okf-context, #okf-local-modal) .okf-hops button + button { border-left-width: 0; }
+:is(#okf-context, #okf-local-modal) .okf-hops button[aria-pressed="true"] { border-color: var(--blue); background: var(--blue); color: var(--white); font-weight: 600; }
 #okf-context .okf-local-canvas { position: relative; height: 250px; border: 1px solid var(--hair); }
 #okf-context .okf-local-canvas svg { display: block; width: 100%; height: 248px; }
 #okf-context .okf-local-omitted {
@@ -624,28 +627,28 @@ body > .okf-layout > main > .okf-page-head .okf-fm-toggle {
   font-family: var(--mono); font-size: 11px; color: var(--gray); background: var(--white); border: 1px solid var(--hair);
 }
 #okf-context .okf-local-foot { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 8px 0 0; font-size: 12px; color: var(--gray); }
-#okf-context .okf-local-foot a { flex: none; font-weight: 600; color: var(--blue); text-decoration: none; }
-#okf-context .okf-local-foot a:hover { color: var(--blue-hover); }
+:is(#okf-context, #okf-local-modal) :is(.okf-local-foot, .okf-local-modal-foot) a { flex: none; font-weight: 600; color: var(--blue); text-decoration: none; }
+:is(#okf-context, #okf-local-modal) :is(.okf-local-foot, .okf-local-modal-foot) a:hover { color: var(--blue-hover); }
 #okf-context .okf-local-list { margin-top: 10px; font-size: 12px; }
 #okf-context .okf-local-list summary { cursor: pointer; color: var(--gray); }
 #okf-context .okf-local-list ul { list-style: none; margin: 4px 0 0; padding: 0; }
-#okf-context .okf-local-id { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+:is(#okf-context, #okf-local-modal) .okf-local-id { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 /* The relation may be long ("2 hops via <id>"): up to half the row, then it wraps
    like the id instead of pushing the 340 px panel wider; a short one ("links to")
    keeps its own width on one line, against the right edge. */
-#okf-context .okf-local-rel { flex: none; max-width: 50%; margin-left: auto; text-align: right; overflow-wrap: anywhere; font-size: 12px; color: var(--gray); }
-#okf-context .okf-local-absent { color: var(--ghost); }
-#okf-context svg .okf-local-edge { fill: none; stroke: var(--edge); }
-#okf-context svg .okf-local-arrowhead { fill: var(--edge); }
+:is(#okf-context, #okf-local-modal) .okf-local-rel { flex: none; max-width: 50%; margin-left: auto; text-align: right; overflow-wrap: anywhere; font-size: 12px; color: var(--gray); }
+:is(#okf-context, #okf-local-modal) .okf-local-absent { color: var(--ghost); }
+:is(#okf-context, #okf-local-modal) svg .okf-local-edge { fill: none; stroke: var(--edge); }
+:is(#okf-context, #okf-local-modal) svg .okf-local-arrowhead { fill: var(--edge); }
 /* The halo (--white is the page background in both themes) keeps a label legible
    where an edge or a neighbour crosses it. */
-#okf-context svg .okf-local-label {
+:is(#okf-context, #okf-local-modal) svg .okf-local-label {
   font-family: var(--mono); font-size: 10px; fill: var(--ink);
   stroke: var(--white); stroke-width: 3px; stroke-linejoin: round; paint-order: stroke;
 }
-#okf-context svg .okf-local-label-center { font-size: 10.5px; font-weight: 700; }
-#okf-context svg .okf-local-label-ghost { fill: var(--ghost); }
-#okf-context svg .okf-local-node { cursor: pointer; }
+:is(#okf-context, #okf-local-modal) svg .okf-local-label-center { font-size: 10.5px; font-weight: 700; }
+:is(#okf-context, #okf-local-modal) svg .okf-local-label-ghost { fill: var(--ghost); }
+:is(#okf-context, #okf-local-modal) svg .okf-local-node { cursor: pointer; }
 
 /* --- P2: the enlarged neighbourhood (X12) --- */
 /* The opener sits in the Neighbourhood head, after the depth toggle (pushed
@@ -653,10 +656,12 @@ body > .okf-layout > main > .okf-page-head .okf-fm-toggle {
    #okf-local-modal. Every rule is anchored to #okf-context or to that id:
    the sanitizer strips id from body content, so nothing in #okf-body can
    take it, and body <code> wearing these classes changes nothing
-   (p2-chrome-classes.md). The shared components the dialog shows (section
-   title, rows, glyphs) and P2's own depth toggle and drawing are restated
-   here under its anchor, with their declarations unchanged. No transition,
-   no animation (reduced motion has nothing to stop). */
+   (p2-chrome-classes.md). The dialog shows the shared components (section
+   title, rows, glyphs, [hidden]: the container lists in Task 3) and P2's own
+   depth toggle, row text, foot link and drawing paint (the rules anchored
+   to :is(#okf-context, #okf-local-modal) above): written once, not
+   restated. Only its own sizes and layout are below. No transition, no
+   animation (reduced motion has nothing to stop). */
 #okf-context .okf-local-head .okf-hops { margin-left: auto; }
 #okf-context .okf-local-enlarge {
   display: inline-flex; align-items: center; justify-content: center; flex: none;
@@ -673,7 +678,6 @@ body > .okf-layout > main > .okf-page-head .okf-fm-toggle {
   padding: 16px; background: var(--backdrop);
 }
 #okf-local-modal[hidden] { display: none; }
-#okf-local-modal [hidden] { display: none !important; }
 /* The drawing takes what the head, the foot and the list leave of
    min(92vw, 1100) x min(80vh, 760). */
 #okf-local-modal .okf-local-dialog {
@@ -688,13 +692,6 @@ body > .okf-layout > main > .okf-page-head .okf-fm-toggle {
   flex: 1 1 240px; min-width: 0; margin: 0; font-family: var(--display); font-weight: 600; font-size: 18px;
   line-height: 1.3; letter-spacing: -.02em; overflow-wrap: anywhere;
 }
-#okf-local-modal .okf-hops { display: flex; flex: none; }
-#okf-local-modal .okf-hops button {
-  height: 24px; padding: 0 10px; font-family: inherit; font-weight: inherit; line-height: inherit; font-size: 12px; cursor: pointer;
-  border: 1px solid var(--hair); background: var(--white); color: var(--gray);
-}
-#okf-local-modal .okf-hops button + button { border-left-width: 0; }
-#okf-local-modal .okf-hops button[aria-pressed="true"] { border-color: var(--blue); background: var(--blue); color: var(--white); font-weight: 600; }
 #okf-local-modal .okf-local-modal-close {
   flex: none; height: 24px; padding: 0 10px; cursor: pointer; border: 1px solid var(--hair); background: var(--white);
   font-family: inherit; font-weight: 600; line-height: inherit; font-size: 12px; color: var(--ink);
@@ -712,36 +709,12 @@ body > .okf-layout > main > .okf-page-head .okf-fm-toggle {
 #okf-local-modal .okf-local-modal-side {
   display: flex; flex-direction: column; flex: none; width: 320px; min-height: 0; padding: 12px 16px 0; border-left: 1px solid var(--hair);
 }
-#okf-local-modal .okf-section-title {
-  font-family: var(--mono); font-size: 11px; font-weight: 400; letter-spacing: .06em; line-height: 1.4;
-  text-transform: uppercase; color: var(--gray); margin: 0 0 6px;
-}
+#okf-local-modal .okf-section-title { margin: 0 0 6px; }
 #okf-local-modal .okf-local-modal-rows { flex: 1 1 auto; min-height: 0; overflow-y: auto; list-style: none; margin: 0; padding: 0 0 12px; }
-#okf-local-modal .okf-row {
-  display: flex; align-items: center; gap: 9px; padding: 6px 0; min-width: 0;
-  border-bottom: 1px solid var(--hair); font-size: 13.5px; line-height: normal; color: var(--ink); text-decoration: none; overflow-wrap: anywhere;
-}
-#okf-local-modal a.okf-row { color: var(--blue); }
-#okf-local-modal a.okf-row:hover { color: var(--blue-hover); }
-#okf-local-modal svg.okf-glyph { flex: none; display: block; overflow: visible; }
-#okf-local-modal .okf-local-id { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
-#okf-local-modal .okf-local-rel { flex: none; max-width: 50%; margin-left: auto; text-align: right; overflow-wrap: anywhere; font-size: 12px; color: var(--gray); }
-#okf-local-modal .okf-local-absent { color: var(--ghost); }
 #okf-local-modal .okf-local-modal-foot {
   display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 12px; margin: 0;
   padding: 10px 16px; border-top: 1px solid var(--hair); font-size: 12px; line-height: 1.4; color: var(--gray);
 }
-#okf-local-modal .okf-local-modal-foot a { flex: none; font-weight: 600; color: var(--blue); text-decoration: none; }
-#okf-local-modal .okf-local-modal-foot a:hover { color: var(--blue-hover); }
-#okf-local-modal svg .okf-local-edge { fill: none; stroke: var(--edge); }
-#okf-local-modal svg .okf-local-arrowhead { fill: var(--edge); }
-#okf-local-modal svg .okf-local-label {
-  font-family: var(--mono); font-size: 10px; fill: var(--ink);
-  stroke: var(--white); stroke-width: 3px; stroke-linejoin: round; paint-order: stroke;
-}
-#okf-local-modal svg .okf-local-label-center { font-size: 10.5px; font-weight: 700; }
-#okf-local-modal svg .okf-local-label-ghost { fill: var(--ghost); }
-#okf-local-modal svg .okf-local-node { cursor: pointer; }
 /* Narrow windows: the dialog fills the window less 8 on each side, the list
    goes under the drawing, nothing scrolls sideways. */
 @media not all and (min-width: 760px) {

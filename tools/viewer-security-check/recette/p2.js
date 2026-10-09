@@ -646,6 +646,89 @@ async function run(ctx) {
     return { pass: after.viewBox === `0 0 ${after.area[0]} ${after.area[1]}` && m.model.label === 0 && m.model.shape === 0 && m.outside.length === 0, before, after, overlaps: m.model };
   });
 
+  // X12-shared: the dialog gets the shared rules by listing its anchor in them
+  // (spec §12.6, written once), not by restating them. Real browsers resolve
+  // what jsdom cannot (borders, backgrounds, fill, stroke with var()), so the
+  // same kind of element must compute alike in the panel and in the dialog,
+  // light and dark, at 1 440 and at 390 wide. Layout-dependent values (sizes,
+  // used margins) are left out; a section title's margin and the foot's line-height
+  // (the link inherits it) are the dialog's own.
+  await check("X12-shared", async () => {
+    const props = [
+      "display", "align-items", "gap", "min-width", "overflow-x", "overflow-y", "overflow-wrap", "flex-grow", "flex-shrink",
+      "padding-top", "padding-right", "padding-bottom", "padding-left", "text-align", "text-transform", "text-decoration-line",
+      "cursor", "color", "background-color", "font-family", "font-size", "font-weight", "line-height", "letter-spacing",
+      "fill", "stroke", "stroke-width", "stroke-linejoin", "paint-order",
+      ...["top", "right", "bottom", "left"].flatMap((side) => [`border-${side}-width`, `border-${side}-style`, `border-${side}-color`]),
+    ];
+    const kinds = [
+      ["section title", "#okf-local-graph .okf-section-title", "#okf-local-modal-count"],
+      ["link row", "#okf-local-list a.okf-row", "#okf-local-modal .okf-local-modal-rows a.okf-row"],
+      ["row glyph", "#okf-local-list a.okf-row svg.okf-glyph", "#okf-local-modal .okf-local-modal-rows a.okf-row svg.okf-glyph"],
+      ["row id", "#okf-local-list a.okf-row .okf-local-id", "#okf-local-modal .okf-local-modal-rows a.okf-row .okf-local-id"],
+      ["row relation", "#okf-local-list a.okf-row .okf-local-rel", "#okf-local-modal .okf-local-modal-rows a.okf-row .okf-local-rel"],
+      ["depth group", "#okf-local-graph .okf-hops", "#okf-local-modal .okf-hops"],
+      ["depth button", "#okf-local-graph .okf-hops button[aria-pressed=false]", "#okf-local-modal .okf-hops button[aria-pressed=false]"],
+      ["second depth button", "#okf-local-graph .okf-hops button + button", "#okf-local-modal .okf-hops button + button"],
+      ["pressed depth button", "#okf-local-graph .okf-hops button[aria-pressed=true]", "#okf-local-modal .okf-hops button[aria-pressed=true]"],
+      ["foot link", "#okf-local-graph .okf-local-foot a", "#okf-local-modal .okf-local-modal-foot a", ["line-height"]],
+      ["edge", "#okf-local-graph svg .okf-local-edge", "#okf-local-modal svg .okf-local-edge"],
+      ["arrowhead", "#okf-local-graph svg .okf-local-arrowhead", "#okf-local-modal svg .okf-local-arrowhead"],
+      ["label", "#okf-local-graph svg .okf-local-label:not(.okf-local-label-center):not(.okf-local-label-ghost)", "#okf-local-modal svg .okf-local-label:not(.okf-local-label-center):not(.okf-local-label-ghost)"],
+      ["centre label", "#okf-local-graph svg .okf-local-label-center", "#okf-local-modal svg .okf-local-label-center"],
+      ["node", "#okf-local-graph svg .okf-local-node", "#okf-local-modal svg .okf-local-node"],
+    ];
+    const compare = (spec) => {
+      const out = [];
+      const read = (sel) => { const el = document.querySelector(sel); if (!el) { return null; } const cs = getComputedStyle(el); return Object.fromEntries(spec.props.map((p) => [p, cs.getPropertyValue(p)])); };
+      for (const [what, inPanel, inDialog, own] of spec.kinds) {
+        const a = read(inPanel), b = read(inDialog);
+        if (!a || !b) { out.push(`${what}: ${a ? "" : "no panel element"} ${b ? "" : "no dialog element"}`); continue; }
+        for (const p of spec.props) { if (a[p] !== b[p] && !(own || []).includes(p)) { out.push(`${what} ${p}: panel ${a[p]}, dialog ${b[p]}`); } }
+      }
+      const t = getComputedStyle(document.getElementById("okf-local-modal-count")).marginBottom;
+      if (t !== "6px") { out.push(`the dialog's section title margin-bottom is ${t}, not 6px`); }
+      return out;
+    };
+    const states = [];
+    const problems = [];
+    for (const [theme, width, height] of [["light", 1440, 900], ["dark", 1440, 900], ["light", 390, 844], ["dark", 390, 844]]) {
+      const p = await ctx.newPage({ viewport: { width, height } });
+      await open(acme + ACME_PAGE, theme, p);
+      await p.click("#okf-local-hops-2");
+      await openModal(p);
+      const out = await p.evaluate(compare, { props, kinds });
+      states.push(`${theme} ${width}`);
+      for (const line of out) { problems.push(`${theme} ${width}: ${line}`); }
+    }
+    // :hover is the one state the comparison above cannot reach: a link row and
+    // the foot link turn --blue-hover in the panel and must in the dialog.
+    for (const theme of ["light", "dark"]) {
+      const p = await ctx.newPage({ viewport: { width: 1440, height: 900 } });
+      await open(acme + ACME_PAGE, theme, p);
+      await p.click("#okf-local-hops-2");
+      await p.evaluate(() => { document.getElementById("okf-local-list").open = true; });
+      const colour = (sel) => p.evaluate((q) => getComputedStyle(document.querySelector(q)).color, sel);
+      const hovered = async (sel) => {
+        await p.mouse.move(2, 2);
+        const rest = await colour(sel);
+        await p.hover(sel);
+        const over = await colour(sel);
+        return { rest, over };
+      };
+      const panelRow = await hovered("#okf-local-list a.okf-row");
+      const panelFoot = await hovered("#okf-local-graph .okf-local-foot a");
+      await openModal(p);
+      const dialogRow = await hovered("#okf-local-modal .okf-local-modal-rows a.okf-row");
+      const dialogFoot = await hovered("#okf-local-modal .okf-local-modal-foot a");
+      for (const [what, a, b] of [["link row", panelRow, dialogRow], ["foot link", panelFoot, dialogFoot]]) {
+        if (a.over === a.rest) { problems.push(`${theme}: the panel's ${what} does not change on hover`); }
+        if (a.rest !== b.rest || a.over !== b.over) { problems.push(`${theme}: ${what} panel ${a.rest} -> ${a.over}, dialog ${b.rest} -> ${b.over}`); }
+      }
+    }
+    return { pass: problems.length === 0, states, problems: problems.slice(0, 8) };
+  });
+
   if (ctx.wanted("P2-8")) {
     results["P2-8"] = { pass: null, note: "compare the captures shots/<browser>/p2/X5.png to X9.png with mockup A's Neighbourhood section by hand (ACCEPTANCE.md P2-8)" };
   }
