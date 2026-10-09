@@ -184,10 +184,43 @@ async function graphSettled(page) {
       },
     });
 
+    // The Neighbourhood enlarged into its dialog (opener: "Enlarge the neighbourhood"),
+    // at two hops, with numbered callouts. Cropped to the dialog and a margin of backdrop.
+    await shot("viewer-modal", {
+      clip: { x: 120, y: 90, width: 1200, height: 720 },
+      run: async (page) => {
+        await page.goto(page_("computations/gross-margin-period.html"));
+        await settle(page);
+        await page.getByRole("button", { name: "Enlarge the neighbourhood" }).click();
+        await page.getByRole("button", { name: "2 hops" }).last().click();
+        await settle(page);
+        await annotate(page, [
+          [1, ".okf-local-dialog .okf-hops", 4],
+          [2, ".okf-local-modal-canvas", 0],
+          [3, ".okf-local-modal-side", 0],
+          [4, "#okf-local-modal-open", 4],
+          [5, ".okf-local-modal-close", 4],
+        ]);
+      },
+    });
+
+    // The same dialog on a phone: the list goes under the drawing.
+    await shot("viewer-modal-narrow", {
+      viewport: NARROW,
+      scale: 2,
+      run: async (page) => {
+        await page.goto(page_("computations/gross-margin-period.html"));
+        await settle(page);
+        await page.getByRole("button", { name: "Enlarge the neighbourhood" }).click();
+        await page.getByRole("button", { name: "2 hops" }).last().click();
+        await settle(page);
+      },
+    });
+
     // A page with headings: the "On this page" panel above the Neighbourhood.
     await shot("viewer-contents", {
       scale: 2,
-      clip: { x: 1101, y: 59, width: 339, height: 600 },
+      clip: { x: 1106, y: 59, width: 334, height: 600 },
       run: async (page) => {
         await page.goto(page_("policies/revenue-recognition.html"));
         await settle(page);

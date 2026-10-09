@@ -38,8 +38,10 @@ and this project adheres to
     neighbours at one hop, or two with the "2 hops" button, drawn in rings
     (at most 40 nodes, "+N omitted" beyond; links to absent concepts as
     ghosts that never navigate), an equivalent list of every neighbour with
-    its relation to the concept, and an "Open in graph" link. The drawing's
-    layout is a pure function of the site index (`OkfLocal`), tested directly.
+    its relation to the concept, and an "Open in graph" link. An "Enlarge the
+    neighbourhood" button opens it in a modal dialog with a larger drawing and
+    the list beside it. The drawing's layout is a pure function of the site
+    index (`OkfLocal`), tested directly.
   - *P3 — global graph.* `graph.html` at the site root (`graph-1.html`… when
     a concept already uses the name), written by `okf-render` and opened by
     every page's "Global graph" link, draws the bundle's body links with a

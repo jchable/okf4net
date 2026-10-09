@@ -395,7 +395,7 @@ type, `status`, trust and staleness, and a folding frontmatter box; its side
 panel holds the page's contents, the pages that reference it and, when the
 concept has neighbours, a "Neighbourhood" local graph (its neighbours at one
 or two hops, at most 40 drawn, with an equivalent list of all of them and an
-"Open in graph" link). "Global graph" opens `graph.html`, a page that draws
+"Open in graph" link; it can be enlarged into a dialog). "Global graph" opens `graph.html`, a page that draws
 the whole bundle's links with a layout computed in the browser, narrowed by
 facets (type, trust, freshness, tags), with a list equivalent and keyboard
 navigation; both are described in

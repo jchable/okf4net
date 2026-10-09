@@ -16,9 +16,9 @@ const renderHtml = `$ okf-render bundles/acme_retail --out ./acme-site
  * `content/viewerShots.ts`).
  *
  * Wording rule: nothing here names a colour or a shape size, and the
- * numbered lists next to the two annotated screenshots must match the
- * callouts `docs-shots.js` draws. One spot is reserved, as a JSX comment, for
- * a paragraph to add once the work on it has landed (the local graph in a modal).
+ * numbered lists next to the annotated screenshots must match the
+ * callouts `docs-shots.js` draws (the concept page, the global graph and the
+ * enlarged Neighbourhood).
  */
 export default function Viewer() {
   return (
@@ -113,7 +113,7 @@ export default function Viewer() {
             </li>
             <li>
               <strong>Neighbourhood</strong>: the concept and the concepts it links to or that link to it, drawn as a
-              small graph. <a href="#concept">More below.</a>
+              small graph that a button enlarges. <a href="#concept">More below.</a>
             </li>
             <li>
               <strong>Referenced by</strong>: the concepts whose body links to this one, with a count.
@@ -242,10 +242,43 @@ export default function Viewer() {
               no Neighbourhood.
             </li>
           </ul>
-          {/*
-            RESERVED (local-graph modal) — a paragraph on enlarging the Neighbourhood in a modal, to add
-            here once that change has merged; the wording above names no size and no colour on purpose.
-          */}
+          <p>
+            <strong>Enlarging it.</strong> The icon button beside the <em>1 hop</em> / <em>2 hops</em> toggle,{' '}
+            <em>Enlarge the neighbourhood</em>, opens the same graph in a dialog, up to 1,100 × 760 px, for a
+            neighbourhood too busy for the panel.
+          </p>
+          <Shot {...viewerShots.modal}>
+            The dialog at two hops. The numbers are listed below.
+          </Shot>
+          <ol className="plain">
+            <li>
+              <strong>The hop toggle</strong>, shared with the panel: change it in one place and the other follows. It
+              is not remembered from one page to the next.
+            </li>
+            <li>
+              <strong>The drawing</strong>, laid out for the room it has: shapes and text keep their size, the rings
+              spread out and, once the drawing is 560 px wide, labels are cut at 32 characters instead of 20. The cap
+              of 40 nodes still applies, with the same <em>+N omitted</em> note. A click on a node opens its concept;
+              a ghost does nothing.
+            </li>
+            <li>
+              <strong>The list</strong>, always open: every neighbour with its relation to the concept, as in the
+              panel.
+            </li>
+            <li>
+              <strong>Open in graph</strong>, the same link as in the panel.
+            </li>
+            <li>
+              <strong>Close.</strong> <kbd>Esc</kbd>, the button, or a click on the dimmed page behind also close it
+              and put the focus back on the button that opened it.
+            </li>
+          </ol>
+          <p>
+            While the dialog is open, <kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd> move among its own controls and
+            wrap round, the page behind is inert and does not scroll, and <kbd>/</kbd> and <kbd>Ctrl</kbd>+<kbd>K</kbd>{' '}
+            do nothing. Below 760 px of window width the dialog fills the window and the list goes under the drawing.
+          </p>
+          <Shot {...viewerShots.modalNarrow}>The dialog at 390 px wide.</Shot>
         </Chapter>
 
         <Chapter id="graph" title="The global graph" refText="graph.html — §6 links, laid out in the browser">

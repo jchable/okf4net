@@ -41,6 +41,20 @@ export const viewerShots = {
     height: 900,
     maxWidth: 1440,
   },
+  modal: {
+    file: 'viewer-modal.png',
+    alt: 'The enlarged Neighbourhood dialog over a concept page, with five numbered callouts: the 1 hop and 2 hops toggle, the large drawing at two hops, the list of all seven neighbours beside it, the Open in graph link and the Close button.',
+    width: 1200,
+    height: 720,
+    maxWidth: 1200,
+  },
+  modalNarrow: {
+    file: 'viewer-modal-narrow.png',
+    alt: 'The same dialog on a phone, 390 px wide: the title, the hop toggle and Close on top, the drawing in the middle and the list of neighbours under it, with Open in graph at the bottom.',
+    width: 780,
+    height: 1688,
+    maxWidth: 390,
+  },
   explorer: {
     file: 'viewer-explorer.png',
     alt: 'The explorer narrowed to the Metric type and the name filter "margin": two concepts remain under their folder, each with a blue trust dot, above the legend of trust and staleness marks.',
@@ -58,9 +72,9 @@ export const viewerShots = {
   contents: {
     file: 'viewer-contents.png',
     alt: 'The right-hand panel of a concept page: the "On this page" list of six headings with the current section marked, above the Neighbourhood graph at one hop and its "Open in graph" link.',
-    width: 678,
+    width: 668,
     height: 1200,
-    maxWidth: 339,
+    maxWidth: 334,
   },
   graph: {
     file: 'viewer-graph.png',
