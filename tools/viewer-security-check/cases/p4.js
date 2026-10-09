@@ -211,7 +211,7 @@ function register(h) {
     s = now(page);
     assert(s.valuenow === 720 && s.variable === "720px" && s.stored === "720", `${label}: End gave ${JSON.stringify(s)}`);
     press("ArrowLeft", { shiftKey: true });
-    assert(now(page).valuenow === 720, `${label}: the maximum was passed: ${now(page).valuenow}`);
+    assert(now(page).valuenow === 720 && now(page).stored === "720" && now(page).variable === "720px", `${label}: past the maximum: ${JSON.stringify(now(page))}`);
     e = press("Enter");
     s = now(page);
     assert(e.defaultPrevented, `${label}: Enter was not taken`);
@@ -333,6 +333,26 @@ function register(h) {
     second.layoutW = 1100;
     second.fireObservers();
     assert(now(p2).valuenow === 450, `ResizeObserver: ${now(p2).valuenow}`);
+    // What the reader saw is what is wanted: a drag or a key pressed past the
+    // bound asks for the bound, not for what the pointer or the step reached.
+    const third = stage({ layoutW: 1100 });
+    const p3 = await openConcept(h, third);
+    pointer(p3.window, p3.handle, "pointerdown", 1000);
+    pointer(p3.window, p3.handle, "pointermove", 100);
+    pointer(p3.window, p3.handle, "pointerup", 100);
+    assert(now(p3).valuenow === 450 && now(p3).stored === "450", `a drag past the bound at 1100: ${JSON.stringify(now(p3))}`);
+    third.layoutW = 1600;
+    p3.window.dispatchEvent(new p3.window.Event("resize"));
+    assert(now(p3).valuenow === 450, `a drag past the bound asked for more than the bound: ${now(p3).valuenow} once the window grew`);
+    h.key(p3.window, p3.handle, { key: "ArrowLeft", shiftKey: true });
+    assert(now(p3).valuenow === 514, `450 + 64 at 1600: ${now(p3).valuenow}`);
+    third.layoutW = 1100;
+    p3.window.dispatchEvent(new p3.window.Event("resize"));
+    h.key(p3.window, p3.handle, { key: "ArrowLeft", shiftKey: true });
+    assert(now(p3).valuenow === 450 && now(p3).stored === "450", `a key past the bound: ${JSON.stringify(now(p3))}`);
+    third.layoutW = 1600;
+    p3.window.dispatchEvent(new p3.window.Event("resize"));
+    assert(now(p3).valuenow === 450, `a key past the bound asked for more than the bound: ${now(p3).valuenow}`);
     // The graph page: the facets (270) count as a fixed column.
     const g = await openGraph(h, stage({ layoutW: 1100, stored: "700" }));
     assert(now(g).valuemax === 470 && now(g).valuenow === 470, `graph at 1100: ${JSON.stringify(now(g))}, expected 470 (1100 - 270 - 360)`);
@@ -529,8 +549,9 @@ function register(h) {
     assert(/\.okf-splitter\s*\{[^}]*display:\s*none/.test(section.replace(wide, "")), "the splitter is not display:none by default");
     assert(/\.okf-splitter\s*\{[^}]*touch-action:\s*none/.test(wide), "the splitter does not turn touch-action off");
     assert(/\.okf-splitter\[hidden\]\s*\{[^}]*display:\s*none/.test(section), "the hidden attribute does not win over the splitter's display");
-    assert(/\.okf-splitter:focus-visible/.test(section), "no focus ring");
+    assert(/\.okf-splitter:focus-visible\s*\{[^}]*outline:\s*2px solid/.test(section), "no focus ring (a 2px solid outline on :focus-visible)");
     assert(/@media \(forced-colors: active\)[^]*\.okf-splitter/.test(section), "no forced-colors rule");
+    assert(/#okf-context \.okf-local-head\s*\{[^}]*flex-wrap:\s*wrap/.test(section), "the Neighbourhood head does not wrap at the narrowest panel");
     assert(!/@media[^{]*prefers-reduced-motion/.test(section) || !/transition/.test(section), "motion in the splitter styles");
     for (const line of section.replace(/[/][*][^]*?[*][/]/g, "").split("\n")) {
       if (!line.includes("okf-splitter")) { continue; }
@@ -556,7 +577,17 @@ function register(h) {
   h.checkAsync("graph: a canvas that changed size is fitted again (a ResizeObserver on the canvas), unless the reader moved the view", async () => {
     const size = { w: 600, h: 500 };
     const st = stage();
-    const page = await openGraph(h, st, { beforeParse: sized(size) });
+    // The view's transform is written whenever the drawing is fitted, even to the same value: a count of the writes tells a refit from nothing.
+    let writes = 0;
+    const counting = (w) => {
+      sized(size)(w);
+      const set = w.Element.prototype.setAttribute;
+      w.Element.prototype.setAttribute = function (name, value) {
+        if (name === "transform" && this.getAttribute("class") === "okf-graph-viewport") { writes++; }
+        return set.call(this, name, value);
+      };
+    };
+    const page = await openGraph(h, st, { beforeParse: counting });
     page.flush();
     assert(st.observers.some((o) => o.targets.some((t) => t.id === "okf-graph-canvas")), "no ResizeObserver watches #okf-graph-canvas");
     const first = transformOf(page.doc);
@@ -568,8 +599,10 @@ function register(h) {
     const wider = transformOf(page.doc);
     assert(wider !== first, "a wider canvas left the old fit");
     // Same size again: nothing.
+    const settled = writes;
     st.fireObservers();
     assert(transformOf(page.doc) === wider, "an unchanged size refitted");
+    assert(writes === settled, `an unchanged size fitted the drawing again (${writes - settled} write(s) of its transform)`);
     // The reader moved the view (a zoom): a new size does not take it back.
     page.doc.querySelector('#okf-graph-zoom button[aria-label="Zoom in"]').dispatchEvent(new page.window.MouseEvent("click", { bubbles: true, cancelable: true }));
     const moved = transformOf(page.doc);

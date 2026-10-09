@@ -824,6 +824,10 @@ body > .okf-graph-layout > .okf-splitter[hidden] { display: none; }
   body > .okf-layout[data-okf-resizing],
   body > .okf-graph-layout[data-okf-resizing] { user-select: none; -webkit-user-select: none; }
 }
+/* The narrowest the panel gets is 240 (198 inside its padding): the Neighbourhood
+   title and its 1 hop / 2 hops toggle are wider than that, and the toggle would
+   run into the padding. They wrap instead (the toggle on a second line). */
+#okf-context .okf-local-head { flex-wrap: wrap; row-gap: 6px; }
 @media (forced-colors: active) {
   body > .okf-layout > .okf-splitter::after,
   body > .okf-graph-layout > .okf-splitter::after { background: ButtonText; }
