@@ -8,6 +8,7 @@ import DocsCli from './pages/docs/Cli'
 import Agents from './pages/docs/Agents'
 import Catalog from './pages/docs/Catalog'
 import Mcp from './pages/docs/Mcp'
+import Viewer from './pages/docs/Viewer'
 import Spec from './pages/docs/Spec'
 import WhatOkfIs from './pages/WhatOkfIs'
 import Library from './pages/Library'
@@ -23,6 +24,7 @@ export const routes: RouteRecord[] = [
   { path: '/docs/guides', element: <Guides />, entry: 'src/pages/docs/Guides.tsx' },
   { path: '/docs/library', element: <DocsLibrary />, entry: 'src/pages/docs/Library.tsx' },
   { path: '/docs/cli', element: <DocsCli />, entry: 'src/pages/docs/Cli.tsx' },
+  { path: '/docs/viewer', element: <Viewer />, entry: 'src/pages/docs/Viewer.tsx' },
   { path: '/docs/agents', element: <Agents />, entry: 'src/pages/docs/Agents.tsx' },
   { path: '/docs/catalog', element: <Catalog />, entry: 'src/pages/docs/Catalog.tsx' },
   { path: '/docs/mcp', element: <Mcp />, entry: 'src/pages/docs/Mcp.tsx' },

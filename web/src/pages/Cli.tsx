@@ -107,7 +107,8 @@ export default function Cli() {
             <a href="https://github.com/jchable/okf4net/releases">okf-render</a> — <code>okf</code> is meant to stay
             small and dependency-free for CI, and the site generator pulls in a vendored copy of{' '}
             <a href="https://github.com/markedjs/marked">marked</a> and three embedded fonts that a CI job running{' '}
-            <code>okf validate</code> never needs.
+            <code>okf validate</code> never needs. The pages it writes — explorer, <em>Jump to</em> palette, trust
+            and staleness badges, link graphs — are described in <Link to="/docs/viewer">docs/viewer.md</Link>.
           </p>
         </Chapter>
 

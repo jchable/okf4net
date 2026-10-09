@@ -110,6 +110,16 @@ export default function Home() {
           <p className="next">→ <Link to="/cli">cli.md</Link> — building the binary, session transcripts, CI recipes · <Link to="/docs/cli">docs/cli.md</Link> — every flag and exit code</p>
         </section>
 
+        <section className="chapter" id="viewer">
+          <div className="chead">
+            <span className="h">##</span>
+            <h2>The viewer</h2>
+            <span className="ref">okf-render — a bundle as a website</span>
+          </div>
+          <p><code>okf-render</code> writes a bundle out as a <strong>static site you open straight from the disk</strong> — no server. A tree explorer with trust and staleness marks, a <em>Jump to</em> palette (<code>Ctrl+K</code>), one page per concept with a local link graph, and a global graph of the whole bundle with facets and a keyboard contract. Light and dark themes, read-only, no full-text search by design.</p>
+          <p className="next">→ <Link to="/docs/viewer">docs/viewer.md</Link> — what is on the pages, with screenshots</p>
+        </section>
+
         <section className="chapter" id="agents">
           <div className="chead">
             <span className="h">##</span>
