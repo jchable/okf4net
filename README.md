@@ -399,7 +399,8 @@ or two hops, at most 40 drawn, with an equivalent list of all of them and an
 the whole bundle's links with a layout computed in the browser, narrowed by
 facets (type, trust, freshness, tags), with a list equivalent and keyboard
 navigation; both are described in
-[`src/OKF4net.Viewer/README.md`](src/OKF4net.Viewer/README.md). The Inter,
+[`src/OKF4net.Viewer/README.md`](src/OKF4net.Viewer/README.md) and, with screenshots, in the
+[viewer docs](https://jchable.github.io/okf4net/docs/viewer/). The Inter,
 Inter Tight and Space Mono fonts are embedded.
 It is read-only, and has no full-text search: a static site has no server
 to run the shared `ConceptSearch` scorer, and mirroring its weights in

@@ -175,6 +175,9 @@ named by id) go to `--out`, by default a folder of the system's temporary
 directory; a slice's report goes into the pull request, never into the
 repository.
 
+`recette/docs-shots.js` is not a check: it regenerates the screenshots of the online
+docs page (`web/public/viewer/`), see [`recette/README.md`](recette/README.md).
+
 The `p3` slice reads two more sites from the environment, because neither
 official site can cover what they hold: `OKF_RECETTE_GHOST=<dir>`, a render of
 `fixtures/hostile-bundle` (broken links, so ghost nodes; concepts named

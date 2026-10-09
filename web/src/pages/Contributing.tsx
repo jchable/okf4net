@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+import { Link } from 'react-router-dom'
 import Layout from '../layouts/Layout'
 import { PageDoc, Chapter, Warn, Steps, Cta } from '../components/doc'
 
@@ -53,8 +54,9 @@ export default function Contributing() {
               alike.
             </li>
             <li>
-              <strong>Next:</strong> more Agent Framework samples, performance baselines, a bundle viewer. The
-              first{' '}
+              <strong>Next:</strong> more Agent Framework samples, performance baselines, and bundle search from a
+              VS Code extension (<a href="https://github.com/jchable/okf4net/issues/163">#163</a>) — the static{' '}
+              <Link to="/docs/viewer">bundle viewer</Link> has shipped, with no full-text search by design. The first{' '}
               <a href="https://github.com/jchable/okf4net/tree/main/samples/catalog-explorer">Catalog sample</a>{' '}
               has shipped.
             </li>

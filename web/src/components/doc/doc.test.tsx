@@ -12,6 +12,7 @@ import {
   MapTable,
   Next,
   PageDoc,
+  Shot,
   Steps,
   Tag,
   Term,
@@ -188,5 +189,22 @@ describe('doc device components', () => {
   it('Tag renders span.tag', () => {
     const el = mount(<Tag>soon</Tag>)
     expect(el.querySelector('span.tag')?.textContent).toBe('soon')
+  })
+
+  it('Shot renders figure.shot > a > img (size, lazy, base-prefixed src) + figcaption', () => {
+    const el = mount(
+      <Shot file="x.png" alt="A thing" width={200} height={100} maxWidth={100}>
+        Caption.
+      </Shot>,
+    )
+    const fig = el.querySelector('figure.shot')
+    expect(fig).not.toBeNull()
+    const img = fig!.querySelector('a > img')
+    expect(img?.getAttribute('src')).toBe(`${import.meta.env.BASE_URL}viewer/x.png`)
+    expect(img?.getAttribute('alt')).toBe('A thing')
+    expect(img?.getAttribute('width')).toBe('200')
+    expect(img?.getAttribute('height')).toBe('100')
+    expect(img?.getAttribute('loading')).toBe('lazy')
+    expect(fig!.querySelector('figcaption')?.textContent).toBe('Caption.')
   })
 })
