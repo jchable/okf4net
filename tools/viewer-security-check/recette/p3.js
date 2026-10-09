@@ -306,7 +306,7 @@ async function run(ctx) {
     // Filled shapes: getBBox() is the geometry of §12.2 (no stroke). A
     // triangle's box is as wide as its size and a little lower than it, so
     // its label gap is measured from the box and allowed that difference.
-    const want = { "okf-shape-0": 26, "okf-shape-1": 30, "okf-shape-2": 31.1, "okf-shape-3": 24, "okf-ghost-mark": 26 };
+    const want = { "okf-shape-0": 18, "okf-shape-1": 21, "okf-shape-2": 22, "okf-shape-3": 17, "okf-ghost-mark": 18 };
     const sized = r.nodes.filter((n) => want[n.cls] !== undefined);
     const inkRgb = rgb(r.ink);
     const pass = sized.length > 0 && sized.every((n) => near(Math.max(n.w, n.h), want[n.cls], 0.2) && n.labelSize === "11.5px" && /Space Mono/.test(n.labelFont)
@@ -403,13 +403,14 @@ async function run(ctx) {
       const f = g && g.querySelector && g.querySelector(".okf-node-focus");
       if (!f) { return null; }
       const cs = getComputedStyle(f);
-      return { focused: g.classList.contains("okf-focused"), side: f.getBBox().width, visibility: cs.visibility, dash: cs.strokeDasharray, stroke: cs.stroke, width: cs.strokeWidth,
+      const shape = g.querySelector('[class^="okf-shape-"], .okf-ghost-mark');
+      return { focused: g.classList.contains("okf-focused"), side: f.getBBox().width, shapeSide: shape.getBBox().width, visibility: cs.visibility, dash: cs.strokeDasharray, stroke: cs.stroke, width: cs.strokeWidth,
         ink: getComputedStyle(document.documentElement).getPropertyValue("--ink").trim(), ringVisible: getComputedStyle(g.querySelector(".okf-node-ring")).visibility };
     });
     await shot("graph-selected");
-    const ringOk = r.ring[2] === "visible" && near(r.ring[0] - r.ring[1], 12, 0.5) && r.ring[4] === rgb(r.blue) && near(parseFloat(r.ring[5]), 2.4, 0.01);
+    const ringOk = r.ring[2] === "visible" && near(r.ring[0] - r.ring[1], 8, 0.5) && r.ring[4] === rgb(r.blue) && near(parseFloat(r.ring[5]), 2.4, 0.01);
     const edgesOk = r.blueEdges.length > 0 && r.blueEdges.every(([out, stroke, width, dash]) => stroke === rgb(r.blue) && width === "2.2px" && (out ? dash === "none" : /^5(px)?,? ?4/.test(dash)));
-    const focusOk = focus && focus.focused && near(focus.side, 26 + 20, 6) && focus.visibility === "visible" && /^3(px)?,? ?3/.test(focus.dash) && focus.stroke === rgb(focus.ink) && focus.width === "2px";
+    const focusOk = focus && focus.focused && near(focus.side - focus.shapeSide, 16, 0.5) && focus.visibility === "visible" && /^3(px)?,? ?3/.test(focus.dash) && focus.stroke === rgb(focus.ink) && focus.width === "2px";
     const pass = ringOk && edgesOk && focusOk && near(r.drawer, 340) && r.padding === "20px" && r.gap === "16px" && r.label === "Selected"
       && /Space Mono/.test(r.idFont) && r.idSize === "12px" && r.title === "24px" && near(r.titleGap, 6, 1)
       && near(r.open, 40) && r.openText === "Open page" && r.reading !== "index.html" && r.hash.length > 1 && r.current === 1
@@ -778,8 +779,8 @@ async function run(ctx) {
         status: document.getElementById("okf-graph-status").textContent };
     });
     const labelOk = (x) => x.title.startsWith("absent: ") && Array.from(x.label).length <= 24 && (Array.from(x.title).length <= 24 || x.label.endsWith(ELLIPSIS));
-    const shapeOk = r.ghosts.length === index.ghosts.length && r.ghosts.every((x) => near(x.size, 26, 0.2) && x.fill === rgb(r.white) && x.stroke === rgb(r.ghost) && x.width === "1.6px"
-      && /^3(px)?,? ?3/.test(x.dash) && x.labelFill === rgb(r.ghost) && x.labelSize === "11.5px" && labelOk(x));
+    const shapeOk = r.ghosts.length === index.ghosts.length && r.ghosts.every((x) => near(x.size, 18, 0.2) && x.fill === rgb(r.white) && x.stroke === rgb(r.ghost) && x.width === "1.2px"
+      && /^2(px)?,? ?2/.test(x.dash) && x.labelFill === rgb(r.ghost) && x.labelSize === "11.5px" && labelOk(x));
     const edgesOk = r.edges.length > 0 && r.edges.every(([stroke, width, dash]) => stroke === rgb(r.ghost) && width === "1.4px" && /^5(px)?,? ?4/.test(dash));
     // Dim mode: concepts the filters hide go to 0.25, a ghost never does.
     await p.locator("#okf-facet-type ~ .okf-facet-list input").first().uncheck();

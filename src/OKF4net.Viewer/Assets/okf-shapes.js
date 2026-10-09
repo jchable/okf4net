@@ -42,14 +42,16 @@
   }
 
   // Spec §12.2: size (then stroke, then dash) per context and shape, read in
-  // the mockups; the cells no mockup shows are drafting choices (§13).
+  // the mockups; the cells no mockup shows are drafting choices (§13). The
+  // three drawing rows are the mockups' x 0.7 (owner's request, 2026-10-09),
+  // sizes to the half unit; strokes too, never thinner than the icon row's.
   var SIZES = Object.freeze({
     icon: row(0, 0, { circle: [10], square: [9], diamond: [11.3], triangle: [11], ring: [10, 2], other: [9, 1.5], ghost: [10, 1.2, [2, 2]] }),
     chip: row(0, 0, { circle: [8], square: [8], diamond: [9], triangle: [9], ring: [8, 1.5], other: [8, 1.5] }),
     flag: row(0, 0, { human: [8], machine: [8, 2], stale: [10] }),
-    local: row(0, 0, { circle: [20], square: [23], diamond: [25.5], triangle: [22], ring: [20, 2.5], other: [20, 1.5], ghost: [21.2, 1.4, [3, 3]] }),
-    localCenter: row(2, 0, { circle: [26], square: [28], diamond: [31.1], triangle: [24], ring: [26, 3], other: [26, 2] }),
-    graph: row(2.4, 2, { circle: [26], square: [30], diamond: [31.1], triangle: [24], ring: [26, 3], other: [26, 2], ghost: [27.6, 1.6, [3, 3]] }),
+    local: row(0, 0, { circle: [14], square: [16], diamond: [18], triangle: [15.5], ring: [14, 2], other: [14, 1.5], ghost: [15.2, 1.2, [2, 2]] }),
+    localCenter: row(2, 0, { circle: [18], square: [19.5], diamond: [22], triangle: [17], ring: [18, 2], other: [18, 1.5] }),
+    graph: row(2.4, 2, { circle: [18], square: [21], diamond: [22], triangle: [17], ring: [18, 2], other: [18, 1.5], ghost: [19.2, 1.2, [2, 2]] }),
   });
 
   var TRUST_NAMES = Object.freeze(["human-reviewed", "machine-confirmed", "unverified"]);
@@ -219,8 +221,8 @@
     return r;
   }
 
-  // A graph node: focus outline (side + 20, dashed), selection outline
-  // (side + 12), then the shape. The outlines show only under the fixed
+  // A graph node: focus outline (side + 16, dashed), selection outline
+  // (side + 8), then the shape. The outlines show only under the fixed
   // classes okf-focused / okf-selected the caller toggles on the <g>. No
   // <title>, no <text>: the caller adds them (X7, G11, G13).
   function node(kind, cx, cy, size, options) {
@@ -231,8 +233,8 @@
     var o = readOptions(options);
     var g = svg("g");
     g.setAttribute("class", "okf-node");
-    if (o.focus > 0) { g.appendChild(outline("okf-node-focus", cx, cy, size + 20, o.focus, true)); }
-    if (o.ring > 0) { g.appendChild(outline("okf-node-ring", cx, cy, size + 12, o.ring, false)); }
+    if (o.focus > 0) { g.appendChild(outline("okf-node-focus", cx, cy, size + 16, o.focus, true)); }
+    if (o.ring > 0) { g.appendChild(outline("okf-node-ring", cx, cy, size + 8, o.ring, false)); }
     g.appendChild(shape(kind, cx, cy, size, options));
     return g;
   }

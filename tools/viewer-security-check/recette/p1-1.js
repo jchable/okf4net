@@ -680,6 +680,15 @@ const specials = {
         }
       }
       out[theme] = ratios;
+      // Rank 1 (the square) is green in both themes, never the ink it was
+      // (owner's request, 2026-10-09): the token, and a square as drawn.
+      const square = await page.evaluate(() => {
+        const e = Array.from(document.querySelectorAll("svg .okf-shape-1")).find((x) => !x.closest(".okf-chip-type"));
+        return e ? getComputedStyle(e).fill : null;
+      });
+      const green = ctx.lib.rgb(theme === "light" ? "#1e7d32" : "#5dc26b");
+      out[`${theme} square`] = { token: c["--okf-type-1"], drawn: square, expected: green };
+      if (c["--okf-type-1"] !== green || square !== green) { pass = false; }
       await ctx.shot(page, `tokens-${theme}`);
     }
     return { pass, ...out };

@@ -22,13 +22,15 @@
   // One ring at 1 hop (or when the second hop draws nothing), two at 2 hops.
   // Chosen, not measured off the mockup (its half-extents are not radii), on
   // three constraints that cases/p2.js pins for every node count up to the
-  // cap: a shape (up to 13 from its centre) and its label (baseline 14 under
+  // cap: a shape (up to 9 from its centre) and its label (baseline 14 under
   // a shape, 3 of descender) stay inside the 298 x 248 view; no shape touches
-  // the centre's selection square (+- 20) or its label, centred under it at
-  // baseline cy + 34 (a band 120 wide, y 140 to 156); and each ring sits
-  // clear of the other. The inner ring of 2 hops is the large one it is
-  // because any ellipse a node can reach under that label would collide with
-  // it, whatever the number of nodes.
+  // the centre's selection square (up to +- 15) or its label, centred under
+  // it at baseline cy + 26.5 to cy + 29 (a band 120 wide, y 132 to 151); and
+  // each ring sits clear of the other. The inner ring of 2 hops is the large
+  // one it is because any ellipse a node can reach under that label would
+  // collide with it, whatever the number of nodes. The radii were set for the
+  // earlier, larger shapes (13, +- 20, cy + 34) and kept when the shapes
+  // shrank to 0.7 of them: smaller shapes only widen every clearance.
   var ONE_RING = Object.freeze([Object.freeze({ rx: 127, ry: 95 })]);
   var TWO_RINGS = Object.freeze([Object.freeze({ rx: 106, ry: 72 }), Object.freeze({ rx: 134, ry: 98 })]);
 
@@ -465,8 +467,8 @@
       var s = shapes.SIZES[n === 0 ? "localCenter" : "local"][kindOf(result.nodes[n].key)];
       sizes.push(s);
       // The arrow stops just outside the target; the centre's selection
-      // square (side + 12, stroke 2) counts as part of it.
-      reach.push(s.size / 2 + (n === 0 ? 7 : 1));
+      // square (side + 8, stroke 2) counts as part of it.
+      reach.push(s.size / 2 + (n === 0 ? 5 : 1));
     }
 
     var lines = svg("g", "okf-local-edges");
@@ -494,7 +496,7 @@
     var halves = [];
     for (var t = 0; t < result.nodes.length; t++) {
       texts.push(lastSegment(idOf(result.nodes[t].key)));
-      halves.push(sizes[t].size / 2 + (t === 0 ? 6 : 0));
+      halves.push(sizes[t].size / 2 + (t === 0 ? 4 : 0));
     }
     var places = labels(result.nodes, texts, halves);
 

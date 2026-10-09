@@ -2603,14 +2603,14 @@ check("CSS tokens match spec §11.0 in light and in both dark blocks", () => {
   const light = {
     "--white": "#ffffff", "--ink": "#101014", "--blue": "#1a3fd6", "--blue-hover": "#102a96", "--blue-soft": "#eef1fd",
     "--gray": "#6a6a72", "--hair": "#e3e3e8", "--red": "#c0392b", "--ghost": "#c0392b", "--edge": "#8a8a94",
-    "--stale": "#b4540a", "--okf-type-0": "#1a3fd6", "--okf-type-1": "#101014", "--okf-type-2": "#b4540a",
+    "--stale": "#b4540a", "--okf-type-0": "#1a3fd6", "--okf-type-1": "#1e7d32", "--okf-type-2": "#b4540a",
     "--okf-type-3": "#6a6a72", "--okf-type-4": "#0b6e69", "--okf-type-5": "#6a6a72",
     "--backdrop": "rgba(16, 16, 20, .34)", "--shadow": "0 18px 50px rgba(16, 16, 20, .28)",
   };
   const dark = {
     "--white": "#101014", "--ink": "#f2f2f5", "--blue": "#8fa5f5", "--blue-hover": "#b7c5f8", "--blue-soft": "#1a1a22",
     "--gray": "#9a9aa2", "--hair": "#2a2a33", "--red": "#ef6b5e", "--ghost": "#ef6b5e", "--edge": "#8a8a94",
-    "--stale": "#e08a3e", "--okf-type-0": "#8fa5f5", "--okf-type-1": "#f2f2f5", "--okf-type-2": "#e08a3e",
+    "--stale": "#e08a3e", "--okf-type-0": "#8fa5f5", "--okf-type-1": "#5dc26b", "--okf-type-2": "#e08a3e",
     "--okf-type-3": "#9a9aa2", "--okf-type-4": "#2fb3a8", "--okf-type-5": "#9a9aa2",
     "--backdrop": "rgba(0, 0, 0, .55)", "--shadow": "none",
   };
@@ -2909,30 +2909,30 @@ const SHAPE_ICONS = {
 // children of the <g>, in order.
 const SHAPE_NODES = {
   local: {
-    circle: ["circle class=okf-shape-0 cx=100 cy=100 r=10"],
-    square: ["rect class=okf-shape-1 height=23 width=23 x=88.5 y=88.5"],
-    diamond: ["path class=okf-shape-2 d=M100 87.25 L112.75 100 L100 112.75 L87.25 100 Z"],
-    triangle: ["path class=okf-shape-3 d=M100 89 L111 111 L89 111 Z"],
-    ring: ["circle class=okf-shape-4 cx=100 cy=100 r=8.75 stroke-width=2.5"],
-    other: ["rect class=okf-shape-5 height=18.5 stroke-width=1.5 width=18.5 x=90.75 y=90.75"],
-    ghost: ["circle class=okf-ghost-mark cx=100 cy=100 r=9.9 stroke-dasharray=3 3 stroke-width=1.4"],
+    circle: ["circle class=okf-shape-0 cx=100 cy=100 r=7"],
+    square: ["rect class=okf-shape-1 height=16 width=16 x=92 y=92"],
+    diamond: ["path class=okf-shape-2 d=M100 91 L109 100 L100 109 L91 100 Z"],
+    triangle: ["path class=okf-shape-3 d=M100 92.25 L107.75 107.75 L92.25 107.75 Z"],
+    ring: ["circle class=okf-shape-4 cx=100 cy=100 r=6 stroke-width=2"],
+    other: ["rect class=okf-shape-5 height=12.5 stroke-width=1.5 width=12.5 x=93.75 y=93.75"],
+    ghost: ["circle class=okf-ghost-mark cx=100 cy=100 r=7 stroke-dasharray=2 2 stroke-width=1.2"],
   },
   localCenter: {
-    circle: ["rect class=okf-node-ring height=38 stroke-width=2 width=38 x=81 y=81", "circle class=okf-shape-0 cx=100 cy=100 r=13"],
-    square: ["rect class=okf-node-ring height=40 stroke-width=2 width=40 x=80 y=80", "rect class=okf-shape-1 height=28 width=28 x=86 y=86"],
-    diamond: ["rect class=okf-node-ring height=43.1 stroke-width=2 width=43.1 x=78.45 y=78.45", "path class=okf-shape-2 d=M100 84.45 L115.55 100 L100 115.55 L84.45 100 Z"],
-    triangle: ["rect class=okf-node-ring height=36 stroke-width=2 width=36 x=82 y=82", "path class=okf-shape-3 d=M100 88 L112 112 L88 112 Z"],
-    ring: ["rect class=okf-node-ring height=38 stroke-width=2 width=38 x=81 y=81", "circle class=okf-shape-4 cx=100 cy=100 r=11.5 stroke-width=3"],
-    other: ["rect class=okf-node-ring height=38 stroke-width=2 width=38 x=81 y=81", "rect class=okf-shape-5 height=24 stroke-width=2 width=24 x=88 y=88"],
+    circle: ["rect class=okf-node-ring height=26 stroke-width=2 width=26 x=87 y=87", "circle class=okf-shape-0 cx=100 cy=100 r=9"],
+    square: ["rect class=okf-node-ring height=27.5 stroke-width=2 width=27.5 x=86.25 y=86.25", "rect class=okf-shape-1 height=19.5 width=19.5 x=90.25 y=90.25"],
+    diamond: ["rect class=okf-node-ring height=30 stroke-width=2 width=30 x=85 y=85", "path class=okf-shape-2 d=M100 89 L111 100 L100 111 L89 100 Z"],
+    triangle: ["rect class=okf-node-ring height=25 stroke-width=2 width=25 x=87.5 y=87.5", "path class=okf-shape-3 d=M100 91.5 L108.5 108.5 L91.5 108.5 Z"],
+    ring: ["rect class=okf-node-ring height=26 stroke-width=2 width=26 x=87 y=87", "circle class=okf-shape-4 cx=100 cy=100 r=8 stroke-width=2"],
+    other: ["rect class=okf-node-ring height=26 stroke-width=2 width=26 x=87 y=87", "rect class=okf-shape-5 height=16.5 stroke-width=1.5 width=16.5 x=91.75 y=91.75"],
   },
   graph: {
-    circle: ["rect class=okf-node-focus height=46 stroke-dasharray=3 3 stroke-width=2 width=46 x=77 y=77", "rect class=okf-node-ring height=38 stroke-width=2.4 width=38 x=81 y=81", "circle class=okf-shape-0 cx=100 cy=100 r=13"],
-    square: ["rect class=okf-node-focus height=50 stroke-dasharray=3 3 stroke-width=2 width=50 x=75 y=75", "rect class=okf-node-ring height=42 stroke-width=2.4 width=42 x=79 y=79", "rect class=okf-shape-1 height=30 width=30 x=85 y=85"],
-    diamond: ["rect class=okf-node-focus height=51.1 stroke-dasharray=3 3 stroke-width=2 width=51.1 x=74.45 y=74.45", "rect class=okf-node-ring height=43.1 stroke-width=2.4 width=43.1 x=78.45 y=78.45", "path class=okf-shape-2 d=M100 84.45 L115.55 100 L100 115.55 L84.45 100 Z"],
-    triangle: ["rect class=okf-node-focus height=44 stroke-dasharray=3 3 stroke-width=2 width=44 x=78 y=78", "rect class=okf-node-ring height=36 stroke-width=2.4 width=36 x=82 y=82", "path class=okf-shape-3 d=M100 88 L112 112 L88 112 Z"],
-    ring: ["rect class=okf-node-focus height=46 stroke-dasharray=3 3 stroke-width=2 width=46 x=77 y=77", "rect class=okf-node-ring height=38 stroke-width=2.4 width=38 x=81 y=81", "circle class=okf-shape-4 cx=100 cy=100 r=11.5 stroke-width=3"],
-    other: ["rect class=okf-node-focus height=46 stroke-dasharray=3 3 stroke-width=2 width=46 x=77 y=77", "rect class=okf-node-ring height=38 stroke-width=2.4 width=38 x=81 y=81", "rect class=okf-shape-5 height=24 stroke-width=2 width=24 x=88 y=88"],
-    ghost: ["rect class=okf-node-focus height=47.6 stroke-dasharray=3 3 stroke-width=2 width=47.6 x=76.2 y=76.2", "rect class=okf-node-ring height=39.6 stroke-width=2.4 width=39.6 x=80.2 y=80.2", "circle class=okf-ghost-mark cx=100 cy=100 r=13 stroke-dasharray=3 3 stroke-width=1.6"],
+    circle: ["rect class=okf-node-focus height=34 stroke-dasharray=3 3 stroke-width=2 width=34 x=83 y=83", "rect class=okf-node-ring height=26 stroke-width=2.4 width=26 x=87 y=87", "circle class=okf-shape-0 cx=100 cy=100 r=9"],
+    square: ["rect class=okf-node-focus height=37 stroke-dasharray=3 3 stroke-width=2 width=37 x=81.5 y=81.5", "rect class=okf-node-ring height=29 stroke-width=2.4 width=29 x=85.5 y=85.5", "rect class=okf-shape-1 height=21 width=21 x=89.5 y=89.5"],
+    diamond: ["rect class=okf-node-focus height=38 stroke-dasharray=3 3 stroke-width=2 width=38 x=81 y=81", "rect class=okf-node-ring height=30 stroke-width=2.4 width=30 x=85 y=85", "path class=okf-shape-2 d=M100 89 L111 100 L100 111 L89 100 Z"],
+    triangle: ["rect class=okf-node-focus height=33 stroke-dasharray=3 3 stroke-width=2 width=33 x=83.5 y=83.5", "rect class=okf-node-ring height=25 stroke-width=2.4 width=25 x=87.5 y=87.5", "path class=okf-shape-3 d=M100 91.5 L108.5 108.5 L91.5 108.5 Z"],
+    ring: ["rect class=okf-node-focus height=34 stroke-dasharray=3 3 stroke-width=2 width=34 x=83 y=83", "rect class=okf-node-ring height=26 stroke-width=2.4 width=26 x=87 y=87", "circle class=okf-shape-4 cx=100 cy=100 r=8 stroke-width=2"],
+    other: ["rect class=okf-node-focus height=34 stroke-dasharray=3 3 stroke-width=2 width=34 x=83 y=83", "rect class=okf-node-ring height=26 stroke-width=2.4 width=26 x=87 y=87", "rect class=okf-shape-5 height=16.5 stroke-width=1.5 width=16.5 x=91.75 y=91.75"],
+    ghost: ["rect class=okf-node-focus height=35.2 stroke-dasharray=3 3 stroke-width=2 width=35.2 x=82.4 y=82.4", "rect class=okf-node-ring height=27.2 stroke-width=2.4 width=27.2 x=86.4 y=86.4", "circle class=okf-ghost-mark cx=100 cy=100 r=9 stroke-dasharray=2 2 stroke-width=1.2"],
   },
 };
 
@@ -3024,7 +3024,7 @@ check("OkfShapes: only the fixed SVG vocabulary and fixed classes; bundle text s
     OkfShapes.icon("circle", "icon", hostile),
     OkfShapes.icon("ghost", "icon"),
     OkfShapes.icon("stale", "flag"),
-    OkfShapes.node("ghost", 10, 10, 27.6, OkfShapes.SIZES.graph.ghost),
+    OkfShapes.node("ghost", 10, 10, 19.2, OkfShapes.SIZES.graph.ghost),
     OkfShapes.legend([
       { role: "type", slot: 0, label: hostile, count: 3 },
       { role: "type", slot: 5, label: "Other types" },
