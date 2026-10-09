@@ -536,8 +536,13 @@ async function compose(browser, frames, { width, file }) {
     browser = null;
   }
   } finally {
-    if (browser) { await browser.close(); }
-    fs.rmSync(work, { recursive: true, force: true });
+    // Removal must run even when closing the browser rejects (and must not
+    // mask that first failure), so it sits in its own finally.
+    try {
+      if (browser) { await browser.close(); }
+    } finally {
+      fs.rmSync(work, { recursive: true, force: true });
+    }
   }
 
   let total = 0;
