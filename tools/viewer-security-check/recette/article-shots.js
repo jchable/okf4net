@@ -247,6 +247,11 @@ async function compose(browser, frames, { width, file }) {
 (async () => {
   const opts = parseArgs(process.argv.slice(2));
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "okf-article-shots-"));
+  let browser = null;
+  const written = [];
+  // Everything after the temporary tree exists runs under this try, so a failed
+  // render, tag extraction, Playwright load or browser launch still removes it.
+  try {
   const acmeSite = path.join(work, "acme-site");
   const synthDir = path.join(work, "synthetic_handbook");
   const synthSite = path.join(work, "synthetic-site");
@@ -268,8 +273,7 @@ async function compose(browser, frames, { width, file }) {
   fs.mkdirSync(opts.out, { recursive: true });
 
   const pw = lib.loadPlaywright();
-  const browser = await lib.launch(pw, opts.browser);
-  const written = [];
+  browser = await lib.launch(pw, opts.browser);
 
   // One fresh context per capture: no stored theme or width, no leftover state.
   async function open({ viewport = WIDE, scheme = "light", scale = 1, scheduler = false }) {
@@ -299,7 +303,7 @@ async function compose(browser, frames, { width, file }) {
 
   try {
     // Before: the same concept page as rendered by okf-render 0.6.0.
-    if (beforeSite) {
+    if (opts.before && beforeSite) {
       await shot("before-static-site", {
         run: async (page) => {
           await page.goto(lib.pageUrl(lib.siteUrl(beforeSite), "computations/gross-margin-period.html"));
@@ -529,6 +533,10 @@ async function compose(browser, frames, { width, file }) {
     });
   } finally {
     await browser.close();
+    browser = null;
+  }
+  } finally {
+    if (browser) { await browser.close(); }
     fs.rmSync(work, { recursive: true, force: true });
   }
 
