@@ -1,6 +1,6 @@
 # Couture « provider de bundle » sous `Bundle` — design
 
-Date : 2026-10-07 (révisé les 2026-10-08, 2026-10-09 et 2026-10-10)
+Date : 2026-10-07 (révisé les 2026-10-08, 2026-10-09 et 2026-10-10, révisions 4 et 5)
 Statut : proposé
 Ticket : [#139](https://github.com/jchable/okf4net/issues/139). Chaque décision
 datée citée ici y est consignée en commentaire : du 2026-10-05 au 2026-10-07
@@ -36,6 +36,19 @@ code et intégrés.
 Arbitrage du mainteneur (2026-10-10), consigné sur #139 : **D5**, un concept
 injecté par `OkfContextProvider` n'est jamais une observation, même s'il est
 complet.
+
+**Révision 5 (troisième passe de revue externe, 2026-10-10).** Verdict « prêt
+pour un plan après deux précisions », toutes deux vérifiées sur le code et
+intégrées (§5.1, §5.4) :
+
+- la révision 4 affirmait qu'un attester en URL est déjà refusé ; c'est faux.
+  Sans `attester.resource`, ou avec une URL, l'orchestrateur laisse aujourd'hui
+  l'`IAttester` de l'hôte attester avec un texte source nul. Arbitrage **D6** :
+  ces deux cas sont désormais **refusés**, changement de comportement annoncé
+  (§10) ;
+- la reprise après un refus d'épinglage avait disparu entre les révisions 3 et
+  4 : le refus **invalide l'image**, et la tentative suivante repart d'un relevé
+  à jour.
 
 **Révision 3 (revue externe, 2026-10-09).** Une revue externe adversariale de la
 version 2, qui a exécuté des programmes jetables sur le code actuel, concluait
@@ -551,7 +564,8 @@ l'audit. Chaque ressource reçoit l'un de ces états :
 | État | Cas | Conséquence |
 |---|---|---|
 | `Pinned(version)` | lue et hachée | exécutable |
-| `Url` | valeur `scheme://…` | jamais lue ; exécution refusée, comme l'orchestrateur le fait déjà aujourd'hui |
+| `Undeclared` | le concept ne déclare pas d'`attester.resource` | exécution refusée (**changement de comportement**, D6, voir ci-dessous) |
+| `Url` | valeur `scheme://…` | jamais lue ; exécution refusée (**changement de comportement**, D6) |
 | `Unsafe` | résolution §6.2 refusée (§2) | exécution refusée |
 | `Missing` | aucun objet sous la clé | exécution refusée |
 | `Unreadable` | erreur de lecture, UTF-8 invalide | exécution refusée |
@@ -560,6 +574,33 @@ l'audit. Chaque ressource reçoit l'un de ces états :
 Une exécution refusée pour l'une de ces raisons reçoit un message de la
 bibliothèque qui nomme la ressource et l'état. La validation continue de
 signaler les ressources manquantes comme aujourd'hui (`BundleValidator`).
+
+**Fin de l'attestation fournie par l'hôte** (D6, arbitrage du 2026-10-10).
+Aujourd'hui, `AttestationOrchestrator.TryResolveAttesterSource` ne lit rien
+quand le concept ne déclare pas d'`attester.resource`, ou en déclare une sous
+forme d'URL ; il laisse alors l'`IAttester` enregistré par l'hôte attester avec
+`AttesterSourceText = null`. Ces deux cas sont désormais **refusés avant tout
+appel au runtime** : il n'y a rien à épingler, donc rien que le modèle ou
+l'hôte puissent tenir pour le code d'attestation effectivement exécuté. C'est un
+changement de sens du §10.5 pour cette implémentation, à consigner au §10 et
+dans `docs/spec-conformance/`. Son périmètre réel est étroit : les six
+computations des bundles du dépôt déclarent toutes un attester en fichier, et
+`ContainerAttester` refuse déjà un `AttesterSourceText` nul. Le test
+`Absent_attester_declaration_yields_null_source_text_not_a_failure` pin le
+comportement actuel et change de sens avec lui.
+
+**Reprise après un refus d'épinglage.** Un refus pour version changée (`Pinned`
+dont la relecture avec `expected` échoue) ou pour un état négatif (`Missing`,
+`Unreadable`, `TooLarge`, `Unsafe`) **invalide l'image** : le prochain accès la
+recharge et relève à nouveau chaque ressource. C'est la seule situation où le
+cœur rafraîchit sans que la politique (`Manual` comprise) le demande, et le
+message de refus le dit. Aucune réexécution automatique, aucune modification
+des observations de la session : si la computation ou le concept ont changé
+aussi, la relecture par le modèle reste nécessaire. Une ressource créée ou
+corrigée après le chargement est ainsi reprise au chargement suivant, sans
+intervention de l'hôte. `Undeclared` et `Url` ne déclenchent pas
+d'invalidation : seul un changement du concept peut les faire évoluer, et il
+passe par les observations.
 
 `OkfDocument.Body` reste une `string` synchrone (le passage à un accès
 asynchrone éventuel relève de #153).
@@ -699,15 +740,18 @@ plus rien hors de cette capture.
 3. **L'attester.** Son code n'est jamais montré au modèle. Il est épinglé à
    **l'image dans laquelle l'exécution a lieu** : son état doit être
    `Pinned(version)` (§5.1), et il est relu avec `expected` = cette version.
-   Tout autre état, ou une version qui a changé depuis le chargement, donne un
-   refus.
+   Tout autre état, `Undeclared` et `Url` compris (D6), ou une version qui a
+   changé depuis le chargement, donne un refus.
 
-Le cœur passe ensuite à l'orchestrateur le concept et les textes capturés. Sans
+Le cœur passe ensuite à l'orchestrateur le concept et les textes capturés ;
+`AttesterSourceText` n'est donc plus jamais nul à l'entrée d'un runtime. Sans
 observation, quand une version a changé ou quand un état n'est pas `Pinned`,
 l'exécution est **refusée** avec un message de la bibliothèque (« lisez-la
 d'abord avec `okf_get_computation` », « elle a changé depuis votre lecture », ou
 la ressource et son état). Un rafraîchissement intermédiaire n'y change rien,
-puisque le registre lui survit.
+puisque le registre lui survit. Un refus pour version changée ou pour un état
+négatif invalide l'image, comme le §5.1 le décrit, pour que la tentative
+suivante parte d'un relevé à jour.
 
 La liste blanche d'empreintes (#154) reste le contrôle qui ne dépend pas de qui
 peut écrire dans la source.
@@ -985,7 +1029,15 @@ l'arbitrage du 2026-10-08).
     - une entrée évincée du registre (au-delà de 10 000 clés) fait refuser
       l'action jusqu'à une nouvelle lecture ;
     - une computation dont une ressource n'est pas `Pinned` (§5.1) est refusée
-      en nommant la ressource et son état ;
+      en nommant la ressource et son état ; un refus pour version changée ou
+      état négatif invalide l'image ;
+    - **D6, changement de sens du §10.5 pour cette implémentation** : une
+      computation sans `attester.resource`, ou dont l'attester est une URL,
+      n'est plus attestée par l'`IAttester` de l'hôte avec un texte nul ; elle
+      est refusée avant tout appel au runtime. À consigner dans
+      `docs/spec-conformance/`. Le test
+      `Absent_attester_declaration_yields_null_source_text_not_a_failure`
+      change de sens avec elle ;
   - une **création** qui produirait une collision ou un conflit fichier/dossier
     est refusée avant toute écriture (§2) ;
   - les sources du catalogue ne rechargent plus à chaque requête, mais restent
@@ -1056,6 +1108,15 @@ l'arbitrage du 2026-10-08).
   - **(révision 4)** la session lit `a`, `a` est supprimé ailleurs, la
     réécriture échoue en conflit, la relecture répond « introuvable », puis la
     recréation en `MustNotExist` réussit.
+- **Attestation (D6)** : une computation sans `attester.resource`, ou avec une
+  URL, est refusée avant que le runtime soit appelé ; un `IAttester` de test
+  enregistré pour ce runtime n'est jamais invoqué. `AttesterSourceText` n'est
+  jamais nul à l'entrée d'un runtime.
+- **Reprise après refus** : sous `Manual`, l'attester passe de v1 à v2 après le
+  chargement ; la première exécution est refusée ; la seconde tentative, sans
+  aucun `Refresh()` de l'hôte, s'exécute sur v2. Même parcours pour une
+  ressource `Missing` créée après le chargement. Les observations de la session
+  sont inchangées par ce rafraîchissement.
 - **Relevé des ressources exécutables** : un concept dont l'attester est absent,
   `Unsafe`, illisible, de plus de 16 Mio ou une URL est **chargé**, validé et
   lisible. Son exécution est refusée en nommant l'état. Aucune lecture n'est
@@ -1190,9 +1251,16 @@ Ajoutés par la révision 4 :
 26. **Vérification de l'arborescence avant création seulement**, en énumérant
     les préfixes parents chez le provider, et non avant chaque écriture d'un
     objet existant, qui ne change pas l'arborescence.
-27. **Les états du relevé des ressources exécutables** (`Pinned`, `Url`,
-    `Unsafe`, `Missing`, `Unreadable`, `TooLarge`), avec un concept toujours
-    chargé et une exécution refusée hors `Pinned`.
+27. **Les états du relevé des ressources exécutables** (`Pinned`, `Undeclared`,
+    `Url`, `Unsafe`, `Missing`, `Unreadable`, `TooLarge`), avec un concept
+    toujours chargé et une exécution refusée hors `Pinned`.
+
+Ajoutés par la révision 5 :
+
+28. **Le refus d'épinglage invalide l'image même sous `Manual`**, plutôt que
+    d'exiger un `Refresh()` de l'hôte ; c'est la seule exception à la politique.
+29. **`Undeclared` et `Url` n'invalident pas l'image**, puisque seul un
+    changement du concept peut les faire évoluer.
 
 ## Risques et limites
 
@@ -1212,6 +1280,11 @@ Ajoutés par la révision 4 :
   au rafraîchissement jusqu'à la suivante (§8). C'est sans perte de données ;
   l'épinglage du code exécuté n'en dépend plus.
 - **Fenêtre inter-processus sur le filesystem** : acceptée (§4, #178).
+- **Attestation fournie par l'hôte (D6)** : un hôte qui s'appuyait sur un
+  `IAttester` attestant sans source dans le bundle voit ses computations
+  refusées jusqu'à ce que le bundle déclare un attester en fichier. Aucun bundle
+  du dépôt n'est dans ce cas ; des hôtes externes peuvent l'être, d'où l'entrée
+  de conformance et le CHANGELOG.
 - **Immuabilité** : tant que #181 n'est pas fait, un appelant qui modifie un
   document d'une image partagée la corrompt pour tous ses consommateurs. C'est
   documenté comme non supporté, sans être empêché.
