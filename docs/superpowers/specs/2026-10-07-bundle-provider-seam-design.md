@@ -1,10 +1,41 @@
 # Couture « provider de bundle » sous `Bundle` — design
 
-Date : 2026-10-07 (révisé le 2026-10-08 et le 2026-10-09)
+Date : 2026-10-07 (révisé les 2026-10-08, 2026-10-09 et 2026-10-10)
 Statut : proposé
 Ticket : [#139](https://github.com/jchable/okf4net/issues/139). Chaque décision
 datée citée ici y est consignée en commentaire : du 2026-10-05 au 2026-10-07
-pour le cadrage, puis les arbitrages des revues du 2026-10-08 et du 2026-10-09.
+pour le cadrage, puis les arbitrages des revues du 2026-10-08, du 2026-10-09 et
+du 2026-10-10.
+
+**Révision 4 (seconde passe de revue externe, 2026-10-10).** La seconde passe,
+sur la révision 3, confirme que les correctifs précédents tiennent. Elle trouve
+deux constats bloquants et six importants dans les raccords, tous vérifiés sur le
+code et intégrés.
+
+- **Bloquants.**
+  - Une lecture **interne** (`OkfContextProvider` appelle `ReadConcept` avant de
+    tronquer ou d'abandonner son rendu) serait devenue une observation. Et
+    `okf_get_computation`, qui ne montre pas le corps entier, aurait autorisé une
+    réécriture complète. Les observations sont désormais enregistrées à la
+    frontière de présentation, et chacune a une **finalité** (§5.4).
+  - Revérifier la racine d'une source de catalogue au seul chargement laissait
+    les accès différés sans protection : la remontée des ancêtres s'arrête avant
+    la racine. La frontière de confinement est maintenant revérifiée avant
+    **chaque** accès au stockage (§8).
+- **Importants.**
+  - Une computation en fichier pouvait s'exécuter avec un contrat modifié depuis
+    l'observation (§5.4).
+  - La réutilisation d'un handle ignorait `path` (§9).
+  - Une écriture pouvait créer un conflit d'arborescence (§2).
+  - Le relevé des ressources exécutables au chargement n'avait pas d'états
+    d'échec (§5.1).
+  - Le séparateur de `relativeDir` changeait sans être annoncé (§9).
+  - Le registre ne savait pas enregistrer une absence, et sa borne était fausse
+    (§5.4).
+
+Arbitrage du mainteneur (2026-10-10), consigné sur #139 : **D5**, un concept
+injecté par `OkfContextProvider` n'est jamais une observation, même s'il est
+complet.
 
 **Révision 3 (revue externe, 2026-10-09).** Une revue externe adversariale de la
 version 2, qui a exécuté des programmes jetables sur le code actuel, concluait
@@ -300,6 +331,33 @@ La validation porte donc sur l'ensemble des clés énumérées.
   clés est en conflit. L'objet et tout ce qui est sous lui sont écartés.
 - Le diagnostic suit la règle du périmètre de l'énumération, ci-dessous.
 
+**Les écritures ne doivent pas créer ces conflits.** Valider le listing ne
+suffit pas, puisqu'une création peut introduire une collision. Sur un
+filesystem sensible à la casse dont l'image contient `A/x.md`, créer `a/y.md`
+passe la validation clé par clé et la condition `MustNotExist`, mais le
+chargement suivant écarterait les deux sous-arbres. Avant toute **création**
+(une clé qui n'existe pas encore), le cœur vérifie donc l'arborescence qui
+résulterait de l'écriture, sous la politique active, et sous le verrou en
+processus :
+
+- pour chaque niveau de la nouvelle clé, il énumère les enfants du préfixe
+  parent **chez le provider**, et non dans l'image, qui peut être périmée. Il
+  cherche un nom égal une fois la casse repliée (et normalisé en NFC sous
+  `Strict`) ;
+- il vérifie qu'aucun préfixe de la nouvelle clé n'est un objet existant, et
+  qu'aucun objet n'existe déjà sous la nouvelle clé prise comme préfixe ;
+- en cas de conflit, l'écriture est **refusée** avant toute tentative, avec un
+  message qui nomme le nom en conflit.
+
+**Ce qui n'est pas garanti**, et que la documentation dit. Cette vérification
+et l'écriture ne forment pas une opération atomique sur l'arborescence. La
+condition par objet ne porte que sur la clé écrite. Deux écritures concurrentes
+sur des clés différentes, venant de deux processus ou d'un processus et d'un
+outil externe, peuvent donc encore produire un conflit. Le verrou en processus
+écarte ce cas à l'intérieur d'un processus. Le chargement suivant écarte les
+noms en conflit avec un diagnostic, comme pour tout conflit venu de
+l'extérieur. Aucune transaction multi-objets n'est introduite pour autant.
+
 **Énumération lenient, lecture/écriture stricte**, sur le modèle des deux
 prédicats de `ReparsePoints` : un nom brut invalide trouvé en énumérant est
 écarté ; une clé invalide demandée en lecture ou en écriture lève une exception.
@@ -427,18 +485,26 @@ problème des observations, ci-dessous, que ce design règle.
 
 - API : `WriteConcept` accepte une version attendue **optionnelle** ; sans elle,
   l'écriture est inconditionnelle, comme aujourd'hui.
-- Outils agents (D1) : l'écriture est conditionnée à la version que **cette
-  session** a lue, prise dans son registre d'observations (§5.4), et non à
-  l'image courante du handle partagé, qu'un autre appel a pu rafraîchir
-  entre-temps.
-  - Concept présent dans le registre : condition `IfMatch(version observée)`.
-  - Concept jamais lu par cette session mais existant : **refus**, avec un
-    message de la bibliothèque (« lisez-le d'abord avec `okf_read_concept` »).
-  - Concept absent du stockage et jamais observé : création, condition
-  `MustNotExist`.
+- Outils agents (D1) : l'écriture est conditionnée à ce que **cette session** a
+  observé, d'après son registre (§5.4), et non à l'image courante du handle
+  partagé, qu'un autre appel a pu rafraîchir entre-temps. Seule une observation
+  de finalité **concept complet** (`okf_read_concept`) autorise une réécriture.
+  Une observation **code** (`okf_get_computation`) ne l'autorise pas, puisque cet
+  outil ne montre pas le corps entier.
+  - Observation « concept complet », version v : condition `IfMatch(v)`.
+  - Observation « absent », c'est-à-dire que `okf_read_concept` a répondu
+    « introuvable » à cette session : création, condition `MustNotExist`.
+  - Pas d'observation utilisable, parce que le concept n'a jamais été lu
+    entièrement, que seul son code a été montré, ou que l'entrée a été évincée :
+    **refus** avec un message de la bibliothèque (« lisez-le d'abord avec
+    `okf_read_concept` »), que le concept existe ou non.
   - En cas de conflit, le modèle reçoit un message rédigé par la bibliothèque
-    (le concept a changé depuis votre lecture, relisez-le) et l'image est
+    (le concept a changé depuis votre lecture, relisez-le), et l'image est
     rafraîchie. Le schéma des outils ne change pas.
+  - Une suppression observée se gère sans effacer de protection : la session lit
+    `a` en v1 ; `a` est supprimé ailleurs ; sa réécriture `IfMatch(v1)` échoue en
+    conflit ; elle relit, obtient « introuvable », ce qui remplace son
+    observation par « absent » ; elle peut alors recréer `a` en `MustNotExist`.
 
 **Opérations sur plusieurs objets** (`RecordVerifications`,
 `RegenerateIndexes`, `FileMemoryStore.DeleteScopeAsync`) : **pas de
@@ -474,8 +540,26 @@ entier. Elle porte :
 
 - la `BundleVersion` du provider au moment du chargement ;
 - la `BundleObjectVersion` de chaque objet chargé ;
-- celle de chaque **ressource exécutable référencée par un concept §10**
-  (fichier de computation, attester), lue et hachée au chargement (§5.4).
+- l'état de chaque **ressource exécutable référencée par un concept §10**
+  (fichier de computation, attester), relevé au chargement (§5.4).
+
+**Le relevé des ressources exécutables ne fait jamais échouer le chargement.**
+Le chargement reste permissif (§11) : un problème sur une ressource ne retire
+pas le concept de l'image, et n'empêche ni la lecture, ni la validation, ni
+l'audit. Chaque ressource reçoit l'un de ces états :
+
+| État | Cas | Conséquence |
+|---|---|---|
+| `Pinned(version)` | lue et hachée | exécutable |
+| `Url` | valeur `scheme://…` | jamais lue ; exécution refusée, comme l'orchestrateur le fait déjà aujourd'hui |
+| `Unsafe` | résolution §6.2 refusée (§2) | exécution refusée |
+| `Missing` | aucun objet sous la clé | exécution refusée |
+| `Unreadable` | erreur de lecture, UTF-8 invalide | exécution refusée |
+| `TooLarge` | au-delà de 16 Mio (§6) | exécution refusée, sans lire au-delà de la borne |
+
+Une exécution refusée pour l'une de ces raisons reçoit un message de la
+bibliothèque qui nomme la ressource et l'état. La validation continue de
+signaler les ressources manquantes comme aujourd'hui (`BundleValidator`).
 
 `OkfDocument.Body` reste une `string` synchrone (le passage à un accès
 asynchrone éventuel relève de #153).
@@ -548,46 +632,82 @@ changement). Le cœur implémente une fois pour tous les providers :
 - Aucun outil de rafraîchissement n'est exposé au modèle.
 
 **5.4 Observations et épinglage du code exécuté** (D1 : « n'agir que sur ce
-qu'on a vu »).
+qu'on a vu » ; D5).
 
-**Le registre d'observations.**
+**Le registre d'observations.** Chaque instance d'`OkfBundleTools` (une session
+d'agent, une connexion MCP) tient un registre. Pour une clé, il garde **ce qui a
+été présenté au modèle et à quelle fin**.
 
-- Chaque instance d'`OkfBundleTools` (une session d'agent, une connexion MCP)
-  tient un registre `BundleKey → BundleObjectVersion` de ce qu'elle a
-  **montré** au modèle :
-  - le concept affiché par `okf_read_concept` ;
-  - le concept et le fichier de computation affichés par `okf_get_computation`.
-- Une recherche ou une navigation, qui ne montrent que des extraits, ne sont pas
-  des observations.
-- Le registre **survit aux rafraîchissements** de l'image. Il n'est **pas
-  partagé** : ni par le `BundleHandle`, ni avec un autre jeu d'outils. Une
-  lecture faite par un autre appelant ne peut donc pas remplacer la version vue
-  par celui-ci. Seule une nouvelle lecture par la même session remplace sa
-  propre observation.
-- Il n'est jamais plus grand que le nombre de clés du bundle.
+| Finalité | Enregistrée par | Autorise |
+|---|---|---|
+| **concept complet**, version v | l'outil `okf_read_concept`, quand il rend le concept entier | la réécriture du concept (§4) ; l'exécution de sa computation en ligne, dont le code et le contrat sont dans ce qu'il rend |
+| **code**, version v | l'outil `okf_get_computation`, pour le concept (contrat + code) et, s'il y en a un, pour le fichier de computation | l'exécution seulement, jamais une réécriture |
+| **absent** | l'outil `okf_read_concept`, quand il répond « introuvable » | la création du concept en `MustNotExist` (§4) |
+
+Une clé peut porter à la fois une observation « concept complet » et une
+observation « code ». Une nouvelle observation de même finalité, par la même
+session, remplace la précédente. Les règles suivantes fixent ce qui compte comme
+observation.
+
+- **À la frontière de présentation, jamais à l'appel d'une méthode.**
+  L'enregistrement est fait par la fonction exposée au modèle, après qu'elle a
+  produit le résultat complet. Il n'est **pas** fait par la méthode publique
+  `ReadConcept` ou `GetComputation` qu'un appelant interne utilise. Une méthode
+  publique appelée directement par un hôte n'enregistre donc rien : un hôte qui
+  présente lui-même le résultat au modèle n'obtient pas de droit d'agir. C'est le
+  défaut sûr.
+- **Une injection de contexte n'est jamais une observation** (D5).
+  `OkfContextProvider` appelle `ReadConcept`, puis tronque ou abandonne le bloc
+  selon son budget (`RenderBlock` peut renvoyer `null`). Même un bloc injecté en
+  entier ne compte pas : l'injection est automatique, le modèle ne l'a pas
+  demandée.
+- **Une recherche ou une navigation n'en sont pas** non plus : elles ne montrent
+  que des extraits.
+
+La durée de vie et la portée du registre sont les suivantes.
+
+- Il **survit aux rafraîchissements** de l'image.
+- Il n'est **pas partagé** : ni par le `BundleHandle`, ni avec un autre jeu
+  d'outils, ni avec `OkfContextProvider`, qui n'en a pas besoin puisqu'il
+  n'enregistre rien. Une lecture faite par un autre appelant ne peut donc pas
+  remplacer la version vue par celui-ci.
+- **Borne propre** : 10 000 clés, en évinçant les moins récemment utilisées. Le
+  nombre de clés du bundle ne le borne pas, puisque les clés observées peuvent
+  disparaître et d'autres apparaître. Une entrée évincée est perdue : l'action
+  qu'elle aurait autorisée est **refusée** jusqu'à une nouvelle lecture, jamais
+  autorisée par défaut.
 - La garantie vaut par instance d'`OkfBundleTools`. Un hôte qui sert plusieurs
   conversations avec une seule instance partage le registre entre elles ; la
   documentation recommande une instance par conversation.
 
-**Ce que `okf_run_computation` exécute.**
+**Ce que `okf_run_computation` exécute.** Au début de l'appel, l'outil capture
+**en une seule fois** tout ce que l'exécution utilisera, et l'exécution ne relit
+plus rien hors de cette capture.
 
-- **La computation.** Le code exécuté est celui que la session a vu.
-  - En ligne : c'est le bloc de code du **corps** du concept, sous
-    `# Computation` (§10.3). Le concept doit avoir été observé, et sa version
-    courante doit être égale à la version observée.
-  - En fichier : le fichier doit avoir été observé via `okf_get_computation`.
-    Il est relu avec `expected` = la version observée.
-  - Sans observation, ou si la version a changé : **refus**, avec un message de
-    la bibliothèque (« lisez-la d'abord avec `okf_get_computation` » ou « elle a
-    changé depuis votre lecture »). Un rafraîchissement intermédiaire n'y change
-    rien, puisque le registre lui survit.
-- **L'attester.** Son code n'est pas montré au modèle : il n'y a donc rien
-  d'« observé ». Il est épinglé à **l'image dans laquelle l'exécution a lieu**.
-  Sa version a été relevée au chargement de cette image (§5.1), et il est relu
-  avec `expected` = cette version. S'il a changé depuis le chargement, refus et
-  rafraîchissement. On n'exécute donc jamais un attester différent de celui de
-  l'image courante, y compris sur le filesystem, sans dépendre du jeton faible
-  du bundle.
+1. **Le concept : contrat et runtime compris, dans les deux modes.** Il faut une
+   observation « concept complet » ou « code » de version v, et la version du
+   concept dans l'image courante doit être égale à v. Sinon, l'exécution est
+   refusée (« elle a changé depuis votre lecture »). L'orchestrateur prend le
+   contrat et le runtime dans le concept (`AttestationOrchestrator.RunAsync`).
+   Un frontmatter modifié avec un fichier de code inchangé est donc refusé lui
+   aussi.
+2. **Le code.**
+   - En ligne : c'est le bloc de code du **corps** du concept, sous
+     `# Computation` (§10.3). Il est couvert par le point 1.
+   - En fichier : il faut en plus une observation « code » de ce fichier. Il est
+     relu avec `expected` = la version observée.
+3. **L'attester.** Son code n'est jamais montré au modèle. Il est épinglé à
+   **l'image dans laquelle l'exécution a lieu** : son état doit être
+   `Pinned(version)` (§5.1), et il est relu avec `expected` = cette version.
+   Tout autre état, ou une version qui a changé depuis le chargement, donne un
+   refus.
+
+Le cœur passe ensuite à l'orchestrateur le concept et les textes capturés. Sans
+observation, quand une version a changé ou quand un état n'est pas `Pinned`,
+l'exécution est **refusée** avec un message de la bibliothèque (« lisez-la
+d'abord avec `okf_get_computation` », « elle a changé depuis votre lecture », ou
+la ressource et son état). Un rafraîchissement intermédiaire n'y change rien,
+puisque le registre lui survit.
 
 La liste blanche d'empreintes (#154) reste le contrôle qui ne dépend pas de qui
 peut écrire dans la source.
@@ -662,11 +782,29 @@ la source l'est. `catalog.json` est de la configuration d'opérateur.
 - Il crée lui-même les dossiers parents lors d'un `Write`, après la garde STRICT
   des ancêtres (§3). Une suppression laisse les dossiers vides en place : un
   dossier vide ne contient aucune clé, donc il n'existe pas pour la couture.
-- **Racine d'une source de catalogue.** Aujourd'hui, la résolution du chemin à
-  chaque requête revérifie que la racine est toujours sous la racine du
-  catalogue et qu'elle n'est pas un point de reparse. Le handle conservant
-  désormais son provider (§9), un provider filesystem créé pour une source de
-  catalogue refait cette vérification **à chaque chargement** de l'image.
+- **Frontière de confinement, revérifiée avant chaque accès.**
+  - **Le problème.** Aujourd'hui, la résolution du chemin à chaque requête
+    revérifie que la racine d'une source de catalogue est toujours sous la racine
+    du catalogue et qu'elle n'est pas un point de reparse. Les gardes de lecture,
+    elles, remontent les ancêtres **jusqu'à la racine du bundle, sans
+    l'inclure** (`ReparsePoints.AnyEntryUpTo`). Une racine remplacée par une
+    jonction après le chargement passerait donc inaperçue lors d'une lecture
+    différée. La revue externe l'a reproduit sur les primitives actuelles : une
+    ressource lue depuis l'image conservée sortait du catalogue.
+  - **La règle.** Un provider filesystem peut recevoir une **frontière de
+    confinement**. Le catalogue lui passe sa propre racine ; c'est le cas de
+    toute source de catalogue. S'il en a une, il revérifie en mode **STRICT**,
+    **avant chaque accès effectif au stockage**, la chaîne qui va de la frontière
+    jusqu'à sa racine **incluse** : pas de point de reparse ni d'entrée
+    impossible à inspecter, et la racine toujours sous la frontière. Cela vaut
+    pour `GetVersion`, `Enumerate`, chaque `Read` (ressources différées
+    comprises), `Exists`, `Write` et `Delete`, et pas seulement au chargement.
+    La garde existante, des ancêtres jusqu'à l'objet, continue de s'appliquer
+    en plus.
+  - **Sans frontière**, c'est-à-dire avec une racine donnée directement par
+    l'hôte (`Bundle.Load(string root)`, `OkfBundleTools(string)`), la racine est
+    de la configuration fiable, comme aujourd'hui.
+  - **Le coût** est de quelques appels système par accès, sur une chaîne courte.
 - **Règle d'affichage d'un chemin** (pour la CLI, le Viewer, `Diagnostic` et
   `AuditFinding`) : `Location`, puis les segments de la clé joints par le
   **séparateur de l'OS**, c'est-à-dire exactement ce que `Path.Combine(root, …)`
@@ -695,9 +833,9 @@ la source l'est. `catalog.json` est de la configuration d'opérateur.
 | `BundleValidator` | relit `index.md`/`log.md` et teste les ressources via le provider (avec les bornes), plus via `File.*`. `Diagnostic.Path` (aujourd'hui une chaîne remplie avec `concept.Path`) devient `Diagnostic.Key` (`BundleKey?`) ; le chemin affiché suit la règle du §8 |
 | `ConceptAudit` | `AuditFinding.Path` devient `AuditFinding.Key` ; le chemin affiché par `okf audit` et `okf_audit` suit la règle du §8, si bien que leurs octets ne changent pas |
 | `BundleConceptWriter` | constructeur sur `BundleHandle` (ou provider) ; version attendue optionnelle ; garde de capacité ; relectures-réessais ; atomicité via le provider ; **reprend l'écriture de `log.md`** (§3) ; `RecordVerifications` expose un `BundleWriteReport` ; `AppendToConceptAtomic` appelle `buildBody` une fois par tentative (§4). `BundleRoot` : voir ci-dessous |
-| `IndexGenerator` | surcharges sur provider ; garde de capacité ; écritures conditionnelles. Le callback `Synthesize` garde sa forme : `relativeDir` reste une chaîne relative, avec `/` pour séparateur (ce qui est documenté). La surcharge provider renvoie un `BundleWriteReport` (clés écrites, échecs) ; la surcharge `string` renvoie toujours la liste des chemins écrits. Un dossier vide n'est plus référencé (§2) |
-| `OkfBundleTools` | constructeur sur `BundleHandle` ; plus aucune E/S directe. `AppendLog` délègue au writer ; la lecture d'`index.md` passe par le provider en UTF-8 **strict** (aujourd'hui `File.ReadAllText`, qui remplace les octets invalides par U+FFFD) ; filtrage des outils d'écriture selon la permission effective ; **registre d'observations** et écritures conditionnées à celles-ci (§4, §5.4). `BundleRoot` : voir ci-dessous |
-| `OkfContextProvider` | partage le `BundleHandle` et le registre d'observations de ses outils. Ses chargements passent par la couture, mais restent **bloquants** dans ses méthodes asynchrones tant que le contrat est synchrone ; c'est #152 qui les rend asynchrones |
+| `IndexGenerator` | surcharges sur provider ; garde de capacité ; écritures conditionnelles. Le callback `Synthesize` garde sa forme. Pour la surcharge `string`, `relativeDir` garde aussi sa **valeur historique**, avec le séparateur de l'OS (aujourd'hui `Path.GetRelativePath`, donc `a\b` sous Windows) : rien ne change pour ses appelants. La surcharge provider, qui est nouvelle, passe une chaîne avec `/` pour séparateur, ce qui est documenté. La surcharge provider renvoie un `BundleWriteReport` (clés écrites, échecs) ; la surcharge `string` renvoie toujours la liste des chemins écrits. Un dossier vide n'est plus référencé (§2) |
+| `OkfBundleTools` | constructeur sur `BundleHandle` ; plus aucune E/S directe. `AppendLog` délègue au writer ; la lecture d'`index.md` passe par le provider en UTF-8 **strict** (aujourd'hui `File.ReadAllText`, qui remplace les octets invalides par U+FFFD) ; filtrage des outils d'écriture selon la permission effective ; **registre d'observations**, enregistré par les fonctions exposées au modèle et jamais par les méthodes publiques `ReadConcept`/`GetComputation` (§5.4) ; écritures et exécutions conditionnées aux observations (§4, §5.4). `BundleRoot` : voir ci-dessous |
+| `OkfContextProvider` | partage le `BundleHandle` de ses outils. Il appelle `ReadConcept` sans rien enregistrer : une injection n'est jamais une observation (D5, §5.4). Ses chargements passent par la couture, mais restent **bloquants** dans ses méthodes asynchrones tant que le contrat est synchrone ; c'est #152 qui les rend asynchrones |
 | `OkfBundleKnowledgeSource` | constructeur sur `BundleHandle` ; ne recharge plus à chaque requête, il suit la politique de la source |
 | Catalog | voir « Catalog : qui crée et conserve les handles » ci-dessous |
 | `FileMemoryStore` | API publique inchangée ; reste adossé au filesystem, via le provider ; recharge le scope à chaque lecture, comme aujourd'hui. Voir ci-dessous pour la suppression d'un scope et les clés mémoire |
@@ -727,17 +865,32 @@ sources mémoire. Désormais :
 
 - **L'instantané du catalogue possède les handles.** À chaque
   `ReloadAsync`, le catalogue crée un `BundleHandle` par source de
-  connaissance activée, avec la fabrique de son type de provider. Il **réutilise**
-  le handle d'une source dont le type et les réglages n'ont pas changé, pour ne
-  pas jeter son image. Les resolvers prennent les handles dans l'instantané au
-  lieu de résoudre un chemin à chaque requête.
+  connaissance activée, avec la fabrique de son type de provider. Les resolvers
+  prennent les handles dans l'instantané au lieu de résoudre un chemin à chaque
+  requête.
+- **Réutilisation d'un handle : sur la configuration effective seulement.** Le
+  catalogue ne réutilise le handle d'une source, pour ne pas jeter son image,
+  que si sa **configuration effective** est identique en tout point :
+  - type de provider ;
+  - pour le filesystem, chemin **résolu**, et non la valeur brute de `path` ;
+  - réglages du provider ;
+  - politique de rafraîchissement ;
+  - bornes ;
+  - politique de portabilité ;
+  - frontière de confinement.
+
+  Toute différence, par exemple `path: old` devenu `path: new` avec le même type
+  et les mêmes réglages, fait **reconstruire** le handle. L'ancien n'est plus
+  servi par le nouvel instantané.
 - **La déduplication se fait par `IBundleProvider.Id`**, et non plus par
   répertoire résolu. Pour le filesystem, l'identifiant est la racine canonique ;
   le résultat est donc le même qu'aujourd'hui.
 - **Les contrôles de chemin** (`CatalogPathResolver` : pas de chemin absolu,
   confinement sous la racine du catalogue, pas de point de reparse) ne valent
   que pour les sources de type `filesystem`. Ils s'appliquent à la création du
-  handle, puis à chaque chargement (§8).
+  handle. Ensuite, la frontière de confinement (la racine du catalogue) est
+  revérifiée par le provider **avant chaque accès au stockage** (§8), et plus
+  seulement au chargement.
 - **Les sources mémoire** restent de type `filesystem` et sont résolues comme
   aujourd'hui. Une source mémoire d'un autre type est rejetée avec un
   diagnostic, puisque la mémoire distante est hors périmètre.
@@ -823,9 +976,18 @@ l'arbitrage du 2026-10-08).
     devient `Missing` au lieu d'être résolue ;
   - un `\` dans un chemin §6.2 donne `Unsafe` (§2) ;
   - écritures atomiques et conditionnelles (§4) ;
-  - **outils agents** : `okf_run_computation` n'exécute que le code montré à la
-    session, et `okf_write_concept` refuse de réécrire un concept que la session
-    n'a pas lu (§4, §5.4) ;
+  - **outils agents** (§4, §5.4) :
+    - `okf_run_computation` n'exécute que ce qui a été montré à la session, et
+      seulement si le concept (contrat compris) n'a pas changé depuis ;
+    - `okf_write_concept` refuse de réécrire un concept que la session n'a pas
+      lu en entier avec `okf_read_concept`. Une injection de contexte ne compte
+      pas (D5), et `okf_get_computation` non plus ;
+    - une entrée évincée du registre (au-delà de 10 000 clés) fait refuser
+      l'action jusqu'à une nouvelle lecture ;
+    - une computation dont une ressource n'est pas `Pinned` (§5.1) est refusée
+      en nommant la ressource et son état ;
+  - une **création** qui produirait une collision ou un conflit fichier/dossier
+    est refusée avant toute écriture (§2) ;
   - les sources du catalogue ne rechargent plus à chaque requête, mais restent
     toujours fraîches grâce à `OnAccess` et aux handles conservés (§5.3, §9) ;
   - lecture d'`index.md` par les outils agents : UTF-8 strict (§9) ;
@@ -875,10 +1037,41 @@ l'arbitrage du 2026-10-08).
   - un concept est réécrit sans avoir été lu ;
   - une session a lu v1, une autre fait passer l'image en v2, et la première
     écrit, ce qui donne un conflit au lieu d'un écrasement ;
-  - l'attester est modifié après le chargement de l'image.
+  - l'attester est modifié après le chargement de l'image ;
+  - **(révision 4)** `OkfContextProvider` injecte un concept, entier ou tronqué,
+    puis la session tente de le réécrire ou d'exécuter son code inline ;
+  - **(révision 4)** la session n'a vu le concept que par `okf_get_computation`,
+    puis tente une réécriture complète ;
+  - **(révision 4)** le fichier `q.sql` est observé, puis le runtime ou le
+    contrat du concept change, le handle est rafraîchi et `q.sql` reste
+    identique ;
+  - **(révision 4)** une observation est évincée par plus de 10 000 lectures
+    d'autres clés, puis la session agit sur la clé évincée ;
+  - **(révision 4)** un hôte appelle directement la méthode publique
+    `ReadConcept`, puis l'outil d'écriture.
 
-  En revanche, une lecture par un second jeu d'outils ne remplace pas
-  l'observation du premier.
+  À l'inverse, ces cas doivent réussir :
+  - une lecture par un second jeu d'outils ne remplace pas l'observation du
+    premier ;
+  - **(révision 4)** la session lit `a`, `a` est supprimé ailleurs, la
+    réécriture échoue en conflit, la relecture répond « introuvable », puis la
+    recréation en `MustNotExist` réussit.
+- **Relevé des ressources exécutables** : un concept dont l'attester est absent,
+  `Unsafe`, illisible, de plus de 16 Mio ou une URL est **chargé**, validé et
+  lisible. Son exécution est refusée en nommant l'état. Aucune lecture n'est
+  tentée pour une URL.
+- **Frontière de confinement** : la racine d'une source de catalogue est
+  remplacée par une jonction **après** le chargement, sans rafraîchissement
+  (politique `Manual`). Une lecture de ressource différée, un `GetVersion` et
+  une écriture sont alors tous refusés.
+- **Réutilisation des handles** : une source dont seul `path` change obtient un
+  nouveau handle, qui sert le nouveau contenu ; une source inchangée garde le
+  sien.
+- **Arborescence à l'écriture** : sur un filesystem sensible à la casse dont
+  l'image contient `A/x.md`, la création de `a/y.md` est refusée sous `Strict`.
+  La création de `a.md/b.md` quand `a.md` existe l'est aussi.
+- **`Synthesize`** : sous Windows, la surcharge `string` reçoit toujours
+  `relativeDir = a\b`, et la surcharge provider `a/b`.
 - **Dossiers vides** : un dossier vide n'apparaît plus dans l'index régénéré ; un
   dossier qui ne contient que des fichiers non-`.md` y apparaît toujours.
 - **Bornes** : un `index.md` racine de plus de 16 Mio donne `okf_version` nul,
@@ -890,7 +1083,8 @@ l'arbitrage du 2026-10-08).
 - **Catalogue** : deux requêtes successives sur une source inchangée réutilisent
   la même image ; une modification du bundle est vue à la requête suivante
   (`OnAccess`) ; une racine de source remplacée par une jonction après la
-  création du handle est refusée au chargement suivant.
+  création du handle est refusée **au prochain accès**, quel qu'il soit (voir
+  « Frontière de confinement » plus haut).
 - **Immuabilité** : l'audit des sites qui modifient un document chargé est
   livré ; aucun d'eux ne modifie une image partagée.
 - **Concurrence** : le test concurrent de #131 reste vert de façon répétée (s'il
@@ -981,6 +1175,25 @@ Ajoutés par la révision 3 :
 21. **Préfixe `_` pour un nom réservé dans une clé mémoire**, plutôt qu'un autre
     échappement.
 
+Ajoutés par la révision 4 :
+
+22. **Trois finalités d'observation** (concept complet, code, absent), avec ce
+    que chacune autorise, plutôt qu'une observation unique.
+23. **Les méthodes publiques `ReadConcept`/`GetComputation` n'enregistrent
+    rien** : seules les fonctions exposées au modèle le font. Un hôte qui
+    présente lui-même un résultat n'obtient donc aucun droit d'agir.
+24. **Borne du registre : 10 000 clés**, avec éviction des moins récemment
+    utilisées, et refus de l'action après éviction.
+25. **Frontière de confinement seulement quand elle est fournie** : une racine
+    passée directement par l'hôte reste de la configuration fiable, sans
+    revérification à chaque accès.
+26. **Vérification de l'arborescence avant création seulement**, en énumérant
+    les préfixes parents chez le provider, et non avant chaque écriture d'un
+    objet existant, qui ne change pas l'arborescence.
+27. **Les états du relevé des ressources exécutables** (`Pinned`, `Url`,
+    `Unsafe`, `Missing`, `Unreadable`, `TooLarge`), avec un concept toujours
+    chargé et une exécution refusée hors `Pinned`.
+
 ## Risques et limites
 
 - **Taille du changement.** Il touche l'API publique du cœur et tous ses
@@ -993,7 +1206,8 @@ Ajoutés par la révision 3 :
 - **« Lire avant d'agir » change l'usage des outils** : un modèle qui réécrivait
   un concept ou exécutait une computation sans les lire d'abord se voit refuser
   l'action, et doit faire un appel de plus. Les messages de refus disent
-  lequel.
+  lequel. C'est aussi vrai pour un concept que `OkfContextProvider` avait déjà
+  injecté en entier (D5), et après l'éviction d'une entrée du registre.
 - **Jeton de version faible sur le filesystem** : une modification peut échapper
   au rafraîchissement jusqu'à la suivante (§8). C'est sans perte de données ;
   l'épinglage du code exécuté n'en dépend plus.
