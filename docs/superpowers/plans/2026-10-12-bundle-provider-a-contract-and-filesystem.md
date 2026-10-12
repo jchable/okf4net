@@ -4,7 +4,7 @@
 
 **Goal:** Put the `IBundleProvider` seam under `Bundle` and load a bundle through it, with the filesystem as the first — read-only, in this lot — provider, so that every later lot (writer, handles/observations, catalog) builds on a contract that already carries a bundle end to end with the golden suite untouched.
 
-**Architecture:** New types live under `src/OKF4net/Providers/` (keys and their three-layer validation, the contract and its value types, the filesystem provider, the §6.2 resolver on keys). `Bundle.Load(IBundleProvider, BundleLoadOptions?)` becomes the real loader; `Bundle.Load(string)` is a thin overload over `FileSystemBundleProvider`. Every existing public member is **kept** in this lot (`Concept.Path`, `Bundle.Root`, `ParseErrors`, `TryResolveResource`, `ReadResourceText(string)`): new members are added beside them (`Concept.Key`, `Bundle.Provider`/`Location`/`Version`/`ParseProblems`, `TryResolveResourceKey`, `ReadResourceText(BundleKey)`), and the historical ones are computed from the new ones by the display rule, so the CLI's bytes do not move. The breaking removals are lot D.
+**Architecture:** New types live under `src/OKF4net/Providers/` (keys and their three-layer validation, the contract and its value types, the filesystem provider, the §6.2 resolver on keys). `Bundle.Load(IBundleProvider, BundleLoadOptions?)` becomes the real loader; `Bundle.Load(string)` is a thin overload over `FileSystemBundleProvider`. Every existing public member is **kept** in this lot (`Concept.Path`, `Bundle.Root`, `ParseErrors`, `TryResolveResource`, `ReadResourceText(string)`, the three-parameter `Concept` constructor and its `Deconstruct`): new members are added beside them (`Concept.Key`, `Bundle.Provider`/`Location`/`Version`/`ParseProblems`, `TryResolveResourceKey`, `ReadResourceText(BundleKey)`), and the historical ones are computed from the new ones by the display rule, so the CLI's bytes do not move. The breaking removals are lot D.
 
 **Tech Stack:** C# 14 / .NET 10, BCL only in `src/OKF4net` (zero `PackageReference`), xunit + `Xunit.SkippableFact` in `tests/OKF4net.Tests`.
 
@@ -21,50 +21,59 @@ The spec is one design but four sequential deliveries; each later lot assumes th
 | **C** | `BundleHandle`, refresh policies, reload obligation, observations registry and purposes (D1, D5), `okf_run_computation` capture and pinning, executable-resource survey states, D6, `OkfBundleTools`/`OkfContextProvider` on handles | §5, §9 (agents, attestation) | after B |
 | **D** | Catalog (snapshot owns handles, provider factories, `MemoryDeleteResult` replaced), Viewer, `okf-mcp` discovery bound, `BundleRoot` obsolete, breaking removals (`Concept.Path`, `Bundle.Root`, `Diagnostic.Path`, `AuditFinding.Path`, …), spec-conformance entry for D6, CHANGELOG consolidation, README/CLAUDE.md (#143) | §9 (catalog, viewer, CLI/MCP), §10 (breaking list) | after C |
 
-Lot A is additive on the public API and changes behaviour only where §10 of the spec already announces it: finite default bounds, `Strict` key policy (tree included), exact-case matching, `\` in a §6.2 path → `Unsafe`. It does **not** touch the write path: `BundleConceptWriter` and `IndexGenerator` keep their direct `File.*` code until lot B.
+Lot A is additive on the public API and changes behaviour only where §10 of the spec already announces it: finite default bounds, `Strict` key policy (tree included), exact-case matching, `\` in a §6.2 path → `Unsafe`, provider I/O errors translated. It does **not** touch the write path: `BundleConceptWriter` and `IndexGenerator` keep their direct `File.*` code until lot B — "read-only provider" never meant "read-only library".
 
 ## Revision history
 
-- **r1 (2026-10-12)** — first version, written from spec revision 6.
+- **r1 (2026-10-12)** — first version, written from spec revision 6, commit `cffa636`.
+- **r2 (2026-10-12)** — after an external review that **executed** r1's tasks 1–6 on Windows and left seven tests red plus four exploitable gaps (evidence: the review's `okf-plan-evidence-cffa636` directory). Everything it found is fixed here:
+  - **Blocking.** `Enumerate` bypassed the guards `Read` applied: a junction prefix was walkable, and because the walk was lazy, the confinement check ran at call time, not at access time (Task 4: prefix guarded STRICTly, boundary re-checked at every directory listing). The core did not enforce the entry/depth/key bounds itself — `Load` did `.ToList()` and trusted the provider (Task 6: the listing is streamed and bounded in the core; a deliberately disobedient fake provider pins it). Objects the tree validation excluded stayed reachable through `TryResolveResourceKey` and `ComputeOkfVersion` (Task 6: rejected keys are kept and honoured). The `nativeConstraints` constructor parameter could weaken the native floor and switch exact-case matching off (Task 4: it can only add, and exact-case follows the OS).
+  - **Important.** A fourth positional `Concept` parameter removed the three-parameter CLR constructor and `Deconstruct` (Task 6: `Key` is a non-positional `init` property). Provider I/O messages reached callers raw, host paths included (Task 6: library-authored messages, raw detail as `InnerException`). The walk yielded files in reverse order; the `"."` resolver row was wrong; a test fixture was 79 bytes against a 64-byte bound; four existing tests needed migration (Tasks 4, 5, 6, 7). Two XML `cref`s did not compile (Tasks 1, 6).
+  - **NFC.** The review proved that `string.Normalize` is a silent no-op under `InvariantGlobalization` *and* that r1's fail-closed rule (refuse every non-ASCII segment) broke a real use: an ASCII concept referencing `café.sql`, already NFC, was refused by the AOT `okf`. Maintainer ruling (2026-10-12): **a table-free NFC quick check** — two tiny range tables (`NFC_QC=No`, derived `Maybe`), always used, never `Normalize`, with an exhaustive ICU cross-check test on hosts where normalization works. The residual (two non-composing marks in the wrong canonical order, canonically equivalent to the ordered form) is accepted and documented; closing it would reject common Thai/Lao/Tibetan names and push hosts off `Strict`. `BundleKeyValidator.NormalizationAvailable` is gone. (Task 2.)
+  - Layer 1's control-character rule now matches the spec's stated ranges exactly (U+0000–U+001F, U+007F–U+009F) with its own predicate; r1 routed through `LineSafeText.ContainsControlCharacter`, which also counts U+2028/U+2029, and that silently dropped two existing tests' `sub\u2028dir/log.md` fixtures (Task 1).
 
 ## Global Constraints
 
 - **Branch and worktree.** Execute in a dedicated worktree on branch `feat/bundle-provider-a`, created from `origin/dev` **after** the spec + plan docs PR (`docs/bundle-provider-spec`) is merged into `dev`, or rebased on it. Never work in `E:\Sources\okf` (shared checkout; `dev` is checked out there). To start from `dev`: `git worktree add .claude/worktrees/bundle-provider-a -b feat/bundle-provider-a origin/dev`. Never `git checkout dev`.
-- **Zero third-party runtime dependencies in `src/OKF4net`** — BCL only. No P/Invoke. No new `PackageReference` anywhere in `src/`.
-- New source files start with `// SPDX-License-Identifier: LGPL-3.0-or-later`. File-scoped namespaces, XML doc on every public member (the build treats missing docs as errors), nullable on, `TreatWarningsAsErrors`, LangVersion 14.
-- **Source files are CRLF in the working tree.** `Write` produces LF; after every `Write`/`Edit` of a `.cs` file, normalise with `unix2dos` or `sed -i 's/$/\r/'` on a **fresh LF file only** — never on a file that already has CR (it would double them). Before each commit: `tr -cd '\r' < f | wc -c` equals `wc -l < f` for every touched `.cs` file. Markdown files (`CHANGELOG.md`, plans, specs) are LF.
+- **Zero third-party runtime dependencies in `src/OKF4net`** — BCL only. No P/Invoke. No new `PackageReference` anywhere in `src/`. `InvariantGlobalization` stays on in `OKF4net.Cli` and `OKF4net.Render` (turning it off would make the Native AOT `okf` require libicu at run time on Linux).
+- New source files start with `// SPDX-License-Identifier: LGPL-3.0-or-later`. File-scoped namespaces, XML doc on every public member (the build treats missing docs as errors), nullable on, `TreatWarningsAsErrors`, LangVersion 14. **An XML `cref` may only name a type that exists at that task** (r1 broke the build twice this way); use `<c>…</c>` for a type a later task adds.
+- **Source files are CRLF in the working tree.** `Write` produces LF; after every `Write`/`Edit` of a `.cs` file, normalise with `unix2dos` or `sed -i 's/$/\r/'` on a **fresh LF file only** — never on a file that already has CR. Before each commit: `tr -cd '\r' < f | wc -c` equals `wc -l < f` for every touched `.cs` file. Markdown files are LF.
 - **`tests/fixtures/` is never edited and no snapshot is regenerated.** If a golden comparison turns red, STOP and report: lot A promises byte-identical CLI output.
-- **Path-safety guards use the STRICT predicates** (`ReparsePoints.IsReparsePointOrUninspectable`, `HasReparsePointOrUninspectableAncestor`); enumeration walks use the lenient pair, and this lot adds exactly **one** lenient site (the provider's walk), which replaces `Bundle.CollectMarkdown` — update the count in `CLAUDE.md` in Task 8.
+- **Path-safety guards use the STRICT predicates** (`ReparsePoints.IsReparsePointOrUninspectable`, `HasReparsePointOrUninspectableAncestor`); enumeration walks use the lenient pair, and this lot adds exactly **one** lenient site (the provider's walk), which replaces `Bundle.CollectMarkdown` — update the count in `CLAUDE.md` in Task 8. A guard runs **at the moment of the access**, never only when an enumerable is created.
 - **Keys are never percent-decoded** and a URL in a §6.2 field is **never** dereferenced.
-- **Bounds, policy and constraints are enforced in the core** (`Bundle.Load`), reading provider streams with byte counting; the provider enforces the same bounds on its own walks (`GetVersion`, `Enumerate`).
-- **NFC under invariant globalization fails closed.** `okf` and `okf-render` are published with `InvariantGlobalization`, under which `string.Normalize(NormalizationForm.FormC)` is a silent no-op (`"e\u0301".Normalize(FormC).Length == 2`, `IsNormalized` returns `true` — measured 2026-10-12 on .NET 10). The validator therefore detects whether normalization works once (`BundleKeyValidator.NormalizationAvailable`) and, when it does not, **rejects every non-ASCII segment under a constraint set that requires NFC**, with a reason that says why. It never pretends to have normalised. (Author's decision while writing this plan — flagged for the maintainer; see "Decisions taken by this plan".)
-- `Bundle.Load` stays permissive (§11): a per-resource or per-concept problem goes to `ParseProblems`; only the global failures of §6 (entry bound, depth, provider I/O error) throw `BundleLoadException`.
-- Each task adds its own `CHANGELOG.md` entry under `## [Unreleased]` (`### Added` for new API, `### Changed` for behaviour changes, prefixed **Breaking (0.x)** only when something public is removed or changes shape — nothing in this lot is), describing behaviour, not commits.
+- **Bounds, policy and constraints are enforced in the core** (`Bundle.Load`) while the listing is consumed — never after a `.ToList()` — and the core reads provider streams with byte counting; the provider enforces the same bounds on its own walks (`GetVersion`, `Enumerate`), counting every entry it inspects, skipped reparse points included, before sorting.
+- **NFC is checked by the quick-check tables, never by `string.Normalize`**, so the library and the AOT binaries give one answer. The tables are generated from ICU on the test host (Task 2 ships the generator) and guarded by an exhaustive cross-check test that runs wherever normalization works.
+- **Provider errors are translated at the core boundary** (§7): a `BundleLoadException` or `IOException` leaving `Bundle` carries a library-authored message naming the key and the exception type; the raw exception is the `InnerException`, which is the host-log channel.
+- `Bundle.Load` stays permissive (§11): a per-resource or per-concept problem goes to `ParseProblems`; only the global failures of §6 (entry bound, depth, provider I/O error, access refused) throw `BundleLoadException`.
+- Each task adds its own `CHANGELOG.md` entry under `## [Unreleased]` (`### Added` for new API, `### Changed` for behaviour changes; nothing in this lot is **Breaking**), describing behaviour, not commits.
 - Commit messages say only what the code actually does. End each with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`. Never `git add -A`. Do not push.
-- Run tests with `dotnet test OKF4net.sln --filter "Category!=ContainerIntegration"` unless a task says otherwise; `ContainerIntegration` tests need Docker and are out of CI by decision.
+- Run tests with `dotnet test OKF4net.sln --filter "Category!=ContainerIntegration"`; `ContainerIntegration` tests need Docker and are out of CI by decision. Run the `Providers` tests at least once as an account that can create symlinks and junctions (Developer Mode on Windows) and confirm **0 skipped**: the review's junction probes found what the skipped symlink tests could not.
 
 ## Decisions taken by this plan (not in the spec — for the maintainer to confirm)
 
-1. **Read-time version mismatch has its own exception.** The spec names `BundleWriteConflictException` for a failed write condition; a `Read(key, expected)` whose `expected` no longer matches is not a write. This plan adds `BundleVersionMismatchException : OkfException` for reads and keeps `BundleWriteConflictException` for writes (lot B). Both derive from a common `BundleProviderException : OkfException`.
-2. **NFC fails closed under invariant globalization** (see Global Constraints).
-3. **The filesystem provider is read-only in this lot** (`CanWrite = false`, `Write`/`Delete` throw `BundleReadOnlyException`). This is a declared capability per §3, not a placeholder: lot B flips it with the atomic commit protocol from #157.
-4. **`Concept.Path` is computed by the display rule** (`Location` + OS separator + key segments) rather than kept from the walk. For the filesystem provider the two are byte-identical (`Path.Combine(root, …)` is exactly that rule); Task 7's Windows test pins it.
-5. **`ParseErrors` stays `IReadOnlyList<(string Path, string Error)>`** and is projected from the new `ParseProblems` (`IReadOnlyList<BundleParseError>`); a rejected raw name (no key) projects its `Path` as `Location` + separator + the raw name passed through `DebugQuote.Quote`, since no existing output can contain one (no fixture has an invalid name).
-6. **Layer-1 control-character range** is U+0000–U+001F and U+007F–U+009F, checked per UTF-16 code unit (no surrogate in that range, so this is exact).
-7. **`BundleLimits.MaxDepth` counts key segments** (a key `a/b/c.md` has depth 3); the directory depth of the spec (64) is the same number for the filesystem.
+1. **Read-time version mismatch has its own exception.** `BundleVersionMismatchException` for a `Read(key, expected)` whose version moved; `BundleWriteConflictException` stays for writes (lot B). Both derive from `BundleProviderException : OkfException`.
+2. **NFC by quick-check tables** (maintainer ruling 2026-10-12, see Revision history): `NfcQuickCheck.No` and `NfcQuickCheck.Maybe` as `(int Start, int End)` ranges; a segment containing a `No` character is refused ("never in NFC"), one containing a `Maybe` character is refused ("cannot be decided without composition tables") — the derived `Maybe` set is the set of marks that actually recompose with some base, tighter than UCD's; the reorder residual is accepted. Over-rejection: a standalone composing mark on a base it does not compose with (`q\u0323`); rare in names, documented.
+3. **The filesystem provider is read-only in this lot** (`CanWrite = false`): a declared capability per §3, not a placeholder; lot B flips it with #157's commit protocol.
+4. **`Concept.Path` is computed by the display rule** (`BundleDisplayPath.Compose(Location, key)` = `Path.Combine(root, …)`), byte-identical to today for the filesystem; Task 7 pins it unnormalised on Windows.
+5. **`Concept.Key` is a non-positional `init` property**, so the three-parameter constructor and `Deconstruct` are unchanged (r1's optional fourth positional parameter removed both at the CLR level).
+6. **`ParseErrors` stays `IReadOnlyList<(string Path, string Error)>`**, projected from `ParseProblems`; a rejected raw name projects as `Location` + separator + `DebugQuote.Quote(raw)`.
+7. **Layer-1 control characters** are exactly U+0000–U+001F and U+007F–U+009F, per UTF-16 code unit, with the validator's own predicate; U+2028/U+2029/U+000C are *not* rejected (they are not in the spec's ranges, and existing tests legitimately put U+2028 in a directory name).
+8. **`BundleLimits.MaxDepth` counts key segments** (`a/b/c.md` has depth 3).
+9. **`additionalConstraints`, not `nativeConstraints`**: the filesystem provider's constructor can only add flags to the OS-derived set, never replace it; exact-case matching is decided by the OS (Windows, macOS), not by a flag.
+10. **`"."` and `"./"` resolve to the concept's own prefix** (`Candidate`, then `Missing` since no object has that key) rather than `Unsafe`: lexically they name a prefix, and nothing about them escapes the bundle. `"../"` from a top-level concept, `"/"` and `""` resolve to the root and stay `Unsafe`.
+11. **Tree-rejected keys are remembered by the bundle** and answer `Unsafe` to `TryResolveResourceKey`, even though `Exists` would say yes; a key absent from the listing altogether (appeared after load) is checked live, as `TryResolveResource` does today.
 
 ## Review Focus
 
 Inputs the spec implies but no task's tests exercise directly, each pinned to the owning task:
 
 1. **A `.md` whose stem is a reserved name only once lower-cased** (`Con.md`, `lPt¹.md`): Windows reserves them case-insensitively — Task 2 tests `Con.md` and `lpt¹.md`.
-2. **A directory named `index.md` or `log.md`** (reserved filename used as a directory): today `CollectMarkdown` descends into it; through keys it is a prefix, and a file under it is a concept whose id contains `index.md` as a segment, which `ConceptId.ValidateSegment` accepts — Task 6 pins that the loader classifies by **last segment of a file key only** and that `tables/index.md/x.md` becomes a concept `tables/index.md/x`, as today.
-3. **A key exactly at 1 024 UTF-8 bytes vs 1 025** — Task 1 tests both edges.
-4. **A root that is itself a symlink** (the bundle root is a reparse point): today `Bundle.Load` follows it (it only checks `Directory.Exists`). The provider must keep that — Task 4 pins that a symlinked root loads, while a symlinked **entry** is skipped, and a boundary that is given makes the root's own reparse status STRICT.
-5. **A provider that enumerates the same raw name twice** (a buggy backend): the tree validator must not crash and must report it — Task 2 tests duplicate raw names.
+2. **A directory named `index.md` or `log.md`**: through keys it is a prefix, and `tables/index.md/x.md` is a concept `tables/index.md/x`, as today — Task 6 pins it.
+3. **A key exactly at 1 024 UTF-8 bytes vs 1 025** — Task 1 tests both edges; Task 6 tests a lower `limits.MaxKeyBytes` enforced by the core.
+4. **A root that is itself a symlink**: loads without a boundary, refused with one — Task 4.
+5. **A provider that enumerates the same raw name twice**, or that ignores every bound — Task 2 (duplicates) and Task 6 (the disobedient provider).
 
 ---
-
 ### Task 1: `BundleKey` — layer-1 (base) validation
 
 **Files:**
@@ -72,8 +81,8 @@ Inputs the spec implies but no task's tests exercise directly, each pinned to th
 - Test: `tests/OKF4net.Tests/Providers/BundleKeyTests.cs`
 
 **Interfaces:**
-- Consumes: `OKF4net.Internal.LineSafeText.ContainsControlCharacter(string)` (exists; checks U+0000–U+001F and U+007F–U+009F) and `OKF4net.Internal.MarkdownPaths.HasMarkdownExtension(string)`.
-- Produces: `public sealed class BundleKey : IEquatable<BundleKey>, IComparable<BundleKey>` with `IReadOnlyList<string> Segments`, `string Name`, `BundleKey? Parent`, `bool IsMarkdown`, `string ToString()` (segments joined by `/`), `static bool TryParse(string raw, out BundleKey? key, out string? reason)`, `static BundleKey Parse(string raw)` (throws `BundleKeyException`), `BundleKey Append(string segment)`, `bool StartsWith(BundleKey prefix)` (segment-bounded), `static BundleKey FromSegments(IReadOnlyList<string>)`, `const int MaxUtf8Bytes = 1024`. Also `public sealed class BundleKeyException : OkfException`. Ordinal, case-sensitive equality and ordering.
+- Consumes: `OKF4net.Internal.MarkdownPaths.HasMarkdownExtension(string)`. (Not `LineSafeText.ContainsControlCharacter`: it also counts U+2028/U+2029, which the spec's layer 1 does not reject — decision 7.)
+- Produces: `public sealed class BundleKey : IEquatable<BundleKey>, IComparable<BundleKey>` with `IReadOnlyList<string> Segments`, `string Name`, `BundleKey? Parent`, `bool IsMarkdown`, `string ToString()` (segments joined by `/`), `static bool TryParse(string raw, out BundleKey? key, out string? reason)`, `static BundleKey Parse(string raw)` (throws `BundleKeyException`), `BundleKey Append(string segment)`, `bool StartsWith(BundleKey prefix)` (segment-bounded), `static BundleKey FromSegments(IReadOnlyList<string>)`, `const int MaxUtf8Bytes = 1024`, `int Utf8ByteCount`. Also `public sealed class BundleKeyException : OkfException`. Ordinal, case-sensitive equality and ordering.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -89,8 +98,10 @@ public class BundleKeyTests
     [InlineData("a.md", new[] { "a.md" })]
     [InlineData("tables/orders.md", new[] { "tables", "orders.md" })]
     [InlineData("a/b/c", new[] { "a", "b", "c" })]
-    [InlineData("%2e%2e/x.md", new[] { "%2e%2e", "x.md" })] // never percent-decoded
+    [InlineData("%2e%2e/x.md", new[] { "%2e%2e", "x.md" })]           // never percent-decoded
     [InlineData("tables/index.md/x.md", new[] { "tables", "index.md", "x.md" })]
+    [InlineData("sub dir/log.md", new[] { "sub dir", "log.md" })] // U+2028 is a separator, not a control: layer 1 keeps it (decision 7)
+    [InlineData("café.md", new[] { "café.md" })]
     public void Parses_valid_keys_into_segments(string raw, string[] segments)
     {
         Assert.True(BundleKey.TryParse(raw, out var key, out var reason), reason);
@@ -110,6 +121,7 @@ public class BundleKeyTests
     [InlineData("a\u001f.md", "control")]
     [InlineData("a\u007f.md", "control")]
     [InlineData("a\u0085.md", "control")]
+    [InlineData("a\u009f.md", "control")]
     public void Rejects_base_rule_violations(string raw, string reasonFragment)
     {
         Assert.False(BundleKey.TryParse(raw, out var key, out var reason));
@@ -121,7 +133,8 @@ public class BundleKeyTests
     public void Length_bound_is_1024_utf8_bytes_inclusive()
     {
         var ascii1024 = new string('a', 1021) + ".md"; // 1024 bytes
-        Assert.True(BundleKey.TryParse(ascii1024, out _, out _));
+        Assert.True(BundleKey.TryParse(ascii1024, out var key, out _));
+        Assert.Equal(1024, key!.Utf8ByteCount);
         var ascii1025 = new string('a', 1022) + ".md";
         Assert.False(BundleKey.TryParse(ascii1025, out _, out var reason));
         Assert.Contains("1024", reason);
@@ -183,7 +196,7 @@ public sealed class BundleKeyException(string message) : OkfException(message)
 /// A validated, provider-independent object key inside a bundle: <c>/</c>-separated
 /// segments, compared ordinally and case-sensitively, never percent-decoded.
 /// This type carries only the base rules (spec §2, layer 1); the storage-specific
-/// constraints and the portability policy live in <see cref="BundleKeyValidator"/>.
+/// constraints and the portability policy live in <c>BundleKeyValidator</c>.
 /// </summary>
 public sealed class BundleKey : IEquatable<BundleKey>, IComparable<BundleKey>
 {
@@ -192,20 +205,24 @@ public sealed class BundleKey : IEquatable<BundleKey>, IComparable<BundleKey>
 
     private readonly string _text;
 
-    private BundleKey(List<string> segments)
+    private BundleKey(List<string> segments, int utf8ByteCount)
     {
         Segments = new ReadOnlyCollection<string>(segments);
         _text = string.Join('/', segments);
+        Utf8ByteCount = utf8ByteCount;
     }
 
     /// <summary>The key's segments, in order; never empty.</summary>
     public IReadOnlyList<string> Segments { get; }
 
+    /// <summary>The key's length in UTF-8 bytes (the unit of <see cref="MaxUtf8Bytes"/> and of a host's <c>BundleLimits.MaxKeyBytes</c>).</summary>
+    public int Utf8ByteCount { get; }
+
     /// <summary>The last segment.</summary>
     public string Name => Segments[^1];
 
     /// <summary>The key without its last segment, or <see langword="null"/> for a top-level key.</summary>
-    public BundleKey? Parent => Segments.Count <= 1 ? null : new BundleKey(Segments.Take(Segments.Count - 1).ToList());
+    public BundleKey? Parent => Segments.Count <= 1 ? null : Parse(string.Join('/', Segments.Take(Segments.Count - 1)));
 
     /// <summary><see langword="true"/> when the last segment ends with <c>.md</c> (ordinal, like <c>MarkdownPaths</c>).</summary>
     public bool IsMarkdown => MarkdownPaths.HasMarkdownExtension(Name);
@@ -224,8 +241,9 @@ public sealed class BundleKey : IEquatable<BundleKey>, IComparable<BundleKey>
     /// <summary>
     /// Parses a raw name against the base rules: non-empty, no leading or trailing
     /// <c>/</c>, no empty, <c>.</c> or <c>..</c> segment, no backslash, no control
-    /// character (U+0000–U+001F, U+007F–U+009F), at most <see cref="MaxUtf8Bytes"/> bytes
-    /// in UTF-8. The text is taken literally: <c>%2e%2e</c> is a name, not <c>..</c>.
+    /// character (U+0000–U+001F, U+007F–U+009F — exactly those; U+2028 and friends are
+    /// separators and stay), at most <see cref="MaxUtf8Bytes"/> bytes in UTF-8. The text is
+    /// taken literally: <c>%2e%2e</c> is a name, not <c>..</c>.
     /// </summary>
     public static bool TryParse(string raw, [NotNullWhen(true)] out BundleKey? key, [NotNullWhen(false)] out string? reason)
     {
@@ -256,13 +274,17 @@ public sealed class BundleKey : IEquatable<BundleKey>, IComparable<BundleKey>
             return false;
         }
 
-        if (LineSafeText.ContainsControlCharacter(raw))
+        foreach (var c in raw)
         {
-            reason = "key contains a control character";
-            return false;
+            if (c <= '\u001f' || (c >= '\u007f' && c <= '\u009f'))
+            {
+                reason = $"key contains the control character U+{(int)c:X4}";
+                return false;
+            }
         }
 
-        if (Encoding.UTF8.GetByteCount(raw) > MaxUtf8Bytes)
+        var bytes = Encoding.UTF8.GetByteCount(raw);
+        if (bytes > MaxUtf8Bytes)
         {
             reason = $"key is longer than {MaxUtf8Bytes} UTF-8 bytes";
             return false;
@@ -290,7 +312,7 @@ public sealed class BundleKey : IEquatable<BundleKey>, IComparable<BundleKey>
             }
         }
 
-        key = new BundleKey(segments.ToList());
+        key = new BundleKey(segments.ToList(), bytes);
         reason = null;
         return true;
     }
@@ -344,12 +366,12 @@ public sealed class BundleKey : IEquatable<BundleKey>, IComparable<BundleKey>
 }
 ```
 
-`LineSafeText.ContainsControlCharacter` is `internal` in `OKF4net.Internal`: same assembly, no change needed. Create `src/OKF4net/Providers/` and `tests/OKF4net.Tests/Providers/`; convert both new files to CRLF.
+Create `src/OKF4net/Providers/` and `tests/OKF4net.Tests/Providers/`; convert both new files to CRLF.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet test OKF4net.sln --filter "FullyQualifiedName~BundleKeyTests"`
-Expected: 5 test methods, 20 cases, all green.
+Expected: 5 test methods, 22 cases, all green; the build has no warning (the only `cref`s name `BundleKey` and `BundleKeyException`).
 
 - [ ] **Step 5: Commit**
 
@@ -362,23 +384,157 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 ```
 
-### Task 2: `BundleKeyConstraints`, `BundleKeyPolicy` and `BundleKeyValidator` — layers 2 and 3, tree validation
+### Task 2: `BundleKeyConstraints`, `BundleKeyPolicy`, the NFC quick check and `BundleKeyValidator` — layers 2 and 3, tree validation
 
 **Files:**
 - Create: `src/OKF4net/Providers/BundleKeyConstraints.cs`
+- Create: `src/OKF4net/Providers/NfcQuickCheck.cs`
 - Create: `src/OKF4net/Providers/BundleKeyValidator.cs`
+- Test: `tests/OKF4net.Tests/Providers/NfcQuickCheckTableTests.cs` (the generator **and** the guard of the tables)
 - Test: `tests/OKF4net.Tests/Providers/BundleKeyValidatorTests.cs`
 
 **Interfaces:**
-- Consumes: `BundleKey` (Task 1); `OKF4net.Internal.UnicodeCaseFold.ToLowercase(string)` (exists; simple case folding without culture).
+- Consumes: `BundleKey` (Task 1); `OKF4net.Internal.UnicodeCaseFold.ToLowercase(string)` (exists; culture-free simple case folding); `System.Text.Rune`.
 - Produces:
-  - `[Flags] public enum BundleKeyConstraints` with `None`, `TrailingDotOrSpace`, `WindowsIllegalCharacters`, `WindowsReservedNames`, `CaseInsensitiveCollisions`, `RequireNfc`, `UnicodeFormCollisions`, `FileDirectoryConflict`; static helpers on `BundleKeyConstraintSets`: `Windows`, `MacOS`, `Linux`, `Strict` (= union of all), `ForCurrentOperatingSystem()`.
+  - `[Flags] public enum BundleKeyConstraints` with `None`, `TrailingDotOrSpace`, `WindowsIllegalCharacters`, `WindowsReservedNames`, `CaseInsensitiveCollisions`, `RequireNfc`, `UnicodeFormCollisions`, `FileDirectoryConflict`; `public static class BundleKeyConstraintSets` with `Windows`, `MacOS`, `Linux`, `Strict`, `ForCurrentOperatingSystem()`.
   - `public enum BundleKeyPolicy { Strict, Native }`.
-  - `public sealed record BundleKeyRejection(string RawName, string Reason)`.
-  - `public sealed class BundleKeyValidator` with ctor `(BundleKeyConstraints native, BundleKeyPolicy policy, IReadOnlyList<Func<BundleKey, string?>>? extraValidators = null)`, property `BundleKeyConstraints Effective` (`Strict` → `BundleKeyConstraintSets.Strict | native`; `Native` → `native`), `static bool NormalizationAvailable`, `string? CheckKey(BundleKey key)` (segment rules of the effective constraints; `null` = accepted), and `BundleKeyTreeResult ValidateTree(IEnumerable<string> rawNames)`.
-  - `public sealed record BundleKeyTreeResult(IReadOnlyList<BundleKey> Accepted, IReadOnlyList<BundleKeyRejection> Rejected)`.
+  - `internal static class NfcQuickCheck` with `(int Start, int End)[] No`, `(int Start, int End)[] Maybe`, `enum NfcStatus { Yes, No, Maybe }`, `NfcStatus Of(Rune)`. Never calls `string.Normalize`.
+  - `public sealed record BundleKeyRejection(string RawName, string Reason)`; `public sealed record BundleKeyTreeResult(IReadOnlyList<BundleKey> Accepted, IReadOnlyList<BundleKeyRejection> Rejected)`.
+  - `public sealed class BundleKeyValidator` with ctor `(BundleKeyConstraints native, BundleKeyPolicy policy, IReadOnlyList<Func<BundleKey, string?>>? extraValidators = null)`, `BundleKeyConstraints Effective`, `string? CheckKey(BundleKey)`, `BundleKeyTreeResult ValidateTree(IEnumerable<string> rawNames)`.
 
-- [ ] **Step 1: Write the failing tests**
+**Why a quick check and not `Normalize` (decision 2):** under `InvariantGlobalization` (`okf`, `okf-render`) `string.Normalize(FormC)` returns its input unchanged and `IsNormalized` answers `true` — measured on .NET 10. UAX #15 §9's quick check needs only two sets: characters that are never in NFC (`NFC_QC=No`: singleton and non-starter decompositions, ≈ 1 100 code points in a few dozen ranges) and marks that can compose with a preceding base (`Maybe`). A segment with neither is NFC, up to the ordering of non-composing marks, which this plan accepts as the documented residual. Both sets are **derived from ICU on the test host** by the test in Step 1, which prints the C# literal to paste on first run and then guards the pasted tables forever.
+
+- [ ] **Step 1: Write the table test, which is also the generator**
+
+```csharp
+// SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Text;
+using OKF4net.Providers;
+
+namespace OKF4net.Tests.Providers;
+
+/// <summary>
+/// Derives the NFC quick-check sets from the host's ICU and compares them with
+/// <see cref="NfcQuickCheck"/>'s tables. Runs only where normalization works
+/// (never under invariant globalization). On a mismatch — first run with empty
+/// tables, or a host ICU with a newer Unicode than the tables — the failure
+/// message carries the exact C# literals to paste into NfcQuickCheck.cs.
+/// </summary>
+public class NfcQuickCheckTableTests
+{
+    private static bool NormalizationWorks => "é".Normalize(NormalizationForm.FormC).Length == 1;
+
+    /// <summary>
+    /// No = { c : NFC(c) != c }. Maybe = the last character of every direct canonical
+    /// pair that recomposes, walked from each primary composite's full decomposition
+    /// (head = NFC(all but last); while the head is one character, the last is a
+    /// composing second element; then recurse on the head).
+    /// </summary>
+    internal static (SortedSet<int> No, SortedSet<int> Maybe) Derive()
+    {
+        var no = new SortedSet<int>();
+        var maybe = new SortedSet<int>();
+        for (var cp = 0; cp <= 0x10FFFF; cp++)
+        {
+            if (cp is >= 0xD800 and <= 0xDFFF)
+            {
+                continue;
+            }
+
+            var s = new Rune(cp).ToString();
+            if (!string.Equals(s.Normalize(NormalizationForm.FormC), s, StringComparison.Ordinal))
+            {
+                no.Add(cp);
+            }
+
+            var seq = s.Normalize(NormalizationForm.FormD).EnumerateRunes().ToList();
+            if (seq.Count < 2 || !string.Equals(string.Concat(seq).Normalize(NormalizationForm.FormC), s, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            while (seq.Count >= 2)
+            {
+                var head = string.Concat(seq.Take(seq.Count - 1)).Normalize(NormalizationForm.FormC).EnumerateRunes().ToList();
+                if (head.Count != 1)
+                {
+                    break;
+                }
+
+                maybe.Add(seq[^1].Value);
+                seq = head[0].ToString().Normalize(NormalizationForm.FormD).EnumerateRunes().ToList();
+            }
+        }
+
+        return (no, maybe);
+    }
+
+    internal static List<(int Start, int End)> ToRanges(SortedSet<int> set)
+    {
+        var ranges = new List<(int, int)>();
+        int? start = null;
+        var prev = -2;
+        foreach (var cp in set)
+        {
+            if (start is null)
+            {
+                start = cp;
+            }
+            else if (cp != prev + 1)
+            {
+                ranges.Add((start.Value, prev));
+                start = cp;
+            }
+
+            prev = cp;
+        }
+
+        if (start is not null)
+        {
+            ranges.Add((start.Value, prev));
+        }
+
+        return ranges;
+    }
+
+    private static string Literal(string name, List<(int Start, int End)> ranges) =>
+        $"    internal static readonly (int Start, int End)[] {name} =\n    [\n"
+        + string.Join("\n", ranges.Select(r => $"        (0x{r.Start:X4}, 0x{r.End:X4}),"))
+        + "\n    ];\n";
+
+    [SkippableFact]
+    public void Tables_match_the_host_normalizer()
+    {
+        Skip.IfNot(NormalizationWorks, "string.Normalize is a no-op here (invariant globalization): nothing to derive from");
+        var (no, maybe) = Derive();
+        var expectedNo = ToRanges(no);
+        var expectedMaybe = ToRanges(maybe);
+        var message = "NfcQuickCheck tables differ from this host's ICU. Paste these into src/OKF4net/Providers/NfcQuickCheck.cs:\n\n"
+            + Literal("No", expectedNo) + "\n" + Literal("Maybe", expectedMaybe)
+            + $"\n(No: {no.Count} code points in {expectedNo.Count} ranges; Maybe: {maybe.Count} in {expectedMaybe.Count}.)";
+        Assert.True(expectedNo.SequenceEqual(NfcQuickCheck.No), message);
+        Assert.True(expectedMaybe.SequenceEqual(NfcQuickCheck.Maybe), message);
+    }
+
+    [Theory]
+    [InlineData(0x00E9, NfcStatus.Yes)]   // é precomposed
+    [InlineData(0x0301, NfcStatus.Maybe)] // combining acute
+    [InlineData(0x212B, NfcStatus.No)]    // ANGSTROM SIGN → Å
+    [InlineData(0x2126, NfcStatus.No)]    // OHM SIGN → Ω
+    [InlineData(0xF900, NfcStatus.No)]    // CJK compatibility ideograph
+    [InlineData(0x1161, NfcStatus.Maybe)] // Hangul jungseong A
+    [InlineData(0xAC00, NfcStatus.Yes)]   // precomposed syllable 가
+    [InlineData(0x0E48, NfcStatus.Yes)]   // Thai tone mark: composes with nothing
+    [InlineData(0x093F, NfcStatus.Yes)]   // Devanagari vowel sign I
+    [InlineData(0x0041, NfcStatus.Yes)]
+    public void Spot_checks(int codePoint, NfcStatus expected)
+    {
+        Assert.Equal(expected, NfcQuickCheck.Of(new Rune(codePoint)));
+    }
+}
+```
+
+- [ ] **Step 2: Write the validator tests**
 
 ```csharp
 // SPDX-License-Identifier: LGPL-3.0-or-later
@@ -410,13 +566,14 @@ public class BundleKeyValidatorTests
     }
 
     [Theory]
-    [InlineData("a./b.md")]      // trailing dot in a directory segment
+    [InlineData("a./b.md")]      // trailing dot in a directory segment: Windows strips it → alias of a/b.md
     [InlineData("a /b.md")]      // trailing space
     [InlineData("con.md")]
     [InlineData("Con.md")]       // reserved names are case-insensitive
     [InlineData("COM1.md")]
     [InlineData("com¹.md")] // COM¹
     [InlineData("lpt³/x.md")]
+    [InlineData("lPt¹.md")]
     [InlineData("nul.txt.md")]   // reserved base before the first '.'
     [InlineData("a:b.md")]
     [InlineData("a|b.md")]
@@ -432,34 +589,38 @@ public class BundleKeyValidatorTests
     [InlineData("tables/orders.md")]
     [InlineData("a.b.c.md")]
     [InlineData("console.md")]   // 'console' is not 'con'
-    [InlineData("foo..md")]      // a trailing dot in the STEM is not an alias; only a whole segment ending with '.' is (a./b.md above)
     [InlineData("com10.md")]     // only COM1..COM9 and the superscripts
     [InlineData("_con.md")]
+    [InlineData("foo..md")]      // a trailing dot in the STEM is not an alias; only a whole segment ending with '.' is (a./b.md above)
     public void Strict_accepts_ordinary_names(string raw)
     {
         Assert.Null(Strict().CheckKey(BundleKey.Parse(raw)));
     }
 
-    [Fact]
-    public void Nfc_is_required_under_strict_and_fails_closed_without_normalization()
+    [Theory]
+    [InlineData("café.md")]                 // NFC
+    [InlineData("niño/über.md")]
+    [InlineData("가나.md")]              // precomposed Hangul
+    [InlineData("ที่.md")]        // Thai with stacked marks: none composes
+    [InlineData("कि.md")]              // Devanagari KA + vowel sign I
+    [InlineData("日本語.md")]
+    public void Strict_accepts_nfc_names_without_normalizing(string raw)
     {
-        var nfd = BundleKey.Parse("café.md"); // e + combining acute
-        var nfc = BundleKey.Parse("café.md");
-        var v = Strict();
-        if (BundleKeyValidator.NormalizationAvailable)
-        {
-            Assert.NotNull(v.CheckKey(nfd));
-            Assert.Null(v.CheckKey(nfc));
-        }
-        else
-        {
-            // Invariant globalization: Normalize is a silent no-op, so any non-ASCII
-            // segment is refused rather than silently accepted as "NFC".
-            Assert.Contains("normalization", v.CheckKey(nfd), StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("normalization", v.CheckKey(nfc), StringComparison.OrdinalIgnoreCase);
-        }
+        Assert.Null(Strict().CheckKey(BundleKey.Parse(raw)));
+    }
 
-        Assert.Null(NativeLinux().CheckKey(nfd));
+    [Theory]
+    [InlineData("café.md", "U+0301")]   // NFD: composing acute
+    [InlineData("Å.md", "U+212B")]       // never NFC
+    [InlineData("가.md", "U+1161")] // conjoining jamo
+    [InlineData("q̣.md", "U+0323")]      // over-rejection, documented: the mark composes with other bases
+    public void Strict_refuses_what_the_quick_check_cannot_call_nfc(string raw, string codePoint)
+    {
+        var key = BundleKey.Parse(raw);
+        var reason = Strict().CheckKey(key);
+        Assert.NotNull(reason);
+        Assert.Contains(codePoint, reason);
+        Assert.Null(NativeLinux().CheckKey(key));
     }
 
     [Fact]
@@ -471,6 +632,14 @@ public class BundleKeyValidatorTests
         Assert.All(r.Rejected, rej => Assert.Contains("collides", rej.Reason));
         Assert.Contains(r.Rejected, rej => rej.RawName == "A/x.md");
         Assert.Contains(r.Rejected, rej => rej.RawName == "a/y.md");
+    }
+
+    [Fact]
+    public void Tree_rejects_deep_case_collisions_too()
+    {
+        var r = Strict().ValidateTree(["p/q/R/x.md", "p/q/r/y.md", "p/q/s/z.md"]);
+        Assert.Equal([BundleKey.Parse("p/q/s/z.md")], r.Accepted);
+        Assert.Equal(2, r.Rejected.Count);
     }
 
     [Fact]
@@ -510,12 +679,12 @@ public class BundleKeyValidatorTests
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [ ] **Step 3: Run the tests to verify they fail**
 
-Run: `dotnet test OKF4net.sln --filter "FullyQualifiedName~BundleKeyValidatorTests"`
-Expected: build error — `BundleKeyValidator`, `BundleKeyConstraints` do not exist.
+Run: `dotnet test OKF4net.sln --filter "FullyQualifiedName~NfcQuickCheck|FullyQualifiedName~BundleKeyValidatorTests"`
+Expected: build error — `NfcQuickCheck`, `BundleKeyValidator`, `BundleKeyConstraints` do not exist.
 
-- [ ] **Step 3: Implement the constraints**
+- [ ] **Step 4: Implement the constraints** (`src/OKF4net/Providers/BundleKeyConstraints.cs`)
 
 ```csharp
 // SPDX-License-Identifier: LGPL-3.0-or-later
@@ -543,10 +712,10 @@ public enum BundleKeyConstraints
     /// <summary>Two siblings must not be equal once case-folded.</summary>
     CaseInsensitiveCollisions = 1 << 3,
 
-    /// <summary>Every segment must already be in Unicode NFC.</summary>
+    /// <summary>Every segment must pass the NFC quick check (no <c>NFC_QC=No</c> character, no composing mark).</summary>
     RequireNfc = 1 << 4,
 
-    /// <summary>Two siblings must not be equal once normalised to NFC (macOS folds forms).</summary>
+    /// <summary>Two siblings must not be canonically equivalent (macOS folds forms). With <see cref="RequireNfc"/> this reduces to case folding, since no composing sequence survives the quick check.</summary>
     UnicodeFormCollisions = 1 << 5,
 
     /// <summary>An object key must not also be a prefix of other keys (a file cannot be a directory).</summary>
@@ -595,7 +764,85 @@ public enum BundleKeyPolicy
 }
 ```
 
-- [ ] **Step 4: Implement the validator**
+- [ ] **Step 5: Implement `NfcQuickCheck` with empty tables, then let the test fill them**
+
+```csharp
+// SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Text;
+
+namespace OKF4net.Providers;
+
+/// <summary>Result of the NFC quick check for one code point (UAX #15 §9).</summary>
+public enum NfcStatus
+{
+    /// <summary>Never changes under NFC on its own.</summary>
+    Yes,
+
+    /// <summary>Never in NFC (a singleton or non-starter decomposition).</summary>
+    No,
+
+    /// <summary>A mark that recomposes with some preceding base; undecidable without composition tables.</summary>
+    Maybe,
+}
+
+/// <summary>
+/// UAX #15's NFC quick check, table-driven and independent of <see cref="string.Normalize(NormalizationForm)"/>,
+/// which is a silent no-op under invariant globalization (the Native AOT <c>okf</c>).
+/// <see cref="No"/> is <c>NFC_QC=No</c>; <see cref="Maybe"/> is the set of second elements of
+/// every direct canonical pair that recomposes — tighter than UCD's <c>NFC_QC=Maybe</c>, and
+/// exact for the question "can this mark compose with something before it". Both are derived
+/// from ICU by <c>tests/OKF4net.Tests/Providers/NfcQuickCheckTableTests.cs</c>, which fails
+/// with the literal to paste whenever a host normalizer disagrees with them. Generated on
+/// <c>[OS and .NET version, filled in when pasted]</c>.
+/// </summary>
+internal static class NfcQuickCheck
+{
+    internal static readonly (int Start, int End)[] No =
+    [
+        // paste from NfcQuickCheckTableTests.Tables_match_the_host_normalizer
+    ];
+
+    internal static readonly (int Start, int End)[] Maybe =
+    [
+        // paste from NfcQuickCheckTableTests.Tables_match_the_host_normalizer
+    ];
+
+    /// <summary>The quick-check status of one scalar value.</summary>
+    internal static NfcStatus Of(Rune rune) =>
+        Contains(No, rune.Value) ? NfcStatus.No
+        : Contains(Maybe, rune.Value) ? NfcStatus.Maybe
+        : NfcStatus.Yes;
+
+    private static bool Contains((int Start, int End)[] ranges, int cp)
+    {
+        var lo = 0;
+        var hi = ranges.Length - 1;
+        while (lo <= hi)
+        {
+            var mid = (lo + hi) >> 1;
+            var (start, end) = ranges[mid];
+            if (cp < start)
+            {
+                hi = mid - 1;
+            }
+            else if (cp > end)
+            {
+                lo = mid + 1;
+            }
+            else
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+}
+```
+
+Then run `dotnet test OKF4net.sln --filter "FullyQualifiedName~NfcQuickCheckTableTests.Tables_match"`: it **fails by design** and prints both literals. Paste them into `NfcQuickCheck.cs`, fill the "Generated on" note (e.g. `Windows 11 / .NET 10.0.x`), rerun: green. Sanity: `No` should be ≈ 1 100 code points in ≈ 60–80 ranges (U+0340…, U+2126, U+212A, U+212B, U+F900–U+FA0D…, U+2F800–U+2FA1D), `Maybe` ≈ 100 in ≈ 50 ranges (U+0300–…, U+1161–U+1175, U+11A8–U+11C2, U+3099–U+309A, …). If the counts are wildly off, the host's `Normalize` is not working (run the spot checks) — do not paste.
+
+- [ ] **Step 6: Implement the validator** (`src/OKF4net/Providers/BundleKeyValidator.cs`)
 
 ```csharp
 // SPDX-License-Identifier: LGPL-3.0-or-later
@@ -615,6 +862,7 @@ public sealed record BundleKeyTreeResult(IReadOnlyList<BundleKey> Accepted, IRea
 /// the host's portability policy, and optional extra validators that can only
 /// restrict. <see cref="ValidateTree"/> checks a whole listing as a tree —
 /// per-level collisions and file/directory conflicts — not key by key.
+/// NFC is decided by <see cref="NfcQuickCheck"/>, never by <see cref="string.Normalize(NormalizationForm)"/>.
 /// </summary>
 public sealed class BundleKeyValidator
 {
@@ -625,18 +873,9 @@ public sealed class BundleKeyValidator
         "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "LPT¹", "LPT²", "LPT³",
     ];
 
-    private const string WindowsIllegal = "<>:\"|?*";
+    private static readonly char[] WindowsIllegal = ['<', '>', ':', '"', '|', '?', '*'];
 
     private readonly IReadOnlyList<Func<BundleKey, string?>> _extra;
-
-    /// <summary>
-    /// Whether <see cref="string.Normalize(NormalizationForm)"/> actually normalises in this
-    /// process. Under <c>InvariantGlobalization</c> it is a silent no-op (measured on .NET 10:
-    /// <c>"é".Normalize(FormC)</c> keeps length 2 and <c>IsNormalized</c> answers
-    /// <see langword="true"/>), so the check cannot be trusted and
-    /// <see cref="BundleKeyConstraints.RequireNfc"/> fails closed instead.
-    /// </summary>
-    public static bool NormalizationAvailable { get; } = ProbeNormalization();
 
     /// <summary>Creates a validator for a provider declaring <paramref name="native"/>, under <paramref name="policy"/>.</summary>
     public BundleKeyValidator(BundleKeyConstraints native, BundleKeyPolicy policy, IReadOnlyList<Func<BundleKey, string?>>? extraValidators = null)
@@ -657,7 +896,7 @@ public sealed class BundleKeyValidator
             var reason = CheckSegment(segment);
             if (reason is not null)
             {
-                return $"segment '{DebugQuote.Quote(segment)}' {reason}";
+                return $"segment {DebugQuote.Quote(segment)} {reason}";
             }
         }
 
@@ -676,10 +915,10 @@ public sealed class BundleKeyValidator
     /// <summary>
     /// Validates a listing as a tree. Every raw name goes through the base rules and
     /// <see cref="CheckKey"/>; then, under <see cref="BundleKeyConstraints.CaseInsensitiveCollisions"/>
-    /// or <see cref="BundleKeyConstraints.UnicodeFormCollisions"/>, siblings that fold to the same
-    /// name are all rejected with their subtrees; under <see cref="BundleKeyConstraints.FileDirectoryConflict"/>,
-    /// an object that is also a prefix of other keys is rejected with everything under it.
-    /// A raw name listed twice is rejected (a provider must not do that).
+    /// or <see cref="BundleKeyConstraints.UnicodeFormCollisions"/>, siblings at any level that fold
+    /// to the same name are all rejected with their subtrees; under
+    /// <see cref="BundleKeyConstraints.FileDirectoryConflict"/>, an object that is also a prefix of
+    /// other keys is rejected with everything under it. A raw name listed twice is rejected.
     /// </summary>
     public BundleKeyTreeResult ValidateTree(IEnumerable<string> rawNames)
     {
@@ -687,12 +926,17 @@ public sealed class BundleKeyValidator
         var rejected = new List<BundleKeyRejection>();
         var candidates = new List<(string Raw, BundleKey Key)>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
+        var duplicates = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var raw in rawNames)
         {
             if (!seen.Add(raw))
             {
-                rejected.Add(new BundleKeyRejection(raw, "listed twice by the provider"));
+                if (duplicates.Add(raw))
+                {
+                    rejected.Add(new BundleKeyRejection(raw, "listed twice by the provider"));
+                }
+
                 continue;
             }
 
@@ -712,63 +956,41 @@ public sealed class BundleKeyValidator
             candidates.Add((raw, key));
         }
 
-        // Remove a raw name that was listed twice from the candidates as well.
-        var duplicates = rejected.Where(r => r.Reason.Contains("twice", StringComparison.Ordinal)).Select(r => r.RawName).ToHashSet(StringComparer.Ordinal);
         candidates.RemoveAll(c => duplicates.Contains(c.Raw));
 
         var doomed = new HashSet<BundleKey>();
-        var fold = Effective.HasFlag(BundleKeyConstraints.CaseInsensitiveCollisions) || Effective.HasFlag(BundleKeyConstraints.UnicodeFormCollisions);
-
-        if (fold)
+        if (Effective.HasFlag(BundleKeyConstraints.CaseInsensitiveCollisions) || Effective.HasFlag(BundleKeyConstraints.UnicodeFormCollisions))
         {
-            // Group siblings by (parent, folded name) over every prefix of every key.
-            var byParent = new Dictionary<string, Dictionary<string, List<string>>>(StringComparer.Ordinal);
+            // For every level of every key: group the segment at that level by (parent prefix, folded name).
+            var groups = new Dictionary<(string Parent, string Folded), HashSet<string>>();
             foreach (var (_, key) in candidates)
             {
                 for (var depth = 1; depth <= key.Segments.Count; depth++)
                 {
                     var parent = string.Join('/', key.Segments.Take(depth - 1));
                     var name = key.Segments[depth - 1];
-                    if (!byParent.TryGetValue(parent, out var siblings))
+                    var g = (parent, Fold(name));
+                    if (!groups.TryGetValue(g, out var names))
                     {
-                        siblings = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-                        byParent[parent] = siblings;
+                        names = new HashSet<string>(StringComparer.Ordinal);
+                        groups[g] = names;
                     }
 
-                    var folded = Fold(name);
-                    if (!siblings.TryGetValue(folded, out var names))
-                    {
-                        names = [];
-                        siblings[folded] = names;
-                    }
-
-                    if (!names.Contains(name, StringComparer.Ordinal))
-                    {
-                        names.Add(name);
-                    }
+                    names.Add(name);
                 }
             }
 
-            foreach (var (parent, siblings) in byParent)
-            {
-                foreach (var names in siblings.Values.Where(n => n.Count > 1))
-                {
-                    foreach (var (raw, key) in candidates)
-                    {
-                        if (doomed.Contains(key))
-                        {
-                            continue;
-                        }
+            var colliding = groups.Where(kv => kv.Value.Count > 1)
+                .SelectMany(kv => kv.Value.Select(name => kv.Key.Parent.Length == 0 ? name : kv.Key.Parent + "/" + name))
+                .Select(BundleKey.Parse)
+                .ToList();
 
-                        var prefixDepth = parent.Length == 0 ? 0 : parent.Count(c => c == '/') + 1;
-                        if (key.Segments.Count > prefixDepth
-                            && string.Join('/', key.Segments.Take(prefixDepth)) == parent
-                            && names.Contains(key.Segments[prefixDepth], StringComparer.Ordinal))
-                        {
-                            doomed.Add(key);
-                            rejected.Add(new BundleKeyRejection(raw, $"segment '{DebugQuote.Quote(key.Segments[prefixDepth])}' collides with a sibling that differs only by case or Unicode form"));
-                        }
-                    }
+            foreach (var (raw, key) in candidates)
+            {
+                var hit = colliding.FirstOrDefault(c => key.Equals(c) || key.StartsWith(c));
+                if (hit is not null && doomed.Add(key))
+                {
+                    rejected.Add(new BundleKeyRejection(raw, $"'{hit}' collides with a sibling that differs only by case or Unicode form"));
                 }
             }
         }
@@ -779,11 +1001,9 @@ public sealed class BundleKeyValidator
             var prefixes = new HashSet<BundleKey>();
             foreach (var key in keys)
             {
-                var parent = key.Parent;
-                while (parent is not null)
+                for (var parent = key.Parent; parent is not null; parent = parent.Parent)
                 {
                     prefixes.Add(parent);
-                    parent = parent.Parent;
                 }
             }
 
@@ -815,7 +1035,7 @@ public sealed class BundleKeyValidator
             return "ends with '.' or a space";
         }
 
-        if (Effective.HasFlag(BundleKeyConstraints.WindowsIllegalCharacters) && segment.IndexOfAny(WindowsIllegal.ToCharArray()) >= 0)
+        if (Effective.HasFlag(BundleKeyConstraints.WindowsIllegalCharacters) && segment.IndexOfAny(WindowsIllegal) >= 0)
         {
             return "contains a character Windows forbids (< > : \" | ? *)";
         }
@@ -835,70 +1055,50 @@ public sealed class BundleKeyValidator
 
         if (Effective.HasFlag(BundleKeyConstraints.RequireNfc))
         {
-            if (!NormalizationAvailable)
+            foreach (var rune in segment.EnumerateRunes())
             {
-                if (segment.Any(c => c > 0x7f))
+                switch (NfcQuickCheck.Of(rune))
                 {
-                    return "is not ASCII and Unicode normalization is unavailable in this process (invariant globalization), so NFC cannot be checked";
+                    case NfcStatus.No:
+                        return $"contains U+{rune.Value:X4}, which is never in Unicode NFC";
+                    case NfcStatus.Maybe:
+                        return $"contains the combining character U+{rune.Value:X4}, whose NFC form cannot be decided without composition tables; use the precomposed form";
                 }
-            }
-            else if (!string.Equals(segment, segment.Normalize(NormalizationForm.FormC), StringComparison.Ordinal))
-            {
-                return "is not in Unicode NFC";
             }
         }
 
         return null;
     }
 
-    private string Fold(string name)
-    {
-        var s = name;
-        if (Effective.HasFlag(BundleKeyConstraints.UnicodeFormCollisions) && NormalizationAvailable)
-        {
-            s = s.Normalize(NormalizationForm.FormC);
-        }
-
-        if (Effective.HasFlag(BundleKeyConstraints.CaseInsensitiveCollisions))
-        {
-            s = UnicodeCaseFold.ToLowercase(s);
-        }
-
-        return s;
-    }
-
-    private static bool ProbeNormalization()
-    {
-        try
-        {
-            return "é".Normalize(NormalizationForm.FormC).Length == 1;
-        }
-        catch (Exception e) when (e is PlatformNotSupportedException or ArgumentException)
-        {
-            return false;
-        }
-    }
+    /// <summary>
+    /// Case folding only: with <see cref="BundleKeyConstraints.RequireNfc"/> in force, no
+    /// composing sequence reaches this point, so NFC folding would be the identity. Two
+    /// non-composing marks in different canonical orders are the accepted residual.
+    /// </summary>
+    private string Fold(string name) =>
+        Effective.HasFlag(BundleKeyConstraints.CaseInsensitiveCollisions) ? UnicodeCaseFold.ToLowercase(name) : name;
 }
 ```
 
-Convert both new source files and the test file to CRLF.
+Convert every new source file and test file to CRLF.
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [ ] **Step 7: Run the tests to verify they pass**
 
-Run: `dotnet test OKF4net.sln --filter "FullyQualifiedName~BundleKeyValidatorTests"`
-Expected: all green. `Nfc_is_required_under_strict_and_fails_closed_without_normalization` takes the `NormalizationAvailable` branch in the test host (ICU present) — the invariant branch is exercised by Task 8's AOT probe.
+Run: `dotnet test OKF4net.sln --filter "FullyQualifiedName~NfcQuickCheck|FullyQualifiedName~BundleKeyValidatorTests"`
+Expected: all green, `Tables_match_the_host_normalizer` **not skipped** on the dev box (the test host has ICU).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add src/OKF4net/Providers/BundleKeyConstraints.cs src/OKF4net/Providers/BundleKeyValidator.cs tests/OKF4net.Tests/Providers/BundleKeyValidatorTests.cs
+git add src/OKF4net/Providers/BundleKeyConstraints.cs src/OKF4net/Providers/NfcQuickCheck.cs src/OKF4net/Providers/BundleKeyValidator.cs tests/OKF4net.Tests/Providers/NfcQuickCheckTableTests.cs tests/OKF4net.Tests/Providers/BundleKeyValidatorTests.cs
 git commit -F - <<'MSG'
-feat(providers): native constraints, Strict/Native policy and tree validation for keys
+feat(providers): native constraints, Strict/Native policy, NFC quick check and tree validation
 
-Per-level case and Unicode-form collisions, file/directory conflicts and the
-Windows reserved names (superscripts included) are checked on the whole
-listing; NFC fails closed when string.Normalize is a no-op (invariant
-globalization).
+NFC is decided by UAX #15 quick-check tables derived from ICU and guarded by
+an exhaustive cross-check test, never by string.Normalize, which is a no-op
+under invariant globalization. Per-level case collisions, file/directory
+conflicts and the Windows reserved names (superscripts included) are checked
+on the whole listing.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
@@ -1326,12 +1526,12 @@ MSG
 - Test: `tests/OKF4net.Tests/Providers/FileSystemBundleProviderTests.cs`
 
 **Interfaces:**
-- Consumes: the contract (Task 3); `OKF4net.Internal.ReparsePoints` (`CanonicalizeRoot`, `IsWithin(root, path, comparison)`, `IsReparsePoint`, `IsReparsePointOrUninspectable`, `HasReparsePointOrUninspectableAncestor(root, path, comparison)`); `TempDir` test helper (`Path`, `Write`, `TryCreateFileSymlink`, `TryCreateDirectorySymlink`, `TryCreateJunctionToExternalDir`).
+- Consumes: the contract (Task 3); `OKF4net.Internal.ReparsePoints` (`CanonicalizeRoot`, `IsWithin(root, path, comparison)`, `IsReparsePoint`, `IsReparsePointOrUninspectable`, `HasReparsePointOrUninspectableAncestor(root, path, comparison)`); `TempDir` (`Path`, `Write`, `TryCreateFileSymlink`, `TryCreateDirectorySymlink`, `TryCreateJunctionToExternalDir`).
 - Produces:
-  - `public sealed class FileSystemBundleProvider : IBundleProvider` with ctor `(string root, string? confinementBoundary = null, BundleKeyConstraints? nativeConstraints = null, BundleLimits? limits = null)`, properties `string Root` (as given), `string? ConfinementBoundary` (canonical), plus the interface. `Capabilities.CanWrite` is **false** in this lot.
+  - `public sealed class FileSystemBundleProvider : IBundleProvider` with ctor `(string root, string? confinementBoundary = null, BundleKeyConstraints additionalConstraints = BundleKeyConstraints.None, BundleLimits? limits = null)`, properties `string Root` (as given), `string? ConfinementBoundary` (canonical), plus the interface. `Capabilities.CanWrite` is **false** in this lot. `NativeConstraints` = the OS set **OR** `additionalConstraints` (decision 9: it can only add).
   - `public static class BundleDisplayPath` with `string Compose(string location, BundleKey key)` = `Path.Combine([location, ..key.Segments])`.
-  - Exceptions added: `BundleAccessRefusedException : BundleProviderException` (a STRICT guard or the confinement boundary refused the access) and `BundleLimitExceededException : BundleProviderException` with `string Bound` (`"entries"` or `"depth"`).
-- Decisions recorded here: the provider matches keys **exactly** (segment by segment, ordinal) only when its `NativeConstraints` include `CaseInsensitiveCollisions` or `UnicodeFormCollisions` (Windows, macOS by default) — on a POSIX native set the OS already compares bytes, so a path lookup is exact; the provider takes `BundleLimits` at construction for `Read` (the interface gives `Read` no limits parameter, and the SHA-256 version requires reading the whole object, which must be bounded before it is hashed).
+  - Exceptions added: `BundleAccessRefusedException : BundleProviderException` and `BundleLimitExceededException : BundleProviderException` with `string Bound` (`"entries"` or `"depth"`).
+- Guards, stated once: the walk is **lenient** (a reparse point is skipped, never followed — the one lenient site this lot adds) but **counts** every entry it inspects, skipped ones included, and is bounded before sorting; an enumeration prefix, a `Read`, an `Exists` go through the **STRICT** pair; the confinement boundary (when given) is re-checked STRICTly at **every** storage access, including each directory listing of a lazy enumeration — the review's probe showed a boundary checked only when the enumerable was created.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1351,7 +1551,7 @@ public class FileSystemBundleProviderTests
     private static BundleKey K(string s) => BundleKey.Parse(s);
 
     [Fact]
-    public void Enumerate_lists_every_file_relative_with_slashes_in_ordinal_order_per_directory()
+    public void Enumerate_lists_every_file_relative_with_slashes_in_ordinal_order_depth_first()
     {
         using var tmp = new TempDir();
         tmp.Write("b.md", "b");
@@ -1377,18 +1577,31 @@ public class FileSystemBundleProviderTests
     }
 
     [Fact]
-    public void Enumerate_counts_directories_and_files_against_the_entry_bound_and_enforces_depth()
+    public void Enumerate_counts_every_entry_against_the_bound_and_enforces_depth()
     {
         using var tmp = new TempDir();
         tmp.Write("d/x.md", "x");
         tmp.Write("y.md", "y");
         var p = new FileSystemBundleProvider(tmp.Path);
-        var ex = Assert.Throws<BundleLimitExceededException>(() => p.Enumerate(null, new BundleLimits { MaxEntries = 2 }).ToList()); // d, d/x.md, y.md = 3
+        // Entries inspected: d (directory), d/x.md, y.md = 3.
+        var ex = Assert.Throws<BundleLimitExceededException>(() => p.Enumerate(null, new BundleLimits { MaxEntries = 2 }).ToList());
         Assert.Equal("entries", ex.Bound);
-        Assert.Equal(3, p.Enumerate(null, new BundleLimits { MaxEntries = 3 }).Count() + 1); // 2 files + 1 directory counted
+        Assert.Equal(2, p.Enumerate(null, new BundleLimits { MaxEntries = 3 }).Count()); // 2 files listed, 3 entries counted
         tmp.Write("l1/l2/l3/deep.md", "d");
         var depth = Assert.Throws<BundleLimitExceededException>(() => p.Enumerate(null, new BundleLimits { MaxDepth = 3 }).ToList()); // l1/l2/l3/deep.md has 4 segments
         Assert.Equal("depth", depth.Bound);
+    }
+
+    [SkippableFact]
+    public void Enumerate_counts_skipped_reparse_points_too()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("real.md", "r");
+        Skip.IfNot(tmp.TryCreateFileSymlink("l1.md", "real.md") && tmp.TryCreateFileSymlink("l2.md", "real.md"), "symlinks unavailable");
+        var p = new FileSystemBundleProvider(tmp.Path);
+        Assert.Equal(["real.md"], p.Enumerate(null, BundleLimits.Default).Select(l => l.RawName));
+        // Three entries inspected, two skipped: the bound still counts three.
+        Assert.Throws<BundleLimitExceededException>(() => p.Enumerate(null, new BundleLimits { MaxEntries = 2 }).ToList());
     }
 
     [SkippableFact]
@@ -1404,14 +1617,31 @@ public class FileSystemBundleProviderTests
     }
 
     [SkippableFact]
-    public void Read_refuses_a_file_under_a_junction_ancestor()
+    public void A_junction_prefix_is_refused_and_a_file_under_it_is_unreadable()
     {
         using var external = new TempDir();
         external.Write("secret.md", "s");
         using var tmp = new TempDir();
-        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("j", external.Path), "junctions unavailable");
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("jump", external.Path), "junctions unavailable");
         var p = new FileSystemBundleProvider(tmp.Path);
-        Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("j/secret.md")));
+        Assert.Throws<BundleAccessRefusedException>(() => p.Enumerate(K("jump"), BundleLimits.Default).ToList());
+        Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("jump/secret.md")));
+        Assert.Empty(p.Enumerate(null, BundleLimits.Default)); // the walk skips the junction (lenient) and lists nothing under it
+    }
+
+    [SkippableFact]
+    public void A_deferred_enumeration_rechecks_the_boundary_when_it_actually_lists()
+    {
+        using var external = new TempDir();
+        external.Write("secret.md", "outside");
+        using var tmp = new TempDir();
+        tmp.Write("src/a.md", "inside");
+        var root = Path.Combine(tmp.Path, "src");
+        var p = new FileSystemBundleProvider(root, confinementBoundary: tmp.Path);
+        var deferred = p.Enumerate(null, BundleLimits.Default); // nothing listed yet
+        Directory.Delete(root, recursive: true);
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("src", external.Path), "junctions unavailable");
+        Assert.Throws<BundleAccessRefusedException>(() => deferred.ToList());
     }
 
     [Fact]
@@ -1460,6 +1690,20 @@ public class FileSystemBundleProviderTests
         Assert.Empty(p.Enumerate(K("references"), BundleLimits.Default));
     }
 
+    [SkippableFact]
+    public void Exact_case_cannot_be_switched_off_by_the_constructor()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows() || OperatingSystem.IsMacOS(), "needs a case-insensitive default volume");
+        using var tmp = new TempDir();
+        tmp.Write("a/UP.sql", "x");
+        var p = new FileSystemBundleProvider(tmp.Path, additionalConstraints: BundleKeyConstraints.None);
+        Assert.Equal(BundleKeyConstraintSets.ForCurrentOperatingSystem(), p.NativeConstraints);
+        Assert.False(p.Exists(K("a/up.sql")));
+        var stricter = new FileSystemBundleProvider(tmp.Path, additionalConstraints: BundleKeyConstraints.RequireNfc);
+        Assert.True(stricter.NativeConstraints.HasFlag(BundleKeyConstraints.RequireNfc));
+        Assert.True(stricter.NativeConstraints.HasFlag(BundleKeyConstraints.CaseInsensitiveCollisions));
+    }
+
     [Fact]
     public void GetVersion_changes_with_content_and_is_stable_otherwise()
     {
@@ -1472,7 +1716,7 @@ public class FileSystemBundleProviderTests
         Assert.NotEqual(v1, p.GetVersion(BundleLimits.Default));
         File.WriteAllText(file, "one");
         File.SetLastWriteTimeUtc(file, new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        Assert.NotEqual(v1, p.GetVersion(BundleLimits.Default)); // same bytes, different mtime: the token is a listing digest, not a content hash
+        Assert.NotEqual(v1, p.GetVersion(BundleLimits.Default)); // same bytes, different mtime: a listing digest, not a content hash
         Assert.Throws<BundleLimitExceededException>(() => p.GetVersion(new BundleLimits { MaxEntries = 0 }));
     }
 
@@ -1566,7 +1810,7 @@ public sealed class BundleAccessRefusedException(BundleKey? key, string detail)
     public BundleKey? Key { get; } = key;
 }
 
-/// <summary>A provider walk exceeded one of its <see cref="BundleLimits"/> (spec §6): <see cref="Bound"/> is <c>"entries"</c> or <c>"depth"</c>.</summary>
+/// <summary>A walk exceeded one of its <see cref="BundleLimits"/> (spec §6): <see cref="Bound"/> is <c>"entries"</c>, <c>"depth"</c> or <c>"key bytes"</c>.</summary>
 public sealed class BundleLimitExceededException(string bound, long limit)
     : BundleProviderException($"the bundle exceeds the {bound} bound ({limit})")
 {
@@ -1617,12 +1861,13 @@ namespace OKF4net.Providers;
 
 /// <summary>
 /// The default provider (spec §8): a bundle as a directory tree. Read-only in this
-/// lot (<see cref="Capabilities"/> says so; lot B adds the atomic write). Keeps every
-/// guard the loader had: the lenient reparse-point predicate on the walk, the STRICT
-/// pair before any read, and — when a confinement boundary is given — a STRICT
-/// re-check of the chain from the boundary to the root, inclusive, before <b>every</b>
-/// access. Versions are SHA-256 of content; the bundle token is a digest of the
-/// listing (name, length, mtime), deliberately weak and never used for pinning.
+/// lot (<see cref="Capabilities"/> says so; lot B adds the atomic write). The walk is
+/// lenient (a reparse point is skipped, never followed) but counts every entry it
+/// inspects; a prefix, a read and an existence check go through the STRICT pair; with a
+/// confinement boundary, the chain boundary→root is re-checked STRICTly before every
+/// storage access, each directory listing of a lazy enumeration included. Versions are
+/// SHA-256 of content; the bundle token is a digest of the listing (name, length,
+/// mtime), deliberately weak and never used for pinning.
 /// </summary>
 public sealed class FileSystemBundleProvider : IBundleProvider
 {
@@ -1636,19 +1881,20 @@ public sealed class FileSystemBundleProvider : IBundleProvider
     /// Creates a provider over <paramref name="root"/>. <paramref name="confinementBoundary"/>
     /// (a catalog root) makes the root itself subject to the STRICT guards on every access;
     /// without it the root is trusted host configuration, as today.
-    /// <paramref name="nativeConstraints"/> defaults to the current OS's set;
-    /// <paramref name="limits"/> bounds <see cref="Read"/> (the interface gives it no per-call limits).
+    /// <paramref name="additionalConstraints"/> is OR-ed into the OS's native set and can only
+    /// add rules; <paramref name="limits"/> bounds <see cref="Read"/>, which the interface gives
+    /// no per-call limits.
     /// </summary>
-    public FileSystemBundleProvider(string root, string? confinementBoundary = null, BundleKeyConstraints? nativeConstraints = null, BundleLimits? limits = null)
+    public FileSystemBundleProvider(string root, string? confinementBoundary = null, BundleKeyConstraints additionalConstraints = BundleKeyConstraints.None, BundleLimits? limits = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(root);
         Root = root;
         _fullRoot = ReparsePoints.CanonicalizeRoot(root);
         ConfinementBoundary = confinementBoundary is null ? null : ReparsePoints.CanonicalizeRoot(confinementBoundary);
-        NativeConstraints = nativeConstraints ?? BundleKeyConstraintSets.ForCurrentOperatingSystem();
+        NativeConstraints = BundleKeyConstraintSets.ForCurrentOperatingSystem() | additionalConstraints;
         _limits = limits ?? BundleLimits.Default;
-        _exactCase = NativeConstraints.HasFlag(BundleKeyConstraints.CaseInsensitiveCollisions)
-            || NativeConstraints.HasFlag(BundleKeyConstraints.UnicodeFormCollisions);
+        // Exact-case matching follows the OS, not a flag a caller could clear (decision 9).
+        _exactCase = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS();
     }
 
     /// <summary>The root as given (also <see cref="Location"/>).</summary>
@@ -1673,9 +1919,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider
     public BundleVersion GetVersion(BundleLimits limits)
     {
         ArgumentNullException.ThrowIfNull(limits);
-        CheckBoundary();
         var sb = new StringBuilder();
-        foreach (var entry in Walk(_fullRoot, limits))
+        foreach (var entry in Walk(_fullRoot, string.Empty, 0, limits, new Counter()))
         {
             if (entry.IsDirectory)
             {
@@ -1711,7 +1956,13 @@ public sealed class FileSystemBundleProvider : IBundleProvider
         if (prefix is not null)
         {
             var resolved = ResolveExact(prefix);
-            if (resolved is null || !Directory.Exists(resolved))
+            if (resolved is null)
+            {
+                return [];
+            }
+
+            GuardStrict(prefix, resolved); // a junction prefix is refused, not walked
+            if (!Directory.Exists(resolved))
             {
                 return [];
             }
@@ -1724,7 +1975,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider
 
     private IEnumerable<BundleListing> EnumerateFrom(string start, BundleKey? prefix, BundleLimits limits)
     {
-        foreach (var entry in Walk(start, limits, prefix?.Segments.Count ?? 0))
+        var baseDepth = prefix?.Segments.Count ?? 0;
+        foreach (var entry in Walk(start, string.Empty, baseDepth, limits, new Counter()))
         {
             if (entry.IsDirectory)
             {
@@ -1813,7 +2065,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider
     /// <summary>
     /// With a boundary: the root must be under it, and neither the root nor any entry
     /// between the boundary and the root may be a reparse point or uninspectable — STRICT,
-    /// on every access, because the loader's own ancestor walk stops <i>before</i> the root.
+    /// at every storage access, because the ancestor walk stops <i>before</i> the root.
     /// </summary>
     private void CheckBoundary()
     {
@@ -1845,10 +2097,10 @@ public sealed class FileSystemBundleProvider : IBundleProvider
     }
 
     /// <summary>
-    /// Maps a key to its on-disk path. On a native set that folds case or Unicode form,
-    /// each segment must match an existing entry's name <b>exactly</b> (ordinal) — spec §2's
-    /// correspondence rule — else <see langword="null"/>. On a POSIX set the OS compares bytes
-    /// already, so the joined path is returned as is.
+    /// Maps a key to its on-disk path. On Windows and macOS each segment must match an
+    /// existing entry's name <b>exactly</b> (ordinal) — spec §2's correspondence rule — else
+    /// <see langword="null"/>. On other systems the OS compares bytes already, so the joined
+    /// path is returned as is.
     /// </summary>
     private string? ResolveExact(BundleKey key)
     {
@@ -1896,64 +2148,60 @@ public sealed class FileSystemBundleProvider : IBundleProvider
         return current;
     }
 
+    private sealed class Counter
+    {
+        public int Entries;
+    }
+
     private readonly record struct WalkEntry(string FullPath, string RawName, bool IsDirectory);
 
     /// <summary>
-    /// Depth-first walk, entries sorted ordinally per directory (as <c>Bundle.CollectMarkdown</c> did),
-    /// skipping reparse points with the <b>lenient</b> predicate (a walk must not abort on an
-    /// unreadable entry; the read gate is STRICT). Every entry, file or directory, counts
-    /// against <see cref="BundleLimits.MaxEntries"/>; a file deeper than <see cref="BundleLimits.MaxDepth"/>
-    /// segments (counting from the bundle root, <paramref name="baseDepth"/> segments above <paramref name="start"/>) aborts.
+    /// Depth-first, ordinal per directory, recursive (recursion depth is bounded by
+    /// <see cref="BundleLimits.MaxDepth"/>). Every entry a directory listing returns is
+    /// counted <b>before</b> the reparse-point skip and before sorting, so an oversized
+    /// directory is refused without being materialised. The boundary is re-checked before
+    /// each listing: a lazily consumed enumeration cannot outlive the root it started on.
     /// </summary>
-    private static IEnumerable<WalkEntry> Walk(string start, BundleLimits limits, int baseDepth = 0)
+    private IEnumerable<WalkEntry> Walk(string dir, string rel, int depth, BundleLimits limits, Counter counter)
     {
-        var count = 0;
-        var stack = new Stack<(string Dir, string Rel, int Depth)>();
-        stack.Push((start, string.Empty, baseDepth));
-        while (stack.Count > 0)
+        CheckBoundary();
+        var names = new List<string>();
+        foreach (var full in Directory.EnumerateFileSystemEntries(dir))
         {
-            var (dir, rel, depth) = stack.Pop();
-            string[] names;
-            try
+            if (++counter.Entries > limits.MaxEntries)
             {
-                names = Directory.GetFileSystemEntries(dir).Select(Path.GetFileName).Where(n => n is not null).Select(n => n!).ToArray();
-            }
-            catch (DirectoryNotFoundException)
-            {
-                throw;
+                throw new BundleLimitExceededException("entries", limits.MaxEntries);
             }
 
-            Array.Sort(names, StringComparer.Ordinal);
-            // Push in reverse so the stack yields ordinal order.
-            for (var i = names.Length - 1; i >= 0; i--)
+            names.Add(Path.GetFileName(full));
+        }
+
+        names.Sort(StringComparer.Ordinal);
+        foreach (var name in names)
+        {
+            var full = Path.Combine(dir, name);
+            if (ReparsePoints.IsReparsePoint(full))
             {
-                var name = names[i];
-                var full = Path.Combine(dir, name);
-                var raw = rel.Length == 0 ? name : rel + "/" + name;
-                if (ReparsePoints.IsReparsePoint(full))
-                {
-                    continue;
-                }
+                continue; // lenient: a walk skips, the read gate refuses
+            }
 
-                if (++count > limits.MaxEntries)
-                {
-                    throw new BundleLimitExceededException("entries", limits.MaxEntries);
-                }
+            if (depth + 1 > limits.MaxDepth)
+            {
+                throw new BundleLimitExceededException("depth", limits.MaxDepth);
+            }
 
-                if (depth + 1 > limits.MaxDepth)
+            var raw = rel.Length == 0 ? name : rel + "/" + name;
+            if (Directory.Exists(full))
+            {
+                yield return new WalkEntry(full, raw, true);
+                foreach (var child in Walk(full, raw, depth + 1, limits, counter))
                 {
-                    throw new BundleLimitExceededException("depth", limits.MaxDepth);
+                    yield return child;
                 }
-
-                if (Directory.Exists(full))
-                {
-                    stack.Push((full, raw, depth + 1));
-                    yield return new WalkEntry(full, raw, true);
-                }
-                else if (File.Exists(full))
-                {
-                    yield return new WalkEntry(full, raw, false);
-                }
+            }
+            else if (File.Exists(full))
+            {
+                yield return new WalkEntry(full, raw, false);
             }
         }
     }
@@ -1980,16 +2228,12 @@ public sealed class FileSystemBundleProvider : IBundleProvider
 }
 ```
 
-Two notes for the implementer:
-- `Walk` yields directories **before** descending (the stack pop order makes the yield happen at the parent's turn); the ordinal order test checks files only, but keep directory entries in the stream so `Enumerate` and `GetVersion` count them. The ordering guarantee is per directory, which is all `Bundle.Load` needs since it sorts keys itself.
-- `ReparsePoints.IsWithin`, `CanonicalizeRoot` etc. are `internal` in the same assembly; nothing to expose.
-
-Convert every new/modified source file and the test file to CRLF.
+`ReparsePoints.IsWithin`, `CanonicalizeRoot` etc. are `internal` in the same assembly; nothing to expose. Convert every new/modified source file and the test file to CRLF.
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `dotnet test OKF4net.sln --filter "FullyQualifiedName~FileSystemBundleProviderTests"`
-Expected: green; the `SkippableFact`s run on Windows with symlink privilege and skip elsewhere — on the Windows dev box, confirm **0 skipped** at least once (run as an account that can create symlinks, or with Developer Mode on).
+Expected: green. Run it once as an account that can create symlinks and junctions (Developer Mode on Windows): **0 skipped**, every junction test executed — the review's probes are now these tests.
 
 - [ ] **Step 7: Commit**
 
@@ -1998,10 +2242,12 @@ git add src/OKF4net/Providers/FileSystemBundleProvider.cs src/OKF4net/Providers/
 git commit -F - <<'MSG'
 feat(providers): read-only filesystem provider with STRICT guards and an optional confinement boundary
 
-Lenient walk, STRICT read gate, exact-case key matching on folding volumes,
-SHA-256 object versions, a listing-digest bundle token, entry/depth bounds,
-and the boundary re-checked before every access. Writes are refused and
-declared so; lot B adds them.
+Ordered recursive walk counting every inspected entry before the reparse
+skip and before sorting; a STRICT-guarded enumeration prefix; the boundary
+re-checked at every directory listing, so a lazy enumeration cannot outlive
+its root; exact-case matching keyed on the OS; SHA-256 object versions and
+a listing-digest bundle token. Writes are refused and declared so; lot B
+adds them.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
@@ -2065,7 +2311,6 @@ public class ResourceKeyResolverTests
     [InlineData("/../q.sql")]
     [InlineData("../")]               // resolves to the root itself
     [InlineData("/")]
-    [InlineData(".")]
     [InlineData("")]
     [InlineData("C:\\x.sql")]         // drive forms
     [InlineData("e:q.sql")]
@@ -2077,6 +2322,19 @@ public class ResourceKeyResolverTests
     {
         Assert.Equal(ResourceKeyOutcome.Unsafe, ResourceKeyResolver.Resolve(Concept, raw, out var key));
         Assert.Null(key);
+    }
+
+    [Theory]
+    [InlineData(".")]
+    [InlineData("./")]
+    public void A_bare_dot_names_the_concepts_own_prefix_not_an_escape(string raw)
+    {
+        // Decision 10: lexically this is the prefix `computations`, nothing escapes; the
+        // caller then finds no object under it and reports Missing. From a top-level
+        // concept the prefix is the root, which IS Unsafe (covered by "../" above).
+        Assert.Equal(ResourceKeyOutcome.Candidate, ResourceKeyResolver.Resolve(Concept, raw, out var key));
+        Assert.Equal(BundleKey.Parse("computations"), key);
+        Assert.Equal(ResourceKeyOutcome.Unsafe, ResourceKeyResolver.Resolve(TopLevel, raw, out _));
     }
 
     [Fact]
@@ -2210,19 +2468,23 @@ MSG
 
 **Files:**
 - Create: `src/OKF4net/Providers/BundleLoadOptions.cs`
+- Modify: `src/OKF4net/OkfException.cs` (add a `(message, inner)` constructor) and `src/OKF4net/Bundle.cs`'s `BundleLoadException` (same)
 - Modify: `src/OKF4net/ConceptId.cs` (add `ToKey()` / `FromKey(BundleKey)` next to `ToPath`/`FromPath`, which stay)
-- Modify: `src/OKF4net/Bundle.cs` (`Concept` gains an optional `Key`; new `Load(provider)`; `Load(string)` delegates; new members; `CollectMarkdown` removed — the provider's walk replaces it)
+- Modify: `src/OKF4net/Bundle.cs` (`Concept` gains a non-positional `Key`; new `Load(provider)`; `Load(string)` delegates; new members; `CollectMarkdown` removed)
 - Modify: `src/OKF4net/Validate.cs` (`ValidateReserved` reads through the provider; `ConceptRelativeHint` and the resource existence check use `TryResolveResourceKey`)
-- Create: `tests/OKF4net.Tests/Providers/InMemoryBundleProvider.cs` (test helper, read-only, OS-independent)
+- Modify: `tests/OKF4net.Tests/ValidateTests.cs`, `tests/OKF4net.Tests/Agents/OkfComputationToolsTests.cs` (two migrations, Step 8)
+- Create: `tests/OKF4net.Tests/Providers/InMemoryBundleProvider.cs` (test helper)
 - Test: `tests/OKF4net.Tests/Providers/BundleProviderLoadTests.cs`
 
 **Interfaces:**
-- Consumes: Tasks 1–5; `OKF4net.Internal.PathOrdering.CompareComponentWise` (splits on `/` and `\`, ordinal per segment, shorter first — applied to key texts it yields today's concept order); `OKF4net.Internal.OkfEncodings.Strict`; `DebugQuote.Quote` (wraps in `"…"`).
+- Consumes: Tasks 1–5; `OKF4net.Internal.PathOrdering.CompareComponentWise` (splits on `/` and `\`, ordinal per segment, shorter first — applied to key texts it yields today's concept order); `OKF4net.Internal.OkfEncodings.Strict`; `DebugQuote.Quote`.
 - Produces:
   - `public sealed record BundleLoadOptions { BundleLimits Limits; BundleKeyPolicy KeyPolicy = Strict; IReadOnlyList<Func<BundleKey,string?>>? ExtraKeyValidators; static Default }`.
-  - `ConceptId.ToKey()` → `BundleKey` (`parents…/Name.md`), `static ConceptId FromKey(BundleKey)` (last segment must end with `.md`; throws `ConceptIdException` otherwise, same as `FromPath` does).
-  - `Concept(ConceptId Id, string Path, OkfDocument Document, BundleKey? Key = null)` — `Key` is always set by `Bundle.Load`.
-  - On `Bundle`: `static Bundle Load(IBundleProvider provider, BundleLoadOptions? options = null)`; `IBundleProvider Provider`; `string Location`; `BundleVersion Version`; `BundleLoadOptions Options`; `IReadOnlyList<BundleParseError> ParseProblems`; `IReadOnlyList<BundleKey> IndexKeys`, `LogKeys`; `IReadOnlyDictionary<BundleKey, BundleObjectVersion> ObjectVersions`; `bool TryResolveResourceKey(Concept concept, string rawPath, out BundleKey? key, out ResourceResolutionStatus status)`; `string ReadResourceText(BundleKey key)`. `Root`, `IndexFiles`, `LogFiles`, `ParseErrors`, `TryResolveResource`, `ReadResourceText(string)` are kept with their current behaviour.
+  - `ConceptId.ToKey()` → `BundleKey`; `static ConceptId FromKey(BundleKey)` (throws `ConceptIdException` for a non-`.md` key).
+  - `Concept(ConceptId Id, string Path, OkfDocument Document)` **unchanged** (constructor and `Deconstruct` intact) plus `public BundleKey? Key { get; init; }`, always set by `Bundle.Load`.
+  - `OkfException(string message, Exception inner)` (protected) and `BundleLoadException(string message, Exception inner)`.
+  - On `Bundle`: `static Bundle Load(IBundleProvider provider, BundleLoadOptions? options = null)`; `IBundleProvider Provider`; `string Location`; `BundleVersion Version`; `BundleLoadOptions Options`; `IReadOnlyList<BundleParseError> ParseProblems`; `IReadOnlyList<BundleKey> IndexKeys`, `LogKeys`; `IReadOnlyDictionary<BundleKey, BundleObjectVersion> ObjectVersions`; `IReadOnlySet<BundleKey> RejectedKeys` (tree-rejected keys that parsed — decision 11); `bool TryResolveResourceKey(Concept, string, out BundleKey?, out ResourceResolutionStatus)`; `string ReadResourceText(BundleKey)`. `Root`, `IndexFiles`, `LogFiles`, `ParseErrors`, `TryResolveResource`, `ReadResourceText(string)` keep their current behaviour.
+- Error translation (§7, Global Constraints): every exception that leaves `Bundle` for a provider failure carries a library-authored message naming the key and the exception **type**, never the raw OS text; the raw exception is the `InnerException`.
 
 - [ ] **Step 1: Write the in-memory provider test helper**
 
@@ -2235,9 +2497,11 @@ using OKF4net.Providers;
 namespace OKF4net.Tests.Providers;
 
 /// <summary>
-/// A read-only provider over a dictionary, so loader tests can use names the
-/// host OS could not create (reserved names, case-colliding siblings) and never
-/// touch the disk. Native constraints default to <see cref="BundleKeyConstraints.None"/>.
+/// A read-only provider over a dictionary, so loader tests can use names the host
+/// OS could not create (reserved names, case-colliding siblings) and never touch the
+/// disk. Native constraints default to <see cref="BundleKeyConstraints.None"/>.
+/// <see cref="ObeyLimits"/> is on by default; off, it ignores every bound — the core
+/// must still enforce them (spec §6).
 /// </summary>
 public sealed class InMemoryBundleProvider : IBundleProvider
 {
@@ -2249,15 +2513,13 @@ public sealed class InMemoryBundleProvider : IBundleProvider
         Id = id;
     }
 
+    public bool ObeyLimits { get; init; } = true;
+
+    public Exception? FailReadsWith { get; set; }
+
     public InMemoryBundleProvider Add(string rawName, string text)
     {
         _objects[rawName] = Encoding.UTF8.GetBytes(text);
-        return this;
-    }
-
-    public InMemoryBundleProvider AddBytes(string rawName, byte[] bytes)
-    {
-        _objects[rawName] = bytes;
         return this;
     }
 
@@ -2287,7 +2549,7 @@ public sealed class InMemoryBundleProvider : IBundleProvider
                 continue;
             }
 
-            if (++count > limits.MaxEntries)
+            if (ObeyLimits && ++count > limits.MaxEntries)
             {
                 throw new BundleLimitExceededException("entries", limits.MaxEntries);
             }
@@ -2298,6 +2560,11 @@ public sealed class InMemoryBundleProvider : IBundleProvider
 
     public BundleObject Read(BundleKey key, BundleObjectVersion? expected = null)
     {
+        if (FailReadsWith is { } failure)
+        {
+            throw failure;
+        }
+
         if (!_objects.TryGetValue(key.ToString(), out var bytes))
         {
             throw new BundleObjectNotFoundException(key);
@@ -2332,8 +2599,10 @@ namespace OKF4net.Tests.Providers;
 
 public class BundleProviderLoadTests
 {
+    // 79 UTF-8 bytes; the "big" fixtures below are 115 and 227 — the bound used with them is 100.
     private const string Orders = "---\ntype: Table\ntitle: Orders\ndescription: One row per order.\n---\n\nSee [customers](/tables/customers.md).\n";
     private const string Customers = "---\ntype: Table\ntitle: Customers\ndescription: One row per customer.\n---\n\nBody.\n";
+    private const string Broken = "---\ntype: Note\nk: *a\n---\nbody\n"; // a YAML alias: the subset rejects it → ParseErrors
 
     private static string Sha(string s) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(s)));
 
@@ -2345,7 +2614,7 @@ public class BundleProviderLoadTests
         tmp.Write("tables/orders.md", Orders);
         tmp.Write("tables/customers.md", Customers);
         tmp.Write("tables/log.md", "# Log\n\n## 2026-01-01\n\n- x\n");
-        tmp.Write("tables/broken.md", "---\ntype: Note\nk: *a\n---\nbody\n"); // a YAML alias: the subset rejects it, so it lands in ParseErrors
+        tmp.Write("tables/broken.md", Broken);
         var byPath = Bundle.Load(tmp.Path);
         var provider = new FileSystemBundleProvider(tmp.Path);
         var byProvider = Bundle.Load(provider);
@@ -2356,6 +2625,7 @@ public class BundleProviderLoadTests
         Assert.Equal(byPath.IndexFiles, byProvider.IndexFiles);
         Assert.Equal(byPath.LogFiles, byProvider.LogFiles);
         Assert.Equal(byPath.ParseErrors, byProvider.ParseErrors);
+        Assert.Single(byPath.ParseErrors);
         Assert.Equal(byPath.OkfVersion, byProvider.OkfVersion);
         Assert.Equal(byPath.Root, byProvider.Root);
         var orders = ConceptId.Parse("tables/orders");
@@ -2369,9 +2639,21 @@ public class BundleProviderLoadTests
         Assert.Equal(new BundleObjectVersion(Sha(Orders)), byProvider.ObjectVersions[BundleKey.Parse("tables/orders.md")]);
         Assert.Equal([BundleKey.Parse("index.md")], byProvider.IndexKeys);
         Assert.Equal([BundleKey.Parse("tables/log.md")], byProvider.LogKeys);
-        // Load(string) sets the new members too.
-        Assert.NotNull(byPath.Provider);
+        Assert.NotNull(byPath.Provider); // Load(string) sets the new members too
         Assert.Equal(BundleKey.Parse("tables/orders.md"), byPath.Get(orders)!.Key);
+    }
+
+    [Fact]
+    public void Concept_keeps_its_three_positional_parameters()
+    {
+        var doc = OkfDocument.Parse(Customers);
+        var concept = new Concept(ConceptId.Parse("a"), "a.md", doc);
+        var (id, path, document) = concept; // Deconstruct(3) still exists
+        Assert.Equal(ConceptId.Parse("a"), id);
+        Assert.Equal("a.md", path);
+        Assert.Same(doc, document);
+        Assert.Null(concept.Key);
+        Assert.Equal(BundleKey.Parse("a.md"), (concept with { Key = BundleKey.Parse("a.md") }).Key);
     }
 
     [Fact]
@@ -2399,40 +2681,84 @@ public class BundleProviderLoadTests
         var strict = Bundle.Load(p);
         Assert.Empty(strict.Concepts);
         Assert.Equal(2, strict.ParseProblems.Count);
+        Assert.Contains(BundleKey.Parse("A/x.md"), strict.RejectedKeys);
         var native = Bundle.Load(p, new BundleLoadOptions { KeyPolicy = BundleKeyPolicy.Native });
         Assert.Equal(2, native.Concepts.Count);
         Assert.Empty(native.ParseProblems);
+        Assert.Empty(native.RejectedKeys);
+    }
+
+    [Fact]
+    public void Tree_rejected_objects_stay_rejected_for_resources_and_the_root_index()
+    {
+        var p = new InMemoryBundleProvider()
+            .Add("c/rev.md", "---\ntype: Attested Computation\n---\n")
+            .Add("A/x.sql", "outside tree x")
+            .Add("a/y.sql", "y")
+            .Add("index.md", "---\nokf_version: \"0.2\"\n---\n")
+            .Add("INDEX.md", "# shadow\n");
+        var bundle = Bundle.Load(p);
+        var concept = bundle.Get(ConceptId.Parse("c/rev"))!;
+        bundle.TryResolveResourceKey(concept, "/A/x.sql", out var key, out var status);
+        Assert.Equal(ResourceResolutionStatus.Unsafe, status); // Exists would say yes; the tree said no
+        Assert.Null(key);
+        Assert.Empty(bundle.IndexKeys);
+        Assert.Null(bundle.OkfVersion); // a rejected root index declares nothing
+        Assert.Equal(4, bundle.ParseProblems.Count);
     }
 
     [Fact]
     public void A_concept_over_the_object_bound_becomes_a_parse_problem_and_the_load_goes_on()
     {
-        var big = "---\ntype: T\n---\n" + new string('x', 100);
+        var big = "---\ntype: T\n---\n" + new string('x', 100); // 115 bytes
         var p = new InMemoryBundleProvider().Add("big.md", big).Add("ok.md", Customers);
-        var bundle = Bundle.Load(p, new BundleLoadOptions { Limits = new BundleLimits { MaxObjectBytes = 64 } });
+        var bundle = Bundle.Load(p, new BundleLoadOptions { Limits = new BundleLimits { MaxObjectBytes = 100 } });
         Assert.Equal([ConceptId.Parse("ok")], bundle.Concepts.Select(c => c.Id));
         var problem = Assert.Single(bundle.ParseProblems);
         Assert.Equal(BundleKey.Parse("big.md"), problem.Key);
-        Assert.Contains("64", problem.Error);
+        Assert.Contains("100", problem.Error);
     }
 
     [Fact]
     public void A_root_index_over_the_bound_gives_no_declared_version()
     {
         var p = new InMemoryBundleProvider()
-            .Add("index.md", "---\nokf_version: \"0.2\"\n---\n" + new string('#', 200))
+            .Add("index.md", "---\nokf_version: \"0.2\"\n---\n" + new string('#', 200)) // 227 bytes
             .Add("ok.md", Customers);
-        var bundle = Bundle.Load(p, new BundleLoadOptions { Limits = new BundleLimits { MaxObjectBytes = 64 } });
+        var bundle = Bundle.Load(p, new BundleLoadOptions { Limits = new BundleLimits { MaxObjectBytes = 100 } });
         Assert.Null(bundle.OkfVersion);
         Assert.Single(bundle.IndexKeys);
     }
 
     [Fact]
-    public void The_entry_bound_aborts_the_load()
+    public void The_core_enforces_entries_depth_and_key_bytes_even_when_the_provider_does_not()
     {
-        var p = new InMemoryBundleProvider().Add("a.md", Customers).Add("b.md", Customers);
-        var ex = Assert.Throws<BundleLoadException>(() => Bundle.Load(p, new BundleLoadOptions { Limits = new BundleLimits { MaxEntries = 1 } }));
+        var entries = new InMemoryBundleProvider { ObeyLimits = false }.Add("a.md", Customers).Add("b.md", Customers);
+        var ex = Assert.Throws<BundleLoadException>(() => Bundle.Load(entries, new BundleLoadOptions { Limits = new BundleLimits { MaxEntries = 1 } }));
         Assert.Contains("entries", ex.Message);
+
+        var depth = new InMemoryBundleProvider { ObeyLimits = false }.Add("a/b/c.md", Customers);
+        var dex = Assert.Throws<BundleLoadException>(() => Bundle.Load(depth, new BundleLoadOptions { Limits = new BundleLimits { MaxDepth = 2 } }));
+        Assert.Contains("depth", dex.Message);
+
+        var longKey = new InMemoryBundleProvider { ObeyLimits = false }.Add("longname.md", Customers).Add("ok.md", Customers);
+        var bundle = Bundle.Load(longKey, new BundleLoadOptions { Limits = new BundleLimits { MaxKeyBytes = 6 } });
+        Assert.Equal([ConceptId.Parse("ok")], bundle.Concepts.Select(c => c.Id));
+        var problem = Assert.Single(bundle.ParseProblems);
+        Assert.Equal("longname.md", problem.RawName);
+        Assert.Contains("6", problem.Error);
+    }
+
+    [Fact]
+    public void Provider_failures_are_translated_and_keep_the_raw_exception_inside()
+    {
+        var p = new InMemoryBundleProvider().Add("a.md", Customers);
+        p.FailReadsWith = new IOException("secret-token=123 host=C:/private signed-url=https://private/?sig=secret");
+        var ex = Assert.Throws<BundleLoadException>(() => Bundle.Load(p));
+        Assert.DoesNotContain("secret", ex.Message);
+        Assert.Contains("'a.md'", ex.Message);
+        Assert.Contains(nameof(IOException), ex.Message);
+        Assert.Contains("secret-token", ex.InnerException!.Message);
     }
 
     [Fact]
@@ -2469,6 +2795,9 @@ public class BundleProviderLoadTests
         bundle.TryResolveResourceKey(concept, "references/missing.sql", out key, out status);
         Assert.Equal(ResourceResolutionStatus.Missing, status);
         Assert.Equal(BundleKey.Parse("references/missing.sql"), key);
+
+        bundle.TryResolveResourceKey(concept, ".", out key, out status);
+        Assert.Equal(ResourceResolutionStatus.Missing, status); // the prefix `computations` is no object
 
         bundle.TryResolveResourceKey(concept, "../../q.sql", out key, out status);
         Assert.Equal(ResourceResolutionStatus.Unsafe, status);
@@ -2521,7 +2850,9 @@ public class BundleProviderLoadTests
 Run: `dotnet test OKF4net.sln --filter "FullyQualifiedName~BundleProviderLoadTests"`
 Expected: build error — `BundleLoadOptions`, `Bundle.Load(IBundleProvider, …)`, `Concept.Key` do not exist.
 
-- [ ] **Step 4: Add `BundleLoadOptions`**
+- [ ] **Step 4: Add `BundleLoadOptions`, and the inner-exception constructors**
+
+`src/OKF4net/Providers/BundleLoadOptions.cs`:
 
 ```csharp
 // SPDX-License-Identifier: LGPL-3.0-or-later
@@ -2542,6 +2873,26 @@ public sealed record BundleLoadOptions
     /// <summary>Host validators that may only restrict further; each returns a reason or <see langword="null"/>.</summary>
     public IReadOnlyList<Func<BundleKey, string?>>? ExtraKeyValidators { get; init; }
 }
+```
+
+In `src/OKF4net/OkfException.cs`, add beside the existing constructor:
+
+```csharp
+    /// <summary>Creates an exception with a library-authored message and the raw cause as <see cref="Exception.InnerException"/>.</summary>
+    protected OkfException(string message, Exception inner)
+        : base(message, inner)
+    {
+    }
+```
+
+In `src/OKF4net/Bundle.cs`, `BundleLoadException` gets the matching constructor:
+
+```csharp
+    /// <summary>Creates the exception with the raw provider failure as <see cref="Exception.InnerException"/> (the host-log channel, spec §7).</summary>
+    public BundleLoadException(string message, Exception inner)
+        : base(message, inner)
+    {
+    }
 ```
 
 - [ ] **Step 5: Add the key bridges to `ConceptId`** (after `ToPath`)
@@ -2574,14 +2925,18 @@ public sealed record BundleLoadOptions
 
 - [ ] **Step 6: Rework `Bundle.cs`**
 
-Replace the `Concept` record:
+Replace the `Concept` record (positional parameters unchanged):
 
 ```csharp
-/// <summary>A loaded concept: its id, its display path (spec §8's rule), its document, and its key in the provider (always set by <see cref="Bundle.Load(IBundleProvider, BundleLoadOptions?)"/>).</summary>
-public sealed record Concept(ConceptId Id, string Path, OkfDocument Document, OKF4net.Providers.BundleKey? Key = null);
+/// <summary>A loaded concept: its id, its display path (spec §8's rule), and its document.</summary>
+public sealed record Concept(ConceptId Id, string Path, OkfDocument Document)
+{
+    /// <summary>The concept's key in its provider; set by <see cref="Bundle.Load(OKF4net.Providers.IBundleProvider, OKF4net.Providers.BundleLoadOptions?)"/>, <see langword="null"/> for a hand-built instance.</summary>
+    public OKF4net.Providers.BundleKey? Key { get; init; }
+}
 ```
 
-Add `using OKF4net.Providers;` at the top. Replace the private constructor and `Load(string)` with:
+Add `using OKF4net.Providers;` at the top of `Bundle.cs`. Replace the private constructor and `Load(string)` with:
 
 ```csharp
     private Bundle(
@@ -2595,6 +2950,7 @@ Add `using OKF4net.Providers;` at the top. Replace the private constructor and `
         List<BundleKey> indexKeys,
         List<BundleKey> logKeys,
         List<BundleParseError> parseProblems,
+        HashSet<BundleKey> rejectedKeys,
         Dictionary<BundleKey, BundleObjectVersion> objectVersions,
         Dictionary<ConceptId, List<ResolvedLink>> outbound,
         Dictionary<ConceptId, List<ConceptId>> backlinks)
@@ -2612,6 +2968,7 @@ Add `using OKF4net.Providers;` at the top. Replace the private constructor and `
         LogFiles = logKeys.Select(k => BundleDisplayPath.Compose(provider.Location, k)).ToList();
         ParseProblems = parseProblems;
         ParseErrors = parseProblems.Select(p => (DisplayPathOf(provider.Location, p), p.Error)).ToList();
+        RejectedKeys = rejectedKeys;
         ObjectVersions = objectVersions;
         _outbound = outbound;
         _backlinks = backlinks;
@@ -2641,14 +2998,14 @@ Add `using OKF4net.Providers;` at the top. Replace the private constructor and `
     }
 
     /// <summary>
-    /// Loads a bundle through <paramref name="provider"/> (spec §1, §2, §6): lists the
-    /// raw names, validates them as a tree under <paramref name="options"/>' policy,
-    /// reads every <c>.md</c> object within the bounds, parses the concepts and builds
-    /// the link graph. Permissive (§11): a rejected name, an oversized or unparseable
-    /// concept goes to <see cref="ParseProblems"/>; only a provider failure or a global
-    /// bound (entries, depth) throws.
+    /// Loads a bundle through <paramref name="provider"/> (spec §1, §2, §6): streams the
+    /// raw names under the entry bound, validates them as a tree under <paramref name="options"/>'
+    /// policy, applies the depth and key-length bounds itself, reads every <c>.md</c> object
+    /// within the byte bound, parses the concepts and builds the link graph. Permissive (§11):
+    /// a rejected name, an oversized or unparseable concept goes to <see cref="ParseProblems"/>;
+    /// only a provider failure or a global bound (entries, depth) throws.
     /// </summary>
-    /// <exception cref="BundleLoadException">The provider failed, refused the access, or a global bound was exceeded.</exception>
+    /// <exception cref="BundleLoadException">The provider failed, refused the access, or a global bound was exceeded. The raw cause is the inner exception.</exception>
     public static Bundle Load(IBundleProvider provider, BundleLoadOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(provider);
@@ -2656,30 +3013,43 @@ Add `using OKF4net.Providers;` at the top. Replace the private constructor and `
         var limits = options.Limits;
         var validator = new BundleKeyValidator(provider.NativeConstraints, options.KeyPolicy, options.ExtraKeyValidators);
 
-        List<BundleListing> listing;
+        // The listing is consumed under the core's own entry bound, whatever the provider does.
+        var rawNames = new List<string>();
         BundleVersion version;
         try
         {
-            listing = provider.Enumerate(null, limits).ToList();
+            var count = 0;
+            foreach (var listing in provider.Enumerate(null, limits))
+            {
+                if (++count > limits.MaxEntries)
+                {
+                    throw new BundleLimitExceededException("entries", limits.MaxEntries);
+                }
+
+                rawNames.Add(listing.RawName);
+            }
+
             version = provider.GetVersion(limits);
         }
         catch (BundleProviderException e)
         {
-            throw new BundleLoadException(e.Message);
+            throw new BundleLoadException(e.Message, e);
         }
-        catch (IOException e)
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            throw new BundleLoadException($"I/O error: {e.Message}");
-        }
-        catch (UnauthorizedAccessException e)
-        {
-            throw new BundleLoadException($"I/O error: {e.Message}");
+            throw new BundleLoadException($"I/O error while listing the bundle ({e.GetType().Name})", e);
         }
 
         var parseProblems = new List<BundleParseError>();
-        var tree = validator.ValidateTree(listing.Select(l => l.RawName));
+        var rejectedKeys = new HashSet<BundleKey>();
+        var tree = validator.ValidateTree(rawNames);
         foreach (var rejection in tree.Rejected)
         {
+            if (BundleKey.TryParse(rejection.RawName, out var rejectedKey, out _))
+            {
+                rejectedKeys.Add(rejectedKey);
+            }
+
             // Only a .md name is diagnosed (spec §2, enumeration scope); other names were never examined.
             if (MarkdownPaths.HasMarkdownExtension(rejection.RawName))
             {
@@ -2687,7 +3057,32 @@ Add `using OKF4net.Providers;` at the top. Replace the private constructor and `
             }
         }
 
-        var mdKeys = tree.Accepted.Where(k => k.IsMarkdown).ToList();
+        // The core's depth and key-length bounds, independent of the provider's (spec §6).
+        var mdKeys = new List<BundleKey>();
+        foreach (var key in tree.Accepted)
+        {
+            if (key.Segments.Count > limits.MaxDepth)
+            {
+                throw new BundleLoadException($"the bundle exceeds the depth bound ({limits.MaxDepth})");
+            }
+
+            if (key.Utf8ByteCount > limits.MaxKeyBytes)
+            {
+                rejectedKeys.Add(key);
+                if (key.IsMarkdown)
+                {
+                    parseProblems.Add(new BundleParseError(key.ToString(), key, $"key is longer than the {limits.MaxKeyBytes}-byte bound"));
+                }
+
+                continue;
+            }
+
+            if (key.IsMarkdown)
+            {
+                mdKeys.Add(key);
+            }
+        }
+
         mdKeys.Sort((a, b) => PathOrdering.CompareComponentWise(a.ToString(), b.ToString()));
 
         var concepts = new List<Concept>();
@@ -2720,15 +3115,11 @@ Add `using OKF4net.Providers;` at the top. Replace the private constructor and `
                         }
                         catch (BundleProviderException e)
                         {
-                            throw new BundleLoadException(e.Message);
+                            throw new BundleLoadException(e.Message, e);
                         }
-                        catch (IOException e)
+                        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
                         {
-                            throw new BundleLoadException($"I/O error: {e.Message}");
-                        }
-                        catch (UnauthorizedAccessException e)
-                        {
-                            throw new BundleLoadException($"I/O error: {e.Message}");
+                            throw new BundleLoadException($"I/O error reading '{key}' ({e.GetType().Name})", e);
                         }
                         catch (System.Text.DecoderFallbackException)
                         {
@@ -2749,7 +3140,7 @@ Add `using OKF4net.Providers;` at the top. Replace the private constructor and `
                         try
                         {
                             var id = ConceptId.FromKey(key);
-                            concepts.Add(new Concept(id, BundleDisplayPath.Compose(provider.Location, key), document, key));
+                            concepts.Add(new Concept(id, BundleDisplayPath.Compose(provider.Location, key), document) { Key = key });
                         }
                         catch (ConceptIdException e)
                         {
@@ -2768,9 +3159,9 @@ Add `using OKF4net.Providers;` at the top. Replace the private constructor and `
         }
 
         var (outbound, backlinks) = BuildGraph(concepts, index);
-        var okfVersion = ComputeOkfVersion(provider, limits);
+        var okfVersion = ComputeOkfVersion(provider, limits, indexKeys);
 
-        return new Bundle(provider, options, validator, version, okfVersion, concepts, index, indexKeys, logKeys, parseProblems, objectVersions, outbound, backlinks);
+        return new Bundle(provider, options, validator, version, okfVersion, concepts, index, indexKeys, logKeys, parseProblems, rejectedKeys, objectVersions, outbound, backlinks);
     }
 
     /// <summary>Reads one object as strict UTF-8, counting bytes against the bound (spec §6) whatever the provider says.</summary>
@@ -2797,12 +3188,17 @@ Add `using OKF4net.Providers;` at the top. Replace the private constructor and `
     }
 ```
 
-Replace `ComputeOkfVersion` (the instance method) with a static one reading through the provider; every failure, including a too-large or refused root index, means "no declared version", as today:
+Replace the instance `ComputeOkfVersion` with a static one that reads the root index **only if the tree accepted it** (decision 11: a rejected `index.md` declares nothing) and treats every failure as "no declared version", as today:
 
 ```csharp
-    private static string? ComputeOkfVersion(IBundleProvider provider, BundleLimits limits)
+    private static string? ComputeOkfVersion(IBundleProvider provider, BundleLimits limits, List<BundleKey> indexKeys)
     {
         var key = BundleKey.Parse(IndexFilename);
+        if (!indexKeys.Contains(key))
+        {
+            return null;
+        }
+
         string text;
         try
         {
@@ -2827,7 +3223,7 @@ Replace `ComputeOkfVersion` (the instance method) with a static one reading thro
     }
 ```
 
-Delete `CollectMarkdown` (the provider's walk replaces it). Add the new members next to `Root`:
+Delete `CollectMarkdown`. Add the new members next to `Root`:
 
 ```csharp
     /// <summary>The provider this bundle was loaded from (spec §1).</summary>
@@ -2851,21 +3247,25 @@ Delete `CollectMarkdown` (the provider's walk replaces it). Add the new members 
     /// <summary>Every problem met while loading (spec §2): rejected names, oversized or unparseable concepts. <see cref="ParseErrors"/> is its display-path projection.</summary>
     public IReadOnlyList<BundleParseError> ParseProblems { get; }
 
+    /// <summary>Keys the tree validation or the key-length bound rejected (spec §2): they stay rejected for <see cref="TryResolveResourceKey"/> even though the provider may still hold them.</summary>
+    public IReadOnlySet<BundleKey> RejectedKeys { get; }
+
     /// <summary>The version of every concept object read at load time (spec §5.1).</summary>
     public IReadOnlyDictionary<BundleKey, BundleObjectVersion> ObjectVersions { get; }
 
     private readonly BundleKeyValidator _validator;
 ```
 
-Change `Root` to `public string Root => Provider.Location;` (same value as before for the filesystem: the root as given). Keep `IndexFiles`, `LogFiles`, `ParseErrors`, `Concepts`, `Count`, `IsEmpty`, `Get`, `Contains`, `LinksFrom`, `Backlinks`, `BrokenLinks`, `OkfVersion` unchanged. Keep `TryResolveResource` and `ReadResourceText(string)` **exactly as they are** (they read `Root`, which still is the filesystem root; lot D retires them). Add, after `ReadResourceText(string)`:
+Change `Root` to `public string Root => Provider.Location;`. Keep `IndexFiles`, `LogFiles`, `ParseErrors`, `Concepts`, `Count`, `IsEmpty`, `Get`, `Contains`, `LinksFrom`, `Backlinks`, `BrokenLinks`, `OkfVersion`, `TryResolveResource` and `ReadResourceText(string)` **exactly as they are** (the last two still read `Root`, the filesystem root; lot D retires them). Every `<see cref="Load"/>` in existing doc comments becomes `<see cref="Load(string)"/>` (the overload makes the bare name ambiguous: CS0419). Add, after `ReadResourceText(string)`:
 
 ```csharp
     /// <summary>
     /// Resolves a §6.2 path-valued field to a key (spec §2): lexically, through
-    /// <see cref="ResourceKeyResolver"/>, then the key policy, then the provider's
-    /// <see cref="IBundleProvider.Exists"/>. Never throws (§11, permissive): a
-    /// provider refusal reads as <see cref="ResourceResolutionStatus.Unsafe"/>.
-    /// Always returns <see langword="true"/>, like <see cref="TryResolveResource"/>.
+    /// <see cref="ResourceKeyResolver"/>, then the key policy, then — unless the tree
+    /// validation rejected that key at load time — the provider's <see cref="IBundleProvider.Exists"/>.
+    /// Never throws (§11, permissive): a provider refusal reads as
+    /// <see cref="ResourceResolutionStatus.Unsafe"/>. Always returns <see langword="true"/>,
+    /// like <see cref="TryResolveResource"/>.
     /// </summary>
     public bool TryResolveResourceKey(Concept concept, string rawPath, out BundleKey? key, out ResourceResolutionStatus status)
     {
@@ -2884,7 +3284,7 @@ Change `Root` to `public string Root => Provider.Location;` (same value as befor
                 return true;
         }
 
-        if (_validator.CheckKey(candidate!) is not null)
+        if (_validator.CheckKey(candidate!) is not null || RejectedKeys.Contains(candidate!))
         {
             key = null;
             status = ResourceResolutionStatus.Unsafe;
@@ -2906,8 +3306,9 @@ Change `Root` to `public string Root => Provider.Location;` (same value as befor
     }
 
     /// <summary>
-    /// Reads a resolved resource as strict UTF-8 through the provider, which applies
-    /// the STRICT guards and the confinement boundary (spec §8). A refusal surfaces as
+    /// Reads a resolved resource as strict UTF-8 through the provider, which applies the
+    /// STRICT guards and the confinement boundary (spec §8). Messages are library-authored
+    /// (§7); the raw cause is the inner exception. A refusal surfaces as
     /// <see cref="UnauthorizedAccessException"/> and a missing object as
     /// <see cref="FileNotFoundException"/>, so existing callers classify both as before.
     /// </summary>
@@ -2929,16 +3330,28 @@ Change `Root` to `public string Root => Provider.Location;` (same value as befor
         {
             throw new FileNotFoundException(e.Message, key.ToString(), e);
         }
+        catch (BundleObjectTooLargeException)
+        {
+            throw;
+        }
         catch (BundleProviderException e)
         {
             throw new IOException(e.Message, e);
+        }
+        catch (UnauthorizedAccessException e)
+        {
+            throw new UnauthorizedAccessException($"access to '{key}' was denied ({e.GetType().Name})", e);
+        }
+        catch (IOException e)
+        {
+            throw new IOException($"I/O error reading '{key}' ({e.GetType().Name})", e);
         }
     }
 ```
 
 - [ ] **Step 7: Route `Validate.cs` through the provider**
 
-In `ValidateReserved`, replace the two reads and the root test. The index loop becomes:
+In `ValidateReserved`, the index loop becomes:
 
 ```csharp
         for (var i = 0; i < bundle.IndexKeys.Count; i++)
@@ -2959,7 +3372,7 @@ In `ValidateReserved`, replace the two reads and the root test. The index loop b
             var isRoot = key.Segments.Count == 1;
 ```
 
-and delete the `rootIndex` local. The log loop likewise iterates `bundle.LogKeys` with `bundle.LogFiles[i]` as the display `path` and reads `bundle.ReadResourceText(key)`. In the resource existence check (`foreach (var resource in concept.Document.FrontmatterResources())`), replace `bundle.TryResolveResource(concept, resource.RawPath, out _, out var resolutionStatus);` with `bundle.TryResolveResourceKey(concept, resource.RawPath, out _, out var resolutionStatus);`. Replace `ConceptRelativeHint`'s body:
+and the `rootIndex` local goes. The log loop likewise iterates `bundle.LogKeys` with `bundle.LogFiles[i]` as the display `path` and reads `bundle.ReadResourceText(key)`. In the resource existence check, replace `bundle.TryResolveResource(concept, resource.RawPath, out _, out var resolutionStatus);` with `bundle.TryResolveResourceKey(concept, resource.RawPath, out _, out var resolutionStatus);`. Replace `ConceptRelativeHint`'s body:
 
 ```csharp
     internal static string? ConceptRelativeHint(Bundle bundle, Concept concept, FrontmatterResource resource)
@@ -2982,27 +3395,70 @@ and delete the `rootIndex` local. The log loop likewise iterates `bundle.LogKeys
     }
 ```
 
-`siblingKey.ToString()` is already `/`-joined, which is what the old `Replace('\\', '/')` produced; the hint's bytes do not change. After this, `Validate.cs` has no `File.` or `ReparsePoints.` reference left — `grep -n "File\.\|ReparsePoints\." src/OKF4net/Validate.cs` must print nothing.
+After this, `grep -n "File\.\|ReparsePoints\." src/OKF4net/Validate.cs` prints nothing.
+
+- [ ] **Step 8: Migrate the two existing tests the new path rules change**
+
+The review found exactly these; their security purpose is kept, only the outcome of the input changes.
+
+`tests/OKF4net.Tests/ValidateTests.cs`, `A_rooted_bare_path_gets_no_concept_relative_hint_even_if_a_sibling_file_exists`: a backslash is now `Unsafe` on every OS (spec §2, point 7), so the theory splits —
+
+```csharp
+    [Fact]
+    public void A_rooted_bare_path_gets_no_concept_relative_hint_even_if_a_sibling_file_exists()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("computations/rev.md", "---\ntype: Attested Computation\ntitle: R\ndescription: D\nruntime: python\ncomputation: /query.sql\n---\n");
+        tmp.Write("computations/query.sql", "SELECT 1");
+        tmp.Write("index.md", "---\ntype: Index\ntitle: I\ndescription: D\n---\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        var d = Assert.Single(report.Diagnostics, x => x.Code == DiagnosticCode.FrontmatterPathMissing);
+        Assert.DoesNotContain("a file exists at", d.Message);
+    }
+
+    [Fact]
+    public void A_backslash_rooted_path_is_unsafe_on_every_os_and_gets_no_hint()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("computations/rev.md", "---\ntype: Attested Computation\ntitle: R\ndescription: D\nruntime: python\ncomputation: \\query.sql\n---\n");
+        tmp.Write("computations/query.sql", "SELECT 1");
+        tmp.Write("index.md", "---\ntype: Index\ntitle: I\ndescription: D\n---\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        var d = Assert.Single(report.Diagnostics, x => x.Code == DiagnosticCode.FrontmatterPathUnsafe);
+        Assert.DoesNotContain("a file exists at", d.Message);
+        Assert.DoesNotContain(report.Diagnostics, x => x.Code == DiagnosticCode.FrontmatterPathMissing);
+    }
+```
+
+`tests/OKF4net.Tests/Agents/OkfComputationToolsTests.cs`, `A_frontmatter_value_quoted_by_a_diagnostic_cannot_forge_a_report_line`: the resource value carries a `\n`, which layer 1 now rejects, so the diagnostic is "escapes the bundle" instead of "not found" — the forged `[error]` line still never starts a report line, which is the point. Replace the last assertion:
+
+```csharp
+        Assert.Contains("'s.md [error] forged.md: made up ' escapes the bundle", rendered, StringComparison.Ordinal);
+```
+
+The two `sub\u2028dir/log.md` tests in the same file need **no** change: U+2028 is not a layer-1 control character (decision 7), so the directory still loads.
 
 Convert every touched `.cs` file to CRLF (new files) or verify it still is (modified files).
 
-- [ ] **Step 8: Run the new tests, then the whole suite**
+- [ ] **Step 9: Run the new tests, then the whole suite**
 
 Run: `dotnet test OKF4net.sln --filter "FullyQualifiedName~BundleProviderLoadTests"` → green.
-Run: `dotnet test OKF4net.sln --filter "Category!=ContainerIntegration"` → green, **0 golden diff**. `ConceptSearchTests` still compiles (`new Concept(id, path, doc)` with the optional fourth parameter). If any golden comparison fails, STOP: do not regenerate, report the diff.
+Run: `dotnet test OKF4net.sln --filter "Category!=ContainerIntegration"` → green, **0 golden diff**, no skipped test that was not skipped before. If any golden comparison fails, STOP: do not regenerate, report the diff.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add src/OKF4net/Providers/BundleLoadOptions.cs src/OKF4net/ConceptId.cs src/OKF4net/Bundle.cs src/OKF4net/Validate.cs tests/OKF4net.Tests/Providers/InMemoryBundleProvider.cs tests/OKF4net.Tests/Providers/BundleProviderLoadTests.cs
+git add src/OKF4net/Providers/BundleLoadOptions.cs src/OKF4net/OkfException.cs src/OKF4net/ConceptId.cs src/OKF4net/Bundle.cs src/OKF4net/Validate.cs tests/OKF4net.Tests/ValidateTests.cs tests/OKF4net.Tests/Agents/OkfComputationToolsTests.cs tests/OKF4net.Tests/Providers/InMemoryBundleProvider.cs tests/OKF4net.Tests/Providers/BundleProviderLoadTests.cs
 git commit -F - <<'MSG'
 feat(core): load a bundle through an IBundleProvider; the validator reads through it
 
-Bundle.Load(string) now delegates to the filesystem provider. Keys are
-validated as a tree under the host's policy, objects are read within the
-bounds, concept paths follow the display rule, and the historical members
-(Root, IndexFiles, ParseErrors, TryResolveResource, ReadResourceText(string))
-keep their values. Validate.cs no longer touches the disk directly.
+Bundle.Load(string) now delegates to the filesystem provider. The core
+streams the listing under its own entry bound, validates keys as a tree
+under the host's policy, enforces depth and key length itself, reads
+objects within the byte bound, remembers tree-rejected keys so a later
+resolution cannot rehabilitate them, and translates provider failures into
+library-authored messages. Concept keeps its three positional parameters
+and gains an init-only Key. Validate.cs no longer touches the disk.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
@@ -3108,8 +3564,9 @@ Under `## [Unreleased]`:
   `FileSystemBundleProvider` (read-only in this release),
   `ResourceKeyResolver`, `BundleLoadOptions`, `Bundle.Load(IBundleProvider,
   BundleLoadOptions?)`, and on `Bundle`: `Provider`, `Location`, `Version`,
-  `ParseProblems`, `IndexKeys`/`LogKeys`, `ObjectVersions`,
-  `TryResolveResourceKey`, `ReadResourceText(BundleKey)`; `Concept.Key`;
+  `ParseProblems`, `IndexKeys`/`LogKeys`, `ObjectVersions`, `RejectedKeys`,
+  `TryResolveResourceKey`, `ReadResourceText(BundleKey)`; `Concept.Key`
+  (init-only; the three-parameter constructor is unchanged);
   `ConceptId.ToKey`/`FromKey`. Every existing member keeps its value.
 
 ### Changed
@@ -3129,9 +3586,16 @@ Under `## [Unreleased]`:
   `references/a.sql` no longer resolves `References/A.sql`; it is `Missing`.
 - **A backslash in a §6.2 path-valued field is `Unsafe`** on every OS;
   `references\a.sql` resolved on Windows before.
-- **NFC under invariant globalization**: in the Native AOT `okf`/`okf-render`
-  binaries, `string.Normalize` is a no-op, so `Strict` refuses non-ASCII names
-  there (with a reason saying why) instead of pretending they are NFC.
+- **NFC is decided by a quick check, never by `string.Normalize`** (a silent
+  no-op in the Native AOT `okf`/`okf-render` binaries): under `Strict`, a name
+  containing a character that is never NFC (e.g. U+212B) or a combining mark
+  that could compose (a decomposed `é`) is rejected with the code point named;
+  precomposed names (`café.sql`) pass everywhere, library and binaries alike.
+  Two non-composing marks in the wrong canonical order are not detected
+  (documented residual).
+- **Provider I/O failures are translated**: a `BundleLoadException` or an
+  `IOException` leaving `Bundle` names the key and the exception type, never
+  the raw OS text, which is kept as `InnerException` for the host's log.
 ```
 
 - [ ] **Step 5: Commit**
@@ -3154,7 +3618,7 @@ MSG
 - [ ] **Step 1: `CLAUDE.md`** — in the `Internal/ReparsePoints.cs` bullet, replace `three walks (`Bundle.cs:500`, the load walk `CollectMarkdown`, and the two `IndexGenerator` walks)` with `three walks (`Providers/FileSystemBundleProvider.Walk`, the load walk that replaced `Bundle.CollectMarkdown`, and the two `IndexGenerator` walks)`, and keep the sentence about `TryResolveResource` (it is unchanged in this lot). Add a bullet after the `Internal/AuditText.cs` one:
 
 ```markdown
-  - `Providers/` — the storage seam under `Bundle` (design: `docs/superpowers/specs/2026-10-07-bundle-provider-seam-design.md`, lot A). `IBundleProvider` is a key space of byte objects that knows nothing of concepts; the core validates every raw name as a **tree** (`BundleKeyValidator`: base rules, the provider's `NativeConstraints`, the host's `BundleKeyPolicy` — `Strict` by default and never below `Native`), enforces the `BundleLimits` by counting bytes itself, resolves §6.2 paths lexically on keys (`ResourceKeyResolver`, never dereferencing a URL), and keeps the historical members (`Concept.Path`, `Bundle.Root`, `ParseErrors`) as projections of the new ones by the display rule (`BundleDisplayPath`: location + OS separator + segments, byte-identical to the old `Path.Combine`). `FileSystemBundleProvider` is the default and read-only until lot B; with a confinement boundary it re-checks the chain boundary→root STRICTly before **every** access, because the ancestor walk stops before the root. Under `InvariantGlobalization` `string.Normalize` is a silent no-op, so `BundleKeyValidator.NormalizationAvailable` fails NFC closed (non-ASCII refused with a reason) rather than pretending.
+  - `Providers/` — the storage seam under `Bundle` (design: `docs/superpowers/specs/2026-10-07-bundle-provider-seam-design.md`, lot A). `IBundleProvider` is a key space of byte objects that knows nothing of concepts; the core validates every raw name as a **tree** (`BundleKeyValidator`: base rules, the provider's `NativeConstraints`, the host's `BundleKeyPolicy` — `Strict` by default and never below `Native`), enforces the `BundleLimits` by counting bytes itself, resolves §6.2 paths lexically on keys (`ResourceKeyResolver`, never dereferencing a URL), and keeps the historical members (`Concept.Path`, `Bundle.Root`, `ParseErrors`) as projections of the new ones by the display rule (`BundleDisplayPath`: location + OS separator + segments, byte-identical to the old `Path.Combine`). `FileSystemBundleProvider` is the default and read-only until lot B; with a confinement boundary it re-checks the chain boundary→root STRICTly before **every** access, because the ancestor walk stops before the root. Under `InvariantGlobalization` `string.Normalize` is a silent no-op, so NFC is decided by `NfcQuickCheck`'s tables (UAX #15's quick check: `NFC_QC=No` plus the derived composing-mark set), never by `Normalize`; the tables are derived from ICU by `NfcQuickCheckTableTests`, which fails with the literal to paste whenever a host normalizer disagrees with them — that test is the tables' executable guard.
 ```
 
 - [ ] **Step 2: Full runs, with numbers**
@@ -3171,12 +3635,14 @@ On Windows, additionally run the `Providers` tests as an account that can create
 
 - [ ] **Step 3: `okf validate` on every sample bundle is byte-identical to `origin/dev`**
 
+Both runs use the **same relative argument** from their own worktree root — the diagnostics print the root as given, so a different argument would diff for no reason.
+
 ```bash
 git worktree add ../okf-dev-ref origin/dev
-for b in bundles/acme_retail bundles/ga4 bundles/attestation_containers_demo bundles/meridian_transit; do
-  dotnet run --project src/OKF4net.Cli -- validate $b > /tmp/new-$(basename $b).txt 2>&1
-  (cd ../okf-dev-ref && dotnet run --project src/OKF4net.Cli -- validate ../$(basename $PWD)/$b > /tmp/old-$(basename $b).txt 2>&1)
-  diff /tmp/old-$(basename $b).txt /tmp/new-$(basename $b).txt && echo "$b identical"
+for b in acme_retail ga4 attestation_containers_demo meridian_transit; do
+  dotnet run --project src/OKF4net.Cli -- validate bundles/$b > /tmp/new-$b.txt 2>&1
+  (cd ../okf-dev-ref && dotnet run --project src/OKF4net.Cli -- validate bundles/$b > /tmp/old-$b.txt 2>&1)
+  diff /tmp/old-$b.txt /tmp/new-$b.txt && echo "$b identical"
 done
 git worktree remove ../okf-dev-ref
 ```
@@ -3190,16 +3656,20 @@ dotnet publish src/OKF4net.Cli -c Release      # Native AOT, InvariantGlobalizat
 dotnet publish src/OKF4net.Render -c Release
 ```
 
-Then, with the published `okf` (`src/OKF4net.Cli/bin/Release/net10.0/<rid>/publish/okf`), build a bundle whose concept name is NFD and run `info`:
+Then, with the published `okf` (`src/OKF4net.Cli/bin/Release/net10.0/<rid>/publish/okf`), build a bundle with an NFD-named concept **and** an ASCII concept referencing an NFC resource — the second is the regression the r1 review found:
 
 ```bash
-mkdir -p /tmp/nfd-probe && printf -- '---\ntype: T\ntitle: t\ndescription: d\n---\n' > "/tmp/nfd-probe/cafe$(printf '\xcc\x81').md"
-./okf info /tmp/nfd-probe
+mkdir -p /tmp/nfc-probe/refs
+printf -- '---\ntype: T\ntitle: t\ndescription: d\n---\n' > "/tmp/nfc-probe/cafe$(printf '\xcc\x81').md"            # NFD name: e + U+0301
+printf -- '---\ntype: T\ntitle: t\ndescription: d\nresource: /refs/caf\xc3\xa9.sql\n---\n' > /tmp/nfc-probe/ok.md   # NFC resource reference
+printf 'select 1' > "/tmp/nfc-probe/refs/caf$(printf '\xc3\xa9').sql"                                           # NFC file name
+./okf info /tmp/nfc-probe
+./okf validate /tmp/nfc-probe
 ```
 
-Expected: `unparseable files:` lists the file with a reason containing `normalization is unavailable` — the fail-closed branch of `BundleKeyValidator.CheckSegment` reached for real, in the binary where `Normalize` is a no-op. The same `info` through `dotnet run` (ICU available) must instead say `is not in Unicode NFC`. Record both outputs in the PR description. If the AOT binary lists the concept as loaded, the probe `NormalizationAvailable` is wrong — fix it, never the expectation.
+Expected from the AOT binary: `info` lists `cafe…md` under `unparseable files:` with a reason naming `U+0301`, and counts `ok` as a loaded concept; `validate` reports **no** `escapes the bundle` warning for `café.sql` (it resolves). `dotnet run --project src/OKF4net.Cli -- …` gives the **same** two outputs (the CLI project sets `InvariantGlobalization` unconditionally, and the quick check never consults `Normalize` anyway). Record both in the PR description. If `café.sql` is refused, the quick check is wrong — fix `NfcQuickCheck`/`CheckSegment`, never the expectation.
 
-- [ ] **Step 5: `CHANGELOG.md` `[Unreleased]` has the lot's entries once; `grep -rn "CollectMarkdown" src/OKF4net/Bundle.cs` prints nothing; `grep -n "File\.\|Directory\." src/OKF4net/Bundle.cs src/OKF4net/Validate.cs` prints only `Directory.Exists` in `Bundle.Load(string)`.**
+- [ ] **Step 5: `CHANGELOG.md` `[Unreleased]` has the lot's entries once; `grep -n "CollectMarkdown" src/OKF4net/Bundle.cs` prints nothing; `grep -n "File\.\|Directory\." src/OKF4net/Validate.cs` prints nothing; in `src/OKF4net/Bundle.cs` the same grep prints only `Directory.Exists` in `Load(string)` and the `File.Exists`/`File.ReadAllBytes` of the two kept historical overloads, `TryResolveResource` and `ReadResourceText(string)` — a search is not the proof here; the proof is that every *new* entry point (`Load(provider)`, `TryResolveResourceKey`, `ReadResourceText(BundleKey)`, `ValidateReserved`) reaches storage only through `Provider`, which the `InMemoryBundleProvider` tests establish by never touching the disk.**
 
 - [ ] **Step 6: Commit**
 
