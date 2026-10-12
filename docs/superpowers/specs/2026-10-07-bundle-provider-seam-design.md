@@ -1,6 +1,6 @@
 # Couture « provider de bundle » sous `Bundle` — design
 
-Date : 2026-10-07 (révisé les 2026-10-08, 2026-10-09 et 2026-10-10, révisions 4 et 5)
+Date : 2026-10-07 (révisions 2 à 6, du 2026-10-08 au 2026-10-12)
 Statut : proposé
 Ticket : [#139](https://github.com/jchable/okf4net/issues/139). Chaque décision
 datée citée ici y est consignée en commentaire : du 2026-10-05 au 2026-10-07
@@ -49,6 +49,26 @@ intégrées (§5.1, §5.4) :
 - la reprise après un refus d'épinglage avait disparu entre les révisions 3 et
   4 : le refus **invalide l'image**, et la tentative suivante repart d'un relevé
   à jour.
+
+**Révision 6 (quatrième passe de revue externe, 2026-10-12).** Verdict « prêt
+pour un plan après trois corrections ciblées » ; D6 et la reprise sont
+vérifiées. Intégré :
+
+- **l'acquittement de l'invalidation** : un refus crée une obligation de
+  rechargement, acquittée seulement par un chargement réussi commencé après le
+  refus ; un chargement en cours ou un chargement échoué la laissent pendante
+  (§5.1, §5.2) ;
+- **la priorité des erreurs** : « ne fait jamais échouer le chargement » devient
+  une règle locale aux ressources ; un échec global du §6 ou du plafond #151
+  interrompt toujours le chargement (§5.1) ;
+- **`BundleWriteReport` et les résultats existants** : `VerificationOutcome`
+  enrichi, `MemoryDeleteResult` remplacé, choix comparé type par type (§1,
+  §10) ;
+- les propres écritures et les conflits sont nommés comme les deux autres
+  exceptions à la politique de rafraîchissement, et `Undeclared`/`Url` sous
+  `Manual` demandent un `Refresh()` de l'hôte (§5.1) ;
+- la portée réelle de D6 dans les tests : le helper `InlineComputation` et ses
+  seize usages, pas un seul test (§5.1).
 
 **Révision 3 (revue externe, 2026-10-09).** Une revue externe adversariale de la
 version 2, qui a exécuté des programmes jetables sur le code actuel, concluait
@@ -268,7 +288,24 @@ capacité d'écriture.
 liste les objets écrits (ou supprimés) et les objets en échec avec leur raison.
 `RecordVerifications`, la surcharge provider de `RegenerateIndexes` et la
 suppression d'un scope mémoire l'exposent, de sorte que le format n'est pas
-réinventé par chaque implémentation (§4, §9).
+réinventé par chaque implémentation (§4, §9). Son intégration aux types de
+résultat existants n'est pas uniforme, et le choix est fait par type (révision
+6) :
+
+- **`VerificationOutcome` est enrichi**, jamais remplacé : il gagne une
+  propriété `Report`. `Recorded`/`Records` et `Report` répondent à deux
+  questions différentes (« le tampon est-il enregistré » et « l'écriture
+  a-t-elle atterri »), `Message` alimente la sortie golden d'`okf verify`, et
+  `VerificationRecord.ReplacedAt` n'a pas de place dans un rapport générique.
+  Aucun appelant ne change.
+- **`MemoryDeleteResult` est remplacé.** Son `TiersDeleted` compte aujourd'hui
+  des répertoires supprimés. Après la couture, un tier est un préfixe dont les
+  clés sont supprimées une à une : le compteur n'a plus d'unité, et « un tier
+  compte seulement si toutes ses clés sont parties » rendrait 0 après avoir
+  supprimé quarante objets. Le type devient
+  `MemoryDeleteResult(IReadOnlyList<MemoryTierDeletion> Tiers, string? Error)`,
+  chaque tier portant son `BundleWriteReport`. C'est un changement cassant de
+  `IMemoryStore` (§10).
 
 ### 2. Les clés : `BundleKey`, en trois couches
 
@@ -556,10 +593,15 @@ entier. Elle porte :
 - l'état de chaque **ressource exécutable référencée par un concept §10**
   (fichier de computation, attester), relevé au chargement (§5.4).
 
-**Le relevé des ressources exécutables ne fait jamais échouer le chargement.**
-Le chargement reste permissif (§11) : un problème sur une ressource ne retire
-pas le concept de l'image, et n'empêche ni la lecture, ni la validation, ni
-l'audit. Chaque ressource reçoit l'un de ces états :
+**Un problème propre à une ressource ne fait pas échouer le chargement.** Le
+chargement reste permissif (§11) : un état négatif d'une ressource ne retire pas
+le concept de l'image, et n'empêche ni la lecture, ni la validation, ni l'audit.
+La règle est **locale** : elle ne couvre pas les échecs globaux du §6 (délai
+réseau, borne d'entrées, profondeur) ni le plafond mémoire de #151, qui
+interrompent le chargement entier, relevé compris, comme ils le feraient sans
+lui. Un délai dépassé pendant le relevé d'un attester est donc un échec de
+chargement, pas un état `Unreadable` ; l'image précédente reste servie, marquée
+périmée (§5.2). Chaque ressource reçoit l'un de ces états :
 
 | État | Cas | Conséquence |
 |---|---|---|
@@ -585,22 +627,39 @@ l'hôte puissent tenir pour le code d'attestation effectivement exécuté. C'est
 changement de sens du §10.5 pour cette implémentation, à consigner au §10 et
 dans `docs/spec-conformance/`. Son périmètre réel est étroit : les six
 computations des bundles du dépôt déclarent toutes un attester en fichier, et
-`ContainerAttester` refuse déjà un `AttesterSourceText` nul. Le test
-`Absent_attester_declaration_yields_null_source_text_not_a_failure` pin le
-comportement actuel et change de sens avec lui.
+`ContainerAttester` refuse déjà un `AttesterSourceText` nul. Côté tests, le
+changement de sens touche plus que le seul
+`Absent_attester_declaration_yields_null_source_text_not_a_failure` : le
+helper `InlineComputation` d'`AttestationOrchestratorTests` construit une
+computation **sans** attester et sert seize tests, dont `Happy_path_is_displayable`.
+Il doit recevoir un attester (sur le modèle d'`InlineComputationWithAttesterFile`)
+pour que ces tests continuent de tester leur objet initial au lieu de rougir
+sur D6.
 
 **Reprise après un refus d'épinglage.** Un refus pour version changée (`Pinned`
 dont la relecture avec `expected` échoue) ou pour un état négatif (`Missing`,
-`Unreadable`, `TooLarge`, `Unsafe`) **invalide l'image** : le prochain accès la
-recharge et relève à nouveau chaque ressource. C'est la seule situation où le
-cœur rafraîchit sans que la politique (`Manual` comprise) le demande, et le
-message de refus le dit. Aucune réexécution automatique, aucune modification
-des observations de la session : si la computation ou le concept ont changé
-aussi, la relecture par le modèle reste nécessaire. Une ressource créée ou
-corrigée après le chargement est ainsi reprise au chargement suivant, sans
-intervention de l'hôte. `Undeclared` et `Url` ne déclenchent pas
-d'invalidation : seul un changement du concept peut les faire évoluer, et il
-passe par les observations.
+`Unreadable`, `TooLarge`, `Unsafe`) crée une **obligation de rechargement** sur
+le handle. Elle n'est **acquittée que par un chargement réussi commencé après
+le refus** : un chargement déjà en cours au moment du refus, même s'il termine
+ensuite, ne l'acquitte pas, puisqu'il a pu relever l'ancien état ; un chargement
+qui échoue (réseau, plafond #151) la laisse pendante, et l'image précédente
+reste servie, périmée. Un compteur de génération suffit ; sa forme relève du
+plan. La garantie est donc : **la tentative suivante provoque un rechargement,
+et utilise le nouveau relevé si ce rechargement réussit**. Elle vaut sous les
+quatre politiques, l'obligation primant sur l'intervalle de `Interval` et sur
+l'absence de signal de `Notify`. Aucune réexécution automatique, aucune
+modification des observations de la session : si la computation ou le concept
+ont changé aussi, la relecture par le modèle reste nécessaire. Une ressource
+créée ou corrigée après le chargement est ainsi reprise, sans intervention de
+l'hôte. `Undeclared` et `Url` ne créent pas d'obligation : seul un changement du
+concept peut les faire évoluer, et sous `Manual` une modification externe de ce
+concept demande toujours un `Refresh()` de l'hôte — les observations ne
+déclenchent pas de rafraîchissement.
+
+Ce n'est pas la seule situation où le cœur recharge sans que la politique le
+demande : les propres écritures de la session et un conflit d'écriture
+(§4, §5.2) invalident l'image de la même manière. Ces trois cas sont les seules
+exceptions à la politique, et le message de refus le dit.
 
 `OkfDocument.Body` reste une `string` synchrone (le passage à un accès
 asynchrone éventuel relève de #153).
@@ -635,7 +694,8 @@ courante.
 - Le remplacement de l'image est atomique ; un appel ne voit jamais qu'une
   seule version.
 - **Échec d'un rafraîchissement** (réseau, plafond de #151) : l'image
-  précédente continue d'être servie, marquée périmée.
+  précédente continue d'être servie, marquée périmée. Une obligation de
+  rechargement née d'un refus d'épinglage (§5.1) reste alors pendante.
 - **Après ses propres écritures** : invalidation, puis rechargement à la
   prochaine utilisation (comportement actuel). La mise à jour incrémentale est
   #179.
@@ -882,7 +942,7 @@ la source l'est. `catalog.json` est de la configuration d'opérateur.
 | `OkfContextProvider` | partage le `BundleHandle` de ses outils. Il appelle `ReadConcept` sans rien enregistrer : une injection n'est jamais une observation (D5, §5.4). Ses chargements passent par la couture, mais restent **bloquants** dans ses méthodes asynchrones tant que le contrat est synchrone ; c'est #152 qui les rend asynchrones |
 | `OkfBundleKnowledgeSource` | constructeur sur `BundleHandle` ; ne recharge plus à chaque requête, il suit la politique de la source |
 | Catalog | voir « Catalog : qui crée et conserve les handles » ci-dessous |
-| `FileMemoryStore` | API publique inchangée ; reste adossé au filesystem, via le provider ; recharge le scope à chaque lecture, comme aujourd'hui. Voir ci-dessous pour la suppression d'un scope et les clés mémoire |
+| `FileMemoryStore` | reste adossé au filesystem, via le provider ; recharge le scope à chaque lecture, comme aujourd'hui. `ReadAsync`, `WriteAsync` et `EnumerateAsync` ne changent pas ; `DeleteScopeAsync` rend le nouveau `MemoryDeleteResult` (§1), ce qui est le seul changement d'`IMemoryStore`. Voir ci-dessous pour la suppression d'un scope et les clés mémoire |
 | `AttestationOrchestrator` | lit le code sanctionné via `ReadResourceText(BundleKey)`, épinglé (§5.4) |
 | Viewer (`SiteModel`, `HtmlWriter`) | `SiteModel` lit aujourd'hui `bundle.Root` et le chemin de `ParseErrors` : il passe à `Location` et au chemin affiché du §8, si bien que le HTML produit par `okf-render` ne change pas |
 | `okf` / `okf-render` | restent synchrones, sur le provider filesystem ; leurs octets de sortie ne changent pas, sous Linux comme sous Windows (règle d'affichage du §8). `parse` et `fmt` restent hors couture (§3) |
@@ -956,7 +1016,8 @@ fait un `Directory.Delete(subDir, recursive: true)`, et `Directory.Exists(subDir
 sert à savoir si un scope existe. Avec la couture :
 
 - la suppression énumère les clés sous le préfixe du scope, puis supprime chaque
-  objet ; en cas d'échec partiel, elle rend un `BundleWriteReport` (§1) ;
+  objet ; le résultat porte un `BundleWriteReport` par tier (§1), qu'il y ait
+  eu échec partiel ou non ;
 - un scope « existe » s'il contient au moins une clé, et non plus si son dossier
   existe. Les dossiers vides laissés sur le filesystem (§8) n'ont donc aucun
   effet.
@@ -1000,7 +1061,11 @@ l'arbitrage du 2026-10-08).
   - le contrat documenté de `AppendToConceptAtomic` : `buildBody` est appelé une
     fois par tentative et doit être pur ;
   - les constructeurs qui prennent désormais un `BundleHandle` (les surcharges
-    `string` restent).
+    `string` restent) ;
+  - `MemoryDeleteResult` : `TiersDeleted` disparaît au profit d'une liste de
+    tiers portant chacun son `BundleWriteReport` (§1) ; `IMemoryStore` change
+    donc de signature sur `DeleteScopeAsync`. `VerificationOutcome`, lui, est
+    seulement enrichi.
 
   La migration asynchrone (#152) sera un second changement cassant, accepté.
 - **Comportement, filesystem compris** :
@@ -1112,11 +1177,16 @@ l'arbitrage du 2026-10-08).
   URL, est refusée avant que le runtime soit appelé ; un `IAttester` de test
   enregistré pour ce runtime n'est jamais invoqué. `AttesterSourceText` n'est
   jamais nul à l'entrée d'un runtime.
-- **Reprise après refus** : sous `Manual`, l'attester passe de v1 à v2 après le
-  chargement ; la première exécution est refusée ; la seconde tentative, sans
-  aucun `Refresh()` de l'hôte, s'exécute sur v2. Même parcours pour une
-  ressource `Missing` créée après le chargement. Les observations de la session
-  sont inchangées par ce rafraîchissement.
+- **Reprise après refus**, sous chacune des quatre politiques : l'attester passe
+  de v1 à v2 après le chargement ; la première exécution est refusée ; la
+  seconde tentative, sans aucun `Refresh()` de l'hôte, s'exécute sur v2. Même
+  parcours pour une ressource `Missing` créée après le chargement. Les
+  observations de la session sont inchangées par ce rafraîchissement.
+- **Reprise dégradée** : un chargement déjà en cours au moment du refus
+  n'acquitte pas l'obligation (la tentative suivante recharge encore) ; un
+  rechargement qui échoue (réseau simulé, plafond #151) laisse l'obligation
+  pendante et l'image v1 servie périmée, puis un rechargement réussi
+  l'acquitte.
 - **Relevé des ressources exécutables** : un concept dont l'attester est absent,
   `Unsafe`, illisible, de plus de 16 Mio ou une URL est **chargé**, validé et
   lisible. Son exécution est refusée en nommant l'état. Aucune lecture n'est
@@ -1257,10 +1327,25 @@ Ajoutés par la révision 4 :
 
 Ajoutés par la révision 5 :
 
-28. **Le refus d'épinglage invalide l'image même sous `Manual`**, plutôt que
-    d'exiger un `Refresh()` de l'hôte ; c'est la seule exception à la politique.
-29. **`Undeclared` et `Url` n'invalident pas l'image**, puisque seul un
-    changement du concept peut les faire évoluer.
+28. **Le refus d'épinglage crée une obligation de rechargement même sous
+    `Manual`**, plutôt que d'exiger un `Refresh()` de l'hôte ; avec les propres
+    écritures et les conflits d'écriture, c'est l'une des trois exceptions à la
+    politique.
+29. **`Undeclared` et `Url` ne créent pas d'obligation**, puisque seul un
+    changement du concept peut les faire évoluer ; sous `Manual`, ce changement
+    externe demande donc un `Refresh()` de l'hôte.
+
+Ajoutés par la révision 6 :
+
+30. **L'obligation de rechargement n'est acquittée que par un chargement réussi
+    commencé après le refus**, plutôt que par toute tentative ou par la fin d'un
+    chargement déjà en cours.
+31. **Un échec global pendant le relevé (délai réseau, bornes, plafond) fait
+    échouer le chargement**, comme il le ferait sans relevé, plutôt que de
+    devenir un état `Unreadable` local.
+32. **`VerificationOutcome` enrichi, `MemoryDeleteResult` remplacé** (§1) :
+    le premier porte des faits que le rapport générique n'a pas et alimente une
+    sortie golden ; le compteur du second perd son unité avec la couture.
 
 ## Risques et limites
 
