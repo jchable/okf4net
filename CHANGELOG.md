@@ -153,9 +153,10 @@ and this project adheres to
   only bounds what it reads. A value built deeper, or a `YamlMapping` that
   holds itself (the type is mutable), overflowed the stack, killing the
   process. A mapping sharing one subtree under two keys at each of 60 levels
-  never finished. `Equals` now walks without recursing and compares each pair
-  of collections once, so two values are equal when they unfold into the same
-  tree, however their sharing or cycles are laid out. On a tree, which covers
+  never finished. `Equals` now walks without recursing, stops at the first
+  difference, and past its first 64 pairs of collections compares each pair
+  once, so two values are equal when they unfold into the same tree, however
+  their sharing or cycles are laid out. On a tree, which covers
   everything the parser returns, the result is unchanged, NaN included: a
   value holding NaN is still unequal to itself. Comparing two scalars still
   allocates nothing. `GetHashCode` reads at most 1024 nodes breadth first, so
