@@ -439,9 +439,10 @@ VS Code extension instead (see
 server. `okf-render` has its own winget package,
 **`Coderise.OKF4net.Render`**, built and attached to each Release the same way
 as `okf`'s — but its *first* submission to `winget-pkgs` is a manual, one-time
-step (see [`packaging/winget/README.md`](packaging/winget/README.md)) that has
-not happened yet, so `winget install Coderise.OKF4net.Render` will not resolve
-until it does. Until then, on Linux or macOS install it with the same script
+step (see [`packaging/winget/README.md`](packaging/winget/README.md)). That submission
+was made for 0.6.0 and is still waiting in the winget-pkgs moderation queue, so
+`winget install Coderise.OKF4net.Render` will not resolve until it is merged.
+Until then, on Linux or macOS install it with the same script
 as `okf` above (`--bin okf-render`), or on any OS grab a prebuilt archive from
 a [GitHub Release](https://github.com/jchable/okf4net/releases) or build it
 from source as shown above.
