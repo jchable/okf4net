@@ -39,6 +39,10 @@ Lot A is additive on the public API and changes behaviour only where §10 of the
   - **Blocking.** Rejected prefixes were compared ordinally although their rejection came from a case equivalence, so a third spelling (`AB` after `Ab`/`aB`) re-entered a condemned subtree: prefixes are now remembered and compared in their **folded** form (Task 6, decision 11).
   - **Important.** The walk parsed a directory's relative name into a key just to label a guard, so a directory with an invalid name (U+0085, > 1 024 bytes) aborted the whole load instead of being skipped with a diagnostic (Task 4). Duplicates were dropped before conflict detection, so `x`, `x`, `x/y.sql` hid the object-is-a-prefix conflict (Task 2). The depth bound sat inside the `TryParse` success branch, so a name violating the base rules bypassed it (Task 6). `BundleLimitExceededException.Bound` was a free string copied into the public message: it is a closed enum now (Tasks 4, 6, decision 16). The `ToUpperInvariant` fold merges `σ`/`ς`, which NTFS keeps distinct — maintainer ruling (a): kept as a documented conservative over-approximation under `Strict` **and** `Native` (decision 13). The `audit --json` display assertion was red by construction (no stale concept in the fixture): it filters with `--type Table` (Task 7). The table generator cannot compile before the validator exists: Task 2's steps are reordered.
   - **Editorial.** Decision 9 contradicted decision 15 on exact-case flags; Task 8 still spoke of an optional fourth `Concept` parameter.
+- **r5 (2026-10-14)** — after a fourth **executed** review of r4 (`64d4fa6`): the plan now runs with no manual correction, three identical full runs at 2 629 green, every earlier scenario closed; one blocker and three seams left. Fixed here:
+  - **Blocking.** `RejectedPrefixes` was filled only while dooming surviving candidates, so when every offender was a duplicate (`Ab/x.sql` ×2, `aB/y.sql` ×2; `x` ×2, `x/y.sql` ×2) the collision was detected but no prefix recorded, and a late `AB/new.sql` or `x/new.sql` resolved: prefixes are now taken directly from the structural collisions and conflicts (Task 2), with loader tests through a provider that lists a name twice (Task 6).
+  - **Important.** `ResolveExact` enumerated each traversed directory before the STRICT guard ran, so under a junction an absent name could be told from a present one (`NotFound` vs refused): every traversed directory is now guarded before it is listed, and `Exists` answers `false` on a refusal (Task 4). The duplicate fix used a `List.Contains` per duplicate — 3.3 s for 64 000 names in the review's measurement: a `HashSet` now (Task 2).
+  - **Minor.** A junction fixture passed `"src/p"` to `mklink`, which the helper does not normalise, so the deferred-replacement test skipped for the wrong reason: `Path.Combine` (Task 4).
 
 ## Global Constraints
 
@@ -727,6 +731,16 @@ public class BundleKeyValidatorTests
         Assert.Contains(r.Rejected, rej => rej.RawName == "x/y.sql" && rej.Reason.Contains("both an object and a prefix"));
     }
 
+    [Theory]
+    [InlineData(new[] { "Ab/x.sql", "Ab/x.sql", "aB/y.sql", "aB/y.sql" }, new[] { "Ab", "aB" })]
+    [InlineData(new[] { "x", "x", "x/y.sql", "x/y.sql" }, new[] { "x" })]
+    public void Prefixes_are_condemned_even_when_every_offender_is_a_duplicate(string[] listing, string[] prefixes)
+    {
+        var r = Strict().ValidateTree(listing);
+        Assert.Empty(r.Accepted);
+        Assert.Equal(prefixes.Select(BundleKey.Parse).OrderBy(k => k), r.RejectedPrefixes);
+    }
+
     [Fact]
     public void FoldKeyText_folds_only_when_a_folding_constraint_is_in_force()
     {
@@ -1072,10 +1086,10 @@ public sealed class BundleKeyValidator
         // A duplicated name is rejected, but the object it names is still THERE: it keeps
         // its structural presence for the collision and conflict checks (a duplicated `x`
         // still conflicts with `x/y.sql`; r3 dropped it first and let `x/y.sql` through).
-        var structural = candidates.Select(c => c.Key).ToList();
+        var structural = new HashSet<BundleKey>(candidates.Select(c => c.Key));
         foreach (var raw in duplicates)
         {
-            if (BundleKey.TryParse(raw, out var dupKey, out _) && !structural.Contains(dupKey))
+            if (BundleKey.TryParse(raw, out var dupKey, out _))
             {
                 structural.Add(dupKey);
             }
@@ -1110,6 +1124,11 @@ public sealed class BundleKeyValidator
                 .Select(BundleKey.Parse)
                 .ToList();
 
+            // The condemned prefixes come from the STRUCTURAL collision, not from the candidates
+            // it dooms: when every offender is a duplicate there is no candidate left to doom,
+            // yet the prefix is condemned all the same (fourth review).
+            rejectedPrefixes.UnionWith(colliding);
+
             foreach (var (raw, key) in candidates)
             {
                 var hit = colliding.FirstOrDefault(c => key.Equals(c) || key.StartsWith(c));
@@ -1134,6 +1153,7 @@ public sealed class BundleKeyValidator
             }
 
             var conflicts = keys.Where(prefixes.Contains).ToList();
+            rejectedPrefixes.UnionWith(conflicts); // likewise: structural, not candidate-driven
             foreach (var (raw, key) in candidates)
             {
                 if (doomed.Contains(key))
@@ -1764,6 +1784,12 @@ public class FileSystemBundleProviderTests
         var p = new FileSystemBundleProvider(tmp.Path);
         Assert.Throws<BundleAccessRefusedException>(() => p.Enumerate(K("jump"), BundleLimits.Default));
         Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("jump/secret.md")));
+        // Present and absent names under the junction are indistinguishable: both refused
+        // before the junction is ever listed (fourth review).
+        Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("jump/absent.md")));
+        Assert.Throws<BundleAccessRefusedException>(() => p.Enumerate(K("jump/absent"), BundleLimits.Default));
+        Assert.False(p.Exists(K("jump/secret.md")));
+        Assert.False(p.Exists(K("jump/absent.md")));
         Assert.Empty(p.Enumerate(null, BundleLimits.Default)); // the walk skips the junction entry and lists nothing under it
     }
 
@@ -1779,7 +1805,7 @@ public class FileSystemBundleProviderTests
 
         var byPrefix = p.Enumerate(K("p"), BundleLimits.Default); // eager: already complete
         Directory.Delete(Path.Combine(root, "p"), recursive: true);
-        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("src/p", external.Path), "junctions unavailable");
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir(Path.Combine("src", "p"), external.Path), "junctions unavailable"); // the helper hands the path to mklink as is: native separator
         Assert.Equal(["p/a.md"], byPrefix.Select(l => l.RawName)); // what was there, not what is there now
         Assert.Throws<BundleAccessRefusedException>(() => p.Enumerate(K("p"), BundleLimits.Default)); // a fresh call sees the junction and refuses
 
@@ -2229,7 +2255,16 @@ public sealed class FileSystemBundleProvider : IBundleProvider
     {
         ArgumentNullException.ThrowIfNull(key);
         CheckBoundary();
-        var path = ResolveExact(key);
+        string? path;
+        try
+        {
+            path = ResolveExact(key);
+        }
+        catch (BundleAccessRefusedException)
+        {
+            return false; // a question, not an access: a refused traversal reads as "no such object"
+        }
+
         if (path is null || !File.Exists(path))
         {
             return false;
@@ -2306,6 +2341,17 @@ public sealed class FileSystemBundleProvider : IBundleProvider
         var current = _fullRoot;
         foreach (var segment in key.Segments)
         {
+            // STRICT before listing a traversed directory (the root excepted: a symlinked root
+            // without a boundary stays loadable, Review Focus 4). Otherwise an absent name under
+            // a junction could be told apart from a present one before the read gate ever ran
+            // (fourth review: NotFound vs refused).
+            if (!string.Equals(current, _fullRoot, PathComparison)
+                && (ReparsePoints.IsReparsePointOrUninspectable(current)
+                    || ReparsePoints.HasReparsePointOrUninspectableAncestor(_fullRoot, current, PathComparison)))
+            {
+                throw new BundleAccessRefusedException(key, "it resolves through a reparse point or an entry that could not be inspected");
+            }
+
             string? match = null;
             try
             {
@@ -2705,6 +2751,15 @@ public sealed class InMemoryBundleProvider : IBundleProvider
 
     public bool ObeyLimits { get; init; } = true;
 
+    private readonly HashSet<string> _listedTwice = new(StringComparer.Ordinal);
+
+    /// <summary>Makes <see cref="Enumerate"/> list <paramref name="rawName"/> twice — a buggy backend (Review Focus 5).</summary>
+    public InMemoryBundleProvider ListTwice(string rawName)
+    {
+        _listedTwice.Add(rawName);
+        return this;
+    }
+
     /// <summary>Thrown by every <see cref="Read"/> when set.</summary>
     public Exception? FailReadsWith { get; set; }
 
@@ -2753,6 +2808,10 @@ public sealed class InMemoryBundleProvider : IBundleProvider
             }
 
             yield return new BundleListing(name, bytes.Length, null);
+            if (_listedTwice.Contains(name))
+            {
+                yield return new BundleListing(name, bytes.Length, null);
+            }
         }
     }
 
@@ -2953,6 +3012,25 @@ public class BundleProviderLoadTests
         Assert.Throws<UnauthorizedAccessException>(() => bundle.ReadResourceText(BundleKey.Parse("AB/new.sql")));
         Assert.False(bundle.IsKeyAllowed(BundleKey.Parse("ab/z.sql"), out var reason));
         Assert.Contains("rejected when the bundle was loaded", reason);
+    }
+
+    [Theory]
+    [InlineData("Ab/x.sql", "aB/y.sql", "AB/new.sql")] // every offender duplicated: the collision is structural only
+    [InlineData("x", "x/y.sql", "x/new.sql")]          // same for the file/directory conflict
+    public void Prefixes_condemned_only_through_duplicated_names_still_guard_late_objects(string first, string second, string late)
+    {
+        var p = new InMemoryBundleProvider()
+            .Add("c/rev.md", "---\ntype: Attested Computation\n---\n")
+            .Add(first, "1").ListTwice(first)
+            .Add(second, "2").ListTwice(second);
+        var bundle = Bundle.Load(p);
+        var concept = bundle.Get(ConceptId.Parse("c/rev"))!;
+        Assert.NotEmpty(bundle.RejectedPrefixes);
+
+        p.Add(late, "late");
+        bundle.TryResolveResourceKey(concept, "/" + late, out _, out var status);
+        Assert.Equal(ResourceResolutionStatus.Unsafe, status);
+        Assert.Throws<UnauthorizedAccessException>(() => bundle.ReadResourceText(BundleKey.Parse(late)));
     }
 
     [Fact]
