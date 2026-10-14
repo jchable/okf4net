@@ -184,7 +184,7 @@ public sealed class TempDir : IDisposable
     /// inside it throw <see cref="UnauthorizedAccessException"/>, even for
     /// the owning process. Only <see cref="FileSystemRights.Write"/> is
     /// denied (not <see cref="FileSystemRights.Delete"/>), so <see cref="Dispose"/>'s
-    /// best-effort recursive delete still succeeds afterward. Returns
+    /// recursive delete still succeeds afterward. Returns
     /// <c>false</c> instead of throwing on a non-Windows platform or if the
     /// ACL change itself is denied, so callers can skip the
     /// permission-dependent assertion (<c>Skip.IfNot(denied, …)</c>) rather
@@ -238,9 +238,9 @@ public sealed class TempDir : IDisposable
     /// non-Windows platform or if any step fails (callers skip with
     /// <c>Skip.If(handle is null, ...)</c>). Declare the handle AFTER the
     /// <see cref="TempDir"/>s it lives in, so <c>using</c> disposes it first:
-    /// <see cref="Dispose"/>'s recursive delete cannot remove a directory
-    /// whose listing is denied, and on Windows does not reliably remove a
-    /// junction by recursion either.
+    /// <see cref="Dispose"/> cannot list a directory whose listing is
+    /// denied, nor tell whether an entry it cannot inspect is a link, and
+    /// throws rather than guess.
     /// </returns>
     /// <param name="relativeLink">The junction's path, relative to the temp root.</param>
     /// <param name="externalTarget">The absolute directory the junction points at.</param>
@@ -275,16 +275,131 @@ public sealed class TempDir : IDisposable
         return handle;
     }
 
-    /// <summary>Removes the temporary directory and its contents (best-effort).</summary>
+    /// <summary>
+    /// Removes the temporary directory and everything under it, removing every
+    /// symlink or junction met on the way as a link -- never descending into
+    /// it, so a link's target outside the tree is never touched -- and throws
+    /// if the tree cannot be removed, so a leak is a visible failure rather
+    /// than a silently abandoned <c>okf4net-*</c> directory (#120).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Not <see cref="Directory.Delete(string, bool)"/> with
+    /// <c>recursive: true</c>: on Windows, .NET unmounts every junction it
+    /// meets with <c>DeleteVolumeMountPoint</c> before removing it, which
+    /// fails with <c>ERROR_ACCESS_DENIED</c> for an ordinary junction to a
+    /// directory. .NET still removes the junction itself (and not its
+    /// target), but remembers the error and throws it before removing the
+    /// junction's ancestors -- so every test that put a junction in a
+    /// <see cref="TempDir"/> left behind the empty directories above it,
+    /// which the old catch-all here swallowed.
+    /// </para>
+    /// <para>
+    /// An entry whose attributes cannot be read is never descended into (it
+    /// may be a link): the failure is thrown instead, as is any other
+    /// failure that persists after a few short retries (a scanner briefly
+    /// holding a fresh file open). A <see cref="UninspectableJunction"/> must
+    /// therefore be disposed BEFORE the <see cref="TempDir"/> it lives in.
+    /// Calling this again after the tree is gone does nothing.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="IOException">The tree could not be removed; the inner exception is the last failure.</exception>
     public void Dispose()
+    {
+        const int attempts = 5;
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                DeleteWithoutFollowingLinks(Path);
+                return;
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                if (attempt == attempts)
+                {
+                    throw new IOException($"TempDir could not remove '{Path}' after {attempts} attempts: {e.Message}", e);
+                }
+
+                Thread.Sleep(25 * attempt);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Removes <paramref name="path"/>: a link (symlink or junction, to a file
+    /// or a directory) is removed as a link without reading through it, a
+    /// directory is emptied entry by entry and then removed, and a file is
+    /// deleted (read-only or not). An absent path is not an error.
+    /// </summary>
+    internal static void DeleteWithoutFollowingLinks(string path)
+    {
+        FileAttributes attributes;
+        try
+        {
+            // Reads the entry itself, never a link's target (no handle is
+            // opened through the link), on Windows and on Unix alike. A
+            // failure other than "absent" propagates: an entry we cannot
+            // inspect may be a link, so it is not descended into.
+            //
+            // This entry-level guard is correct by construction (nothing
+            // here maps a failure to "plain directory") but no test
+            // exercises it: every entry below the root is reached through
+            // its parent's listing, and on Windows .NET falls back to that
+            // same listing (FindFirstFile on the parent) when it cannot open
+            // the entry, so a listable parent yields readable attributes. A
+            // parent whose listing is denied fails one level up, at
+            // Directory.EnumerateFileSystemEntries, which is what
+            // TempDirTests covers. (On Unix, a directory with read but not
+            // search permission would reach it; no test builds one.)
+            attributes = File.GetAttributes(path);
+        }
+        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return;
+        }
+
+        if ((attributes & FileAttributes.ReparsePoint) != 0)
+        {
+            // Windows removes a directory link with RemoveDirectory and a
+            // file link with DeleteFile; both remove the link, never the
+            // target. Unix unlinks any symlink, whatever it points at.
+            IgnoreAbsent(OperatingSystem.IsWindows() && (attributes & FileAttributes.Directory) != 0
+                ? () => Directory.Delete(path, recursive: false)
+                : () => File.Delete(path));
+            return;
+        }
+
+        if ((attributes & FileAttributes.Directory) != 0)
+        {
+            var listing = new EnumerationOptions { AttributesToSkip = 0, IgnoreInaccessible = false, RecurseSubdirectories = false };
+            foreach (var entry in Directory.EnumerateFileSystemEntries(path, "*", listing).ToList())
+            {
+                DeleteWithoutFollowingLinks(entry);
+            }
+
+            IgnoreAbsent(() => Directory.Delete(path, recursive: false));
+            return;
+        }
+
+        if ((attributes & FileAttributes.ReadOnly) != 0)
+        {
+            // Limitation: on a hard link this also clears ReadOnly on every other link to the file, even one outside the tree (NTFS keeps attributes per file, not per link); content is untouched, and no test creates hard links.
+            IgnoreAbsent(() => File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly));
+        }
+
+        IgnoreAbsent(() => File.Delete(path));
+    }
+
+    private static void IgnoreAbsent(Action delete)
     {
         try
         {
-            Directory.Delete(Path, recursive: true);
+            delete();
         }
-        catch
+        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
         {
-            // Best-effort cleanup on Dispose.
+            // Already gone (a test may remove part of its own tree).
         }
     }
 }
@@ -377,7 +492,8 @@ public sealed class UninspectableJunction : IDisposable
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            // Best-effort, like TempDir.Dispose.
+            // Left to TempDir.Dispose, which removes the link (never its
+            // target) or throws to say why it cannot.
         }
     }
 
