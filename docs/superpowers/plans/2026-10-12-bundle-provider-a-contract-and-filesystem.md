@@ -49,7 +49,8 @@ Lot A is additive on the public API and changes behaviour only where §10 of the
 - **r7 (2026-10-14)** — after a sixth **executed** review of r6 (`a092d16`): both r6 corrections confirmed (91 targeted tests green, an independent oracle agreeing on 26 244 duplicate/collision/conflict combinations), one blocker left. `structural` was built from the admitted candidates, so a key refused by `CheckKey` — a host validator refusing `x.md`, or `Strict` refusing `x.md/con.sql` — lost its physical presence and its child or parent came back in. Every name that parses now enters `structural` **before** `CheckKey` and before duplicate handling; admission decides what is accepted and diagnosed, never what exists (Task 2, with validator and loader regressions in Tasks 2 and 6).
 - **r8 (2026-10-14)** — after a seventh **executed** review of r7 (`0089f95`): the r7 fix confirmed (80 targeted tests green, an oracle agreeing on 1 259 712 ASCII combinations), one blocker and one performance seam left. Fixed here:
   - **Blocking.** Sibling names were grouped by the case fold alone, so canonically equivalent names — `café` beside `cafe` + U+0301, `Å` beside U+212B — were never recognised as one object: under `Strict` the NFD name was refused but its twin was accepted with no prefix condemned, and under `UnicodeFormCollisions` alone both were accepted. Maintainer ruling (2026-10-14, option b: tables derived from ICU rather than a closed per-level rule): `CanonicalForm`, a table-driven canonical decomposition **with** canonical ordering (the NFD; Hangul by arithmetic), derived and guarded by the same generator test as the quick-check sets; `FoldSegment` decomposes under `UnicodeFormCollisions` and upcases under `CaseInsensitiveCollisions`, and both the grouping and `FoldKeyText` use it (Task 2, decision 17; loader regressions in Task 6). The plan had announced a composition-only fold; it was replaced before writing because adjacent-pair composition misses the reordering case (`é` + cedilla against `ȩ` + acute), which needs the combining classes anyway — and with them the ordering half of the quick check closes for free, so the "reorder residual" of decision 2 is gone.
-  - **Important.** Each candidate scanned the whole list of colliding and conflicting keys (`FirstOrDefault` with `StartsWith`): 26 s for 65 536 names under two colliding roots. Both lists are sets now and each candidate looks up its own prefixes, outermost first — one lookup per segment (Task 2, with a 65 536-name regression whose duration Task 8 records; no timing assertion).
+  - **Important.** Each candidate scanned the whole list of colliding and conflicting keys (`FirstOrDefault` with `StartsWith`): 26 s for 64 000 names in colliding sibling pairs, 13 s in file/prefix conflicts. Both lists are sets now and each candidate looks up its own prefixes, outermost first — one lookup per segment (Task 2, with a 65 536-name regression whose duration Task 8 records; no timing assertion).
+- **r9 (2026-10-14)** — after an eighth **executed** review of r8 (`fdb70b2`): verdict "ready after one minor correction", nothing blocking or important reproduced — the Unicode collisions closed on 36 extra checks, `Decompose` agreeing with the host's NFD on every scalar plus 120 000 sequences, 922 non-zero-class code points all Mn/Mc, the oracle at 1 259 712 comparisons, three full runs at 2 994 green, four bundles byte-identical, the tables costing 34 816 bytes in `okf`. The one correction: r8's performance regression put 65 536 names under **two** colliding roots, so r7's scan had two keys to check per candidate and took 0.4 s — the 26 s the comment attributed to that shape came from the review's *distributed* collisions. The fixture now grows its condemned prefixes with the listing (16 384 colliding pairs and 16 384 conflicts), the comments cite the shapes the figures came from, and Task 8's filter follows the new name (Task 2, Task 8). Lesson recorded: a figure quoted in a test comment must come from the input that test builds.
 
 ## Global Constraints
 
@@ -1102,24 +1103,32 @@ public class BundleKeyValidatorTests
     }
 
     [Fact]
-    public void Large_listings_with_collisions_at_the_root_validate_in_one_pass()
+    public void Large_listings_whose_condemned_prefixes_grow_with_them_validate_in_one_pass()
     {
-        // 65 536 names under two colliding roots: every candidate is doomed. The seventh review
-        // measured r7's per-candidate scan of the colliding list at 26 s on this shape; with one
-        // set lookup per ancestor it is milliseconds. The assertions are on the outcome — a
-        // timing assertion is a flake, not a proof — so a regression to the quadratic scan shows
-        // up as this test's duration in the run, which Task 8 records.
+        // 65 536 names whose condemned prefixes grow WITH the listing: 16 384 case-colliding
+        // pairs (`p{i}/A` beside `p{i}/a`) and 16 384 file/prefix conflicts (`q{i}` beside
+        // `q{i}/child.sql`). That is the shape on which the seventh review measured r7's
+        // per-candidate scan of the condemned list: 26 s (collisions) and 13 s (conflicts) for
+        // 64 000 names; with one set lookup per ancestor it is under a second. A fixture with
+        // two colliding roots — r8's — never exposed that scan (two keys to scan per candidate,
+        // 0.4 s either way: eighth review). The assertions are on the outcome — a timing
+        // assertion is a flake, not a proof — so a regression to the scan shows up as this
+        // test's duration in the run, which Task 8 records.
         var names = new List<string>(65_536);
-        for (var i = 0; i < 32_768; i++)
+        for (var i = 0; i < 16_384; i++)
         {
-            names.Add($"Root/d{i % 64}/f{i}.sql");
-            names.Add($"root/d{i % 64}/g{i}.sql");
+            names.Add($"p{i}/A/x.sql");
+            names.Add($"p{i}/a/y.sql");
+            names.Add($"q{i}");
+            names.Add($"q{i}/child.sql");
         }
 
         var r = Strict().ValidateTree(names);
         Assert.Empty(r.Accepted);
         Assert.Equal(65_536, r.Rejected.Count);
-        Assert.Equal([BundleKey.Parse("Root"), BundleKey.Parse("root")], r.RejectedPrefixes);
+        Assert.Equal(3 * 16_384, r.RejectedPrefixes.Count); // p{i}/A, p{i}/a and q{i}
+        Assert.Contains(BundleKey.Parse("p16383/a"), r.RejectedPrefixes);
+        Assert.Contains(BundleKey.Parse("q0"), r.RejectedPrefixes);
     }
 
     [Theory]
@@ -1765,7 +1774,8 @@ public sealed class BundleKeyValidator
     /// The outermost prefix of <paramref name="key"/> (the key itself included) that is in
     /// <paramref name="condemned"/>, or <see langword="null"/>: one set lookup per segment, so
     /// the whole pass is linear in the listing times its depth. r7 scanned the condemned list
-    /// once per candidate — 26 s for 65 536 names under two colliding roots (seventh review).
+    /// once per candidate — quadratic when that list grows with the listing: 26 s for 64 000
+    /// names in colliding sibling pairs, 13 s in file/prefix conflicts (seventh review).
     /// </summary>
     private static BundleKey? OutermostCondemned(BundleKey key, HashSet<BundleKey> condemned)
     {
@@ -1841,7 +1851,7 @@ Now everything compiles. Run `dotnet test OKF4net.sln --filter "FullyQualifiedNa
 - [ ] **Step 8: Run the tests to verify they pass**
 
 Run: `dotnet test OKF4net.sln --filter "FullyQualifiedName~UnicodeTableTests|FullyQualifiedName~BundleKeyValidatorTests"`
-Expected: all green, the three `SkippableFact`s **not skipped** on the dev box (the test host has ICU). Note the duration of `Large_listings_with_collisions_at_the_root_validate_in_one_pass` (milliseconds; r7's scan took 26 s on this shape).
+Expected: all green, the three `SkippableFact`s **not skipped** on the dev box (the test host has ICU). Note the duration of `Large_listings_whose_condemned_prefixes_grow_with_them_validate_in_one_pass` (under a second; r7's scan took 26 s and 13 s on the two halves of this shape).
 
 - [ ] **Step 9: Commit**
 
@@ -4764,7 +4774,7 @@ dotnet format OKF4net.sln --verify-no-changes
 for i in 1 2 3; do dotnet test OKF4net.sln --filter "Category!=ContainerIntegration"; done   # 3× green, same counts
 dotnet test producers/OkfProducer.sln                      # green (references src/OKF4net; Concept keeps its three positional parameters)
 dotnet test OKF4net.sln --filter "FullyQualifiedName~BundleLoadPerformanceTests"              # still under its ceiling; note the load figures in the PR
-dotnet test OKF4net.sln --filter "FullyQualifiedName~Large_listings_with_collisions" -v n     # note its duration in the PR: milliseconds, not the 26 s of r7's scan
+dotnet test OKF4net.sln --filter "FullyQualifiedName~Large_listings_whose_condemned" -v n     # note its duration in the PR: under a second, not the 26 s / 13 s of r7's scan
 ```
 
 On Windows, additionally run the `Providers` tests as an account that can create symlinks and junctions and confirm **0 skipped** at least once: `dotnet test OKF4net.sln --filter "FullyQualifiedName~OKF4net.Tests.Providers"`.
