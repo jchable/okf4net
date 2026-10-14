@@ -43,6 +43,9 @@ Lot A is additive on the public API and changes behaviour only where §10 of the
   - **Blocking.** `RejectedPrefixes` was filled only while dooming surviving candidates, so when every offender was a duplicate (`Ab/x.sql` ×2, `aB/y.sql` ×2; `x` ×2, `x/y.sql` ×2) the collision was detected but no prefix recorded, and a late `AB/new.sql` or `x/new.sql` resolved: prefixes are now taken directly from the structural collisions and conflicts (Task 2), with loader tests through a provider that lists a name twice (Task 6).
   - **Important.** `ResolveExact` enumerated each traversed directory before the STRICT guard ran, so under a junction an absent name could be told from a present one (`NotFound` vs refused): every traversed directory is now guarded before it is listed, and `Exists` answers `false` on a refusal (Task 4). The duplicate fix used a `List.Contains` per duplicate — 3.3 s for 64 000 names in the review's measurement: a `HashSet` now (Task 2).
   - **Minor.** A junction fixture passed `"src/p"` to `mklink`, which the helper does not normalise, so the deferred-replacement test skipped for the wrong reason: `Path.Combine` (Task 4).
+- **r6 (2026-10-14)** — after a fifth **executed** review of r5 (`93f3bac`): verdict "ready after two targeted corrections", every r4 reproduction closed, one blocker and one fixture failure left. Fixed here:
+  - **Blocking.** The file/directory conflict check still excluded case-doomed keys (`keys = structural.Where(k => !doomed.Contains(k))`), so for `x.md`, `x.md/A.sql`, `x.md/a.sql` the children were rejected but `x.md` — an object that is also a prefix — was loaded, and a late `x.md/new.sql` resolved: conflicts are computed on **all** structural keys (Task 2), with the mixed case added to the validator and loader tests (Tasks 2, 6).
+  - **Important.** The deferred-replacement test now ran, and failed in its own cleanup: `Directory.Delete(root, recursive: true)` refuses to traverse the junction it had planted; the junction is deleted first, non-recursively (Task 4).
 
 ## Global Constraints
 
@@ -734,7 +737,8 @@ public class BundleKeyValidatorTests
     [Theory]
     [InlineData(new[] { "Ab/x.sql", "Ab/x.sql", "aB/y.sql", "aB/y.sql" }, new[] { "Ab", "aB" })]
     [InlineData(new[] { "x", "x", "x/y.sql", "x/y.sql" }, new[] { "x" })]
-    public void Prefixes_are_condemned_even_when_every_offender_is_a_duplicate(string[] listing, string[] prefixes)
+    [InlineData(new[] { "x.md", "x.md/A.sql", "x.md/a.sql" }, new[] { "x.md", "x.md/A.sql", "x.md/a.sql" })] // children case-doomed, parent still an object-and-prefix
+    public void Prefixes_are_condemned_even_when_every_offender_is_a_duplicate_or_case_doomed(string[] listing, string[] prefixes)
     {
         var r = Strict().ValidateTree(listing);
         Assert.Empty(r.Accepted);
@@ -1142,7 +1146,10 @@ public sealed class BundleKeyValidator
 
         if (Effective.HasFlag(BundleKeyConstraints.FileDirectoryConflict))
         {
-            var keys = structural.Where(k => !doomed.Contains(k)).ToHashSet();
+            // On ALL structural keys, case-doomed ones included: a child condemned for a case
+            // collision is still physically under its parent, so the parent is still an object
+            // that is also a prefix (fifth review: `x.md`, `x.md/A.sql`, `x.md/a.sql`).
+            var keys = structural;
             var prefixes = new HashSet<BundleKey>();
             foreach (var key in keys)
             {
@@ -1810,6 +1817,7 @@ public class FileSystemBundleProviderTests
         Assert.Throws<BundleAccessRefusedException>(() => p.Enumerate(K("p"), BundleLimits.Default)); // a fresh call sees the junction and refuses
 
         var whole = p.Enumerate(null, BundleLimits.Default);
+        Directory.Delete(Path.Combine(root, "p")); // the junction first, non-recursively: a recursive delete refuses to traverse it
         Directory.Delete(root, recursive: true);
         Skip.IfNot(tmp.TryCreateJunctionToExternalDir("src", external.Path), "junctions unavailable");
         Assert.DoesNotContain(whole, l => l.RawName.Contains("secret"));
@@ -3015,14 +3023,20 @@ public class BundleProviderLoadTests
     }
 
     [Theory]
-    [InlineData("Ab/x.sql", "aB/y.sql", "AB/new.sql")] // every offender duplicated: the collision is structural only
-    [InlineData("x", "x/y.sql", "x/new.sql")]          // same for the file/directory conflict
-    public void Prefixes_condemned_only_through_duplicated_names_still_guard_late_objects(string first, string second, string late)
+    [InlineData("Ab/x.sql", "aB/y.sql", "AB/new.sql", true)]        // every offender duplicated: the collision is structural only
+    [InlineData("x", "x/y.sql", "x/new.sql", true)]                 // same for the file/directory conflict
+    [InlineData("x.md/A.sql", "x.md/a.sql", "x.md/new.sql", false)] // case-doomed children: the parent `x.md` stays an object-and-prefix
+    public void Prefixes_condemned_only_structurally_still_guard_late_objects(string first, string second, string late, bool duplicated)
     {
         var p = new InMemoryBundleProvider()
             .Add("c/rev.md", "---\ntype: Attested Computation\n---\n")
-            .Add(first, "1").ListTwice(first)
-            .Add(second, "2").ListTwice(second);
+            .Add("x.md", "---\ntype: T\n---\n")
+            .Add(first, "1")
+            .Add(second, "2");
+        if (duplicated)
+        {
+            p.ListTwice(first).ListTwice(second);
+        }
         var bundle = Bundle.Load(p);
         var concept = bundle.Get(ConceptId.Parse("c/rev"))!;
         Assert.NotEmpty(bundle.RejectedPrefixes);
