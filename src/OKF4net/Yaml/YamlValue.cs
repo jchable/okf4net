@@ -21,8 +21,9 @@ public abstract class YamlValue
     /// </summary>
     /// <exception cref="YamlEmitException">
     /// The value, built in code, nests collections deeper than the parser's
-    /// limit, or reuses collection objects so much that writing each reuse in
-    /// full would pass the emitter's sharing limit (see <see cref="YamlEmitter.Emit"/>).
+    /// limit, reuses collections or long strings so much that writing each
+    /// reuse in full would pass the emitter's sharing limit, or would be written
+    /// as a text longer than its output limit (see <see cref="YamlEmitter.Emit"/>).
     /// </exception>
     public string ToYamlString() => YamlEmitter.Emit(this);
 
