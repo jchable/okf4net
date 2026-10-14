@@ -132,6 +132,34 @@ public class YamlHostileInputTests
     }
 
     /// <summary>
+    /// Emitting a value built in code that reuses one collection object (#189).
+    /// The OKF YAML subset has no anchors or aliases, so a reuse can only be
+    /// written in full: a chain of 60 mappings each holding the next one under
+    /// two keys unfolds into 2^60 leaves, and one 10 000-entry mapping held
+    /// 100 000 times by a sequence into a billion lines. Both are refused with
+    /// the emitter's own exception in a clean exit, instead of writing until
+    /// the deadline (a hang) or memory (an "unexpected" OutOfMemoryException)
+    /// runs out. A mapping that holds itself still gets the nesting refusal,
+    /// which it reaches first.
+    /// </summary>
+    [Theory]
+    [InlineData("emit-diamonds", "YamlEmitException: YAML emit error: " + SharedOutputMessage)]
+    [InlineData("emit-wide-reuse", "YamlEmitException: YAML emit error: " + SharedOutputMessage)]
+    [InlineData("emit-cycle", "YamlEmitException: YAML emit error: nesting depth limit exceeded")]
+    public void Emitting_a_value_that_reuses_collections_is_refused_in_a_clean_exit(string name, string expected)
+    {
+        var (code, stdout, stderr) = RunProbe(name);
+
+        Assert.True(code == 0, $"probe exited with {code} (a crash, e.g. a stack overflow?)\nstdout:\n{stdout}\nstderr:\n{stderr}");
+        var lines = stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        Assert.Equal([expected], lines);
+    }
+
+    private const string SharedOutputMessage =
+        "shared collection limit exceeded: the OKF YAML subset has no anchors or aliases, "
+        + "so every reuse of a collection is written in full, and the reuses would write more than 16777216 characters";
+
+    /// <summary>
     /// Runs the probe on <paramref name="name"/>, killing it at the deadline.
     /// The probe is built next to this test project in the same configuration
     /// and target framework (the test project's <c>ProjectReference</c> to it,

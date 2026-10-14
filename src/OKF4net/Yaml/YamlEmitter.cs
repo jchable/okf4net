@@ -63,38 +63,131 @@ public static class YamlEmitter
     }
 
     /// <summary>
+    /// The sharing rule: how many characters, at most, one emit writes for
+    /// collections it has already written (16 MiB). A <see cref="YamlValue"/>
+    /// built in code can hold one collection object in several places
+    /// (<see cref="YamlMapping"/> is mutable; an immutable
+    /// <see cref="YamlSequence"/> is meant to be shared). The OKF YAML subset
+    /// has no anchors or aliases, so the only encoding of such a reuse is to
+    /// write the collection again in full, and that is what this emitter does
+    /// — re-parsing the text gives an equal value, since equality is
+    /// structural. But reuse can multiply the output without bound: a chain of
+    /// mappings each holding the next one under two keys doubles it per level
+    /// (60 levels, 60 objects, 2^60 leaves), one collection held by many slots
+    /// multiplies it by their count. So the emitter tracks, by reference, the
+    /// non-empty collections it has written during the current emit, counts the
+    /// characters written while re-writing one of them (a reuse inside a reuse
+    /// counted once), and refuses with a catchable <see cref="YamlEmitException"/>
+    /// (<see cref="SharedOutputExceededMessage"/>) as soon as that count passes
+    /// this limit, at most one line late. A value that reuses no collection is
+    /// never counted, so the rule changes nothing for it — in particular for
+    /// every value the parser returns, which never shares a node — and its
+    /// output stays proportional to its own size. Reuse that stays small (one
+    /// list under two keys) is written as before. A limit, rather than a
+    /// refusal of every reuse, keeps that ordinary case working; a limit on
+    /// repeats alone, rather than on the whole output, keeps a value of any
+    /// size that reuses nothing writable. A collection that holds itself is
+    /// refused by the nesting rule (<see cref="CheckDepth"/>), which it reaches
+    /// first. Reaching the refusal is errors-as-data on every caller's path,
+    /// like the nesting refusal — see <see cref="YamlEmitException"/>.
+    /// </summary>
+    internal const int MaxRepeatedOutputChars = 16 * 1024 * 1024;
+
+    /// <summary>The message of the sharing refusal (<see cref="MaxRepeatedOutputChars"/>, whose value it states).</summary>
+    internal const string SharedOutputExceededMessage =
+        "shared collection limit exceeded: the OKF YAML subset has no anchors or aliases, "
+        + "so every reuse of a collection is written in full, and the reuses would write more than 16777216 characters";
+
+    /// <summary>
+    /// One emit's output and its sharing bookkeeping (<see cref="MaxRepeatedOutputChars"/>).
+    /// </summary>
+    private sealed class EmitState
+    {
+        /// <summary>The non-empty collections written so far, by reference: equality is structural, sharing is not.</summary>
+        private readonly HashSet<object> _written = new(ReferenceEqualityComparer.Instance);
+
+        /// <summary>How many collections being re-written enclose the current one (0 outside any).</summary>
+        private int _repeatDepth;
+
+        /// <summary>The output length when the outermost re-written collection was entered.</summary>
+        private int _repeatStart;
+
+        /// <summary>Characters written by re-written collections already left.</summary>
+        private long _repeatedChars;
+
+        public StringBuilder Output { get; } = new();
+
+        /// <summary>Records <paramref name="collection"/> as entered; returns whether it was written before.</summary>
+        public bool Enter(YamlValue collection)
+        {
+            if (_written.Add(collection))
+            {
+                return false;
+            }
+
+            if (_repeatDepth++ == 0)
+            {
+                _repeatStart = Output.Length;
+            }
+
+            return true;
+        }
+
+        /// <summary>Records leaving a collection <see cref="Enter"/> answered <paramref name="repeated"/> for.</summary>
+        public void Leave(bool repeated)
+        {
+            if (repeated && --_repeatDepth == 0)
+            {
+                _repeatedChars += Output.Length - _repeatStart;
+            }
+        }
+
+        /// <summary>Refuses once re-written collections have written more than <see cref="MaxRepeatedOutputChars"/>.</summary>
+        public void CheckRepeatedOutput()
+        {
+            if (_repeatDepth > 0 && _repeatedChars + (Output.Length - _repeatStart) > MaxRepeatedOutputChars)
+            {
+                throw new YamlEmitException(SharedOutputExceededMessage);
+            }
+        }
+    }
+
+    /// <summary>
     /// Emits a value as YAML text (always ends with "\n").
     /// </summary>
     /// <exception cref="YamlEmitException">
     /// <paramref name="value"/> nests collections deeper than the parser's
-    /// limit (<see cref="CheckDepth"/>).
+    /// limit (<see cref="CheckDepth"/>), or reuses collections so much that
+    /// writing each reuse in full passes <see cref="MaxRepeatedOutputChars"/>.
     /// </exception>
     public static string Emit(YamlValue value)
     {
-        var outSb = new StringBuilder();
+        var state = new EmitState();
         switch (value)
         {
             case YamlMapping m when !m.IsEmpty:
-                EmitMapping(m, 0, 1, outSb);
+                EmitMapping(m, 0, 1, state);
                 break;
             case YamlSequence s when s.Items.Count > 0:
-                EmitSequence(s.Items, 0, 1, outSb);
+                EmitSequence(s, 0, 1, state);
                 break;
             default:
                 CheckInlineCollection(value, 1);
-                outSb.Append(EmitScalar(value));
-                outSb.Append('\n');
+                state.Output.Append(EmitScalar(value));
+                state.Output.Append('\n');
                 break;
         }
 
-        return outSb.ToString();
+        return state.Output.ToString();
     }
 
     /// <summary>Emits a non-empty mapping, at depth <paramref name="depth"/>, in block style.</summary>
-    private static void EmitMapping(YamlMapping map, int indent, int depth, StringBuilder outSb)
+    private static void EmitMapping(YamlMapping map, int indent, int depth, EmitState state)
     {
         CheckDepth(depth);
+        var repeated = state.Enter(map);
 
+        var outSb = state.Output;
         var pad = new string(' ', indent);
         foreach (var (key, value) in map.Entries)
         {
@@ -103,44 +196,54 @@ public static class YamlEmitter
             {
                 case YamlMapping m when !m.IsEmpty:
                     outSb.Append(pad).Append(keyText).Append(":\n");
-                    EmitMapping(m, indent + IndentStep, depth + 1, outSb);
+                    EmitMapping(m, indent + IndentStep, depth + 1, state);
                     break;
                 case YamlSequence s when s.Items.Count > 0:
                     outSb.Append(pad).Append(keyText).Append(":\n");
-                    EmitSequence(s.Items, indent + IndentStep, depth + 1, outSb);
+                    EmitSequence(s, indent + IndentStep, depth + 1, state);
                     break;
                 default:
                     CheckInlineCollection(value, depth + 1);
                     outSb.Append(pad).Append(keyText).Append(": ").Append(EmitScalar(value)).Append('\n');
                     break;
             }
+
+            state.CheckRepeatedOutput();
         }
+
+        state.Leave(repeated);
     }
 
     /// <summary>Emits a non-empty sequence, at depth <paramref name="depth"/>, in block style.</summary>
-    private static void EmitSequence(IReadOnlyList<YamlValue> seq, int indent, int depth, StringBuilder outSb)
+    private static void EmitSequence(YamlSequence seq, int indent, int depth, EmitState state)
     {
         CheckDepth(depth);
+        var repeated = state.Enter(seq);
 
+        var outSb = state.Output;
         var pad = new string(' ', indent);
-        foreach (var item in seq)
+        foreach (var item in seq.Items)
         {
             switch (item)
             {
                 case YamlMapping m when !m.IsEmpty:
                     outSb.Append(pad).Append("-\n");
-                    EmitMapping(m, indent + IndentStep, depth + 1, outSb);
+                    EmitMapping(m, indent + IndentStep, depth + 1, state);
                     break;
                 case YamlSequence s when s.Items.Count > 0:
                     outSb.Append(pad).Append("-\n");
-                    EmitSequence(s.Items, indent + IndentStep, depth + 1, outSb);
+                    EmitSequence(s, indent + IndentStep, depth + 1, state);
                     break;
                 default:
                     CheckInlineCollection(item, depth + 1);
                     outSb.Append(pad).Append("- ").Append(EmitScalar(item)).Append('\n');
                     break;
             }
+
+            state.CheckRepeatedOutput();
         }
+
+        state.Leave(repeated);
     }
 
     /// <summary>

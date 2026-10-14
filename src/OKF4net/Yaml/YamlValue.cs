@@ -19,6 +19,11 @@ public abstract class YamlValue
     /// <summary>
     /// Emits this value as YAML text using block style, preserving key order.
     /// </summary>
+    /// <exception cref="YamlEmitException">
+    /// The value, built in code, nests collections deeper than the parser's
+    /// limit, or reuses collection objects so much that writing each reuse in
+    /// full would pass the emitter's sharing limit (see <see cref="YamlEmitter.Emit"/>).
+    /// </exception>
     public string ToYamlString() => YamlEmitter.Emit(this);
 
     /// <summary>
