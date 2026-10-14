@@ -19,7 +19,7 @@ and this project adheres to
   `ParseProblems`, `IndexKeys`/`LogKeys`, `ObjectVersions`, `RejectedKeys`,
   `TryResolveResourceKey`, `ReadResourceText(BundleKey)`; `Concept.Key`
   (init-only; the three-parameter constructor is unchanged);
-  `ConceptId.ToKey`/`FromKey`. Every existing member keeps its value.
+  `ConceptId.ToKey`/`FromKey`. Display paths and concept ids are unchanged.
 - **`okf` as a dotnet tool: `OKF4net.Cli` on nuget.org.** A repository with
   the .NET SDK can now pin `okf` in its tool manifest and gate CI on it with
   `dotnet tool restore` then `dotnet okf validate`. `dotnet tool install -g
@@ -131,8 +131,7 @@ and this project adheres to
   containing a character that is never NFC (e.g. U+212B) or a combining mark
   that could compose (a decomposed `é`) is rejected with the code point named;
   precomposed names (`café.sql`) pass everywhere, library and binaries alike.
-  Two non-composing marks in the wrong canonical order are not detected
-  (documented residual).
+  Marks out of canonical order are rejected too.
 - **Provider I/O failures are translated**: a `BundleLoadException` or an
   `IOException` leaving `Bundle` names the key and the exception type, never
   the raw OS text, which is kept as `InnerException` for the host's log.
@@ -143,10 +142,13 @@ and this project adheres to
   reported as escaping the bundle (`FrontmatterPathUnsafe`), as before.
 - **Known, temporary gap:** `Bundle.TryResolveResource` and
   `Bundle.ReadResourceText(string)` are kept unchanged in this lot and apply
-  neither the key policy nor the rejected-key guard. The readers that still use
-  them (`AttestationOrchestrator`, `OkfBundleTools`) follow in the next lots, so
-  until then `okf validate` can flag a resource name as `Unsafe` that
-  `okf_run_computation` still reads.
+  neither the key policy, nor the rejected-key guard, nor the exact-case and
+  backslash rules above (they still resolve through the OS filesystem, so
+  `references\a.sql` resolves on Windows and a case-folded name on Windows and
+  macOS). The readers that still use them (`AttestationOrchestrator`,
+  `OkfBundleTools`) follow in the next lots, so until then `okf validate` can
+  flag a resource `Unsafe` or `Missing` — for a key-policy, case or backslash
+  reason — that `okf_run_computation` still reads.
 - **The `okf-render` release archives carry its licences:** `NOTICE`, `LICENSE`,
   `LICENSE.GPL-3.0`, the embedded fonts' SIL OFL texts (`licenses/OFL-*.txt`)
   and the MIT licence text of the embedded marked (`licenses/marked-LICENSE.md`,

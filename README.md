@@ -219,7 +219,8 @@ File.WriteAllText("./my_bundle/log.md", new ChangeLog(log.Title, days).ToMarkdow
 ### Loading through a provider
 
 `Bundle.Load(string root)` is now an overload over the default
-`FileSystemBundleProvider`. A host can load through any `IBundleProvider`
+`FileSystemBundleProvider` (it still throws `BundleLoadException` for a root
+that is not a directory, before delegating). A host can load through any `IBundleProvider`
 (`OKF4net.Providers`) — a key space of objects, read-only unless the provider
 declares `Capabilities.CanWrite` — with `Bundle.Load(provider, new
 BundleLoadOptions { Limits = …, KeyPolicy = … })`. Keys are validated as a tree
@@ -234,10 +235,12 @@ write side and the first remote providers are tracked in #139.
 
 The historical members `Bundle.TryResolveResource` and
 `Bundle.ReadResourceText(string)` are unchanged in this release: they apply
-neither the key policy nor the rejected-key guard, and the readers that still
-use them (`AttestationOrchestrator`, `OkfBundleTools`) move to the key-based
-members in the next lots. Until then `okf validate` can report a resource name
-as `Unsafe` that `okf_run_computation` still reads — a known, temporary gap.
+neither the key policy, nor the rejected-key guard, nor the exact-case and
+backslash rules (they still resolve through the OS filesystem), and the readers
+that still use them (`AttestationOrchestrator`, `OkfBundleTools`) move to the
+key-based members in the next lots. Until then `okf_run_computation` can read a
+resource that `okf validate` reports `Unsafe` or `Missing` for a key-policy,
+case or backslash reason — a known, temporary gap.
 
 ### As a CLI
 
