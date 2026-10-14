@@ -151,4 +151,112 @@ public class YamlValueTests
         Assert.False(new YamlFloat(0.0).IsEmptyValue);
         Assert.False(new YamlString("x").IsEmptyValue);
     }
+
+    // Equality and hashing. Deep, cyclic and shared-everywhere values are
+    // exercised in a child process (YamlHostileInputTests, #158), where a
+    // regression to recursion would crash the probe instead of this host.
+
+    [Fact]
+    public void Equality_is_structural_and_order_sensitive()
+    {
+        var a = YamlValue.Parse("x: 1\ny: [a, b]\n");
+        Assert.Equal(a, YamlValue.Parse("x: 1\ny: [a, b]\n"));
+        Assert.Equal(a.GetHashCode(), YamlValue.Parse("x: 1\ny: [a, b]\n").GetHashCode());
+        Assert.NotEqual(a, YamlValue.Parse("y: [a, b]\nx: 1\n"));
+        Assert.NotEqual(a, YamlValue.Parse("x: 1\ny: [b, a]\n"));
+        Assert.NotEqual(a, YamlValue.Parse("x: 1\ny: [a, b, c]\n"));
+        Assert.NotEqual(a, YamlValue.Parse("x: '1'\ny: [a, b]\n"));
+    }
+
+    [Fact]
+    public void Negative_zero_equals_zero_and_hashes_alike()
+    {
+        var zero = new YamlSequence([new YamlFloat(0.0)]);
+        var negativeZero = new YamlSequence([new YamlFloat(-0.0)]);
+        Assert.Equal(zero, negativeZero);
+        Assert.Equal(zero.GetHashCode(), negativeZero.GetHashCode());
+    }
+
+    /// <summary>
+    /// IEEE-754 all the way: a value holding NaN is unequal even to itself.
+    /// Pins that the comparison takes no by-reference shortcut, which would
+    /// make <c>v.Equals(v)</c> true here.
+    /// </summary>
+    [Fact]
+    public void A_value_holding_NaN_is_unequal_even_to_itself()
+    {
+        var map = new YamlMapping();
+        map.Insert("k", new YamlFloat(double.NaN));
+        Assert.False(map.Equals(map));
+    }
+
+    [Fact]
+    public void Sharing_a_subtree_does_not_change_equality_or_the_hash()
+    {
+        var shared = YamlValue.Parse("k: [1, 2]\n");
+        var withSharing = new YamlMapping();
+        withSharing.Insert("x", shared);
+        withSharing.Insert("y", shared);
+
+        var withCopies = YamlValue.Parse("x:\n  k: [1, 2]\ny:\n  k: [1, 2]\n");
+        Assert.Equal(withCopies, withSharing);
+        Assert.Equal(withSharing, withCopies);
+        Assert.Equal(withCopies.GetHashCode(), withSharing.GetHashCode());
+    }
+
+    /// <summary>
+    /// The comparison remembers pairs it has met, never one side alone: a
+    /// node shared under two keys is compared with each of its two partners,
+    /// whichever side holds the sharing. Remembering only the left node (or
+    /// only the right) would skip the second partner and call these equal.
+    /// </summary>
+    /// <remarks>
+    /// The shared subtree is 100 collections deep because the comparison only
+    /// starts remembering pairs past its first 64: a shallower one would never
+    /// reach the code this pins.
+    /// </remarks>
+    [Fact]
+    public void A_shared_subtree_is_compared_with_each_of_its_partners()
+    {
+        static YamlValue Nested(string leaf)
+        {
+            var inner = YamlValue.Parse(leaf);
+            for (var i = 0; i < 100; i++)
+            {
+                inner = new YamlSequence([inner]);
+            }
+
+            return inner;
+        }
+
+        var shared = Nested("[1, 2]");
+        var withSharing = new YamlMapping();
+        withSharing.Insert("x", shared);
+        withSharing.Insert("y", shared);
+
+        var differentSecond = new YamlMapping();
+        differentSecond.Insert("x", Nested("[1, 2]"));
+        differentSecond.Insert("y", Nested("[1, 3]"));
+
+        Assert.NotEqual<YamlValue>(withSharing, differentSecond);
+        Assert.NotEqual<YamlValue>(differentSecond, withSharing);
+    }
+
+    /// <summary>
+    /// The hash reads a bounded number of nodes, so this value, larger than
+    /// that, is only partly read. Equal copies still hash alike, and two
+    /// values that differ only where the hash never reads still compare
+    /// unequal. The bound itself is guarded where breaking it would hang, by
+    /// the cyclic and diamond cases of <c>YamlHostileInputTests</c>.
+    /// </summary>
+    [Fact]
+    public void Values_larger_than_the_hash_reads_stay_consistent_with_equality()
+    {
+        static YamlSequence Items(string last) =>
+            new([.. Enumerable.Range(0, 10_000).Select(i => (YamlValue)new YamlInt(i)), new YamlString(last)]);
+
+        Assert.Equal(Items("end").GetHashCode(), Items("end").GetHashCode());
+        Assert.Equal(Items("end"), Items("end"));
+        Assert.NotEqual(Items("end"), Items("END"));
+    }
 }

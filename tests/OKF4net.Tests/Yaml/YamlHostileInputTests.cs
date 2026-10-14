@@ -89,6 +89,49 @@ public class YamlHostileInputTests
     }
 
     /// <summary>
+    /// Structural equality and hashing on values built in code (#158), where
+    /// the parser's 1000 rule does not reach: 100 000 collections deep, cyclic
+    /// (a <c>YamlMapping</c> can hold itself), or sharing one subtree under
+    /// two keys at each of 60 levels. Each question gets its answer in a clean
+    /// exit, so <c>Equals</c> and <c>GetHashCode</c> neither recurse (a stack
+    /// overflow kills the process) nor walk every path of a shared structure
+    /// (2^60 of them; the deadline turns that hang into a failure). Two values
+    /// with the same unfolding are equal however their cycles are laid out,
+    /// and equal values hash equally.
+    /// </summary>
+    [Theory]
+    [InlineData("value-deep-built", new[]
+    {
+        "do equal copies compare equal: True",
+        "does a copy with another leaf compare equal: False",
+        "do equal copies hash alike: True",
+    })]
+    [InlineData("value-cycles", new[]
+    {
+        "does a cycle equal an identical cycle: True",
+        "does it equal a longer cycle with the same unfolding: True",
+        "do all three hash alike: True",
+        "does it equal a cycle with another key: False",
+        "does it equal a tree: False",
+        "does it equal a longer cycle that differs only in its second node: False",
+        "does that cycle equal it: False",
+    })]
+    [InlineData("value-diamonds", new[]
+    {
+        "do equal diamond chains compare equal: True",
+        "does a copy with another leaf compare equal: False",
+        "do equal diamond chains hash alike: True",
+    })]
+    public void Equality_and_hashing_of_a_built_value_answer_in_a_clean_exit(string name, string[] expected)
+    {
+        var (code, stdout, stderr) = RunProbe(name);
+
+        Assert.True(code == 0, $"probe exited with {code} (a crash, e.g. a stack overflow?)\nstdout:\n{stdout}\nstderr:\n{stderr}");
+        var lines = stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        Assert.Equal(expected, lines);
+    }
+
+    /// <summary>
     /// Runs the probe on <paramref name="name"/>, killing it at the deadline.
     /// The probe is built next to this test project in the same configuration
     /// and target framework (the test project's <c>ProjectReference</c> to it,

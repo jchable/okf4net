@@ -224,12 +224,43 @@ public class YamlDepthSymmetryTests
     /// The depth of <paramref name="value"/> under the rule: 0 for a scalar,
     /// otherwise 1 + the deepest child (an empty collection is 1).
     /// </summary>
-    private static int Depth(YamlValue value) => value switch
+    /// <remarks>
+    /// Iterative on purpose (#186). The values measured here are 1000 and 1001
+    /// collections deep, and the recursive version of this walk, through LINQ
+    /// at about five frames per level, overflowed the stack once on a Windows
+    /// CI runner and passed when re-run. A stack overflow kills the whole
+    /// test host, not just this test.
+    /// </remarks>
+    private static int Depth(YamlValue value)
     {
-        YamlMapping m => 1 + m.Entries.Select(e => Math.Max(Depth(e.Key), Depth(e.Value))).DefaultIfEmpty(0).Max(),
-        YamlSequence s => 1 + s.Items.Select(Depth).DefaultIfEmpty(0).Max(),
-        _ => 0,
-    };
+        var deepest = 0;
+        var pending = new Stack<(YamlValue Node, int Above)>();
+        pending.Push((value, 0));
+        while (pending.TryPop(out var item))
+        {
+            var (node, above) = item;
+            IEnumerable<YamlValue>? children = node switch
+            {
+                YamlMapping m => m.Entries.SelectMany(e => new[] { e.Key, e.Value }),
+                YamlSequence s => s.Items,
+                _ => null,
+            };
+            if (children is null)
+            {
+                deepest = Math.Max(deepest, above);
+                continue;
+            }
+
+            var depth = above + 1;
+            deepest = Math.Max(deepest, depth);
+            foreach (var child in children)
+            {
+                pending.Push((child, depth));
+            }
+        }
+
+        return deepest;
+    }
 
     // ---------------------------------------------------------------- text, parser first
 

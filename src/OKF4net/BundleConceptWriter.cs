@@ -1225,7 +1225,7 @@ public sealed class BundleConceptWriter
 
     /// <summary>
     /// Whether <paramref name="value"/> contains a NaN <see cref="YamlFloat"/>
-    /// anywhere in its tree (recursing into mappings and sequences). Exists
+    /// anywhere in its tree, mapping keys included. Exists
     /// solely to make the equality-refusal message in
     /// <see cref="RecordVerifications"/> diagnosable: <see cref="YamlValue"/>'s
     /// structural equality compares floats with IEEE-754 <c>==</c>, under
@@ -1237,13 +1237,17 @@ public sealed class BundleConceptWriter
     /// could not confirm the edit, instead of the generic message implying a
     /// real corruption.
     /// </summary>
-    internal static bool ContainsNaN(YamlValue value) => value switch
-    {
-        YamlFloat f => double.IsNaN(f.Value),
-        YamlMapping m => m.Entries.Any(e => ContainsNaN(e.Key) || ContainsNaN(e.Value)),
-        YamlSequence s => s.Items.Any(ContainsNaN),
-        _ => false,
-    };
+    /// <remarks>
+    /// A value is unequal to itself exactly when it holds a NaN somewhere:
+    /// <see cref="YamlValue.Equals(object?)"/> takes no by-reference shortcut,
+    /// every pair it meets comparing a value with itself has the same type and
+    /// count, and among scalars only NaN fails <c>==</c>. So this reuses that
+    /// comparison and inherits its guarantees (#158): no recursion, and an
+    /// answer on any value, including one built in code that holds itself.
+    /// <c>A_value_holding_NaN_is_unequal_even_to_itself</c> pins the absence of
+    /// the shortcut this relies on.
+    /// </remarks>
+    internal static bool ContainsNaN(YamlValue value) => !value.Equals(value);
 
     /// <summary>
     /// Names WHICH part of the frontmatter actually diverged, for the

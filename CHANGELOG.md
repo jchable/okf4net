@@ -148,6 +148,26 @@ and this project adheres to
 
 ### Fixed
 
+- **`YamlValue.Equals` and `GetHashCode` answer for any value built in code
+  (#158).** Both recursed once per nesting level, and the parser's 1000 rule
+  only bounds what it reads. A value built deeper, or a `YamlMapping` that
+  holds itself (the type is mutable), overflowed the stack, killing the
+  process. A mapping sharing one subtree under two keys at each of 60 levels
+  never finished. `Equals` now walks without recursing, stops at the first
+  difference, and past its first 64 pairs of collections compares each pair
+  once, so two values are equal when they unfold into the same tree, however
+  their sharing or cycles are laid out. On a tree, which covers
+  everything the parser returns, the result is unchanged, NaN included: a
+  value holding NaN is still unequal to itself. Comparing two scalars still
+  allocates nothing. `GetHashCode` reads at most 1024 nodes breadth first, so
+  equal values still hash alike, at bounded cost. The price is that two
+  values differing only past their first 1024 nodes now share a hash, where
+  the old hash read everything. `BundleConceptWriter.ContainsNaN`, which runs
+  when `okf verify`'s round-trip comparison fails, no longer recurses either.
+  The deep, cyclic and shared cases run in the hostile-input probe's child
+  process. The test helper that measured depth in `YamlDepthSymmetryTests`
+  recursed the same way and overflowed once on a Windows runner; it is
+  iterative too (#186).
 - **A junction or symlink to a bundle now shares the bundle's write lock
   (#86).** `BundleConceptWriter` keyed its process-wide lock on the root's
   lexical full path, so a writer over `alias` (a junction to `actual`) and a
