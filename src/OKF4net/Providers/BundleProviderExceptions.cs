@@ -49,3 +49,47 @@ public sealed class BundleObjectTooLargeException(BundleKey key, long observedBy
     /// <summary>The offending key.</summary>
     public BundleKey Key { get; } = key;
 }
+
+/// <summary>A STRICT path guard or the confinement boundary refused an access (spec §8). The message names the key only; <see cref="Detail"/> is the provider's own explanation, for the host's log.</summary>
+public sealed class BundleAccessRefusedException(BundleKey? key, string detail)
+    : BundleProviderException(key is null ? "access to the bundle was refused by its provider" : $"access to '{key}' was refused by the provider")
+{
+    /// <summary>The key, when the refusal concerned one.</summary>
+    public BundleKey? Key { get; } = key;
+
+    /// <summary>Why, in the provider's words — may name storage internals; log it, never show it to a model.</summary>
+    public string Detail { get; } = detail;
+}
+
+/// <summary>The bounds of spec §6 a walk or a load can exceed — a closed set, so a message built from it carries nothing a provider wrote (decision 16).</summary>
+public enum BundleBound
+{
+    /// <summary><see cref="BundleLimits.MaxEntries"/>.</summary>
+    Entries,
+
+    /// <summary><see cref="BundleLimits.MaxDepth"/>.</summary>
+    Depth,
+
+    /// <summary><see cref="BundleLimits.MaxKeyBytes"/>.</summary>
+    KeyBytes,
+}
+
+/// <summary>A walk or a load exceeded one of its <see cref="BundleLimits"/> (spec §6). The message names the bound by its category only.</summary>
+public sealed class BundleLimitExceededException(BundleBound bound, long limit)
+    : BundleProviderException($"the bundle exceeds the {Describe(bound)} bound ({limit})")
+{
+    /// <summary>Which bound was exceeded.</summary>
+    public BundleBound Bound { get; } = bound;
+
+    /// <summary>The bound's value.</summary>
+    public long Limit { get; } = limit;
+
+    /// <summary>The fixed word for a bound in messages: <c>entries</c>, <c>depth</c>, <c>key-length</c>.</summary>
+    public static string Describe(BundleBound bound) => bound switch
+    {
+        BundleBound.Entries => "entries",
+        BundleBound.Depth => "depth",
+        BundleBound.KeyBytes => "key-length",
+        _ => "unknown",
+    };
+}
