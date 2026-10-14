@@ -14,7 +14,20 @@ namespace OKF4net.Tests.Attestation.Containers;
 /// pin the two teardown properties a real engine cannot be made to demonstrate on
 /// demand, which decoder each output stream is wired to, and the output-cap and
 /// UTF-8 accounting the real-Docker integration tests then confirm end to end.
+/// <para><b>Runs alone.</b> The class sits in a collection with parallelization
+/// disabled (<see cref="CliContainerEngineTeardownTimingCollection"/>), which xunit
+/// runs by itself after every parallel collection has finished. The two teardown
+/// tests bound wall-clock time, and <see cref="CliContainerEngine"/> does its teardown
+/// on thread-pool continuations (timer callbacks, process-exit notifications), so
+/// in-process thread-pool starvation from the rest of the suite stretches them. Measured
+/// during the parallel phase, under four concurrent full suites (#149): pool callbacks
+/// 2.0-2.7 s late while a dedicated thread was at most 0.26 s late, the first
+/// <c>kill</c> starting 3.6 s into a run whose timeout was 30 ms, and the slow-kill test
+/// taking 8.2-9.5 s against its 8 s bound. Running alone removes that source.
+/// Other processes on the machine still compete for the CPU, which is why each bound
+/// below also states its margin.</para>
 /// </summary>
+[Collection(CliContainerEngineTeardownTimingCollection.Name)]
 public class CliContainerEngineRunTests
 {
     private static ContainerRunSpec Spec(TimeSpan? timeout) => new(
@@ -258,63 +271,108 @@ public class CliContainerEngineRunTests
     /// -- a kill that already hung once will not answer a second time either, and the
     /// caller is already past its own deadline.
     /// <para>
-    /// The hung child is the clock (issue #149). This test used to time the whole
+    /// The clock starts at the hang (#149). This test used to time the whole
     /// <see cref="CliContainerEngine.RunAsync"/> call against a fixed 4 s, so that one
-    /// number had to absorb spawning the <c>run</c> process (a freshly written script,
-    /// on a shared Windows runner), the 300 ms timeout, spawning <c>kill</c>, the 1 s
-    /// budget and two process-tree kills; a GitHub Windows runner needed 4.25-4.3 s
-    /// for all of that, against ~1 s locally. Now the assertion is "no <c>done</c>
-    /// line by the time <see cref="CliContainerEngine.RunAsync"/> returns", and the
-    /// window it measures starts only when the <c>kill</c> child itself starts its
-    /// sleep: nothing before that point -- spawning <c>run</c>, the timeout, JIT, an
-    /// antivirus scan of the script -- can fail it any more.
+    /// number had to absorb spawning the <c>run</c> process, the 300 ms timeout,
+    /// spawning <c>kill</c>, the 1 s budget and two process-tree kills; a GitHub Windows
+    /// runner needed 4.25-4.3 s for all of that, against ~1.3 s normally. Its main
+    /// bound is now measured from the moment the <c>kill</c> child writes its
+    /// <c>kill</c> line -- immediately before its sleep -- as seen by a 5 ms poll of the
+    /// marker file (<see cref="WhenKillLineAppearsAsync"/>, whose reading can only be
+    /// late, which shortens the window and can only hide a regression on one run).
     /// </para>
     /// <para>
-    /// The margins, with <see cref="CliContainerEngine.TeardownBudget"/> shrunk to 1 s
-    /// and a <see cref="HungKillSeconds"/> (4 s) hang. The budget's cancellation starts
-    /// once <c>kill</c> has been started, and the child's sleep starts after that (once
-    /// its shell is up), so the correct code fails this test only if killing the
-    /// <c>kill</c> process tree takes more than 4 - 1 = 3 s beyond the budget firing --
-    /// a margin for teardown latency alone, wider than the ~2.7 s the old bound left
-    /// for the whole run. The regressions it guards against: an unbounded wait on
-    /// <c>kill</c> lets the child finish and write <c>done</c> whatever the timing; the
-    /// fixed 5 s per-attempt bound that the shared budget replaced does too,
-    /// as long as the child's shell reaches its sleep within 5 - 4 = 1 s of being
-    /// started -- on a run where it does not, that variant goes unnoticed for that run
-    /// (a missed detection, never a false failure). The budget stays at 1 s rather
-    /// than smaller so the one-<c>kill</c>-line assertion still means something: a
-    /// <c>kill</c> that failed fast would leave more than <c>RetryThreshold</c> (500 ms)
-    /// of a 1 s budget and be retried, so only the hang consuming the budget explains
-    /// a single attempt.
+    /// The mechanism the bounds rest on (<c>KillContainerAsync</c>, <c>TryKillOnceAsync</c>):
+    /// the teardown stopwatch starts, and the first attempt's slice of the budget is
+    /// computed -- in practice the whole 1 s, since nothing has run yet -- BEFORE
+    /// <c>kill</c> is spawned; that slice's cancellation is armed only once
+    /// <c>Start()</c> has returned. The time spent spawning is therefore charged to the
+    /// budget only for the retry decision, not to the first attempt. The <c>kill</c>
+    /// line is written after <c>Start()</c> returned (once the child's shell is up), so
+    /// the cut-off lands at most 1 s after that line, and what follows it -- killing the
+    /// <c>kill</c> tree, killing the <c>run</c> tree, draining output -- is latency.
     /// </para>
     /// <para>
-    /// The elapsed-time check is a backstop, not the proof: it catches a teardown that
-    /// waits out the 20 s <c>run</c> hang instead (e.g. one that stopped killing the
-    /// <c>run</c> process tree), with a 15 s bound that is more than ten times the
-    /// ~1.3 s the correct path spends on timeout plus budget.
+    /// What each assertion catches, and what it cannot:
+    /// <list type="bullet">
+    /// <item><b>Window (kill line to return) under 1 s budget + 2 s slack.</b> Measured
+    /// with the class running alone and <see cref="EnsureThreadPoolHeadroom"/>: at most
+    /// 1.11 s on the three CI runners (48 runs). Without that headroom: at most 1.37 s
+    /// locally under four concurrent full suites (64 runs), and 1.83 s once on a Windows
+    /// CI runner. Catches an unbounded wait on <c>kill</c> (about 4 s, since
+    /// the child exits after its sleep); the fixed 5 s per-attempt bound the shared
+    /// budget replaced (about 5 s, minus the child's shell start-up -- so it is missed
+    /// only on a run where that start-up takes over 2 s; the CI measurements put the
+    /// whole spawn-plus-start-up at tens of ms); and any extra wait of 2 s or more after
+    /// the hang begins, e.g. a bounded drain after a hung <c>kill</c>. Cannot see a
+    /// delay before <c>kill</c> starts.</item>
+    /// <item><b>End to end under 8 s</b>, from before <see cref="CliContainerEngine.RunAsync"/>
+    /// is called. Catches a delay anywhere, including before teardown starts, and a
+    /// teardown that waits out the 20 s <c>run</c> hang (one that stopped killing the
+    /// <c>run</c> tree). Correct runs take 1.3-1.8 s; 8 s is close to twice the
+    /// slowest CI run ever seen (4.3 s, #149, under parallel load). Cannot catch an
+    /// added delay of up to ~6 s before <c>kill</c> starts.</item>
+    /// <item><b>No <c>done</c> line, checked after outliving the hang</b> (until the
+    /// kill line + <see cref="HungKillSeconds"/> + 2 s). Catches a <c>kill</c> child
+    /// that was abandoned rather than killed with its process tree: the window
+    /// assertion alone passes then, because the wait itself was still cut off. Correct
+    /// code fails it only if the kill tree is killed more than 4 - 1 = 3 s after the
+    /// cut-off. The extra 2 s covers a <c>ping</c>-based sleep running long; an
+    /// abandoned child slower than that is missed on that run.</item>
+    /// <item><b>Exactly one <c>kill</c> line.</b> Catches a retry after a hung
+    /// <c>kill</c>, including a fresh budget per attempt. The budget stays at 1 s
+    /// rather than smaller so this means something: a <c>kill</c> that failed fast would
+    /// leave more than <c>RetryThreshold</c> (500 ms) of 1 s and be retried, so only the
+    /// hang consuming the budget explains a single attempt. Its one timing dependency:
+    /// the child must write its line within the 1 s slice, i.e. its shell must start in
+    /// under 1 s.</item>
+    /// </list>
     /// </para>
     /// </summary>
     [Fact]
     public async Task A_hung_engine_kill_does_not_hang_the_timed_out_run()
     {
+        EnsureThreadPoolHeadroom();
         using var tmp = new TempDir();
         var marker = System.IO.Path.Combine(tmp.Path, "kill-calls.txt");
         var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, killMode: KillMode.Hang))
         {
-            TeardownBudget = TimeSpan.FromSeconds(1),
+            TeardownBudget = HungKillBudget,
         };
         var clock = Stopwatch.StartNew();
+        using var stopWatching = new CancellationTokenSource();
+        var killLineSeen = WhenKillLineAppearsAsync(marker, clock, stopWatching.Token);
 
         var ex = await Assert.ThrowsAsync<ContainerExecutionException>(
             async () => await engine.RunAsync(Spec(TimeSpan.FromMilliseconds(300))));
-        var elapsed = clock.Elapsed;
+        var returnedAt = clock.Elapsed;
+        await stopWatching.CancelAsync();
+        var killStartedAt = await killLineSeen;
 
         Assert.Contains("exceeded its timeout", ex.Message);
-        Assert.False(
-            CountMarkerLines(marker, "done") > 0,
-            $"the hung kill ran out its {HungKillSeconds} s sleep before the timed-out run returned (after {elapsed}): teardown waited on it instead of cutting it off at the 1 s budget");
-        Assert.Equal(1, CountMarkerLines(marker, "kill"));
-        Assert.True(elapsed < TimeSpan.FromSeconds(15), $"the timed-out run took {elapsed}");
+        Assert.True(
+            returnedAt < HungKillEndToEndBound,
+            $"the timed-out run took {returnedAt} against an end-to-end bound of {HungKillEndToEndBound}");
+        Assert.True(killStartedAt.HasValue, "the fake engine's kill never wrote its kill line");
+        var window = returnedAt - killStartedAt.Value;
+        var windowBound = HungKillBudget + HungKillWindowSlack;
+        Assert.True(
+            window < windowBound,
+            $"the timed-out run returned {window} after the hung kill started its sleep, against a bound of {windowBound} (teardown budget {HungKillBudget})");
+
+        // Then outlive the hang: a kill child that was abandoned rather than killed
+        // writes its `done` line before this wait ends.
+        var outlive = killStartedAt.Value + TimeSpan.FromSeconds(HungKillSeconds) + HungKillOrphanGrace - clock.Elapsed;
+        if (outlive > TimeSpan.Zero)
+        {
+            await Task.Delay(outlive);
+        }
+
+        var (kills, dones) = ReadMarker(marker);
+        Assert.True(
+            dones == 0,
+            $"the hung kill wrote its done line: it ran out its {HungKillSeconds} s sleep instead of being killed with its process tree");
+        Assert.Equal(1, kills);
     }
 
     /// <summary>
@@ -347,17 +405,37 @@ public class CliContainerEngineRunTests
     /// exceed 2x the slower attempt plus the retry delay (2 x 0.75 s + 0.25 s = 1.75 s
     /// on POSIX; smaller on Windows) by roughly 3 s of headroom -- enough to absorb
     /// even a heavily loaded shared CI runner's scheduling noise without the
-    /// RetryThreshold check ever coming close to the edge. The assertion below still
-    /// derives its elapsed bound from this budget plus a fixed slack (matching the
-    /// sibling's own pattern) rather than a bare literal, so the two numbers cannot
-    /// drift apart the way the old literal 3.5 s did. Confirmed empirically: 20 runs on
-    /// Windows and 20 runs in a Linux container (dotnet/sdk:10.0), see the
-    /// retry-test-fix report.
+    /// RetryThreshold check ever coming close to the edge.
+    /// </para>
+    /// <para>
+    /// What each assertion catches, and what it cannot:
+    /// <list type="bullet">
+    /// <item><b>Exactly two <c>kill</c> lines</b> -- the guarantee itself. Catches a
+    /// retry that was dropped or made to need more budget than a slow <c>kill</c>
+    /// leaves, and a third attempt. It fails correct code only if the first attempt
+    /// takes over 4.5 s (the 5 s budget less <c>RetryThreshold</c>). Even in the
+    /// starved runs described on the class, where the whole run took up to 9.5 s,
+    /// every run made both attempts.</item>
+    /// <item><b>Teardown (first <c>kill</c> line to return) under the budget + 3 s.</b>
+    /// This used to be timed from before <see cref="CliContainerEngine.RunAsync"/> was
+    /// called, and that is what failed
+    /// under load (8.2 s and 9.5 s against 8 s). In those runs the first <c>kill</c>
+    /// started 3.6 s into the run, so most of the time was spent before teardown began.
+    /// It is now timed from the first <c>kill</c> line, seen by the same poll as the
+    /// sibling's. With the class running alone it took 1.0-2.0 s on the CI runners
+    /// (the POSIX <c>kill</c> sleeps 2 x 0.75 s). Catches a teardown
+    /// that runs on for 8 s or more after its first <c>kill</c>, e.g. a retry delay of
+    /// several seconds, or an attempt that does not end when its <c>kill</c> exits. It
+    /// cannot show that the budget itself is honoured: neither 0.3-0.75 s attempt comes
+    /// near it. That is the sibling's job, whose 1 s budget a hung <c>kill</c> actually
+    /// exhausts.</item>
+    /// </list>
     /// </para>
     /// </summary>
     [Fact]
     public async Task A_slow_failing_kill_still_gets_retried_within_the_budget()
     {
+        EnsureThreadPoolHeadroom();
         using var tmp = new TempDir();
         var marker = System.IO.Path.Combine(tmp.Path, "kill-calls.txt");
         var budget = TimeSpan.FromSeconds(5);
@@ -366,14 +444,23 @@ public class CliContainerEngineRunTests
             TeardownBudget = budget,
         };
         var clock = Stopwatch.StartNew();
+        using var stopWatching = new CancellationTokenSource();
+        var killLineSeen = WhenKillLineAppearsAsync(marker, clock, stopWatching.Token);
 
         var ex = await Assert.ThrowsAsync<ContainerExecutionException>(
             async () => await engine.RunAsync(Spec(TimeSpan.FromMilliseconds(30))));
+        var returnedAt = clock.Elapsed;
+        await stopWatching.CancelAsync();
+        var firstKill = await killLineSeen;
 
-        var bound = budget + TimeSpan.FromSeconds(3);
         Assert.Contains("exceeded its timeout", ex.Message);
-        Assert.True(clock.Elapsed < bound, $"the timed-out run took {clock.Elapsed} against a bound of {bound} (budget {budget})");
-        Assert.Equal(2, CountMarkerLines(marker, "kill"));
+        Assert.Equal(2, ReadMarker(marker).Kills);
+        Assert.True(firstKill.HasValue, "the fake engine's kill never wrote its kill line");
+        var teardown = returnedAt - firstKill.Value;
+        var bound = budget + TimeSpan.FromSeconds(3);
+        Assert.True(
+            teardown < bound,
+            $"the timed-out run returned {teardown} after its first kill started, against a bound of {bound} (budget {budget})");
     }
 
     /// <summary>
@@ -384,10 +471,100 @@ public class CliContainerEngineRunTests
     /// </summary>
     private const int HungKillSeconds = 4;
 
-    private static int CountMarkerLines(string markerFile, string token) =>
-        File.Exists(markerFile)
-            ? File.ReadAllLines(markerFile).Count(line => line.Trim() == token)
-            : 0;
+    /// <summary>The teardown budget <see cref="A_hung_engine_kill_does_not_hang_the_timed_out_run"/> runs with.</summary>
+    private static readonly TimeSpan HungKillBudget = TimeSpan.FromSeconds(1);
+
+    /// <summary>Latency allowed after the 1 s budget in the hung-kill window; see that test for the measurements behind it.</summary>
+    private static readonly TimeSpan HungKillWindowSlack = TimeSpan.FromSeconds(2);
+
+    /// <summary>The hung-kill test's end-to-end backstop, timed from before <see cref="CliContainerEngine.RunAsync"/> is called; see that test.</summary>
+    private static readonly TimeSpan HungKillEndToEndBound = TimeSpan.FromSeconds(8);
+
+    /// <summary>How long past the end of its sleep an abandoned hung <c>kill</c> child is given to write its <c>done</c> line.</summary>
+    private static readonly TimeSpan HungKillOrphanGrace = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Raises -- never lowers -- the thread pool's minimum worker count before a teardown
+    /// test. Running alone (see the class) keeps other tests from competing, but not from
+    /// leaving work behind: a test that abandons a blocking stage leaves a pool thread
+    /// blocked after it ends, and once the minimum is used up the pool adds threads
+    /// slowly, so a queued teardown continuation waits for one. Measured on a Windows CI
+    /// runner with the class already running alone: one hung-kill window of 1.83 s against
+    /// ~1.0 s, with pool callbacks 1.0 s late while a dedicated thread was at most 16 ms
+    /// late. The setting is process-wide, but only ever raised, and a production host's
+    /// pool is its own concern: this removes test-host noise, not anything
+    /// <see cref="CliContainerEngine"/> does.
+    /// </summary>
+    private static void EnsureThreadPoolHeadroom()
+    {
+        ThreadPool.GetMinThreads(out var workers, out var io);
+        if (workers < 64)
+        {
+            ThreadPool.SetMinThreads(64, io);
+        }
+    }
+
+    /// <summary>
+    /// Counts the <c>kill</c> and <c>done</c> lines of one snapshot of the marker file.
+    /// Each line is trimmed before it is compared: cmd's <c>echo kill &gt;&gt; file</c>
+    /// keeps the space before the redirection as part of the line. A read that collides
+    /// with a child still appending is retried rather than failing the test.
+    /// </summary>
+    private static (int Kills, int Dones) ReadMarker(string markerFile)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                if (!File.Exists(markerFile))
+                {
+                    return (0, 0);
+                }
+
+                var lines = File.ReadAllLines(markerFile);
+                return (
+                    lines.Count(static line => line.Trim() == "kill"),
+                    lines.Count(static line => line.Trim() == "done"));
+            }
+            catch (IOException) when (attempt < 50)
+            {
+                Thread.Sleep(10);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Polls <paramref name="markerFile"/> on a dedicated thread every 5 ms and returns the
+    /// <paramref name="clock"/> reading at which the first <c>kill</c> line was seen, or
+    /// <c>null</c> if none had appeared by the time <paramref name="stop"/> was cancelled
+    /// (one last read is made after that). The reading can only be late, never early: the
+    /// line is written immediately before the child starts its sleep and is seen some
+    /// milliseconds later, so a window measured from it is never longer than the real one
+    /// -- poll lag can hide a regression on one run, never fail correct code.
+    /// </summary>
+    private static Task<TimeSpan?> WhenKillLineAppearsAsync(string markerFile, Stopwatch clock, CancellationToken stop) =>
+        Task.Factory.StartNew(
+            () =>
+            {
+                while (true)
+                {
+                    var stopping = stop.IsCancellationRequested;
+                    if (ReadMarker(markerFile).Kills > 0)
+                    {
+                        return (TimeSpan?)clock.Elapsed;
+                    }
+
+                    if (stopping)
+                    {
+                        return null;
+                    }
+
+                    Thread.Sleep(5);
+                }
+            },
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
 
     private enum KillMode
     {
@@ -414,10 +591,8 @@ public class CliContainerEngineRunTests
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            // `echo kill>>file`, not `echo kill >> file`: cmd would keep the space
-            // before the redirection as part of the line.
             var killBody = killMode == KillMode.Hang
-                ? $"ping -n {HungKillSeconds + 1} 127.0.0.1 >nul\r\necho done>>\"{markerFile}\"\r\nexit /b 1\r\n"
+                ? $"ping -n {HungKillSeconds + 1} 127.0.0.1 >nul\r\necho done >> \"{markerFile}\"\r\nexit /b 1\r\n"
                 : "ping -n 1 -w 750 192.0.2.1 >nul\r\nexit /b 1\r\n";
             return tmp.Write(
                 "engine.cmd",
@@ -426,7 +601,7 @@ public class CliContainerEngineRunTests
                 + $"ping -n {runHangSeconds + 1} 127.0.0.1 >nul\r\n"
                 + "exit /b 0\r\n"
                 + ":kill\r\n"
-                + $"echo kill>>\"{markerFile}\"\r\n"
+                + $"echo kill >> \"{markerFile}\"\r\n"
                 + killBody);
         }
 
@@ -503,4 +678,16 @@ public class CliContainerEngineRunTests
         }
     }
 
+}
+
+/// <summary>
+/// Runs <see cref="CliContainerEngineRunTests"/> with no other test alongside it: xunit
+/// executes a collection that disables parallelization on its own, after all the
+/// parallel ones. See that class for why.
+/// </summary>
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class CliContainerEngineTeardownTimingCollection
+{
+    /// <summary>The collection's name, shared by the definition and the test class.</summary>
+    public const string Name = "CliContainerEngine teardown timing";
 }
