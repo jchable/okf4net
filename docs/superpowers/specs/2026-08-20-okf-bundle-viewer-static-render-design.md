@@ -1,11 +1,12 @@
 # Design — Bundle viewer, tranche 1 : rendu statique (`okf render`)
 
 - **Date** : 2026-08-20
-- **Statut** : implémenté — mergé dans `dev` par la PR #48, publié dans la 0.6.0
-  (`src/OKF4net.Viewer/`) ; plan :
-  `docs/superpowers/plans/2026-08-20-okf-bundle-viewer-static-render.md`. Depuis,
-  la génération est sortie d'`okf` pour le binaire `okf-render`
-  (`src/OKF4net.Render/`), le viewer est devenu interactif
+- **Statut** : implémenté — mergé dans `dev` par la PR #48 (`src/OKF4net.Viewer/`) ;
+  plan : `docs/superpowers/plans/2026-08-20-okf-bundle-viewer-static-render.md`.
+  Le verbe `okf render` décrit ici n'a jamais été publié : avant toute release, la
+  génération a été sortie d'`okf` vers son propre binaire, et c'est sous la forme
+  du binaire `okf-render` (`src/OKF4net.Render/`) qu'elle a été livrée dans la
+  0.6.0. Depuis, le viewer est devenu interactif
   (`2026-10-06-okf-viewer-interactive-design.md`) et la seconde tranche de #40
   (`okf serve`) a été abandonnée. Ce document reste le design d'origine : le code
   fait foi.

@@ -39,12 +39,16 @@ public class ProvenanceSerializerReachTests
         "body\n";
 
     /// <summary>
-    /// The real guard: the behaviour the design doc relies on, observed end to end through the
-    /// CLI. It does not care how <c>fmt</c> is wired, only that it keeps every <c>sources</c> entry
-    /// exactly as written, so any rewiring through <see cref="Provenance.ToYaml"/> — direct, aliased,
-    /// via a wrapper, a method group or reflection — fails it. The first assertion block proves the
-    /// probe discriminates (a ToYaml round-trip really does change it); without that, a future
-    /// lossless ToYaml would leave this test green for the wrong reason.
+    /// The real guard, for the one command the design doc makes a claim about: <c>okf fmt</c>, in
+    /// both of its output modes — printed to stdout, and written back to disk with <c>-w</c> (each
+    /// mode is its own branch in <c>CmdFmt</c>, so each is run). It observes the behaviour end to
+    /// end through the CLI and does not care how <c>fmt</c> is wired: a rewiring of either mode
+    /// through <see cref="Provenance.ToYaml"/> — direct, aliased, via a wrapper, a method group or
+    /// reflection — changes a <c>sources</c> entry and fails it. It says nothing about any other
+    /// writer (<c>BundleConceptWriter</c>, <c>okf verify</c>, the agent tools), about which the doc
+    /// makes no claim. The first assertion proves the probe discriminates (a ToYaml round-trip
+    /// really does change it); without that, a future lossless ToYaml would leave this test green
+    /// for the wrong reason.
     /// </summary>
     [Fact]
     public void Fmt_keeps_a_sources_entry_that_Provenance_ToYaml_would_rewrite()
@@ -59,57 +63,73 @@ public class ProvenanceSerializerReachTests
             $"ToYaml gave: {Shape(viaToYaml)}");
 
         using var tmp = new TempDir();
-        var path = tmp.Write("probe.md", Probe);
 
-        var r = TestPaths.Run(["fmt", path]);
+        // `okf fmt <file>`: the formatted document on stdout.
+        var printed = TestPaths.Run(["fmt", tmp.Write("printed.md", Probe)]);
+        Assert.Equal(0, printed.Code);
+        Assert.Equal("", printed.Err);
+        AssertSourcesKept("okf fmt", printed.Out, probeSources);
 
-        Assert.Equal(0, r.Code);
-        Assert.Equal("", r.Err);
-        var fmtSources = OkfDocument.Parse(r.Out).Frontmatter.AsMapping().Get("sources");
-        Assert.True(
-            fmtSources is YamlSequence && Shape(fmtSources) == Shape(probeSources),
-            "`okf fmt` rewrote a sources entry (dropped or reordered a key, or added `resource`) — " +
-            $"the behaviour of Provenance.ToYaml, not of raw-tree re-serialization. {DesignDoc} say " +
-            "fmt cannot lose a field ToYaml does not write; either restore raw-tree fmt or rewrite " +
-            $"those sections. Expected {Shape(probeSources)}, got {(fmtSources is null ? "<no sources>" : Shape(fmtSources))}");
-        Assert.Contains("license: CC-BY-4.0", r.Out);
+        // `okf fmt -w <file>`: the formatted document written back to disk, read back from there.
+        var written = tmp.Write("written.md", Probe);
+        var inPlace = TestPaths.Run(["fmt", written, "-w"]);
+        Assert.Equal(0, inPlace.Code);
+        Assert.Equal("", inPlace.Err);
+        AssertSourcesKept("okf fmt -w", File.ReadAllText(written), probeSources);
     }
 
     /// <summary>
     /// Smoke check, not proof: counts the source-text mentions of <c>ToYaml</c> (as a whole word,
-    /// outside <c>//</c> comment lines) under <c>src/</c>. It turns a new direct caller into a failing
-    /// test that names the design doc, since a second caller — even one that never touches
-    /// <c>fmt</c> — makes the doc's "builder path only" wording false. It cannot see an indirect
-    /// call (a wrapper around <see cref="OkfDocumentBuilder"/>, a delegate, reflection, a string
-    /// built at run time), so it is not what protects <c>okf fmt</c>: the behavioural test above is.
+    /// outside <c>//</c> comment lines) in the <c>.cs</c> files under <c>src/</c>, build output
+    /// excluded. It turns a new direct caller into a failing test that names the design doc, since
+    /// a second caller — even one that never touches <c>fmt</c> — makes the doc's "builder path
+    /// only" wording false. It is a text match, not a symbol lookup: a new, unrelated method that
+    /// happens to be named <c>ToYaml</c> trips it too, and it cannot see an indirect call (a wrapper
+    /// around <see cref="OkfDocumentBuilder"/>, a delegate, reflection, a name built at run time).
+    /// So it is not what protects <c>okf fmt</c>: the behavioural test above is.
     /// </summary>
     [Fact]
     public void Provenance_ToYaml_is_named_only_by_its_declaration_and_OkfDocumentBuilder()
     {
         var src = Path.Combine(TestPaths.RepoRoot(), "src");
         var word = new Regex(@"\bToYaml\b", RegexOptions.CultureInvariant);
-        var sep = Path.DirectorySeparatorChar;
+        const string Declaration = "OKF4net/Provenance.cs";
+        const string Builder = "OKF4net/OkfDocumentBuilder.cs";
 
         var hits = Directory.EnumerateFiles(src, "*.cs", SearchOption.AllDirectories)
-            .Where(f => !f.Contains($"{sep}bin{sep}") && !f.Contains($"{sep}obj{sep}"))
-            .SelectMany(f => File.ReadLines(f)
-                .Select((line, i) => (File: Path.GetFileName(f), Line: i + 1, Text: line)))
+            .Select(f => (Full: f, Rel: Path.GetRelativePath(src, f).Replace('\\', '/')))
+            .Where(f => !f.Rel.Split('/').Any(part => part is "bin" or "obj"))
+            .SelectMany(f => File.ReadLines(f.Full)
+                .Select((line, i) => (File: f.Rel, Line: i + 1, Text: line)))
             .Where(h => !h.Text.TrimStart().StartsWith("//", StringComparison.Ordinal))
             .Where(h => word.IsMatch(h.Text))
             .ToList();
 
         var unexpected = hits
-            .Where(h => !(h.File == "Provenance.cs" && h.Text.Contains("public static YamlSequence ToYaml(", StringComparison.Ordinal)))
-            .Where(h => h.File != "OkfDocumentBuilder.cs")
+            .Where(h => !(h.File == Declaration && h.Text.Contains("public static YamlSequence ToYaml(", StringComparison.Ordinal)))
+            .Where(h => h.File != Builder)
             .ToList();
-        var builderCalls = hits.Count(h => h.File == "OkfDocumentBuilder.cs");
+        var builderCalls = hits.Count(h => h.File == Builder);
 
         Assert.True(
             unexpected.Count == 0 && builderCalls == 1,
-            $"Provenance.ToYaml's caller set changed ({builderCalls} mention(s) in OkfDocumentBuilder.cs; " +
-            $"others: {string.Join("; ", unexpected.Select(h => $"{h.File}:{h.Line}"))}). " +
+            $"Provenance.ToYaml's caller set may have changed ({builderCalls} mention(s) in src/{Builder}; " +
+            $"others: {string.Join("; ", unexpected.Select(h => $"src/{h.File}:{h.Line}"))}). " +
             $"{DesignDoc} say ToYaml serves OkfDocumentBuilder alone; widen the caller set only " +
-            "together with those sections.");
+            "together with those sections. This is a whole-word text match: if the new mention is an " +
+            "unrelated method that is also named ToYaml, rename it or narrow this check instead.");
+    }
+
+    private static void AssertSourcesKept(string command, string document, YamlSequence expected)
+    {
+        var actual = OkfDocument.Parse(document).Frontmatter.AsMapping().Get("sources");
+        Assert.True(
+            actual is YamlSequence && Shape(actual) == Shape(expected),
+            $"`{command}` rewrote a sources entry (dropped or reordered a key, or added `resource`) — " +
+            $"the behaviour of Provenance.ToYaml, not of raw-tree re-serialization. {DesignDoc} say " +
+            "fmt cannot lose a field ToYaml does not write; either restore raw-tree fmt or rewrite " +
+            $"those sections. Expected {Shape(expected)}, got {(actual is null ? "<no sources>" : Shape(actual))}");
+        Assert.Contains("license: CC-BY-4.0", document);
     }
 
     // Keys of every mapping, in order, recursively; scalars as their display text. Two sequences

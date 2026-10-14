@@ -25,10 +25,15 @@ before any change: `Frontmatter` wraps an order-preserving `YamlMapping` and
 re-serializes the raw tree, so a nested key it has no typed accessor for
 survives untouched. `Provenance.ToYaml` has exactly one caller
 (`OkfDocumentBuilder.Build`), so the serializer reaches only the
-producer/builder path, never `fmt`. Both halves of that — and so sections 1, 4
-and 8 of this document — are pinned by `ProvenanceSerializerReachTests`: `okf fmt` must keep a
-`sources` entry `ToYaml` would rewrite, and a new direct caller of `ToYaml` fails
-a smoke check that names this document. The gap is therefore **blindness, not data
+producer/builder path, never `fmt`. `ProvenanceSerializerReachTests` pins what
+sections 1, 4 and 8 of this document need from that: `okf fmt`, both printing
+to stdout and writing back with `-w`, must keep a `sources` entry `ToYaml`
+would rewrite (an unknown key, a non-canonical key order, an entry with no
+`resource`), however `fmt` is wired. The single-caller fact itself is only
+smoke-checked — a whole-word text match on `ToYaml` under `src/`, which fails
+on a new direct caller and names this document, but cannot see an indirect
+one. Other writers are not covered, and this document makes no claim about
+them. The gap is therefore **blindness, not data
 loss**: the value sits in the file, correctly preserved, and the library cannot
 see it, cannot check it, and cannot hand it to anyone.
 

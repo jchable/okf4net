@@ -13,8 +13,8 @@ does name are a different kind: fixed points in time — the tree a claim was
 reproduced or checked against (`66c0b1b`, sections 1 and 8 below), the commit
 an earlier mislabelling was fixed in (`65b7d9b`, sections 5 and 5.1), the tree
 a behaviour is compared with (`ccacfc5`, section 6) — and the upstream spec pin
-(`62432a0`). Those
-stay true however the work is later revised, which is why they are kept.
+(`62432a0`). Those stay true however the work is later revised, which is why
+they are kept.
 §7's predictions held: no fixture and no golden moved for the spelling work.
 **Date:** 2026-08-31, revised 2026-09-01 (§4 oracle reach, §6 end-of-day, §11)
 **Branch:** `fix/temporal-conformance`
