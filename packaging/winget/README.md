@@ -9,9 +9,9 @@ scripts:
 | `okf-render` | **`Coderise.OKF4net.Render`** | `okf-render`  | `okf-render-<version>-*` |
 
 Both are portable zips (a single `.exe` nested inside).
-**`Coderise.OKF4net.Render` has never been submitted to winget-pkgs** — see
-*Submitting a brand-new package* below before expecting the automated job to
-publish it.
+**`Coderise.OKF4net.Render` was first submitted by hand for 0.6.0** (microsoft/winget-pkgs
+PR 444993, a new package) and was still waiting in moderation on 2026-10-14. Until it is
+merged, `winget-submit-render` stays skipped — see *Submitting a brand-new package* below.
 
 ## How it works
 
