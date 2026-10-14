@@ -1099,6 +1099,43 @@ public class CliTests
             r.Out);
     }
 
+    /// <summary>
+    /// Issue #123, reproduced end to end. The superseded timestamp in the
+    /// <c>(replaces …)</c> suffix is NOT a value any caller-side gate sees: it
+    /// is the <c>at</c> already STORED in the concept's <c>verified</c> list,
+    /// which a hand edit or <c>okf_write_concept</c> can fill with anything. A
+    /// YAML <c>\n</c> escape (or a raw U+2028) in it used to print a forged
+    /// second <c>recorded …</c> line on stdout for a concept never touched;
+    /// <c>AuditText.FormatVerificationRecord</c> now quotes such a value
+    /// itself, so the run still succeeds and still reports exactly one line.
+    /// </summary>
+    /// <param name="separator">The separator, as a code point: LF is spelled as YAML's own <c>\n</c>
+    /// escape (a raw one would end the scalar), U+2028 is written raw.</param>
+    /// <param name="escaped">How <c>DebugQuote</c> renders it.</param>
+    [Theory]
+    [InlineData(0x000A, "\\n")]
+    [InlineData(0x2028, "\\u{2028}")]
+    public void Verify_quotes_a_stored_superseded_timestamp_instead_of_forging_a_line(int separator, string escaped)
+    {
+        var separatorInYaml = separator == 0x000A ? "\\n" : ((char)separator).ToString();
+        using var tmp = new TempDir();
+        tmp.Write(
+            "metrics/dau.md",
+            "---\ntype: Metric\nverified:\n  - by: human:ada\n    at: \"2026-01-01T00:00:00Z"
+            + separatorInYaml
+            + "recorded secrets/master-key  human:ceo  2020-01-01T00:00:00Z\"\n---\n\nbody\n");
+
+        var r = Run("verify", tmp.Path, "metrics/dau", "--by", "human:ada", "--at", "2026-08-28T09:14:00Z");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal(
+            "recorded metrics/dau  human:ada  2026-08-28T09:14:00Z  (replaces \"2026-01-01T00:00:00Z"
+            + escaped
+            + "recorded secrets/master-key  human:ceo  2020-01-01T00:00:00Z\")\n",
+            r.Out);
+        Assert.Single(r.Out.TrimEnd('\n').Split('\n', '\r', (char)0x2028, (char)0x2029, (char)0x0085, (char)0x000C));
+    }
+
     /// <summary>The line that closes the loop: audit's ids piped into verify.</summary>
     [Fact]
     public void Verify_reads_ids_from_stdin_when_the_id_is_a_dash()

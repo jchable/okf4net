@@ -763,16 +763,16 @@ public sealed class OkfBundleTools
             // never dates anything itself.
             var outcome = _writer.RecordVerifications(ids, by, at);
 
-            // `by` and `record.ConceptId` are NOT folded on their way into
-            // these lines, and neither exemption rests on provenance (see
-            // OneLine). `by` was REFUSED above by
-            // LineSafeText.ContainsControlCharacter, which covers every C0/C1
-            // control plus U+2028/U+2029 -- a strictly stronger outcome than
-            // folding, and the one the write gate applies too. `record.ConceptId`
-            // exists only for ids that CheckVerificationTargets accepted and
-            // RecordVerifications then wrote, so it has passed ConceptId's
-            // ASCII-only segment charset. AuditText itself is shared with the
-            // golden-locked CLI verb and must not move.
+            // No OneLine here: AuditText.FormatVerificationRecord makes every
+            // value it interpolates line-safe itself (#123), quoting one that
+            // carries a C0/C1 control or U+2028/U+2029 and leaving every other
+            // value byte-identical. That is what covers `record.ReplacedAt`,
+            // the `at` already STORED in the concept, which no check on this
+            // tool's arguments ever sees. The guards upstream still stand and
+            // are not redundant: `by` was REFUSED above by
+            // LineSafeText.ContainsControlCharacter (refusing beats rendering
+            // a hostile actor quoted), and `record.ConceptId` exists only for
+            // ids CheckVerificationTargets accepted.
             //
             // The same line shape as the CLI verb, via the shared AuditText:
             // the CLI's bytes are golden-locked, so the wording must not move

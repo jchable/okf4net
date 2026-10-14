@@ -67,12 +67,90 @@ internal static class AuditText
     /// <c>recorded {id}  {by}  {at}</c>, with a trailing
     /// <c>  (replaces {previous at})</c> when the stamp superseded an earlier
     /// one.
+    ///
+    /// <para><b>Line-safe by itself, not by its callers (#123).</b> The id and
+    /// the actor go through <see cref="Field"/>, the two stamps through
+    /// <see cref="Stamp"/>, so none of the four can end this line or drive a
+    /// terminal whatever its caller checked first. The callers' own guards
+    /// still stand -- <c>--by</c> is refused by
+    /// <see cref="LineSafeText.ContainsControlCharacter"/>, the id has passed
+    /// <see cref="ConceptId"/>'s grammar, <c>at</c> is the writer's own
+    /// strictly-formatted stamp -- but none of that is visible here, and the
+    /// fourth value never had a guard at all: <c>ReplacedAt</c> is the
+    /// <c>at</c> already STORED in the concept's <c>verified</c> list, which a
+    /// hand edit or <c>okf_write_concept</c> can fill with anything, and a
+    /// <c>\n</c> in it printed a forged second <c>recorded …</c> line through
+    /// both <c>okf verify</c> and <c>okf_verify</c>.</para>
     /// </summary>
     /// <param name="record">The record <see cref="BundleConceptWriter.RecordVerifications"/> reported.</param>
     /// <param name="by">The actor the caller verified as -- echoed as given, not re-read from the record.</param>
     public static string FormatVerificationRecord(VerificationRecord record, string by)
     {
-        var replaces = record.ReplacedAt is { } previous ? $"  (replaces {previous})" : string.Empty;
-        return $"recorded {record.ConceptId}  {by}  {record.At}{replaces}";
+        var replaces = record.ReplacedAt is { } previous ? $"  (replaces {Stamp(previous)})" : string.Empty;
+        return $"recorded {Field(record.ConceptId)}  {Field(by)}  {Stamp(record.At)}{replaces}";
     }
+
+    /// <summary>
+    /// Renders one <c>okf verify --dry-run</c> line:
+    /// <c>would record {id}  {by}  {at}</c>, with the fixed placeholder
+    /// <c>(now)</c> standing for an absent <c>--at</c>. Lives beside
+    /// <see cref="FormatVerificationRecord"/> and shares its
+    /// <see cref="Field"/>/<see cref="Stamp"/> rules, so the dry run and the
+    /// real run cannot drift into two record shapes with two safety
+    /// contracts (it used to be interpolated raw in <c>OkfCli</c>).
+    /// </summary>
+    /// <param name="conceptId">The id as the caller named it.</param>
+    /// <param name="by">The actor the caller would verify as.</param>
+    /// <param name="at">The caller's <c>--at</c>, or <see langword="null"/> when the stamp would be "now".</param>
+    public static string FormatDryRunRecord(string conceptId, string by, string? at) =>
+        $"would record {Field(conceptId)}  {Field(by)}  {(at is null ? "(now)" : Stamp(at))}";
+
+    /// <summary>
+    /// A timestamp field: raw ONLY when it is spelled exactly as
+    /// <c>okf verify</c> writes a stamp (<c>yyyy-MM-ddTHH:mm:ssZ</c>, checked
+    /// by <see cref="OkfTimestamp.IsEmittedUtcForm"/> -- the same strict test
+    /// <c>--at</c> and the writer apply), and ALWAYS a
+    /// <see cref="DebugQuote.Quote"/> literal otherwise, control character or
+    /// not.
+    ///
+    /// <para>Stricter than <see cref="Field"/> because the superseded stamp is
+    /// read from the bundle: a stored value of literal <c>"</c> and <c>\</c>
+    /// characters, with no control character at all, used to render
+    /// byte-identical to a genuinely quoted LF value, and an empty or blank
+    /// one shifted the two-space separators a <c>cut</c>-based pipeline
+    /// splits on. Under this rule a raw stamp is always a real, canonical
+    /// timestamp and a quoted one always means "stored non-canonical value".
+    /// Every stamp in the goldens is canonical, so their bytes do not
+    /// move.</para>
+    /// </summary>
+    /// <param name="value">A stamp about to be interpolated into one line.</param>
+    private static string Stamp(string value) =>
+        OkfTimestamp.IsEmittedUtcForm(value) ? value : DebugQuote.Quote(value);
+
+    /// <summary>
+    /// One interpolated value, made safe to sit inside a single rendered
+    /// line: returned verbatim when it carries nothing that would break a
+    /// line-oriented rendering of it, and as a <see cref="DebugQuote.Quote"/>
+    /// literal (escaped, double-quoted) when it does.
+    ///
+    /// <para><b>Conditional on purpose.</b> Quoting every value would change
+    /// every byte of <c>verify.out</c> for no gain; quoting only a value that
+    /// needs it is a no-op on everything the golden captures (and every value
+    /// the callers' guards admit), so the CLI's wording stays put. The
+    /// trigger is the one shared predicate,
+    /// <see cref="LineSafeText.ContainsControlCharacter"/> (every C0/C1
+    /// control, plus U+2028/U+2029), and the spelling is the one shared
+    /// quoter, <see cref="DebugQuote.Quote"/> -- the same helper every
+    /// <c>okf verify</c> refusal already quotes an id with -- so neither the
+    /// character test nor the escape format is forked here.</para>
+    ///
+    /// <para>Escape rather than fold to a space: a folded value reads as an
+    /// ordinary one (<c>human:ada recorded x …</c>), where the quoted form
+    /// says exactly what is in the value and that something unusual is. Bidi
+    /// controls (Cf, not Cc) are out of scope, as they are for both shared
+    /// helpers: they reorder a line's display, they do not end it.</para>
+    /// </summary>
+    /// <param name="value">A value about to be interpolated into one line.</param>
+    private static string Field(string value) =>
+        LineSafeText.ContainsControlCharacter(value) ? DebugQuote.Quote(value) : value;
 }

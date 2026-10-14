@@ -779,7 +779,8 @@ public static class OkfCli
             // date the real run would not reproduce is worse than saying "now".
             foreach (var id in ids)
             {
-                stdout.Write($"would record {id}  {by}  {at ?? "(now)"}\n");
+                stdout.Write(AuditText.FormatDryRunRecord(id, by, at));
+                stdout.Write("\n");
             }
 
             return 0;
