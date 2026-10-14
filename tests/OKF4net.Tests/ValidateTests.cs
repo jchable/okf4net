@@ -734,21 +734,38 @@ public class ValidateTests
     /// <c>FrontmatterResourceClassifier.KindOf</c>), so suggesting the
     /// concept-relative <c>./</c> form would contradict what was written --
     /// even though a file happens to sit beside the concept under the bare
-    /// name. Covers both accepted root-relative spellings; the code handles
-    /// them symmetrically (<c>StartsWith('/') || StartsWith('\\')</c>).
+    /// name. The backslash spelling is refused outright, on every OS, and has its own test
+    /// (<c>A_backslash_rooted_path_is_unsafe_on_every_os_and_gets_no_hint</c>).
     /// </summary>
-    [Theory]
-    [InlineData("/query.sql")]
-    [InlineData("\\query.sql")]
-    public void A_rooted_bare_path_gets_no_concept_relative_hint_even_if_a_sibling_file_exists(string rootedRawPath)
+    [Fact]
+    public void A_rooted_bare_path_gets_no_concept_relative_hint_even_if_a_sibling_file_exists()
     {
         using var tmp = new TempDir();
-        tmp.Write("computations/rev.md", $"---\ntype: Attested Computation\ntitle: R\ndescription: D\nruntime: python\ncomputation: {rootedRawPath}\n---\n");
+        tmp.Write("computations/rev.md", "---\ntype: Attested Computation\ntitle: R\ndescription: D\nruntime: python\ncomputation: /query.sql\n---\n");
         tmp.Write("computations/query.sql", "SELECT 1");
         tmp.Write("index.md", "---\ntype: Index\ntitle: I\ndescription: D\n---\n");
         var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
         var d = Assert.Single(report.Diagnostics, x => x.Code == DiagnosticCode.FrontmatterPathMissing);
         Assert.DoesNotContain("a file exists at", d.Message);
+    }
+
+    /// <summary>
+    /// The backslash spelling of the same root-relative statement: a backslash is no
+    /// separator in a key, so the resolver refuses it on every OS (spec §2, point 7) and
+    /// the validator reports <see cref="DiagnosticCode.FrontmatterPathUnsafe"/> instead of
+    /// a missing file — still with no concept-relative hint.
+    /// </summary>
+    [Fact]
+    public void A_backslash_rooted_path_is_unsafe_on_every_os_and_gets_no_hint()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("computations/rev.md", "---\ntype: Attested Computation\ntitle: R\ndescription: D\nruntime: python\ncomputation: \\query.sql\n---\n");
+        tmp.Write("computations/query.sql", "SELECT 1");
+        tmp.Write("index.md", "---\ntype: Index\ntitle: I\ndescription: D\n---\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        var d = Assert.Single(report.Diagnostics, x => x.Code == DiagnosticCode.FrontmatterPathUnsafe);
+        Assert.DoesNotContain("a file exists at", d.Message);
+        Assert.DoesNotContain(report.Diagnostics, x => x.Code == DiagnosticCode.FrontmatterPathMissing);
     }
 
     /// <summary>

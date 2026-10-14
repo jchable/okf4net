@@ -602,7 +602,7 @@ public static class BundleValidator
                     continue;
                 }
 
-                bundle.TryResolveResource(concept, resource.RawPath, out _, out var resolutionStatus);
+                bundle.TryResolveResourceKey(concept, resource.RawPath, out _, out var resolutionStatus);
                 if (resolutionStatus == ResourceResolutionStatus.Missing)
                 {
                     var message = $"frontmatter path '{resource.Field}' → '{resource.RawPath}' not found";
@@ -675,31 +675,20 @@ public static class BundleValidator
             return null;
         }
 
-        string candidate;
-        try
-        {
-            var conceptDir = concept.Id.Parent?.ToString() ?? string.Empty;
-            candidate = Path.GetFullPath(Path.Combine(bundle.Root, conceptDir, resource.RawPath));
-        }
-        catch (Exception e) when (e is ArgumentException or PathTooLongException or NotSupportedException)
-        {
-            // Same permissive stance as TryResolveResource: a malformed raw
-            // path must never throw out of validation (§11).
-            return null;
-        }
-
-        if (!File.Exists(candidate) || !ReparsePoints.IsWithinBundleRoot(bundle.Root, candidate))
+        // Would the same bare path exist next to the concept? Ask the resolver for its
+        // concept-relative form, under the same policy and through the same provider.
+        bundle.TryResolveResourceKey(concept, "./" + resource.RawPath, out var siblingKey, out var siblingStatus);
+        if (siblingStatus != ResourceResolutionStatus.Resolved || siblingKey is null)
         {
             return null;
         }
 
-        var relativeToRoot = Path.GetRelativePath(bundle.Root, candidate).Replace('\\', '/');
         // "this implementation's reading of §6.2", not a bare "(§6.2)": §6.2
         // lists the accepted SHAPES of a path-valued field ("a relative path")
         // and names no base for one. Resolving it from the bundle root is a
         // reading this repo chose (docs/spec-conformance/, S6.2-1), and the
         // hint says so rather than telling a producer the spec settled it.
-        return $" — a file exists at {relativeToRoot}; a bare path resolves from the bundle root (this implementation's reading of §6.2) — write ./{resource.RawPath} for the concept-relative form";
+        return $" — a file exists at {siblingKey}; a bare path resolves from the bundle root (this implementation's reading of §6.2) — write ./{resource.RawPath} for the concept-relative form";
     }
 
     /// <summary>Non-throwing check that the concept carries a conformant <c>type</c> (§11), without relying on exceptions for control flow.</summary>
@@ -831,14 +820,14 @@ public static class BundleValidator
     /// <summary>Checks that reserved files (index.md and log.md) follow their structural rules when present (§8/§9).</summary>
     private static void ValidateReserved(Bundle bundle, List<Diagnostic> diagnostics)
     {
-        var rootIndex = System.IO.Path.Combine(bundle.Root, IndexFilename);
-
-        foreach (var path in bundle.IndexFiles)
+        for (var i = 0; i < bundle.IndexKeys.Count; i++)
         {
+            var key = bundle.IndexKeys[i];
+            var path = bundle.IndexFiles[i];
             string text;
             try
             {
-                text = OkfEncodings.Strict.GetString(File.ReadAllBytes(path));
+                text = bundle.ReadResourceText(key);
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
             {
@@ -872,7 +861,7 @@ public static class BundleValidator
 
             // Frontmatter is only permitted in the bundle-root index.md, and only
             // to declare `okf_version` (§12).
-            var isRoot = string.Equals(path, rootIndex, StringComparison.Ordinal);
+            var isRoot = key.Segments.Count == 1;
             if (!isRoot)
             {
                 diagnostics.Add(new Diagnostic(
@@ -910,12 +899,14 @@ public static class BundleValidator
             }
         }
 
-        foreach (var path in bundle.LogFiles)
+        for (var i = 0; i < bundle.LogKeys.Count; i++)
         {
+            var key = bundle.LogKeys[i];
+            var path = bundle.LogFiles[i];
             string text;
             try
             {
-                text = OkfEncodings.Strict.GetString(File.ReadAllBytes(path));
+                text = bundle.ReadResourceText(key);
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
             {

@@ -13,4 +13,10 @@ public abstract class OkfException : Exception
         : base(message)
     {
     }
+
+    /// <summary>Creates an exception with a library-authored message and the raw cause as <see cref="Exception.InnerException"/>.</summary>
+    protected OkfException(string message, Exception inner)
+        : base(message, inner)
+    {
+    }
 }
