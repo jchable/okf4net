@@ -54,13 +54,16 @@ GitHub Actions, with the tool manifest committed at the repository root:
   with:
     dotnet-version: 10.0.x
 - run: dotnet tool restore
-- run: dotnet okf validate ./knowledge --as-of 2026-01-01
+- run: dotnet okf validate ./knowledge
 ```
 
 `okf validate` exits 1 when the bundle is not conformant, so the step fails the
-build. Warnings are reported but do not fail it. Staleness (`stale_after`, §5.5)
-depends on the day the check runs, so a job that wants the same verdict every
-time pins the evaluation date with `--as-of`.
+build. Warnings are reported but never fail it. That includes a concept past
+its `stale_after` date (§5.5): which concepts are stale depends on the day the
+check runs, but the exit code does not. `--as-of <YYYY-MM-DD>` pins that date
+when the report itself must not change from one day to the next. A gate does
+not need it, and a fixed past date would keep reporting concepts as fresh
+after they go stale.
 
 ## Commands
 

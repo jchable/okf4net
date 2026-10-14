@@ -308,7 +308,9 @@ the output pipes. `--json` always emits the full document.
 makes `stale_after` an instant. Without it, anything touching `stale_after`
 (§5.5) depends on the day it runs — including `okf validate`'s
 `concept is stale` warning, which is why a CI job that wants a reproducible
-verdict should pin the date rather than let the calendar move under it. Note the counts
+report should pin the date rather than let the calendar move under it. The
+exit code never depends on it: staleness is a warning, not a conformance
+error. Note the counts
 always cover the whole bundle while `findings` covers the selection: `audit` is
 a worklist, not an inventory (use `okf info --json` for that).
 
