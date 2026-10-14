@@ -514,9 +514,22 @@ public sealed class Bundle
     }
 
     /// <summary>
-    /// Builds the outbound link and backlink maps for all concepts. Internal
-    /// rather than private only so <c>BundleBacklinksTests</c> can run it on
-    /// in-memory concepts at a scale no test should write to disk.
+    /// Builds the outbound link and backlink maps for all concepts.
+    /// <para>
+    /// Called by <see cref="Load"/>. It is internal rather than private so that
+    /// <c>BundleBacklinksScaleTests</c> can run it on in-memory concepts at a scale
+    /// no test should write to disk. Being internal also makes it callable from
+    /// every assembly this one grants <c>InternalsVisibleTo</c> (<c>okf</c>,
+    /// <c>okf-render</c>, <c>OKF4net.Agents</c>, <c>OKF4net.Catalog</c>,
+    /// <c>OKF4net.Viewer</c>), but only the tests call it.
+    /// </para>
+    /// <para>
+    /// Precondition, not checked: <paramref name="concepts"/> and <paramref name="index"/>
+    /// come from the same snapshot, with <paramref name="index"/> mapping every id in
+    /// <paramref name="concepts"/>, as <see cref="Load"/> builds them. The index decides
+    /// whether a link target exists; a mismatched pair gives wrong existence flags and
+    /// backlinks, with no error.
+    /// </para>
     /// </summary>
     internal static (Dictionary<ConceptId, List<ResolvedLink>> Outbound, Dictionary<ConceptId, List<ConceptId>> Backlinks) BuildGraph(
         List<Concept> concepts,

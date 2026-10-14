@@ -1067,6 +1067,20 @@ public class LinksTests
     }
 
     /// <summary>
+    /// Footnote keys come back once each, in first-seen order, compared ordinally (so
+    /// <c>A</c> and <c>a</c> are two keys), across lines and inside a definition's text
+    /// (its own label is no citation). Pins the order the set-based de-duplication (#148)
+    /// must keep.
+    /// </summary>
+    [Fact]
+    public void Footnote_references_are_deduplicated_in_first_seen_order()
+    {
+        const string body = "One.[^b] Two.[^a] Three.[^b] Four.[^A]\n\n[^c]: Defined, citing [^a] and [^d].\n\nAgain.[^d][^b]\n";
+
+        Assert.Equal(["b", "a", "A", "d"], LinkScanner.ExtractFootnoteReferences(body));
+    }
+
+    /// <summary>
     /// Linear on hostile input shaped for the bracket algorithm: destinations that never
     /// balance or never end, and long runs of openers each followed by a link.
     /// </summary>

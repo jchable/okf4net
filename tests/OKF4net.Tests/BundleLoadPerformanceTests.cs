@@ -257,13 +257,14 @@ public class BundleLoadPerformanceTests
 }
 
 /// <summary>
-/// Runs <see cref="BundleLoadPerformanceTests"/> with no other test alongside it:
+/// Runs <see cref="BundleLoadPerformanceTests"/> and <see cref="BundleBacklinksScaleTests"/>,
+/// one after the other, with no other test alongside them:
 /// xunit executes a collection that disables parallelization on its own, after
 /// all the parallel ones.
 /// </summary>
 [CollectionDefinition(Name, DisableParallelization = true)]
 public sealed class BundleLoadPerformanceCollection
 {
-    /// <summary>The collection's name, shared by the definition and the test class.</summary>
+    /// <summary>The collection's name, shared by the definition and the test classes.</summary>
     public const string Name = "Bundle.Load performance baseline";
 }
