@@ -13,6 +13,8 @@ const dotnetVersionHtml = `$ dotnet --version
 
 const wingetInstallHtml = `$ winget install Coderise.OKF4net`
 
+const curlInstallHtml = `$ curl -sSL https://raw.githubusercontent.com/jchable/okf4net/main/packaging/install.sh | sh`
+
 const cloneAndPublishHtml = `$ git clone https://github.com/jchable/okf4net
 $ dotnet publish src/OKF4net.Cli -c Release   <span class="c"># self-contained okf binary, no runtime needed</span>`
 
@@ -86,7 +88,7 @@ export default function GettingStarted() {
           <pre className="block" dangerouslySetInnerHTML={{ __html: dotnetVersionHtml }} />
         </Chapter>
 
-        <Chapter id="install" title="Install" refText="library from NuGet · CLI via winget or from source">
+        <Chapter id="install" title="Install" refText="library from NuGet · CLI via winget, install.sh, a dotnet tool, or from source">
           <p>
             Use the <strong>library</strong> to work with bundles from C#. Add the package to any project:
           </p>
@@ -100,6 +102,17 @@ export default function GettingStarted() {
             <a href="https://github.com/microsoft/winget-pkgs">winget</a>:
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: wingetInstallHtml }} />
+          <p>
+            On Linux or macOS, the install script fetches the release binary for your platform and checks its
+            SHA-256 (options in the <Link to="/docs/cli#install">CLI reference</Link>):
+          </p>
+          <pre className="block" dangerouslySetInnerHTML={{ __html: curlInstallHtml }} />
+          <p>
+            Since you already have the .NET SDK, it is also one command on any OS as the <code>OKF4net.Cli</code>{' '}
+            dotnet tool — or pin it per repository with a tool manifest (see the{' '}
+            <Link to="/docs/cli#ci">CLI reference</Link>):
+          </p>
+          <pre className="block">$ dotnet tool install -g OKF4net.Cli</pre>
           <p>On any OS, build it from source:</p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: cloneAndPublishHtml }} />
         </Chapter>

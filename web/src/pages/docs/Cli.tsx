@@ -145,6 +145,17 @@ okf validate ./bundles/ga4`
 
 const wingetInstallHtml = `$ winget install Coderise.OKF4net`
 
+const toolCiHtml = `<span class="c"># once, in the repository — then commit dotnet-tools.json</span>
+$ dotnet new tool-manifest
+$ dotnet tool install OKF4net.Cli
+
+<span class="c"># in CI</span>
+$ dotnet tool restore
+$ dotnet okf validate ./knowledge`
+
+const toolInstallHtml = `$ dotnet tool install -g OKF4net.Cli        <span class="c"># global</span>
+$ dnx OKF4net.Cli --yes validate ./bundle   <span class="c"># once, nothing installed</span>`
+
 const curlInstallHtml = `$ curl -sSL https://raw.githubusercontent.com/jchable/okf4net/main/packaging/install.sh | sh`
 
 const buildHtml = `$ git clone https://github.com/jchable/okf4net
@@ -432,12 +443,17 @@ export default function Cli() {
           />
           <p>Because the binary is self-contained, a CI image needs no .NET runtime, no SDK, no restore:</p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: ciSnippetHtml }} />
+          <p>
+            In a repository that already builds with the .NET SDK, pin <code>okf</code> in the tool manifest instead,
+            so every clone and every CI run restores the same version:
+          </p>
+          <pre className="block" dangerouslySetInnerHTML={{ __html: toolCiHtml }} />
           <Next>
             → <Link to="/library">library.md</Link> — the same engine, as a C# API · <Link to="/docs/getting-started">getting-started.md</Link>
           </Next>
         </Chapter>
 
-        <Chapter id="install" title="Install it" refText="winget on Windows, install.sh on Linux/macOS, or Native AOT publish">
+        <Chapter id="install" title="Install it" refText="winget on Windows, install.sh on Linux/macOS, a dotnet tool, or Native AOT publish">
           <p>
             On Windows, install via <a href="https://github.com/microsoft/winget-pkgs">winget</a>:
           </p>
@@ -452,6 +468,12 @@ export default function Cli() {
             the site generator instead, <code>--version &lt;tag&gt;</code> to pin a release, or <code>--dry-run</code>{' '}
             to see what it would do first; <code>-h</code> lists every option.
           </p>
+          <p>
+            With the .NET SDK, <code>okf</code> is also the <code>OKF4net.Cli</code> dotnet tool — portable, on the
+            .NET 10 runtime or later, same source and same verdicts as the native binary. <code>dnx</code> needs
+            {' '}<code>--yes</code> to download non-interactively:
+          </p>
+          <pre className="block" dangerouslySetInnerHTML={{ __html: toolInstallHtml }} />
           <p>On any OS, you can also build it from source:</p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: buildHtml }} />
         </Chapter>

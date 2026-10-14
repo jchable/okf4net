@@ -82,6 +82,16 @@ jobs:
           -p:Version=$VERSION
           -p:ContinuousIntegrationBuild=true
 
+      # The portable `okf` dotnet tool (OKF4net.Cli). The same project's Native
+      # AOT binaries are built by the cli-binaries matrix below; pack never
+      # compiles AOT, so this step needs no native toolchain. ci.yml's
+      # `dotnet tool smoke test` job installs and runs this package on every PR.
+      - name: Pack (Cli tool)
+        run: >
+          dotnet pack src/OKF4net.Cli/OKF4net.Cli.csproj -c Release -o artifacts
+          -p:Version=$VERSION
+          -p:ContinuousIntegrationBuild=true
+
       # Trusted Publishing: exchanges this job's OIDC token for a short-lived
       # (1 h, single-use) API key — no long-lived secret stored. Requires a
       # trusted publishing policy on nuget.org pointing at this repository and

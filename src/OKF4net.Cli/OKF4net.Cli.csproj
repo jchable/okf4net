@@ -4,12 +4,6 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>okf</AssemblyName>
     <TargetFramework>net10.0</TargetFramework>
-    <!--
-      Not packed, so this is not packaging metadata: it is what the published
-      binary reports in its file properties, which was blank until now.
-    -->
-    <Authors>Julien CHABLE</Authors>
-    <Copyright>Copyright 2026 Julien CHABLE</Copyright>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
@@ -24,6 +18,66 @@
     -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
+
+  <!--
+    One project, two distributions. `dotnet publish -r <rid>`
+    (packaging/Publish-Cli.ps1, release.yml's cli-binaries matrix) gives the
+    Native AOT binary that winget and install.sh ship. `dotnet pack` gives the
+    portable, framework-dependent `dotnet tool` (OKF4net.Cli on nuget.org), so a
+    .NET repository can pin okf in its tool manifest and run it in CI after
+    `dotnet tool restore`. PublishAot does not leak into the tool package: pack
+    writes a plain IL tools/net10.0/any/ payload. ci.yml's `dotnet tool smoke
+    test` job installs that package and runs it; nothing else does.
+  -->
+  <PropertyGroup Label="Packaging">
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>okf</ToolCommandName>
+    <PackageId>OKF4net.Cli</PackageId>
+    <Authors>Julien CHABLE</Authors>
+    <Description>okf, the OKF (Open Knowledge Format) v0.2 command-line validator, as a .NET tool: validate, audit, verify, index, graph and format knowledge bundles, and gate CI on them.</Description>
+    <Copyright>Copyright 2026 Julien CHABLE</Copyright>
+    <PackageLicenseExpression>LGPL-3.0-or-later</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/jchable/okf4net</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/jchable/okf4net</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>okf;open-knowledge-format;knowledge;validator;cli;dotnet-tool</PackageTags>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <!--
+      Without this, a tool built for .NET 10 refuses to start on a machine that
+      has only a later major runtime. The AOT binary ignores it: it carries its
+      own runtime.
+    -->
+    <RollForward>Major</RollForward>
+    <!--
+      PublishAot makes the SDK target the latest runtime patch whenever it
+      publishes, and pack publishes, so the tool's runtimeconfig would demand
+      the packing SDK's patch (10.0.8, say) instead of 10.0.0, and a 10.0.x
+      machine below it would refuse to start the tool. Only for pack: the AOT
+      binary must keep the latest patch, since it embeds that runtime. `dotnet
+      pack` sets _IsPacking; ci.yml's `dotnet tool smoke test` asserts the
+      packaged runtimeconfig asks for 10.0.0, so it fails if that ever stops
+      holding.
+    -->
+    <TargetLatestRuntimePatch Condition="'$(_IsPacking)' == 'true'">false</TargetLatestRuntimePatch>
+    <!--
+      Keeps OKF4net.xml, the library's API documentation, out of the output and
+      so out of the tool package: it is larger than both assemblies together
+      and nothing running okf reads it. The SDK default is
+      .pdb;.xml;.pri;.dll.config;.exe.config, and none of the others apply.
+      The PDBs stay: they put file and line numbers in the stack trace a user
+      pastes from a crashed CI run.
+    -->
+    <AllowedReferenceRelatedFileExtensions>.pdb</AllowedReferenceRelatedFileExtensions>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\NOTICE" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\OKF4net\OKF4net.csproj" />

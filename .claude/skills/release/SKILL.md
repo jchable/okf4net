@@ -56,6 +56,18 @@ everything is checked *before* the tag exists.
   only) and the `NUGET_USER` GitHub secret must contain the nuget.org
   *profile name* (`gh secret list`). A fresh policy is probationary for 7
   days — a successful publish within that window makes it permanent.
+- **A release that adds a package ID** (the first one carrying `OKF4net.Cli`,
+  the `okf` dotnet tool): a policy has scopes, one for pushing *new packages*
+  and one for new versions of existing ones, plus a glob saying which package
+  IDs it covers ([docs](https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing#select-scopes)).
+  Before tagging, ask the user to confirm on nuget.org (username → Trusted
+  Publishing) that the policy allows new packages and that its glob matches
+  the new ID. Claude cannot read that page. Otherwise the push fails partway,
+  after the tag is out and the packages pushed before the new one are already
+  published (see "Push refused partway" in the failure playbook).
+  Check that the ID is still free with
+  `curl -s -o /dev/null -w '%{http_code}' https://api.nuget.org/v3-flatcontainer/okf4net.cli/index.json`:
+  `404` before its first release.
 
 ## 2. Pick the version (SemVer)
 
@@ -188,6 +200,20 @@ curl -s https://api.nuget.org/v3-flatcontainer/okf4net/index.json
 spot-check https://www.nuget.org/packages/OKF4net — README rendered, license
 `LGPL-3.0-or-later`, version listed.
 
+The `okf` dotnet tool is a package of its own, `OKF4net.Cli`, and a green
+workflow does not show that it installs from the feed. Once
+`https://api.nuget.org/v3-flatcontainer/okf4net.cli/index.json` lists the
+version, install it into a throwaway tool path and run it:
+
+```sh
+TOOL_DIR="$(mktemp -d)"
+dotnet tool install OKF4net.Cli --version X.Y.Z --tool-path "$TOOL_DIR"
+"$TOOL_DIR/okf" --version
+```
+
+It must print `okf X.Y.Z (OKF spec v0.2)`. If the push refused
+`OKF4net.Cli`, follow "Push refused partway" in the failure playbook.
+
 ## 6. GitHub Release page
 
 `release.yml`'s `publish GitHub Release` job **already creates the release**,
@@ -206,7 +232,9 @@ ran to ~2 300 lines), use the digest at its top — the "Breaking changes at a
 glance" and "What is new" parts — and rewrite any sentence that points at
 "the sections below", which do not exist on the release page. End with a link
 to the version's CHANGELOG anchor and an install block:
-`dotnet add package OKF4net --version X.Y.Z` and
+`dotnet add package OKF4net --version X.Y.Z`,
+`dotnet tool install -g OKF4net.Cli --version X.Y.Z` (the `okf` tool's
+PackageId is `OKF4net.Cli`) and
 `dotnet tool install -g OKF4net.Mcp --version X.Y.Z` (the `okf-mcp` tool's
 PackageId is `OKF4net.Mcp`).
 
@@ -245,7 +273,21 @@ uncommitted: parallel sessions have reverted uncommitted work in this repo
 before.
 
 **Push step failed** (bad flag, network): same as above — nuget.org received
-nothing until the push succeeds.
+nothing until the push succeeds. Check that it is true before re-tagging: the
+push sends `artifacts/*.nupkg` one package at a time, so a failure partway is
+the next case, not this one.
+
+**Push refused partway** (typically a new package ID, such as `OKF4net.Cli`,
+outside the Trusted Publishing policy's scopes; see step 1): the packages
+pushed before it are published and immutable, so the tag stays where it is —
+do not re-tag. List what reached the feed (`curl` each package's
+`v3-flatcontainer/<id-lowercase>/index.json`), have the user fix the policy on
+nuget.org, then re-run only the failed `pack & publish to NuGet` job
+(`gh run rerun <run-id> --failed`). `--skip-duplicate` makes the packages
+already published a no-op, and a fresh OIDC token comes with the new attempt.
+`github-release` needs `nuget`, so it and the winget jobs behind it were
+skipped; re-running failed jobs runs their dependents too, so the rest of the
+release follows once the push succeeds.
 
 **Publish succeeded but the release is wrong**: the version on nuget.org is
 immutable. Do NOT move or delete the tag — it now points at published

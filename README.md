@@ -69,7 +69,7 @@ other project layers a specific integration on top and points back to it.
 | Project                  | NuGet package             | Responsibility                                                              | Deep dive                                                     |
 |--------------------------|---------------------------|----------------------------------------------------------------------------|--------------------------------------------------------------|
 | `OKF4net`                | `OKF4net`                 | Zero-dependency core library: parse, validate, index, graph OKF bundles.   | [Library overview](#library-overview)                        |
-| `OKF4net.Cli`            | — (Native AOT `okf` binary, no PackageId) | The `okf` command-line tool (`validate`/`audit`/`verify`/`info`/`index`/`graph`/`parse`/`fmt`). | [As a CLI](#as-a-cli)                                    |
+| `OKF4net.Cli`            | `OKF4net.Cli` (the `okf` dotnet tool; also Native AOT `okf` binaries) | The `okf` command-line tool (`validate`/`audit`/`verify`/`info`/`index`/`graph`/`parse`/`fmt`). | [As a CLI](#as-a-cli)                                    |
 | `OKF4net.Render`         | — (Native AOT `okf-render` binary, no PackageId) | Standalone CLI: generates a browsable HTML site from a bundle. | [As a CLI](#as-a-cli)                                        |
 | `OKF4net.Viewer`         | — (ships inside the `okf-render` binary, not packed by `release.yml`) | Static HTML site generation for a bundle; backs `okf-render`. | [As a CLI](#as-a-cli)                                        |
 | `OKF4net.Agents`         | `OKF4net.Agents`          | Microsoft Agent Framework tools + `OkfContextProvider` (context & memory). | [Microsoft Agent Framework](#using-okf4net-with-microsoft-agent-framework) |
@@ -240,6 +240,25 @@ to `~/.local/bin` when that isn't writable — it never calls `sudo`). Pass
 resolving the version. Run it with `-h` for the full option list; see
 [`packaging/install.sh`](packaging/install.sh) for the implementation.
 
+If the machine has the .NET SDK, `okf` is also a
+[dotnet tool](https://www.nuget.org/packages/OKF4net.Cli), and that is the
+best way to run it in CI. Pin it in the repository's tool manifest, commit
+the manifest, and every clone and CI run gets the same version back:
+
+```sh
+dotnet new tool-manifest            # once per repository; creates dotnet-tools.json
+dotnet tool install OKF4net.Cli     # records the version in the manifest
+dotnet tool restore                 # what CI runs
+dotnet okf validate ./knowledge
+```
+
+`dotnet tool install -g OKF4net.Cli` installs it globally instead, and
+`dnx OKF4net.Cli --yes validate ./knowledge` runs it once without installing
+anything. The tool is portable IL and needs the .NET 10 runtime or a later
+one. It is built from the same source as the native binary and gives the same
+verdicts. If both are installed, the first `okf` on `PATH` wins, while
+`dotnet okf` always runs the manifest's version.
+
 On any OS, you can also build from source — see
 [Building & testing](#building--testing).
 
@@ -289,7 +308,9 @@ the output pipes. `--json` always emits the full document.
 makes `stale_after` an instant. Without it, anything touching `stale_after`
 (§5.5) depends on the day it runs — including `okf validate`'s
 `concept is stale` warning, which is why a CI job that wants a reproducible
-verdict should pin the date rather than let the calendar move under it. Note the counts
+report should pin the date rather than let the calendar move under it. The
+exit code never depends on it: staleness is a warning, not a conformance
+error. Note the counts
 always cover the whole bundle while `findings` covers the selection: `audit` is
 a worklist, not an inventory (use `okf info --json` for that).
 
@@ -363,16 +384,17 @@ numeric offset, or fractional seconds are all rejected, not silently rounded.
 > the diff happens to touch and silently empty the very worklist this feature
 > exists to populate.
 
-`okf` is `OKF4net.Cli`, published as a self-contained, Native AOT
-single-file binary — no .NET runtime installation required on the target
-machine. Full command reference with real output samples:
+`okf` is `OKF4net.Cli`, published two ways from the same project: a
+self-contained, Native AOT single-file binary for winget and the install
+script, which needs no .NET runtime on the target machine, and the portable
+`OKF4net.Cli` dotnet tool described above. Full command reference with real output samples:
 [CLI docs on the site](https://jchable.github.io/okf4net/docs/cli/).
 
 #### `okf-render` — generate a static HTML site
 
 Static HTML site generation lives in a **separate** binary, `okf-render`
 (`OKF4net.Render`), not in `okf` itself — `okf` is meant to be the small,
-dependency-free CI validator winget distributes, and the site generator pulls
+dependency-free CI validator that winget and nuget.org distribute, and the site generator pulls
 in a vendored copy of [marked](https://github.com/markedjs/marked) (MIT) and
 three embedded fonts (SIL OFL 1.1) that a CI job running `okf validate` never
 needs. `OKF4net.Mcp` already
@@ -829,6 +851,7 @@ no framework to learn before you can help.
 dotnet build OKF4net.sln           # core library + okf CLI + okf-render + test project
 dotnet test OKF4net.sln            # unit + integration tests (incl. golden CLI comparisons)
 dotnet publish src/OKF4net.Cli -c Release     # Native AOT, self-contained okf binary
+dotnet pack src/OKF4net.Cli -c Release        # the portable okf dotnet tool (OKF4net.Cli)
 dotnet publish src/OKF4net.Render -c Release  # Native AOT, self-contained okf-render binary
 ```
 
@@ -846,7 +869,7 @@ That applies to everything this project builds: every OKF4net library and
 binary is original work, LGPL-3.0-or-later in its entirety. The `okf` binary
 and the packages published to NuGet — `OKF4net`, `OKF4net.Agents`,
 `OKF4net.Catalog`, `OKF4net.Catalog.Hosting`, `OKF4net.Attestation`,
-`OKF4net.Mcp` — carry that one licence and include no third-party source
+`OKF4net.Cli`, `OKF4net.Mcp` — carry that one licence and include no third-party source
 code.
 
 The exceptions anywhere in the build are both in `OKF4net.Viewer` (not itself
