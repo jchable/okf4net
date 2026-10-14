@@ -238,4 +238,57 @@ public class YamlEmitterSharingTests
             YamlEmitter.OutputSizeExceededMessage,
             StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// Deciding whether a string can be written plain must not hand a
+    /// multi-line string to the parser, which builds one entry per line and
+    /// copies them (about 23 times the string's size, so a legal 120 Mi-newline
+    /// value ran out of a 4 GiB heap). Quoting 1 Mi newlines, a 2 MiB string
+    /// written as a 4 MiB text, must allocate only what writing it takes: the
+    /// quoted copy, the output buffer and the final string, each of them about
+    /// twice the input (measured: about 8 times the input in all, against 28
+    /// times when the parser read the string first). What this proves is that
+    /// bound on this thread's allocations, for this shape — not a peak-memory
+    /// figure, and not every shape the parser could be handed.
+    /// </summary>
+    [Fact]
+    public void Quoting_a_string_of_newlines_allocates_a_small_multiple_of_its_size()
+    {
+        const int n = 1 << 20;
+        var value = new YamlString(new string('\n', n));
+        _ = value.ToYamlString(); // JIT and first-use allocations out of the measurement
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var text = value.ToYamlString();
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.Equal((2 * n) + 3, text.Length);
+        var inputBytes = 2L * n;
+        Assert.True(allocated < 12 * inputBytes, $"allocated {allocated} bytes for a {inputBytes}-byte string");
+    }
+
+    /// <summary>
+    /// Quoting stops at the output limit it was given, not the production one:
+    /// a 1 000 001-character string of control characters (each escaped as six
+    /// characters) under a limit of 1 000 001 is refused without building its
+    /// 6 M-character quoted form. Measured as this thread's allocations: about
+    /// 7 MB when quoting stops at the limit, over 50 MB when it runs to the end
+    /// of the string (or when the parser reads the string first).
+    /// </summary>
+    [Fact]
+    public void Quoting_stops_at_the_given_output_limit()
+    {
+        const int n = 1_000_000;
+        var value = new YamlString("\"" + new string('\u0001', n));
+        var limit = n + 1;
+        _ = Assert.Throws<YamlEmitException>(() => YamlEmitter.EmitWithLimits(value, Large, limit));
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var e = Assert.Throws<YamlEmitException>(() => YamlEmitter.EmitWithLimits(value, Large, limit));
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.Equal(OutputRefusal, e.Message);
+        var limitBytes = 2L * limit;
+        Assert.True(allocated < 8 * limitBytes, $"allocated {allocated} bytes under a {limitBytes}-byte limit");
+    }
 }

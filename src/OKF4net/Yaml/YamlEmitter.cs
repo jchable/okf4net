@@ -110,10 +110,14 @@ public static class YamlEmitter
     /// The length from which a string written again counts for the sharing rule
     /// (<see cref="MaxRepeatedOutputChars"/>): 1 KiB. Shorter strings are reused
     /// all the time and legitimately — interned literals, one producer name in
-    /// every stamp — and re-writing one costs at most this much per slot the
-    /// value allocated, so leaving them out keeps ordinary emits free of
+    /// every stamp — and re-writing one costs at most this much output per slot
+    /// the value allocated, so leaving them out keeps ordinary emits free of
     /// bookkeeping (no set lookup per scalar) at a bounded price, which
-    /// <see cref="MaxOutputChars"/> caps in total.
+    /// <see cref="MaxOutputChars"/> caps in total. The price is also time: each
+    /// slot is rendered anew, and a string that may be written plain is
+    /// re-checked by the parser each time, so a value made of one short string
+    /// held by millions of slots costs CPU in proportion to its text until the
+    /// output rule refuses it — seconds, not a hang.
     /// </summary>
     internal const int LongStringChars = 1024;
 
@@ -122,14 +126,20 @@ public static class YamlEmitter
     /// (256 MiB, 512 MB of UTF-16). Any value whose text would be longer is
     /// refused with a catchable <see cref="YamlEmitException"/>
     /// (<see cref="OutputSizeExceededMessage"/>) before the line that would pass
-    /// it is written, so no shape can end in an <see cref="OutOfMemoryException"/>
-    /// or an <see cref="ArgumentOutOfRangeException"/> from the buffer, neither
-    /// of which any caller's errors-as-data path catches. It is a quarter of
-    /// .NET's longest string, which leaves room for the buffer and the final
-    /// string side by side, and orders of magnitude above any frontmatter: a
-    /// value that large is not a legitimate concept header. It is the one place
-    /// where a value the parser reads may be refused by the emitter, and only
-    /// past a document of comparable size.
+    /// it is written; a string longer than the limit is refused before any work
+    /// on it, and quoting stops once past it. So the text can never outgrow the
+    /// buffer (no <see cref="ArgumentOutOfRangeException"/> from it, which no
+    /// caller's errors-as-data path catches), and memory is bounded by a small
+    /// multiple of the limit, not by the shape of the value: the buffer and the
+    /// final string, each at most the limit, plus, while one line is written, a
+    /// few copies of its longest string (its quoted form, or the parser's check
+    /// of one that may be plain) — a few GB at the very worst. That is a bound,
+    /// not a guarantee the process has it: on a smaller heap, a value near the
+    /// limit can still end in an <see cref="OutOfMemoryException"/>. The limit
+    /// is a quarter of .NET's longest string, and orders of magnitude above any
+    /// frontmatter: a value that large is not a legitimate concept header. It
+    /// is the one place where a value the parser reads may be refused by the
+    /// emitter, and only past a document of comparable size.
     /// </summary>
     internal const int MaxOutputChars = 256 * 1024 * 1024;
 
@@ -167,6 +177,9 @@ public static class YamlEmitter
         private long _repeatedChars;
 
         public StringBuilder Output { get; } = new();
+
+        /// <summary>The output limit this emit enforces (<see cref="YamlEmitter.MaxOutputChars"/> in production).</summary>
+        public int OutputLimit => maxOutputChars;
 
         /// <summary>Records <paramref name="collection"/> as entered; returns whether it was written before.</summary>
         public bool Enter(YamlValue collection)
@@ -279,7 +292,7 @@ public static class YamlEmitter
                 break;
             default:
                 CheckInlineCollection(value, 1);
-                var text = EmitScalar(value);
+                var text = EmitScalar(value, maxOutputChars);
                 if ((long)text.Length + 1 > maxOutputChars)
                 {
                     throw new YamlEmitException(OutputSizeExceededMessage);
@@ -301,7 +314,7 @@ public static class YamlEmitter
         var pad = new string(' ', indent);
         foreach (var (key, value) in map.Entries)
         {
-            var keyText = EmitKey(key);
+            var keyText = EmitKey(key, state.OutputLimit);
             var repeatedKey = state.IsRepeatedLongString(key);
             switch (value)
             {
@@ -316,7 +329,7 @@ public static class YamlEmitter
                 default:
                     CheckInlineCollection(value, depth + 1);
                     var repeatedValue = state.IsRepeatedLongString(value);
-                    state.WriteLine(pad, keyText, ':', EmitScalar(value), repeatedKey || repeatedValue);
+                    state.WriteLine(pad, keyText, ':', EmitScalar(value, state.OutputLimit), repeatedKey || repeatedValue);
                     break;
             }
         }
@@ -345,7 +358,7 @@ public static class YamlEmitter
                     break;
                 default:
                     CheckInlineCollection(item, depth + 1);
-                    state.WriteLine(pad, null, '-', EmitScalar(item), state.IsRepeatedLongString(item));
+                    state.WriteLine(pad, null, '-', EmitScalar(item, state.OutputLimit), state.IsRepeatedLongString(item));
                     break;
             }
         }
@@ -356,16 +369,17 @@ public static class YamlEmitter
     /// <summary>
     /// Emits a scalar (or an empty collection) inline. Non-empty collections
     /// never reach here in block context; as a defensive fallback both render
-    /// as "[]" (not "{}" for a non-empty mapping) if they somehow do.
+    /// as "[]" (not "{}" for a non-empty mapping) if they somehow do. A string
+    /// is refused rather than rendered past <paramref name="maxOutputChars"/>.
     /// </summary>
-    private static string EmitScalar(YamlValue value) => value switch
+    private static string EmitScalar(YamlValue value, int maxOutputChars) => value switch
     {
         YamlNull => "null",
         YamlBool { Value: true } => "true",
         YamlBool { Value: false } => "false",
         YamlInt i => i.Value.ToString(CultureInfo.InvariantCulture),
         YamlFloat f => FormatFloat(f.Value),
-        YamlString s => EmitString(s.Value),
+        YamlString s => EmitString(s.Value, maxOutputChars),
         YamlSequence { Items.Count: 0 } => "[]",
         YamlMapping { IsEmpty: true } => "{}",
         YamlSequence or YamlMapping => "[]",
@@ -543,20 +557,21 @@ public static class YamlEmitter
     }
 
     /// <summary>Emits a string as a plain scalar when safe, otherwise double-quoted.</summary>
-    private static string EmitString(string s)
+    private static string EmitString(string s, int maxOutputChars)
     {
-        CheckStringLength(s);
-        return IsSafePlain(s) ? s : DoubleQuote(s);
+        CheckStringLength(s, maxOutputChars);
+        return IsSafePlain(s) ? s : DoubleQuote(s, maxOutputChars);
     }
 
     /// <summary>
     /// Refuses, before any work on it, a string longer than the whole text may
-    /// be (<see cref="MaxOutputChars"/>): it could never be written, and quoting
-    /// it could take more memory than the text itself.
+    /// be (<paramref name="maxOutputChars"/>, <see cref="MaxOutputChars"/> in
+    /// production): it could never be written, and quoting it could take more
+    /// memory than the text itself.
     /// </summary>
-    private static void CheckStringLength(string s)
+    private static void CheckStringLength(string s, int maxOutputChars)
     {
-        if (s.Length > MaxOutputChars)
+        if (s.Length > maxOutputChars)
         {
             throw new YamlEmitException(OutputSizeExceededMessage);
         }
@@ -589,15 +604,17 @@ public static class YamlEmitter
     /// off the key). Keys whose quotes and brackets all close stay plain
     /// (<c>a[b]</c>, <c>a"b"c</c>), as do ordinary keys.
     /// </summary>
-    private static string EmitKey(YamlValue key)
+    private static string EmitKey(YamlValue key, int maxOutputChars)
     {
         if (key is not YamlString { Value: var s })
         {
-            return EmitScalar(key);
+            return EmitScalar(key, maxOutputChars);
         }
 
-        CheckStringLength(s);
-        return IsSafePlain(s) && !YamlParser.SplitsAtKeyEnd(s) ? DoubleQuote(s) : EmitString(s);
+        // One IsSafePlain call: a key it rejects is quoted like a value, one it
+        // accepts stays plain unless the split would not end at its colon.
+        CheckStringLength(s, maxOutputChars);
+        return IsSafePlain(s) && YamlParser.SplitsAtKeyEnd(s) ? s : DoubleQuote(s, maxOutputChars);
     }
 
     private static readonly char[] Indicators =
@@ -607,28 +624,16 @@ public static class YamlEmitter
 
     /// <summary>
     /// Whether a string can be emitted as a plain (unquoted) scalar without
-    /// being misread on re-parse.
+    /// being misread on re-parse. The conditions are all required, so their
+    /// order changes no answer; the character checks come first so that the
+    /// parser, last, only ever reads one line that cannot open a structure.
+    /// Handing it the whole string first cost about 23 times the string's size
+    /// for a multi-line one (the parser keeps an entry per line and copies
+    /// them), enough to run a legal value out of memory.
     /// </summary>
     private static bool IsSafePlain(string s)
     {
         if (s.Length == 0)
-        {
-            return false;
-        }
-
-        // Must not be reinterpreted as null/bool/number.
-        YamlValue parsed;
-        try
-        {
-            parsed = YamlValue.Parse(s);
-        }
-        catch (YamlParseException)
-        {
-            // parse() of a multiline/odd string may error; fall through to quoting.
-            return false;
-        }
-
-        if (!parsed.Equals(new YamlString(s)))
         {
             return false;
         }
@@ -658,21 +663,30 @@ public static class YamlEmitter
             }
         }
 
-        return true;
+        // Must not be reinterpreted as null/bool/number.
+        try
+        {
+            return YamlValue.Parse(s).Equals(new YamlString(s));
+        }
+        catch (YamlParseException)
+        {
+            // An odd string the parser refuses: fall through to quoting.
+            return false;
+        }
     }
 
     /// <summary>
     /// Renders a string as a double-quoted scalar with C-style escapes. An
     /// escape is up to six characters, so the quoted text is refused as soon
-    /// as it passes <see cref="MaxOutputChars"/> rather than grown past it.
+    /// as it passes <paramref name="maxOutputChars"/> rather than grown past it.
     /// </summary>
-    private static string DoubleQuote(string s)
+    private static string DoubleQuote(string s, int maxOutputChars)
     {
-        var outSb = new StringBuilder(s.Length + 2);
+        var outSb = new StringBuilder(Math.Min(s.Length, maxOutputChars) + 2);
         outSb.Append('"');
         foreach (var c in s)
         {
-            if (outSb.Length > MaxOutputChars)
+            if (outSb.Length > maxOutputChars)
             {
                 throw new YamlEmitException(OutputSizeExceededMessage);
             }
