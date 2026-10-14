@@ -210,17 +210,36 @@ public class YamlValueTests
     /// whichever side holds the sharing. Remembering only the left node (or
     /// only the right) would skip the second partner and call these equal.
     /// </summary>
+    /// <remarks>
+    /// The shared subtree is 100 collections deep because the comparison only
+    /// starts remembering pairs past its first 64: a shallower one would never
+    /// reach the code this pins.
+    /// </remarks>
     [Fact]
     public void A_shared_subtree_is_compared_with_each_of_its_partners()
     {
-        var shared = YamlValue.Parse("k: [1, 2]\n");
+        static YamlValue Nested(string leaf)
+        {
+            var inner = YamlValue.Parse(leaf);
+            for (var i = 0; i < 100; i++)
+            {
+                inner = new YamlSequence([inner]);
+            }
+
+            return inner;
+        }
+
+        var shared = Nested("[1, 2]");
         var withSharing = new YamlMapping();
         withSharing.Insert("x", shared);
         withSharing.Insert("y", shared);
 
-        var differentSecond = YamlValue.Parse("x:\n  k: [1, 2]\ny:\n  k: [1, 3]\n");
-        Assert.NotEqual(withSharing, differentSecond);
-        Assert.NotEqual(differentSecond, withSharing);
+        var differentSecond = new YamlMapping();
+        differentSecond.Insert("x", Nested("[1, 2]"));
+        differentSecond.Insert("y", Nested("[1, 3]"));
+
+        Assert.NotEqual<YamlValue>(withSharing, differentSecond);
+        Assert.NotEqual<YamlValue>(differentSecond, withSharing);
     }
 
     /// <summary>

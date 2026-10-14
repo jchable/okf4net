@@ -129,8 +129,9 @@ public abstract class YamlValue
     /// <see cref="YamlMapping"/> is mutable, so a value built in code can also
     /// share a subtree or contain itself. Two values are then equal when they
     /// unfold into the same tree, however their sharing or cycles are laid
-    /// out. Each pair of collections is compared once, so the answer comes
-    /// even when the unfolding is infinite or exponentially large.
+    /// out. Past the first few, each pair of collections is compared once, so
+    /// the answer comes even when the unfolding is infinite or exponentially
+    /// large. The comparison stops at the first difference.
     /// </remarks>
     public override bool Equals(object? obj) => obj is YamlValue other && ValueEquals(this, other);
 
@@ -144,67 +145,96 @@ public abstract class YamlValue
             return ScalarEquals(a, b);
         }
 
-        // Every pair still to compare. Equality holds when every pair reachable
-        // from (a, b) matches; a pair of collections met again has been or is
-        // being compared already, so it is skipped rather than walked twice.
-        // That is what ends the walk on a cycle and keeps shared subtrees
-        // linear; on a tree no pair ever repeats, so the result is plain
-        // structural equality. The pair is remembered as a pair: one node met
-        // twice with two different partners is compared with each.
-        var pending = new Stack<(YamlValue, YamlValue)>();
-        var compared = new HashSet<(YamlValue, YamlValue)>(ReferencePairComparer.Instance);
-        pending.Push((a, b));
-        while (pending.TryPop(out var pair))
+        if (!SameShape(a, b))
         {
-            switch (pair)
+            return false;
+        }
+
+        // One frame per pair of collections being compared, with the index of
+        // its next child pair: children are compared in order, the walk stops
+        // at the first difference, and the stack grows with depth, not width.
+        //
+        // Equality holds when every pair reachable from (a, b) matches. A pair
+        // of collections met again has been or is being compared already, so
+        // past the first UnrememberedPairs collection pairs each one is
+        // remembered and a repeat is skipped. That ends the walk on a cycle and
+        // keeps shared subtrees linear; on a tree no pair repeats, so the
+        // result is plain structural equality. Below the threshold nothing is
+        // remembered, so a small value allocates no set; a repeat there is
+        // compared again, which costs time but changes no answer. The pair is
+        // remembered as a pair: one node met twice with two different partners
+        // is compared with each.
+        var frames = new Stack<(YamlValue X, YamlValue Y, int Next)>();
+        HashSet<(YamlValue, YamlValue)>? remembered = null;
+        var opened = 1;
+        frames.Push((a, b, 0));
+        while (frames.TryPop(out var frame))
+        {
+            var (x, y, next) = frame;
+            if (next == ChildCount(x))
             {
-                case (YamlSequence x, YamlSequence y):
-                    if (x.Items.Count != y.Items.Count)
-                    {
-                        return false;
-                    }
-
-                    if (compared.Add(pair))
-                    {
-                        // Pushed last first, so items are compared in order.
-                        for (var i = x.Items.Count - 1; i >= 0; i--)
-                        {
-                            pending.Push((x.Items[i], y.Items[i]));
-                        }
-                    }
-
-                    break;
-
-                case (YamlMapping x, YamlMapping y):
-                    if (x.Count != y.Count)
-                    {
-                        return false;
-                    }
-
-                    if (compared.Add(pair))
-                    {
-                        var xs = x.Entries;
-                        var ys = y.Entries;
-                        for (var i = xs.Count - 1; i >= 0; i--)
-                        {
-                            pending.Push((xs[i].Value, ys[i].Value));
-                            pending.Push((xs[i].Key, ys[i].Key));
-                        }
-                    }
-
-                    break;
-
-                default:
-                    if (!ScalarEquals(pair.Item1, pair.Item2))
-                    {
-                        return false;
-                    }
-
-                    break;
+                continue;
             }
+
+            frames.Push((x, y, next + 1));
+            var (childX, childY) = Child(x, y, next);
+            if (!IsCollection(childX) || !IsCollection(childY))
+            {
+                if (!ScalarEquals(childX, childY))
+                {
+                    return false;
+                }
+
+                continue;
+            }
+
+            if (!SameShape(childX, childY))
+            {
+                return false;
+            }
+
+            if (++opened > UnrememberedPairs
+                && !(remembered ??= new HashSet<(YamlValue, YamlValue)>(ReferencePairComparer.Instance)).Add((childX, childY)))
+            {
+                continue;
+            }
+
+            frames.Push((childX, childY, 0));
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// How many pairs of collections <see cref="ValueEquals"/> compares before
+    /// it starts remembering them. A typical frontmatter holds fewer, so its
+    /// comparison allocates no set.
+    /// </summary>
+    private const int UnrememberedPairs = 64;
+
+    /// <summary>Both sequences, or both mappings, with as many items or entries.</summary>
+    private static bool SameShape(YamlValue x, YamlValue y) => (x, y) switch
+    {
+        (YamlSequence xs, YamlSequence ys) => xs.Items.Count == ys.Items.Count,
+        (YamlMapping xm, YamlMapping ym) => xm.Count == ym.Count,
+        _ => false,
+    };
+
+    /// <summary>The number of child pairs of a collection: its items, or a key and a value per entry.</summary>
+    private static int ChildCount(YamlValue collection) =>
+        collection is YamlSequence seq ? seq.Items.Count : 2 * ((YamlMapping)collection).Count;
+
+    /// <summary>Child pair <paramref name="index"/> of two collections of the same shape.</summary>
+    private static (YamlValue, YamlValue) Child(YamlValue x, YamlValue y, int index)
+    {
+        if (x is YamlSequence xs)
+        {
+            return (xs.Items[index], ((YamlSequence)y).Items[index]);
+        }
+
+        var xe = ((YamlMapping)x).Entries[index / 2];
+        var ye = ((YamlMapping)y).Entries[index / 2];
+        return index % 2 == 0 ? (xe.Key, ye.Key) : (xe.Value, ye.Value);
     }
 
     private static bool IsCollection(YamlValue value) => value is YamlSequence or YamlMapping;

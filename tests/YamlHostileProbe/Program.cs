@@ -122,9 +122,9 @@ static List<string> DeepBuiltEquality()
     var c = Built(100_000, leaf: "w");
     return
     [
-        Ask("equal copies are equal", () => a.Equals(b)),
-        Ask("a different leaf is unequal", () => a.Equals(c)),
-        Ask("equal copies hash equally", () => a.GetHashCode() == b.GetHashCode()),
+        Ask("do equal copies compare equal", () => a.Equals(b)),
+        Ask("does a copy with another leaf compare equal", () => a.Equals(c)),
+        Ask("do equal copies hash alike", () => a.GetHashCode() == b.GetHashCode()),
     ];
 }
 
@@ -158,13 +158,13 @@ static List<string> CyclicEquality()
     q.Insert("c", p);
     return
     [
-        Ask("a cycle equals an identical cycle", () => a.Equals(b)),
-        Ask("it equals a longer cycle with the same unfolding", () => a.Equals(m)),
-        Ask("it hashes like both", () => a.GetHashCode() == b.GetHashCode() && a.GetHashCode() == m.GetHashCode()),
-        Ask("a cycle with another key is unequal", () => a.Equals(other)),
-        Ask("a cycle is unequal to a tree", () => a.Equals(Built(3))),
-        Ask("it is unequal to a longer cycle that differs only in its second node", () => a.Equals(p)),
-        Ask("so is that cycle to it", () => p.Equals(a)),
+        Ask("does a cycle equal an identical cycle", () => a.Equals(b)),
+        Ask("does it equal a longer cycle with the same unfolding", () => a.Equals(m)),
+        Ask("do all three hash alike", () => a.GetHashCode() == b.GetHashCode() && a.GetHashCode() == m.GetHashCode()),
+        Ask("does it equal a cycle with another key", () => a.Equals(other)),
+        Ask("does it equal a tree", () => a.Equals(Built(3))),
+        Ask("does it equal a longer cycle that differs only in its second node", () => a.Equals(p)),
+        Ask("does that cycle equal it", () => p.Equals(a)),
     ];
 
     static YamlMapping SelfLoop(string first, string second)
@@ -186,9 +186,9 @@ static List<string> DiamondEquality()
     var c = Diamonds(60, "w");
     return
     [
-        Ask("equal diamond chains are equal", () => a.Equals(b)),
-        Ask("a different leaf is unequal", () => a.Equals(c)),
-        Ask("equal diamond chains hash equally", () => a.GetHashCode() == b.GetHashCode()),
+        Ask("do equal diamond chains compare equal", () => a.Equals(b)),
+        Ask("does a copy with another leaf compare equal", () => a.Equals(c)),
+        Ask("do equal diamond chains hash alike", () => a.GetHashCode() == b.GetHashCode()),
     ];
 
     static YamlValue Diamonds(int levels, string leaf)

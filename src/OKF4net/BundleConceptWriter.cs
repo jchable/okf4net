@@ -1225,7 +1225,7 @@ public sealed class BundleConceptWriter
 
     /// <summary>
     /// Whether <paramref name="value"/> contains a NaN <see cref="YamlFloat"/>
-    /// anywhere in its tree (recursing into mappings and sequences). Exists
+    /// anywhere in its tree, mapping keys included. Exists
     /// solely to make the equality-refusal message in
     /// <see cref="RecordVerifications"/> diagnosable: <see cref="YamlValue"/>'s
     /// structural equality compares floats with IEEE-754 <c>==</c>, under
@@ -1238,42 +1238,16 @@ public sealed class BundleConceptWriter
     /// real corruption.
     /// </summary>
     /// <remarks>
-    /// Walks without recursing, like <see cref="YamlValue.Equals(object?)"/>
-    /// right before it (#158): it runs exactly when that comparison has failed,
-    /// on a frontmatter that can be up to the parser's 1000 levels deep. That
-    /// frontmatter was parsed, so it is a tree: unlike <c>Equals</c>, this walk
-    /// does not guard against a value built in code that contains itself.
+    /// A value is unequal to itself exactly when it holds a NaN somewhere:
+    /// <see cref="YamlValue.Equals(object?)"/> takes no by-reference shortcut,
+    /// every pair it meets comparing a value with itself has the same type and
+    /// count, and among scalars only NaN fails <c>==</c>. So this reuses that
+    /// comparison and inherits its guarantees (#158): no recursion, and an
+    /// answer on any value, including one built in code that holds itself.
+    /// <c>A_value_holding_NaN_is_unequal_even_to_itself</c> pins the absence of
+    /// the shortcut this relies on.
     /// </remarks>
-    internal static bool ContainsNaN(YamlValue value)
-    {
-        var pending = new Stack<YamlValue>();
-        pending.Push(value);
-        while (pending.TryPop(out var node))
-        {
-            switch (node)
-            {
-                case YamlFloat f when double.IsNaN(f.Value):
-                    return true;
-                case YamlMapping m:
-                    foreach (var (key, entryValue) in m.Entries)
-                    {
-                        pending.Push(key);
-                        pending.Push(entryValue);
-                    }
-
-                    break;
-                case YamlSequence s:
-                    foreach (var item in s.Items)
-                    {
-                        pending.Push(item);
-                    }
-
-                    break;
-            }
-        }
-
-        return false;
-    }
+    internal static bool ContainsNaN(YamlValue value) => !value.Equals(value);
 
     /// <summary>
     /// Names WHICH part of the frontmatter actually diverged, for the

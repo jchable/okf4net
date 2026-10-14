@@ -102,25 +102,25 @@ public class YamlHostileInputTests
     [Theory]
     [InlineData("value-deep-built", new[]
     {
-        "equal copies are equal: True",
-        "a different leaf is unequal: False",
-        "equal copies hash equally: True",
+        "do equal copies compare equal: True",
+        "does a copy with another leaf compare equal: False",
+        "do equal copies hash alike: True",
     })]
     [InlineData("value-cycles", new[]
     {
-        "a cycle equals an identical cycle: True",
-        "it equals a longer cycle with the same unfolding: True",
-        "it hashes like both: True",
-        "a cycle with another key is unequal: False",
-        "a cycle is unequal to a tree: False",
-        "it is unequal to a longer cycle that differs only in its second node: False",
-        "so is that cycle to it: False",
+        "does a cycle equal an identical cycle: True",
+        "does it equal a longer cycle with the same unfolding: True",
+        "do all three hash alike: True",
+        "does it equal a cycle with another key: False",
+        "does it equal a tree: False",
+        "does it equal a longer cycle that differs only in its second node: False",
+        "does that cycle equal it: False",
     })]
     [InlineData("value-diamonds", new[]
     {
-        "equal diamond chains are equal: True",
-        "a different leaf is unequal: False",
-        "equal diamond chains hash equally: True",
+        "do equal diamond chains compare equal: True",
+        "does a copy with another leaf compare equal: False",
+        "do equal diamond chains hash alike: True",
     })]
     public void Equality_and_hashing_of_a_built_value_answer_in_a_clean_exit(string name, string[] expected)
     {
