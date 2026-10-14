@@ -89,6 +89,47 @@ public class YamlHostileInputTests
     }
 
     /// <summary>
+    /// Structural equality and hashing on values built in code (#158), where
+    /// the parser's 1000 rule does not reach: 100 000 collections deep, cyclic
+    /// (a <c>YamlMapping</c> can hold itself), or sharing one subtree under
+    /// two keys at each of 60 levels. Each question gets its answer in a clean
+    /// exit, so <c>Equals</c> and <c>GetHashCode</c> neither recurse (a stack
+    /// overflow kills the process) nor walk every path of a shared structure
+    /// (2^60 of them; the deadline turns that hang into a failure). Two values
+    /// with the same unfolding are equal however their cycles are laid out,
+    /// and equal values hash equally.
+    /// </summary>
+    [Theory]
+    [InlineData("value-deep-built", new[]
+    {
+        "equal copies are equal: True",
+        "a different leaf is unequal: False",
+        "equal copies hash equally: True",
+    })]
+    [InlineData("value-cycles", new[]
+    {
+        "a cycle equals an identical cycle: True",
+        "it equals a longer cycle with the same unfolding: True",
+        "it hashes like both: True",
+        "a cycle with another key is unequal: False",
+        "a cycle is unequal to a tree: False",
+    })]
+    [InlineData("value-diamonds", new[]
+    {
+        "equal diamond chains are equal: True",
+        "a different leaf is unequal: False",
+        "equal diamond chains hash equally: True",
+    })]
+    public void Equality_and_hashing_of_a_built_value_answer_in_a_clean_exit(string name, string[] expected)
+    {
+        var (code, stdout, stderr) = RunProbe(name);
+
+        Assert.True(code == 0, $"probe exited with {code} (a crash, e.g. a stack overflow?)\nstdout:\n{stdout}\nstderr:\n{stderr}");
+        var lines = stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        Assert.Equal(expected, lines);
+    }
+
+    /// <summary>
     /// Runs the probe on <paramref name="name"/>, killing it at the deadline.
     /// The probe is built next to this test project in the same configuration
     /// and target framework (the test project's <c>ProjectReference</c> to it,

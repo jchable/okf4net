@@ -117,91 +117,195 @@ public abstract class YamlValue
     public override string ToString() => ToYamlString();
 
     /// <summary>
-    /// Structural (deep) equality: same type, recursively equal contents,
-    /// mapping entries compared in order (not just by key set). Floats compare
-    /// with IEEE-754 semantics (via <c>==</c>) — so <c>NaN</c> never equals
-    /// <c>NaN</c>, and <c>-0.0</c> equals <c>0.0</c>.
+    /// Structural (deep) equality: same type, equal contents all the way
+    /// down, mapping entries compared in order (not just by key set). Floats
+    /// compare with IEEE-754 semantics (via <c>==</c>) — so <c>NaN</c> never
+    /// equals <c>NaN</c>, not even within one value compared with itself, and
+    /// <c>-0.0</c> equals <c>0.0</c>.
     /// </summary>
+    /// <remarks>
+    /// The comparison never recurses, so it answers for a value of any depth,
+    /// including one built in code past the parser's nesting rule (#158).
+    /// <see cref="YamlMapping"/> is mutable, so a value built in code can also
+    /// share a subtree or contain itself. Two values are then equal when they
+    /// unfold into the same tree, however their sharing or cycles are laid
+    /// out. Each pair of collections is compared once, so the answer comes
+    /// even when the unfolding is infinite or exponentially large.
+    /// </remarks>
     public override bool Equals(object? obj) => obj is YamlValue other && ValueEquals(this, other);
 
     /// <inheritdoc cref="Equals(object?)"/>
-    private static bool ValueEquals(YamlValue a, YamlValue b) => (a, b) switch
+    private static bool ValueEquals(YamlValue a, YamlValue b)
     {
-        (YamlNull, YamlNull) => true,
-        (YamlBool x, YamlBool y) => x.Value == y.Value,
-        (YamlInt x, YamlInt y) => x.Value == y.Value,
-        (YamlFloat x, YamlFloat y) => x.Value == y.Value,
-        (YamlString x, YamlString y) => string.Equals(x.Value, y.Value, StringComparison.Ordinal),
-        (YamlSequence x, YamlSequence y) => x.Items.Count == y.Items.Count && x.Items.SequenceEqual(y.Items),
-        (YamlMapping x, YamlMapping y) => MappingEquals(x, y),
-        _ => false,
-    };
-
-    private static bool MappingEquals(YamlMapping a, YamlMapping b)
-    {
-        if (a.Count != b.Count)
+        // Every pair still to compare. Equality holds when every pair reachable
+        // from (a, b) matches; a pair of collections met again has been or is
+        // being compared already, so it is skipped rather than walked twice.
+        // That is what ends the walk on a cycle and keeps shared subtrees
+        // linear; on a tree no pair ever repeats, so the result is plain
+        // structural equality.
+        var pending = new Stack<(YamlValue, YamlValue)>();
+        HashSet<(YamlValue, YamlValue)>? compared = null;
+        pending.Push((a, b));
+        while (pending.TryPop(out var pair))
         {
-            return false;
-        }
-
-        using var ea = a.Entries.GetEnumerator();
-        using var eb = b.Entries.GetEnumerator();
-        while (ea.MoveNext() && eb.MoveNext())
-        {
-            if (!ValueEquals(ea.Current.Key, eb.Current.Key))
+            switch (pair)
             {
-                return false;
-            }
+                case (YamlSequence x, YamlSequence y):
+                    if (x.Items.Count != y.Items.Count)
+                    {
+                        return false;
+                    }
 
-            if (!ValueEquals(ea.Current.Value, eb.Current.Value))
-            {
-                return false;
+                    if ((compared ??= new HashSet<(YamlValue, YamlValue)>(ReferencePairComparer.Instance)).Add(pair))
+                    {
+                        // Pushed last first, so items are compared in order.
+                        for (var i = x.Items.Count - 1; i >= 0; i--)
+                        {
+                            pending.Push((x.Items[i], y.Items[i]));
+                        }
+                    }
+
+                    break;
+
+                case (YamlMapping x, YamlMapping y):
+                    if (x.Count != y.Count)
+                    {
+                        return false;
+                    }
+
+                    if ((compared ??= new HashSet<(YamlValue, YamlValue)>(ReferencePairComparer.Instance)).Add(pair))
+                    {
+                        var xs = x.Entries;
+                        var ys = y.Entries;
+                        for (var i = xs.Count - 1; i >= 0; i--)
+                        {
+                            pending.Push((xs[i].Value, ys[i].Value));
+                            pending.Push((xs[i].Key, ys[i].Key));
+                        }
+                    }
+
+                    break;
+
+                default:
+                    if (!ScalarEquals(pair.Item1, pair.Item2))
+                    {
+                        return false;
+                    }
+
+                    break;
             }
         }
 
         return true;
     }
 
+    /// <summary>Equality of two values that are not both sequences or both mappings.</summary>
+    private static bool ScalarEquals(YamlValue a, YamlValue b) => (a, b) switch
+    {
+        (YamlNull, YamlNull) => true,
+        (YamlBool x, YamlBool y) => x.Value == y.Value,
+        (YamlInt x, YamlInt y) => x.Value == y.Value,
+        (YamlFloat x, YamlFloat y) => x.Value == y.Value,
+        (YamlString x, YamlString y) => string.Equals(x.Value, y.Value, StringComparison.Ordinal),
+        _ => false,
+    };
+
+    /// <summary>
+    /// How many nodes of a value <see cref="GetHashCode"/> reads, breadth
+    /// first from the root. A frontmatter rarely holds more, so in practice
+    /// the whole value is hashed; past it, values that differ only further
+    /// down share a hash, which a hash is allowed to do.
+    /// </summary>
+    private const int HashedNodeBudget = 256;
+
     /// <summary>
     /// Consistent with <see cref="Equals(object?)"/>: equal values always
     /// hash equally (in particular, <c>0.0</c> and <c>-0.0</c> are normalized
     /// to the same hash, matching their IEEE-754 equality above).
     /// </summary>
-    public override int GetHashCode() => this switch
-    {
-        YamlNull => HashCode.Combine(typeof(YamlNull)),
-        YamlBool b => HashCode.Combine(typeof(YamlBool), b.Value),
-        YamlInt i => HashCode.Combine(typeof(YamlInt), i.Value),
-        YamlFloat f => HashCode.Combine(typeof(YamlFloat), f.Value == 0.0 ? 0.0 : f.Value),
-        YamlString s => HashCode.Combine(typeof(YamlString), s.Value),
-        YamlSequence seq => SequenceHashCode(seq.Items),
-        YamlMapping map => MappingHashCode(map),
-        _ => 0,
-    };
-
-    private static int SequenceHashCode(IReadOnlyList<YamlValue> items)
+    /// <remarks>
+    /// Reads at most the first <see cref="HashedNodeBudget"/> nodes of the
+    /// value's unfolding, breadth first, without recursing: the cost is bounded
+    /// whatever the value's depth, sharing or cycles (#158). Equal values
+    /// unfold into the same tree, so they present the same nodes in the same
+    /// order and hash equally.
+    /// </remarks>
+    public override int GetHashCode()
     {
         var hash = new HashCode();
-        hash.Add(typeof(YamlSequence));
-        foreach (var item in items)
+        var queue = new Queue<YamlValue>();
+        queue.Enqueue(this);
+        for (var budget = HashedNodeBudget; budget > 0 && queue.TryDequeue(out var node); budget--)
         {
-            hash.Add(item);
+            switch (node)
+            {
+                case YamlNull:
+                    hash.Add(typeof(YamlNull));
+                    break;
+                case YamlBool b:
+                    hash.Add(typeof(YamlBool));
+                    hash.Add(b.Value);
+                    break;
+                case YamlInt i:
+                    hash.Add(typeof(YamlInt));
+                    hash.Add(i.Value);
+                    break;
+                case YamlFloat f:
+                    hash.Add(typeof(YamlFloat));
+                    hash.Add(f.Value == 0.0 ? 0.0 : f.Value);
+                    break;
+                case YamlString s:
+                    hash.Add(typeof(YamlString));
+                    hash.Add(s.Value);
+                    break;
+                case YamlSequence seq:
+                    hash.Add(typeof(YamlSequence));
+                    hash.Add(seq.Items.Count);
+                    foreach (var item in seq.Items)
+                    {
+                        // Nothing past the budget is read, so nothing past it is queued.
+                        if (queue.Count >= budget)
+                        {
+                            break;
+                        }
+
+                        queue.Enqueue(item);
+                    }
+
+                    break;
+                case YamlMapping map:
+                    hash.Add(typeof(YamlMapping));
+                    hash.Add(map.Count);
+                    foreach (var (key, value) in map.Entries)
+                    {
+                        if (queue.Count >= budget)
+                        {
+                            break;
+                        }
+
+                        queue.Enqueue(key);
+                        queue.Enqueue(value);
+                    }
+
+                    break;
+            }
         }
 
         return hash.ToHashCode();
     }
 
-    private static int MappingHashCode(YamlMapping map)
+    /// <summary>Compares pairs of values by reference: the set of pairs <see cref="ValueEquals"/> has already met.</summary>
+    private sealed class ReferencePairComparer : IEqualityComparer<(YamlValue, YamlValue)>
     {
-        var hash = new HashCode();
-        hash.Add(typeof(YamlMapping));
-        foreach (var (key, value) in map.Entries)
-        {
-            hash.Add(key);
-            hash.Add(value);
-        }
+        public static readonly ReferencePairComparer Instance = new();
 
-        return hash.ToHashCode();
+        public bool Equals((YamlValue, YamlValue) x, (YamlValue, YamlValue) y) =>
+            ReferenceEquals(x.Item1, y.Item1) && ReferenceEquals(x.Item2, y.Item2);
+
+        public int GetHashCode((YamlValue, YamlValue) pair) =>
+            HashCode.Combine(
+                System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(pair.Item1),
+                System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(pair.Item2));
     }
 }
 

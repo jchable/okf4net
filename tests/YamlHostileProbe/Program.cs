@@ -17,6 +17,13 @@ using OKF4net.Yaml;
 // what the harness (tests/OKF4net.Tests/Yaml/YamlHostileInputTests.cs) is
 // there to see without dying itself.
 //
+// The "value-*" cases build values in code, where the parser's 1000 rule does
+// not apply, and print one "<question>: <answer>" line per equality or hash
+// question asked of them (YamlValue.Equals / GetHashCode, issue #158). Deeper
+// than any stack, cyclic (YamlMapping is mutable, so a mapping can hold
+// itself), or sharing subtrees: each must answer, never crash and never hang
+// (the harness's deadline catches a hang).
+//
 // The "small-stack-*" cases run on a new thread with a 256 KB stack: smaller
 // than a 1000-deep document (block or flow) needs, so they reach the parser's and the
 // emitter's stack guard (RuntimeHelpers.TryEnsureSufficientExecutionStack)
@@ -31,6 +38,9 @@ List<string>? lines = name switch
     "small-stack-block-sequences" => OnSmallStack(() => ParseBoth(BlockSequences(1000))),
     "small-stack-flow" => OnSmallStack(() => ParseBoth("k: " + new string('[', 999) + "v" + new string(']', 999))),
     "small-stack-emit" => OnSmallStack(() => [Emit(Built(1000))]),
+    "value-deep-built" => DeepBuiltEquality(),
+    "value-cycles" => CyclicEquality(),
+    "value-diamonds" => DiamondEquality(),
     _ => Build(name) is { } yaml ? ParseBoth(yaml) : null,
 };
 
@@ -89,6 +99,97 @@ static string Emit(YamlValue value)
     catch (Exception e)
     {
         return $"unexpected {e.GetType().Name}: {e.Message}";
+    }
+}
+
+static string Ask(string question, Func<object> answer)
+{
+    try
+    {
+        return $"{question}: {answer()}";
+    }
+    catch (Exception e)
+    {
+        return $"unexpected {e.GetType().Name}: {e.Message}";
+    }
+}
+
+static List<string> DeepBuiltEquality()
+{
+    // 100 000 collections: far past the 1000 rule and any thread's stack.
+    var a = Built(100_000);
+    var b = Built(100_000);
+    var c = Built(100_000, leaf: "w");
+    return
+    [
+        Ask("equal copies are equal", () => a.Equals(b)),
+        Ask("a different leaf is unequal", () => a.Equals(c)),
+        Ask("equal copies hash equally", () => a.GetHashCode() == b.GetHashCode()),
+    ];
+}
+
+static List<string> CyclicEquality()
+{
+    // Two mappings, each holding itself under two keys: a cycle of width 2,
+    // whose unfolding doubles at every level.
+    var a = SelfLoop("a", "b");
+    var b = SelfLoop("a", "b");
+
+    // The same unfolding reached through a cycle of length 2: m -> n -> m.
+    var m = new YamlMapping();
+    var n = new YamlMapping();
+    m.Insert("a", n);
+    m.Insert("b", n);
+    n.Insert("a", m);
+    n.Insert("b", m);
+
+    // A different key somewhere in the cycle.
+    var other = SelfLoop("a", "c");
+    return
+    [
+        Ask("a cycle equals an identical cycle", () => a.Equals(b)),
+        Ask("it equals a longer cycle with the same unfolding", () => a.Equals(m)),
+        Ask("it hashes like both", () => a.GetHashCode() == b.GetHashCode() && a.GetHashCode() == m.GetHashCode()),
+        Ask("a cycle with another key is unequal", () => a.Equals(other)),
+        Ask("a cycle is unequal to a tree", () => a.Equals(Built(3))),
+    ];
+
+    static YamlMapping SelfLoop(string first, string second)
+    {
+        var map = new YamlMapping();
+        map.Insert(first, map);
+        map.Insert(second, map);
+        return map;
+    }
+}
+
+static List<string> DiamondEquality()
+{
+    // 60 levels, each a mapping holding the SAME next level under two keys:
+    // a tree of 2^60 paths built from 60 objects. Walking every path never
+    // ends; a walk that visits each shared pair once ends at once.
+    var a = Diamonds(60, "v");
+    var b = Diamonds(60, "v");
+    var c = Diamonds(60, "w");
+    return
+    [
+        Ask("equal diamond chains are equal", () => a.Equals(b)),
+        Ask("a different leaf is unequal", () => a.Equals(c)),
+        Ask("equal diamond chains hash equally", () => a.GetHashCode() == b.GetHashCode()),
+    ];
+
+    static YamlValue Diamonds(int levels, string leaf)
+    {
+        YamlValue inner = new YamlString(leaf);
+        for (var i = 0; i < levels; i++)
+        {
+            var map = new YamlMapping();
+            map.Insert("l", inner);
+            map.Insert("r", inner);
+            inner = map;
+        }
+
+        return inner;
     }
 }
 
@@ -176,11 +277,11 @@ static string BlockSequences(int levels)
     return sb.Append(' ', 2 * (levels - 1)).Append("- v\n").ToString();
 }
 
-static YamlValue Built(int depth)
+static YamlValue Built(int depth, string leaf = "v")
 {
     // depth collections built without the parser, alternating mapping (odd
     // levels, the root included) and sequence, around a scalar.
-    YamlValue inner = new YamlString("v");
+    YamlValue inner = new YamlString(leaf);
     for (var level = depth; level >= 1; level--)
     {
         if (level % 2 == 1)
