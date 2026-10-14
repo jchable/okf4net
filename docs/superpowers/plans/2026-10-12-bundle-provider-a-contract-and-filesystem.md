@@ -47,6 +47,9 @@ Lot A is additive on the public API and changes behaviour only where §10 of the
   - **Blocking.** The file/directory conflict check still excluded case-doomed keys (`keys = structural.Where(k => !doomed.Contains(k))`), so for `x.md`, `x.md/A.sql`, `x.md/a.sql` the children were rejected but `x.md` — an object that is also a prefix — was loaded, and a late `x.md/new.sql` resolved: conflicts are computed on **all** structural keys (Task 2), with the mixed case added to the validator and loader tests (Tasks 2, 6).
   - **Important.** The deferred-replacement test now ran, and failed in its own cleanup: `Directory.Delete(root, recursive: true)` refuses to traverse the junction it had planted; the junction is deleted first, non-recursively (Task 4).
 - **r7 (2026-10-14)** — after a sixth **executed** review of r6 (`a092d16`): both r6 corrections confirmed (91 targeted tests green, an independent oracle agreeing on 26 244 duplicate/collision/conflict combinations), one blocker left. `structural` was built from the admitted candidates, so a key refused by `CheckKey` — a host validator refusing `x.md`, or `Strict` refusing `x.md/con.sql` — lost its physical presence and its child or parent came back in. Every name that parses now enters `structural` **before** `CheckKey` and before duplicate handling; admission decides what is accepted and diagnosed, never what exists (Task 2, with validator and loader regressions in Tasks 2 and 6).
+- **r8 (2026-10-14)** — after a seventh **executed** review of r7 (`0089f95`): the r7 fix confirmed (80 targeted tests green, an oracle agreeing on 1 259 712 ASCII combinations), one blocker and one performance seam left. Fixed here:
+  - **Blocking.** Sibling names were grouped by the case fold alone, so canonically equivalent names — `café` beside `cafe` + U+0301, `Å` beside U+212B — were never recognised as one object: under `Strict` the NFD name was refused but its twin was accepted with no prefix condemned, and under `UnicodeFormCollisions` alone both were accepted. Maintainer ruling (2026-10-14, option b: tables derived from ICU rather than a closed per-level rule): `CanonicalForm`, a table-driven canonical decomposition **with** canonical ordering (the NFD; Hangul by arithmetic), derived and guarded by the same generator test as the quick-check sets; `FoldSegment` decomposes under `UnicodeFormCollisions` and upcases under `CaseInsensitiveCollisions`, and both the grouping and `FoldKeyText` use it (Task 2, decision 17; loader regressions in Task 6). The plan had announced a composition-only fold; it was replaced before writing because adjacent-pair composition misses the reordering case (`é` + cedilla against `ȩ` + acute), which needs the combining classes anyway — and with them the ordering half of the quick check closes for free, so the "reorder residual" of decision 2 is gone.
+  - **Important.** Each candidate scanned the whole list of colliding and conflicting keys (`FirstOrDefault` with `StartsWith`): 26 s for 65 536 names under two colliding roots. Both lists are sets now and each candidate looks up its own prefixes, outermost first — one lookup per segment (Task 2, with a 65 536-name regression whose duration Task 8 records; no timing assertion).
 
 ## Global Constraints
 
@@ -58,7 +61,7 @@ Lot A is additive on the public API and changes behaviour only where §10 of the
 - **Path-safety guards use the STRICT predicates** (`ReparsePoints.IsReparsePointOrUninspectable`, `HasReparsePointOrUninspectableAncestor`); enumeration walks use the lenient pair, and this lot adds exactly **one** lenient site (the provider's walk), which replaces `Bundle.CollectMarkdown` — update the count in `CLAUDE.md` in Task 8. A guard runs **at the moment of the access**, never only when an enumerable is created.
 - **Keys are never percent-decoded** and a URL in a §6.2 field is **never** dereferenced.
 - **Bounds, policy and constraints are enforced in the core** (`Bundle.Load`) while the listing is consumed — never after a `.ToList()` — and the core reads provider streams with byte counting; the provider enforces the same bounds on its own walks (`GetVersion`, `Enumerate`), counting every entry it inspects, skipped reparse points included, before sorting.
-- **NFC is checked by the quick-check tables, never by `string.Normalize`**, so the library and the AOT binaries give one answer. The tables are generated from ICU on the test host (Task 2 ships the generator) and guarded by an exhaustive cross-check test that runs wherever normalization works.
+- **NFC is checked by the quick-check tables and canonical equivalence is decided by the decomposition and combining-class tables, never by `string.Normalize`**, so the library and the AOT binaries give one answer. All four tables are generated from ICU on the test host (Task 2 ships the generator, `UnicodeTableTests`) and guarded by an exhaustive cross-check test that runs wherever normalization works.
 - **Provider errors are translated at the core boundary** (§7): a `BundleLoadException` or `IOException` leaving `Bundle` carries a library-authored message naming the key and the exception type; the raw exception is the `InnerException`, which is the host-log channel.
 - `Bundle.Load` stays permissive (§11): a per-resource or per-concept problem goes to `ParseProblems`; only the global failures of §6 (entry bound, depth, provider I/O error, access refused) throw `BundleLoadException`.
 - Each task adds its own `CHANGELOG.md` entry under `## [Unreleased]` (`### Added` for new API, `### Changed` for behaviour changes; nothing in this lot is **Breaking**), describing behaviour, not commits.
@@ -68,7 +71,7 @@ Lot A is additive on the public API and changes behaviour only where §10 of the
 ## Decisions taken by this plan (not in the spec — for the maintainer to confirm)
 
 1. **Read-time version mismatch has its own exception.** `BundleVersionMismatchException` for a `Read(key, expected)` whose version moved; `BundleWriteConflictException` stays for writes (lot B). Both derive from `BundleProviderException : OkfException`.
-2. **NFC by quick-check tables** (maintainer ruling 2026-10-12, see Revision history): `NfcQuickCheck.No` and `NfcQuickCheck.Maybe` as `(int Start, int End)` ranges; a segment containing a `No` character is refused ("never in NFC"), one containing a `Maybe` character is refused ("cannot be decided without composition tables") — the derived `Maybe` set is the set of marks that actually recompose with some base, tighter than UCD's; the reorder residual is accepted. Over-rejection: a standalone composing mark on a base it does not compose with (`q\u0323`); rare in names, documented.
+2. **NFC by quick-check tables** (maintainer ruling 2026-10-12, see Revision history): `NfcQuickCheck.No` and `NfcQuickCheck.Maybe` as `(int Start, int End)` ranges; a segment containing a `No` character is refused ("never in NFC"), one containing a `Maybe` character is refused ("cannot be decided without composition tables") — the derived `Maybe` set is the set of marks that actually recompose with some base, tighter than UCD's — and, since r8, one whose marks are out of canonical order is refused too (`CanonicalForm.IsCanonicallyOrdered`, decision 17): the reorder residual r2 accepted is closed. The one over-rejection left: a standalone composing mark on a base it does not compose with (`q` + U+0323); rare in names, documented.
 3. **The filesystem provider is read-only in this lot** (`CanWrite = false`): a declared capability per §3, not a placeholder; lot B flips it with #157's commit protocol.
 4. **`Concept.Path` is computed by the display rule** (`BundleDisplayPath.Compose(Location, key)` = `Path.Combine(root, …)`), byte-identical to today for the filesystem; Task 7 pins it unnormalised on Windows.
 5. **`Concept.Key` is a non-positional `init` property**, so the three-parameter constructor and `Deconstruct` are unchanged (r1's optional fourth positional parameter removed both at the CLR level).
@@ -77,12 +80,13 @@ Lot A is additive on the public API and changes behaviour only where §10 of the
 8. **`BundleLimits.MaxDepth` counts key segments** (`a/b/c.md` has depth 3).
 9. **`additionalConstraints`, not `nativeConstraints`**: the filesystem provider's constructor can only add flags to the OS-derived set, never replace it; exact-case matching is on by the OS (Windows, macOS) or by a folding flag the host adds (decision 15), and nothing can switch it off.
 10. **`"."` and `"./"` resolve to the concept's own prefix** (`Candidate`, then `Missing` since no object has that key) rather than `Unsafe`: lexically they name a prefix, and nothing about them escapes the bundle. `"../"` from a top-level concept, `"/"` and `""` resolve to the root and stay `Unsafe`.
-11. **Tree-rejected keys and prefixes are remembered by the bundle** (`RejectedKeys`, `RejectedPrefixes`) and one shared guard — policy, rejected keys, rejected prefixes, depth and key-length bounds — fronts both `TryResolveResourceKey` and `ReadResourceText(BundleKey)`, so a rejected object cannot be read directly and an object created later under a rejected prefix cannot be rehabilitated. A rejected prefix is matched **in its folded form** (each segment through `FoldForCollision` whenever a folding constraint is in force, identity otherwise): a prefix condemned for a case collision condemns every spelling of it, not just the ones that were listed (r3 compared ordinally and let `AB` in after `Ab`/`aB`). A key under no rejected prefix that appeared after load is checked live, as `TryResolveResource` does today.
+11. **Tree-rejected keys and prefixes are remembered by the bundle** (`RejectedKeys`, `RejectedPrefixes`) and one shared guard — policy, rejected keys, rejected prefixes, depth and key-length bounds — fronts both `TryResolveResourceKey` and `ReadResourceText(BundleKey)`, so a rejected object cannot be read directly and an object created later under a rejected prefix cannot be rehabilitated. A rejected prefix is matched **in its folded form** (each segment through `FoldSegment`: canonical decomposition under `UnicodeFormCollisions`, the upper-case fold under `CaseInsensitiveCollisions`, identity under neither): a prefix condemned for a collision condemns every spelling of it, not just the ones that were listed (r3 compared ordinally and let `AB` in after `Ab`/`aB`; r7 folded case only and would have let `café` in after `cafe` + U+0301). A key under no rejected prefix that appeared after load is checked live, as `TryResolveResource` does today.
 12. **`Enumerate` is eager**: the whole walk runs inside the call, under the guards, and returns a materialised list (still typed `IEnumerable<BundleListing>`). A lazily consumed enumeration cannot be made safe against a root or prefix replaced between two `MoveNext` calls (r2's per-listing re-check was shown to be bypassable); with no deferred access there is nothing to defend. A replacement racing the walk itself is the accepted inter-process window (#178).
 13. **Case folding for collisions is `Rune.ToUpperInvariant` per code point**, context-free — not `UnicodeCaseFold.ToLowercase`, whose final-sigma rule turns `AΣ` into `aς` and misses the real `AΣ`/`aσ` alias the review measured on Windows. It is a **conservative over-approximation** of NTFS's `$UpCase` table, not an equivalence: it also merges pairs NTFS keeps distinct (`σ.sql` and `ς.sql` are two files on an NTFS volume, measured by the third review). Maintainer ruling (2026-10-14, option a): the same fold applies under `Strict` **and** `Native`, so `Native` on Windows can over-reject such siblings — a guard fails closed, `$UpCase` cannot be shipped, and the pairs concerned are confusable to a reader anyway. The over-rejection is documented in the CHANGELOG and the validator's doc comment. `ToUpperInvariant` performs full simple case mapping under invariant globalization since .NET 8.
 14. **A code point the host normalizer refuses** (`ArgumentException` from `Normalize`, e.g. the noncharacter U+FFFE) is classified `No` by the table generator: fail closed, never silently `Yes`.
 15. **Exact-case matching is enabled by the OS *or* by a folding flag in `additionalConstraints`**, so a Linux host on a case-insensitive mount can ask for it; nothing can switch it off.
 16. **A bound is a closed category** (`enum BundleBound { Entries, Depth, KeyBytes }`), never a free string: the public message of a `BundleLimitExceededException` is built from the enum, so a provider cannot inject text into it (r3 copied a string field into the message).
+17. **Canonical equivalence by table-driven NFD** (maintainer ruling 2026-10-14, option b): `CanonicalForm` ships every canonical decomposition (≈ 2 060 records; Hangul syllables by arithmetic) and the canonical combining classes as ranks, both derived from ICU by `UnicodeTableTests` and guarded by it — `Decompose` is compared with the host's NFD on every scalar and on random mark sequences. Under `UnicodeFormCollisions`, sibling names are grouped, and rejected prefixes matched, in canonical decomposition, so `café` and `cafe` + U+0301, `Å` and U+212B, a Hangul syllable and its conjoining jamo, `ȩ` + acute and `é` + cedilla are one name, as on APFS; this holds for every structural name, including one `RequireNfc` refuses. Under a native Windows set (no `UnicodeFormCollisions`) the two forms stay two files, as on NTFS. The same classes let the NFC check verify canonical ordering, closing decision 2's residual. Cost: ≈ 40 KB of tables in the AOT binaries, zero dependencies, no `Normalize`. The alternative — treating a quick-check-undecidable name as condemning its whole sibling level — was closed but punished every neighbour of one decomposed file.
 
 ## Review Focus
 
@@ -410,20 +414,24 @@ MSG
 **Files:**
 - Create: `src/OKF4net/Providers/BundleKeyConstraints.cs`
 - Create: `src/OKF4net/Providers/NfcQuickCheck.cs`
+- Create: `src/OKF4net/Providers/CanonicalForm.cs`
 - Create: `src/OKF4net/Providers/BundleKeyValidator.cs`
-- Test: `tests/OKF4net.Tests/Providers/NfcQuickCheckTableTests.cs` (the generator **and** the guard of the tables)
+- Test: `tests/OKF4net.Tests/Providers/UnicodeTableTests.cs` (the generator **and** the guard of the four tables)
 - Test: `tests/OKF4net.Tests/Providers/BundleKeyValidatorTests.cs`
 
 **Interfaces:**
-- Consumes: `BundleKey` (Task 1); `System.Text.Rune` (`ToUpperInvariant`, `EnumerateRunes`). Not `UnicodeCaseFold`: its final-sigma rule is linguistic, not a storage alias rule (decision 13).
+- Consumes: `BundleKey` (Task 1); `System.Text.Rune` (`ToUpperInvariant`, `EnumerateRunes`, `GetUnicodeCategory` — the last only in the generator test). Not `UnicodeCaseFold`: its final-sigma rule is linguistic, not a storage alias rule (decision 13).
 - Produces:
   - `[Flags] public enum BundleKeyConstraints` with `None`, `TrailingDotOrSpace`, `WindowsIllegalCharacters`, `WindowsReservedNames`, `CaseInsensitiveCollisions`, `RequireNfc`, `UnicodeFormCollisions`, `FileDirectoryConflict`; `public static class BundleKeyConstraintSets` with `Windows`, `MacOS`, `Linux`, `Strict`, `ForCurrentOperatingSystem()`.
   - `public enum BundleKeyPolicy { Strict, Native }`.
   - `public enum NfcStatus { Yes, No, Maybe }`; `internal static class NfcQuickCheck` with `(int Start, int End)[] No`, `(int Start, int End)[] Maybe`, `NfcStatus Of(Rune)`. Never calls `string.Normalize`.
+  - `internal static class CanonicalForm` with `int[] DecompositionData` (flat records `code, count, code points…`, every non-Hangul canonical decomposition, fully decomposed), `int[] CombiningClassData` (flat triples `start, end, rank`), `string Decompose(string)` (canonical decomposition **and** canonical ordering: the NFD of its input, Hangul by arithmetic), `int ClassOf(Rune)` (the combining-class rank, 0 for a starter) and `bool IsCanonicallyOrdered(string)`. Never calls `string.Normalize` (decision 17).
   - `public sealed record BundleKeyRejection(string RawName, string Reason)`; `public sealed record BundleKeyTreeResult(IReadOnlyList<BundleKey> Accepted, IReadOnlyList<BundleKeyRejection> Rejected, IReadOnlyList<BundleKey> RejectedPrefixes)` — `RejectedPrefixes` are the colliding or conflicting keys themselves (`A`, `a`, `a.md`), under which nothing may ever be admitted (decision 11).
-  - `public sealed class BundleKeyValidator` with ctor `(BundleKeyConstraints native, BundleKeyPolicy policy, IReadOnlyList<Func<BundleKey, string?>>? extraValidators = null)`, `BundleKeyConstraints Effective`, `string? CheckKey(BundleKey)`, `BundleKeyTreeResult ValidateTree(IEnumerable<string> rawNames)`, `static string FoldForCollision(string segment)` (per-code-point `Rune.ToUpperInvariant`), and `string FoldKeyText(BundleKey key)` (each segment through `FoldForCollision` when a folding constraint is in force, identity otherwise — the form in which `Bundle` remembers rejected prefixes, decision 11).
+  - `public sealed class BundleKeyValidator` with ctor `(BundleKeyConstraints native, BundleKeyPolicy policy, IReadOnlyList<Func<BundleKey, string?>>? extraValidators = null)`, `BundleKeyConstraints Effective`, `string? CheckKey(BundleKey)`, `BundleKeyTreeResult ValidateTree(IEnumerable<string> rawNames)`, `static string FoldForCollision(string segment)` (per-code-point `Rune.ToUpperInvariant`), `string FoldSegment(string segment)` (`CanonicalForm.Decompose` under `UnicodeFormCollisions`, then `FoldForCollision` under `CaseInsensitiveCollisions`, identity under neither) and `string FoldKeyText(BundleKey key)` (each segment through `FoldSegment` — the form in which sibling names are grouped and in which `Bundle` remembers rejected prefixes, decision 11).
 
-**Why a quick check and not `Normalize` (decision 2):** under `InvariantGlobalization` (`okf`, `okf-render`) `string.Normalize(FormC)` returns its input unchanged and `IsNormalized` answers `true` — measured on .NET 10. UAX #15's quick check needs two sets: characters never in NFC (`NFC_QC=No`) and marks that can compose with a preceding base. A segment with neither is NFC **up to the canonical ordering of non-composing marks**, which this plan accepts as the documented residual (the standard check also verifies that ordering). Both sets are derived from ICU on the test host by the test in Step 1, which prints the C# literal to paste on first run and then guards the pasted tables forever. A code point the host normalizer refuses (U+FFFE and the other noncharacters raise `ArgumentException`) is classified `No` — fail closed (decision 14).
+**Why a quick check and not `Normalize` (decision 2):** under `InvariantGlobalization` (`okf`, `okf-render`) `string.Normalize(FormC)` returns its input unchanged and `IsNormalized` answers `true` — measured on .NET 10. UAX #15's quick check needs two sets: characters never in NFC (`NFC_QC=No`) and marks that can compose with a preceding base. A segment with neither, whose marks are in canonical order (`CanonicalForm.IsCanonicallyOrdered`, decision 17), is NFC. The sets are derived from ICU on the test host by the test in Step 1, which writes the C# literals to paste on first run and then guards the pasted tables forever. A code point the host normalizer refuses (U+FFFE and the other noncharacters raise `ArgumentException`) is classified `No` — fail closed (decision 14).
+
+**Why canonical decomposition tables for collisions (decision 17):** `UnicodeFormCollisions` asks whether two sibling names are *canonically equivalent* — one file on APFS. r7 answered it with the case fold alone, on the argument that no composing sequence survives `RequireNfc`; but since r7 every parsed name is structurally present, refused or not, so the NFD spelling `cafe` + U+0301 that `RequireNfc` refuses still sits beside its NFC twin `café`, and under `UnicodeFormCollisions` alone (no `RequireNfc`) both are admissible on their own — the seventh review accepted both. Canonical equivalence is decided by comparing canonical decompositions, and the exact decomposition needs two more tables: every canonical decomposition (≈ 2 060 entries; Hangul syllables are arithmetic) and the canonical combining classes, so that `é` + cedilla and `ȩ` + acute — equivalent only after the marks are reordered — decompose to one form. Composition-only approaches (adjacent pairs) miss exactly that reordering case, so the fold is decomposition + ordering, which is NFD, and leaves **no** residual. The combining classes are derived as *ranks*, not UCD numbers: NFD reorders two adjacent marks exactly when the second has the lower class, so the test orders every mark against representatives with `Normalize` alone and the shipped table only needs the order. All four tables ship as source, are derived by the one test in Step 1 and are guarded by it on every host whose ICU works.
 
 **The test rows below are written with `\uXXXX` escape text on purpose** — an NFD string pasted as literal characters is indistinguishable from its NFC form on screen. Keep them as C# `\u` escapes when you copy them.
 
@@ -431,21 +439,29 @@ MSG
 
 ```csharp
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Globalization;
 using System.Text;
 using OKF4net.Providers;
 
 namespace OKF4net.Tests.Providers;
 
 /// <summary>
-/// Derives the NFC quick-check sets from the host's ICU and compares them with
-/// <see cref="NfcQuickCheck"/>'s tables. Runs only where normalization works
-/// (never under invariant globalization). On a mismatch — first run with empty
-/// tables, or a host ICU with a newer Unicode than the tables — the failure
-/// message carries the exact C# literals to paste into NfcQuickCheck.cs.
+/// Derives four Unicode tables from the host's ICU and compares them with the ones
+/// shipped in <see cref="NfcQuickCheck"/> (the NFC quick-check sets) and
+/// <see cref="CanonicalForm"/> (canonical decompositions and combining-class ranks).
+/// Runs only where normalization works (never under invariant globalization). On a
+/// mismatch — first run with empty tables, or a host ICU with a newer Unicode than
+/// the tables — the failure names a file holding the exact C# literals to paste.
 /// </summary>
-public class NfcQuickCheckTableTests
+public class UnicodeTableTests
 {
-    private static bool NormalizationWorks => "e\u0301".Normalize(NormalizationForm.FormC).Length == 1;
+    private static bool NormalizationWorks => "é".Normalize(NormalizationForm.FormC).Length == 1;
+
+    private static string Nfc(string s) => s.Normalize(NormalizationForm.FormC);
+
+    private static string Nfd(string s) => s.Normalize(NormalizationForm.FormD);
+
+    private static bool IsHangulSyllable(int cp) => cp is >= 0xAC00 and <= 0xD7A3;
 
     /// <summary>
     /// No = { c : NFC(c) != c } ∪ { c : the normalizer refuses c } (decision 14).
@@ -453,11 +469,14 @@ public class NfcQuickCheckTableTests
     /// walked from each primary composite's full decomposition (head = NFC(all but
     /// last); while the head is one character, the last is a composing second
     /// element; then recurse on the head).
+    /// Decompositions = { c → NFD(c) : NFD(c) != c, c not a Hangul syllable } (Hangul is
+    /// arithmetic, <see cref="Hangul_decomposition_is_arithmetic"/> pins that).
     /// </summary>
-    internal static (SortedSet<int> No, SortedSet<int> Maybe, int Refused) Derive()
+    internal static (SortedSet<int> No, SortedSet<int> Maybe, SortedDictionary<int, string> Decompositions, int Refused) Derive()
     {
         var no = new SortedSet<int>();
         var maybe = new SortedSet<int>();
+        var decompositions = new SortedDictionary<int, string>();
         var refused = 0;
         for (var cp = 0; cp <= 0x10FFFF; cp++)
         {
@@ -471,8 +490,8 @@ public class NfcQuickCheckTableTests
             string nfd;
             try
             {
-                nfc = s.Normalize(NormalizationForm.FormC);
-                nfd = s.Normalize(NormalizationForm.FormD);
+                nfc = Nfc(s);
+                nfd = Nfd(s);
             }
             catch (ArgumentException)
             {
@@ -487,26 +506,130 @@ public class NfcQuickCheckTableTests
                 no.Add(cp);
             }
 
+            if (!string.Equals(nfd, s, StringComparison.Ordinal) && !IsHangulSyllable(cp))
+            {
+                decompositions[cp] = nfd;
+            }
+
             var seq = nfd.EnumerateRunes().ToList();
-            if (seq.Count < 2 || !string.Equals(string.Concat(seq).Normalize(NormalizationForm.FormC), s, StringComparison.Ordinal))
+            if (seq.Count < 2 || !string.Equals(Nfc(string.Concat(seq)), s, StringComparison.Ordinal))
             {
                 continue;
             }
 
             while (seq.Count >= 2)
             {
-                var head = string.Concat(seq.Take(seq.Count - 1)).Normalize(NormalizationForm.FormC).EnumerateRunes().ToList();
+                var head = Nfc(string.Concat(seq.Take(seq.Count - 1))).EnumerateRunes().ToList();
                 if (head.Count != 1)
                 {
                     break;
                 }
 
                 maybe.Add(seq[^1].Value);
-                seq = head[0].ToString().Normalize(NormalizationForm.FormD).EnumerateRunes().ToList();
+                seq = Nfd(head[0].ToString()).EnumerateRunes().ToList();
             }
         }
 
-        return (no, maybe, refused);
+        return (no, maybe, decompositions, refused);
+    }
+
+    /// <summary>
+    /// The canonical combining classes, as RANKS (1 = the lowest non-zero class), derived
+    /// without the UCD numbers: NFD reorders two adjacent non-starters exactly when the
+    /// second has the lower class, so comparing NFD(r + x) with x + r orders x against a
+    /// representative r, and equal classes reorder in neither direction. A non-starter is
+    /// a mark (General_Category Mn or Mc — every ccc != 0 code point is one) that is its own
+    /// NFD and that NFD moves against at least one of three probes of classes 1, 230 and
+    /// 240 (U+0334, U+0301, U+0345): a class strictly between 1 and 240 moves against one
+    /// of the two extremes, class 230 moves against 240, 1 against 230, 240 against 1.
+    /// </summary>
+    internal static SortedDictionary<int, int> DeriveCombiningClassRanks()
+    {
+        int[] probes = [0x0334, 0x0301, 0x0345];
+        var nonStarters = new List<int>();
+        for (var cp = 0; cp <= 0x10FFFF; cp++)
+        {
+            if (cp is >= 0xD800 and <= 0xDFFF)
+            {
+                continue;
+            }
+
+            var rune = new Rune(cp);
+            var category = Rune.GetUnicodeCategory(rune);
+            if (category is not (UnicodeCategory.NonSpacingMark or UnicodeCategory.SpacingCombiningMark))
+            {
+                continue;
+            }
+
+            var s = rune.ToString();
+            string nfd;
+            try
+            {
+                nfd = Nfd(s);
+            }
+            catch (ArgumentException)
+            {
+                continue;
+            }
+
+            if (!string.Equals(nfd, s, StringComparison.Ordinal))
+            {
+                continue; // decomposes: its constituents get a class, it does not
+            }
+
+            foreach (var p in probes)
+            {
+                var probe = new Rune(p).ToString();
+                if (!string.Equals(Nfd(probe + s), probe + s, StringComparison.Ordinal)
+                    || !string.Equals(Nfd(s + probe), s + probe, StringComparison.Ordinal))
+                {
+                    nonStarters.Add(cp);
+                    break;
+                }
+            }
+        }
+
+        // Representatives of the classes met so far, in increasing class order.
+        var representatives = new List<int>();
+        var classIndexOf = new Dictionary<int, int>();
+        foreach (var cp in nonStarters)
+        {
+            var x = new Rune(cp).ToString();
+            var lo = 0;
+            var hi = representatives.Count - 1;
+            var found = -1;
+            while (lo <= hi)
+            {
+                var mid = (lo + hi) >> 1;
+                var r = new Rune(representatives[mid]).ToString();
+                var rx = Nfd(r + x);
+                var xr = Nfd(x + r);
+                if (string.Equals(rx, x + r, StringComparison.Ordinal))
+                {
+                    hi = mid - 1; // x moved before r: class(x) < class(r)
+                }
+                else if (string.Equals(xr, r + x, StringComparison.Ordinal))
+                {
+                    lo = mid + 1; // r moved before x: class(x) > class(r)
+                }
+                else
+                {
+                    found = mid;
+                    break;
+                }
+            }
+
+            if (found < 0)
+            {
+                representatives.Insert(lo, cp);
+                found = lo;
+            }
+
+            classIndexOf[cp] = representatives[found];
+        }
+
+        var rankOf = representatives.Select((rep, i) => (rep, rank: i + 1)).ToDictionary(t => t.rep, t => t.rank);
+        return new SortedDictionary<int, int>(classIndexOf.ToDictionary(kv => kv.Key, kv => rankOf[kv.Value]));
     }
 
     internal static List<(int Start, int End)> ToRanges(SortedSet<int> set)
@@ -537,23 +660,142 @@ public class NfcQuickCheckTableTests
         return ranges;
     }
 
-    private static string Literal(string name, List<(int Start, int End)> ranges) =>
+    /// <summary>Flat triples (start, end, rank) over consecutive code points of one rank — the layout of <see cref="CanonicalForm.CombiningClassData"/>.</summary>
+    internal static List<int> ToClassTriples(SortedDictionary<int, int> ranks)
+    {
+        var data = new List<int>();
+        int? start = null;
+        var prev = -2;
+        var rank = 0;
+        foreach (var (cp, r) in ranks)
+        {
+            if (start is not null && (cp != prev + 1 || r != rank))
+            {
+                data.AddRange([start.Value, prev, rank]);
+                start = null;
+            }
+
+            start ??= cp;
+            rank = r;
+            prev = cp;
+        }
+
+        if (start is not null)
+        {
+            data.AddRange([start.Value, prev, rank]);
+        }
+
+        return data;
+    }
+
+    /// <summary>Flat records (code, count, code points…) — the layout of <see cref="CanonicalForm.DecompositionData"/>.</summary>
+    internal static List<int> ToDecompositionData(SortedDictionary<int, string> decompositions)
+    {
+        var data = new List<int>();
+        foreach (var (cp, nfd) in decompositions)
+        {
+            var runes = nfd.EnumerateRunes().Select(r => r.Value).ToList();
+            data.Add(cp);
+            data.Add(runes.Count);
+            data.AddRange(runes);
+        }
+
+        return data;
+    }
+
+    private static string RangeLiteral(string name, List<(int Start, int End)> ranges) =>
         $"    internal static readonly (int Start, int End)[] {name} =\n    [\n"
         + string.Join("\n", ranges.Select(r => $"        (0x{r.Start:X4}, 0x{r.End:X4}),"))
         + "\n    ];\n";
+
+    private static string FlatLiteral(string name, List<int> data, Func<List<int>, int, int> recordLength)
+    {
+        var sb = new StringBuilder();
+        sb.Append($"    internal static readonly int[] {name} =\n    [\n");
+        for (var i = 0; i < data.Count;)
+        {
+            var len = recordLength(data, i);
+            sb.Append("        ").Append(string.Join(", ", data.Skip(i).Take(len).Select(v => $"0x{v:X4}"))).Append(",\n");
+            i += len;
+        }
+
+        return sb.Append("    ];\n").ToString();
+    }
 
     [SkippableFact]
     public void Tables_match_the_host_normalizer()
     {
         Skip.IfNot(NormalizationWorks, "string.Normalize is a no-op here (invariant globalization): nothing to derive from");
-        var (no, maybe, refused) = Derive();
+        var (no, maybe, decompositions, refused) = Derive();
+        var ranks = DeriveCombiningClassRanks();
         var expectedNo = ToRanges(no);
         var expectedMaybe = ToRanges(maybe);
-        var message = "NfcQuickCheck tables differ from this host's ICU. Paste these into src/OKF4net/Providers/NfcQuickCheck.cs:\n\n"
-            + Literal("No", expectedNo) + "\n" + Literal("Maybe", expectedMaybe)
-            + $"\n(No: {no.Count} code points in {expectedNo.Count} ranges, {refused} of them refused by the normalizer; Maybe: {maybe.Count} in {expectedMaybe.Count}.)";
+        var expectedDecompositions = ToDecompositionData(decompositions);
+        var expectedClasses = ToClassTriples(ranks);
+
+        var literal = "// NfcQuickCheck.cs\n\n" + RangeLiteral("No", expectedNo) + "\n" + RangeLiteral("Maybe", expectedMaybe)
+            + "\n// CanonicalForm.cs\n\n" + FlatLiteral("DecompositionData", expectedDecompositions, (d, i) => 2 + d[i + 1])
+            + "\n" + FlatLiteral("CombiningClassData", expectedClasses, (_, _) => 3);
+        var file = Path.Combine(AppContext.BaseDirectory, "unicode-tables.generated.txt");
+        File.WriteAllText(file, literal);
+        var message = $"The shipped Unicode tables differ from this host's ICU. The C# literals to paste into "
+            + $"src/OKF4net/Providers/NfcQuickCheck.cs and CanonicalForm.cs are in {file}.\n"
+            + $"(No: {no.Count} code points in {expectedNo.Count} ranges, {refused} of them refused by the normalizer; "
+            + $"Maybe: {maybe.Count} in {expectedMaybe.Count}; Decompositions: {decompositions.Count} entries, {expectedDecompositions.Count} ints; "
+            + $"combining classes: {ranks.Count} code points in {ranks.Values.Distinct().Count()} ranks, {expectedClasses.Count / 3} triples.)";
         Assert.True(expectedNo.SequenceEqual(NfcQuickCheck.No), message);
         Assert.True(expectedMaybe.SequenceEqual(NfcQuickCheck.Maybe), message);
+        Assert.True(expectedDecompositions.SequenceEqual(CanonicalForm.DecompositionData), message);
+        Assert.True(expectedClasses.SequenceEqual(CanonicalForm.CombiningClassData), message);
+    }
+
+    [SkippableFact]
+    public void Hangul_decomposition_is_arithmetic()
+    {
+        Skip.IfNot(NormalizationWorks, "string.Normalize is a no-op here (invariant globalization): nothing to compare with");
+        for (var cp = 0xAC00; cp <= 0xD7A3; cp++)
+        {
+            var s = new Rune(cp).ToString();
+            Assert.Equal(Nfd(s), CanonicalForm.Decompose(s));
+        }
+    }
+
+    [SkippableFact]
+    public void Decompose_agrees_with_the_host_normalizer_on_every_scalar_and_on_mark_sequences()
+    {
+        Skip.IfNot(NormalizationWorks, "string.Normalize is a no-op here (invariant globalization): nothing to compare with");
+        for (var cp = 0; cp <= 0x10FFFF; cp++)
+        {
+            if (cp is >= 0xD800 and <= 0xDFFF)
+            {
+                continue;
+            }
+
+            var s = new Rune(cp).ToString();
+            string nfd;
+            try
+            {
+                nfd = Nfd(s);
+            }
+            catch (ArgumentException)
+            {
+                continue; // a noncharacter: refused by the quick check before any fold
+            }
+
+            Assert.Equal(nfd, CanonicalForm.Decompose(s));
+        }
+
+        // Reordering: every pair of non-starters after a base, both orders.
+        var marks = DeriveCombiningClassRanks().Keys.ToList();
+        var rng = new Random(20261014);
+        for (var i = 0; i < 20_000; i++)
+        {
+            var a = new Rune(marks[rng.Next(marks.Count)]).ToString();
+            var b = new Rune(marks[rng.Next(marks.Count)]).ToString();
+            var c = new Rune(marks[rng.Next(marks.Count)]).ToString();
+            var s = "a" + a + b + c;
+            Assert.Equal(Nfd(s), CanonicalForm.Decompose(s));
+        }
     }
 
     [Theory]
@@ -572,6 +814,47 @@ public class NfcQuickCheckTableTests
     {
         Assert.Equal(expected, NfcQuickCheck.Of(new Rune(codePoint)));
     }
+
+    [Theory]
+    [InlineData("caf\u00e9", "cafe\u0301")]                     // é → e + acute
+    [InlineData("\u212b", "A\u030a")]                            // ANGSTROM SIGN → A + ring (singleton to a composite, fully decomposed)
+    [InlineData("\u00c5", "A\u030a")]                            // Å → the same
+    [InlineData("\uac01", "\u1100\u1161\u11a8")]                // Hangul LVT syllable: arithmetic
+    [InlineData("\u0229\u0301", "e\u0327\u0301")]               // ȩ + acute: already in canonical order (202 < 230)
+    [InlineData("\u00e9\u0327", "e\u0327\u0301")]               // é + cedilla: REORDERED to the same form (the two names are one on APFS)
+    [InlineData("a\u0305\u0335", "a\u0335\u0305")]              // overline (230) then stroke overlay (1): reordered
+    [InlineData("\u0e17\u0e35\u0e48", "\u0e17\u0e35\u0e48")]  // Thai: unchanged
+    [InlineData("plain", "plain")]
+    public void Decompose_spot_checks(string input, string expected)
+    {
+        Assert.Equal(expected, CanonicalForm.Decompose(input));
+    }
+
+    [Theory]
+    [InlineData("a\u0335\u0305", true)]   // stroke overlay (class 1) then overline (230)
+    [InlineData("a\u0305\u0335", false)]  // the reverse: not canonically ordered
+    [InlineData("e\u0327\u0301", true)]
+    [InlineData("e\u0301\u0327", false)]
+    [InlineData("a\u0301b\u0327", true)]  // a starter between them: two separate runs
+    [InlineData("caf\u00e9", true)]
+    public void IsCanonicallyOrdered_spot_checks(string input, bool expected)
+    {
+        Assert.Equal(expected, CanonicalForm.IsCanonicallyOrdered(input));
+    }
+
+    [Fact]
+    public void Combining_class_ranks_order_like_the_ucd_classes()
+    {
+        Assert.Equal(0, CanonicalForm.ClassOf(new Rune('a')));
+        Assert.Equal(0, CanonicalForm.ClassOf(new Rune(0x00E9)));
+        var overlay = CanonicalForm.ClassOf(new Rune(0x0335));  // ccc 1
+        var cedilla = CanonicalForm.ClassOf(new Rune(0x0327));  // ccc 202
+        var below = CanonicalForm.ClassOf(new Rune(0x0323));    // ccc 220
+        var above = CanonicalForm.ClassOf(new Rune(0x0301));    // ccc 230
+        var iota = CanonicalForm.ClassOf(new Rune(0x0345));     // ccc 240
+        Assert.True(0 < overlay && overlay < cedilla && cedilla < below && below < above && above < iota);
+        Assert.Equal(above, CanonicalForm.ClassOf(new Rune(0x0300))); // grave: also 230
+    }
 }
 ```
 
@@ -587,6 +870,8 @@ public class BundleKeyValidatorTests
 {
     private static BundleKeyValidator Strict() => new(BundleKeyConstraints.None, BundleKeyPolicy.Strict);
     private static BundleKeyValidator NativeLinux() => new(BundleKeyConstraintSets.Linux, BundleKeyPolicy.Native);
+    private static BundleKeyValidator NativeWindows() => new(BundleKeyConstraintSets.Windows, BundleKeyPolicy.Native);
+    private static BundleKeyValidator NativeMacOS() => new(BundleKeyConstraintSets.MacOS, BundleKeyPolicy.Native);
 
     [Fact]
     public void Strict_is_the_union_of_every_known_native_set()
@@ -601,7 +886,7 @@ public class BundleKeyValidatorTests
     [Fact]
     public void Native_never_drops_below_the_providers_own_constraints()
     {
-        var v = new BundleKeyValidator(BundleKeyConstraintSets.Windows, BundleKeyPolicy.Native);
+        var v = NativeWindows();
         Assert.Equal(BundleKeyConstraintSets.Windows, v.Effective);
         Assert.NotNull(v.CheckKey(BundleKey.Parse("con.md")));
     }
@@ -645,6 +930,7 @@ public class BundleKeyValidatorTests
     [InlineData("\u0e17\u0e35\u0e48.md")]        // Thai with stacked marks: none composes
     [InlineData("\u0915\u093f.md")]              // Devanagari KA + vowel sign I
     [InlineData("\u65e5\u672c\u8a9e.md")]
+    [InlineData("a\u0335\u0305.md")]             // two non-composing marks in canonical order (class 1, then 230)
     public void Strict_accepts_nfc_names_without_normalizing(string raw)
     {
         Assert.Null(Strict().CheckKey(BundleKey.Parse(raw)));
@@ -656,12 +942,13 @@ public class BundleKeyValidatorTests
     [InlineData("\u1100\u1161.md", "U+1161")] // conjoining jamo
     [InlineData("q\u0323.md", "U+0323")]      // over-rejection, documented: the mark composes with other bases
     [InlineData("x\ufffe.md", "U+FFFE")]      // refused by the normalizer: closed (decision 14)
-    public void Strict_refuses_what_the_quick_check_cannot_call_nfc(string raw, string codePoint)
+    [InlineData("a\u0305\u0335.md", "canonical order")] // overline (230) before stroke overlay (1): NFC would reorder them (decision 17)
+    public void Strict_refuses_what_the_quick_check_cannot_call_nfc(string raw, string expectedInReason)
     {
         var key = BundleKey.Parse(raw);
         var reason = Strict().CheckKey(key);
         Assert.NotNull(reason);
-        Assert.Contains(codePoint, reason);
+        Assert.Contains(expectedInReason, reason);
         Assert.Null(NativeLinux().CheckKey(key));
     }
 
@@ -686,6 +973,50 @@ public class BundleKeyValidatorTests
         var r = Strict().ValidateTree([first, second]);
         Assert.Empty(r.Accepted);
         Assert.Equal(2, r.Rejected.Count);
+    }
+
+    // Canonically equivalent siblings: one name on APFS. The NFD spelling is refused by
+    // RequireNfc, but it is still THERE, so its NFC twin collides with it and both prefixes
+    // are condemned (seventh review: r7 grouped by case fold only and accepted `caf\u00e9/x.md`).
+    [Theory]
+    [InlineData("caf\u00e9/x.md", "cafe\u0301/y.md")]       // é vs e + acute
+    [InlineData("\u00c5/x.md", "\u212b/y.md")]              // Å vs ANGSTROM SIGN
+    [InlineData("\uac00/x.md", "\u1100\u1161/y.md")]        // Hangul syllable vs conjoining jamo
+    public void Tree_rejects_canonically_equivalent_siblings_under_strict(string nfc, string other)
+    {
+        var r = Strict().ValidateTree([nfc, other]);
+        Assert.Empty(r.Accepted);
+        Assert.Equal(2, r.Rejected.Count);
+        Assert.Contains(r.Rejected, rej => rej.RawName == nfc && rej.Reason.Contains("collides"));
+        Assert.Contains(r.Rejected, rej => rej.RawName == other); // refused by RequireNfc, structurally present all the same
+        Assert.Equal(
+            new[] { nfc, other }.Select(n => BundleKey.Parse(n).Parent!).OrderBy(k => k).ToList(),
+            r.RejectedPrefixes);
+    }
+
+    [Theory]
+    [InlineData("caf\u00e9/x.md", "cafe\u0301/y.md")]
+    [InlineData("\u00c5/x.md", "\u212b/y.md")]
+    [InlineData("\u0229\u0301/x.md", "\u00e9\u0327/y.md")] // ȩ + acute vs é + cedilla: equivalent only after reordering (classes 202 < 230)
+    public void UnicodeFormCollisions_alone_rejects_both_forms(string nfc, string other)
+    {
+        // No RequireNfc: both names are admissible on their own (the third row's acute is a
+        // `Maybe` mark that Strict would refuse); together they are one object on the volume.
+        var v = new BundleKeyValidator(BundleKeyConstraints.UnicodeFormCollisions, BundleKeyPolicy.Native);
+        var r = v.ValidateTree([nfc, other]);
+        Assert.Empty(r.Accepted);
+        Assert.Equal(2, r.Rejected.Count);
+        Assert.All(r.Rejected, rej => Assert.Contains("collides", rej.Reason));
+        Assert.Equal(2, r.RejectedPrefixes.Count);
+    }
+
+    [Fact]
+    public void A_native_windows_set_keeps_both_unicode_forms_but_folds_case()
+    {
+        // NTFS compares code points, not canonical forms: é and e + acute are two files.
+        var r = NativeWindows().ValidateTree(["caf\u00e9/x.md", "cafe\u0301/y.md", "CAF\u00c9/z.md"]);
+        Assert.Equal([BundleKey.Parse("cafe\u0301/y.md")], r.Accepted);
+        Assert.Equal([BundleKey.Parse("CAF\u00c9"), BundleKey.Parse("caf\u00e9")], r.RejectedPrefixes);
     }
 
     [Fact]
@@ -762,10 +1093,46 @@ public class BundleKeyValidatorTests
     }
 
     [Fact]
-    public void FoldKeyText_folds_only_when_a_folding_constraint_is_in_force()
+    public void The_outermost_condemned_prefix_is_the_one_named_in_the_reason()
     {
-        Assert.Equal("AB/X.MD", Strict().FoldKeyText(BundleKey.Parse("Ab/x.md")));
-        Assert.Equal("Ab/x.md", NativeLinux().FoldKeyText(BundleKey.Parse("Ab/x.md")));
+        var r = Strict().ValidateTree(["A/x.md", "a/B/y.md", "a/b/z.md"]);
+        Assert.Empty(r.Accepted);
+        var deep = Assert.Single(r.Rejected, rej => rej.RawName == "a/b/z.md");
+        Assert.Contains("'a'", deep.Reason); // not 'a/b': the reader is told the first prefix that fails
+    }
+
+    [Fact]
+    public void Large_listings_with_collisions_at_the_root_validate_in_one_pass()
+    {
+        // 65 536 names under two colliding roots: every candidate is doomed. The seventh review
+        // measured r7's per-candidate scan of the colliding list at 26 s on this shape; with one
+        // set lookup per ancestor it is milliseconds. The assertions are on the outcome — a
+        // timing assertion is a flake, not a proof — so a regression to the quadratic scan shows
+        // up as this test's duration in the run, which Task 8 records.
+        var names = new List<string>(65_536);
+        for (var i = 0; i < 32_768; i++)
+        {
+            names.Add($"Root/d{i % 64}/f{i}.sql");
+            names.Add($"root/d{i % 64}/g{i}.sql");
+        }
+
+        var r = Strict().ValidateTree(names);
+        Assert.Empty(r.Accepted);
+        Assert.Equal(65_536, r.Rejected.Count);
+        Assert.Equal([BundleKey.Parse("Root"), BundleKey.Parse("root")], r.RejectedPrefixes);
+    }
+
+    [Theory]
+    [InlineData("Ab/x.md", "AB/X.MD", "AB/X.MD", "Ab/x.md")]
+    [InlineData("caf\u00e9/x.md", "CAFE\u0301/X.MD", "CAF\u00c9/X.MD", "caf\u00e9/x.md")]   // Strict decomposes then upcases; Windows upcases only; Linux: identity
+    [InlineData("\u212b/x.md", "A\u030a/X.MD", "\u212b/X.MD", "\u212b/x.md")]               // ANGSTROM SIGN has no case mapping
+    public void FoldKeyText_folds_the_way_the_effective_constraints_compare_siblings(string raw, string strict, string windows, string linux)
+    {
+        var key = BundleKey.Parse(raw);
+        Assert.Equal(strict, Strict().FoldKeyText(key));
+        Assert.Equal(windows, NativeWindows().FoldKeyText(key));
+        Assert.Equal(linux, NativeLinux().FoldKeyText(key));
+        Assert.Equal(strict, NativeMacOS().FoldKeyText(key)); // macOS folds both
     }
 
     [Fact]
@@ -815,7 +1182,12 @@ public enum BundleKeyConstraints
     /// <summary>Every segment must pass the NFC quick check (no <c>NFC_QC=No</c> character, no composing mark).</summary>
     RequireNfc = 1 << 4,
 
-    /// <summary>Two siblings must not be canonically equivalent (macOS folds forms). With <see cref="RequireNfc"/> this reduces to case folding, since no composing sequence survives the quick check.</summary>
+    /// <summary>
+    /// Two siblings must not be canonically equivalent (APFS compares normalized names):
+    /// sibling names are compared in canonical decomposition (<c>CanonicalForm.Decompose</c>),
+    /// independently of <see cref="RequireNfc"/> — a decomposed name that the quick check
+    /// refuses is still a file beside its precomposed twin.
+    /// </summary>
     UnicodeFormCollisions = 1 << 5,
 
     /// <summary>An object key must not also be a prefix of other keys (a file cannot be a directory).</summary>
@@ -864,7 +1236,7 @@ public enum BundleKeyPolicy
 }
 ```
 
-- [ ] **Step 5: Implement `NfcQuickCheck` with empty tables, then let the test fill them**
+- [ ] **Step 5: Implement `NfcQuickCheck` and `CanonicalForm` with empty tables, then let the test fill them**
 
 ```csharp
 // SPDX-License-Identifier: LGPL-3.0-or-later
@@ -891,22 +1263,22 @@ public enum NfcStatus
 /// <see cref="No"/> is <c>NFC_QC=No</c> plus the code points the reference normalizer refuses;
 /// <see cref="Maybe"/> is the set of second elements of every direct canonical pair that
 /// recomposes — tighter than UCD's <c>NFC_QC=Maybe</c>, and exact for the question "can this
-/// mark compose with something before it". The check does not verify the canonical ordering
-/// of non-composing marks (documented residual). Both tables are derived from ICU by
-/// <c>tests/OKF4net.Tests/Providers/NfcQuickCheckTableTests.cs</c>, which fails with the literal
-/// to paste whenever a host normalizer disagrees with them. Generated on
+/// mark compose with something before it". The canonical ordering of the marks is checked
+/// separately by <see cref="CanonicalForm.IsCanonicallyOrdered"/>. Both tables are derived
+/// from ICU by <c>tests/OKF4net.Tests/Providers/UnicodeTableTests.cs</c>, which fails with the
+/// literal to paste whenever a host normalizer disagrees with them. Generated on
 /// <c>[OS, .NET version and ICU/Unicode version, filled in when pasted]</c>.
 /// </summary>
 internal static class NfcQuickCheck
 {
     internal static readonly (int Start, int End)[] No =
     [
-        // paste from NfcQuickCheckTableTests.Tables_match_the_host_normalizer
+        // paste from UnicodeTableTests.Tables_match_the_host_normalizer
     ];
 
     internal static readonly (int Start, int End)[] Maybe =
     [
-        // paste from NfcQuickCheckTableTests.Tables_match_the_host_normalizer
+        // paste from UnicodeTableTests.Tables_match_the_host_normalizer
     ];
 
     /// <summary>The quick-check status of one scalar value.</summary>
@@ -942,6 +1314,180 @@ internal static class NfcQuickCheck
 }
 ```
 
+Then `src/OKF4net/Providers/CanonicalForm.cs` — the canonical decomposition, independent of `Normalize` for the same reason:
+
+```csharp
+// SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Text;
+
+namespace OKF4net.Providers;
+
+/// <summary>
+/// Canonical decomposition and canonical ordering (the NFD of a string), table-driven and
+/// independent of <see cref="string.Normalize(NormalizationForm)"/>, which is a silent no-op
+/// under invariant globalization. <see cref="DecompositionData"/> holds every canonical
+/// decomposition outside the Hangul syllables (which are arithmetic) as flat records
+/// <c>code, count, code points…</c>, each already fully decomposed; <see cref="CombiningClassData"/>
+/// holds the canonical combining classes as flat triples <c>start, end, rank</c> — ranks in
+/// class order, not the UCD numbers, since only the order matters to reordering. Both are
+/// derived from ICU by <c>tests/OKF4net.Tests/Providers/UnicodeTableTests.cs</c>, which fails
+/// with the literals to paste whenever a host normalizer disagrees, and which compares
+/// <see cref="Decompose"/> with the host's NFD on every scalar and on random mark sequences.
+/// Generated on <c>[OS, .NET version and ICU/Unicode version, filled in when pasted]</c>.
+/// </summary>
+internal static class CanonicalForm
+{
+    private const int HangulBase = 0xAC00;
+    private const int HangulEnd = 0xD7A3;
+    private const int LBase = 0x1100;
+    private const int VBase = 0x1161;
+    private const int TBase = 0x11A7;
+    private const int VCount = 21;
+    private const int TCount = 28;
+
+    internal static readonly int[] DecompositionData =
+    [
+        // paste from UnicodeTableTests.Tables_match_the_host_normalizer
+    ];
+
+    internal static readonly int[] CombiningClassData =
+    [
+        // paste from UnicodeTableTests.Tables_match_the_host_normalizer
+    ];
+
+    // Built once from the flat data: code point → its full canonical decomposition.
+    private static readonly Dictionary<int, string> Decompositions = BuildDecompositions();
+
+    private static Dictionary<int, string> BuildDecompositions()
+    {
+        var map = new Dictionary<int, string>();
+        for (var i = 0; i < DecompositionData.Length;)
+        {
+            var code = DecompositionData[i];
+            var count = DecompositionData[i + 1];
+            var sb = new StringBuilder(count * 2);
+            for (var j = 0; j < count; j++)
+            {
+                sb.Append(new Rune(DecompositionData[i + 2 + j]).ToString());
+            }
+
+            map[code] = sb.ToString();
+            i += 2 + count;
+        }
+
+        return map;
+    }
+
+    /// <summary>The combining-class rank of one scalar: 0 for a starter, otherwise its position in class order.</summary>
+    internal static int ClassOf(Rune rune)
+    {
+        var lo = 0;
+        var hi = CombiningClassData.Length / 3 - 1;
+        while (lo <= hi)
+        {
+            var mid = (lo + hi) >> 1;
+            var start = CombiningClassData[mid * 3];
+            var end = CombiningClassData[mid * 3 + 1];
+            if (rune.Value < start)
+            {
+                hi = mid - 1;
+            }
+            else if (rune.Value > end)
+            {
+                lo = mid + 1;
+            }
+            else
+            {
+                return CombiningClassData[mid * 3 + 2];
+            }
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// The canonical decomposition of <paramref name="text"/> with its marks in canonical
+    /// order: the NFD. Two canonically equivalent strings decompose to the same string, which
+    /// is what makes two sibling names comparable under
+    /// <see cref="BundleKeyConstraints.UnicodeFormCollisions"/>.
+    /// </summary>
+    internal static string Decompose(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        var runes = new List<Rune>(text.Length);
+        foreach (var rune in text.EnumerateRunes())
+        {
+            var cp = rune.Value;
+            if (cp is >= HangulBase and <= HangulEnd)
+            {
+                var s = cp - HangulBase;
+                runes.Add(new Rune(LBase + s / (VCount * TCount)));
+                runes.Add(new Rune(VBase + s % (VCount * TCount) / TCount));
+                var t = s % TCount;
+                if (t != 0)
+                {
+                    runes.Add(new Rune(TBase + t));
+                }
+            }
+            else if (Decompositions.TryGetValue(cp, out var decomposed))
+            {
+                runes.AddRange(decomposed.EnumerateRunes());
+            }
+            else
+            {
+                runes.Add(rune);
+            }
+        }
+
+        // Canonical ordering: within each run of non-starters, a stable sort by class.
+        for (var i = 1; i < runes.Count; i++)
+        {
+            var c = ClassOf(runes[i]);
+            if (c == 0)
+            {
+                continue;
+            }
+
+            var j = i;
+            while (j > 0 && ClassOf(runes[j - 1]) > c)
+            {
+                (runes[j - 1], runes[j]) = (runes[j], runes[j - 1]);
+                j--;
+            }
+        }
+
+        var sb = new StringBuilder(text.Length);
+        foreach (var rune in runes)
+        {
+            sb.Append(rune.ToString());
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>Whether no two adjacent non-starters of <paramref name="text"/> are out of class order (the second part of UAX #15's quick check).</summary>
+    internal static bool IsCanonicallyOrdered(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        var previous = 0;
+        foreach (var rune in text.EnumerateRunes())
+        {
+            var c = ClassOf(rune);
+            if (c != 0 && previous > c)
+            {
+                return false;
+            }
+
+            previous = c;
+        }
+
+        return true;
+    }
+}
+```
+
+The insertion sort only moves a mark past marks of a strictly higher class, so equal classes keep their order (stable) — the same rule NFD applies. Runs of non-starters are a few marks long in any real name; the bound on a segment is the key's own 1 024 bytes.
+
 Do not run the generator yet: the test project also holds `BundleKeyValidatorTests`, which cannot compile until Step 6 (the third review hit CS0246 here).
 
 - [ ] **Step 6: Implement the validator** (`src/OKF4net/Providers/BundleKeyValidator.cs`)
@@ -968,8 +1514,10 @@ public sealed record BundleKeyTreeResult(IReadOnlyList<BundleKey> Accepted, IRea
 /// the host's portability policy, and optional extra validators that can only
 /// restrict. <see cref="ValidateTree"/> checks a whole listing as a tree —
 /// per-level collisions and file/directory conflicts — not key by key.
-/// NFC is decided by <see cref="NfcQuickCheck"/>; collisions are folded by
-/// <see cref="FoldForCollision"/>, never by a linguistic case mapping.
+/// NFC is decided by <see cref="NfcQuickCheck"/> and <see cref="CanonicalForm.IsCanonicallyOrdered"/>;
+/// sibling names are compared through <see cref="FoldSegment"/>: canonical decomposition
+/// (<see cref="CanonicalForm.Decompose"/>) and the per-code-point upper-case fold
+/// <see cref="FoldForCollision"/>, never a linguistic case mapping, never <c>Normalize</c>.
 /// </summary>
 public sealed class BundleKeyValidator
 {
@@ -1017,10 +1565,25 @@ public sealed class BundleKeyValidator
     }
 
     /// <summary>
+    /// Folds one segment the way the effective constraints say two sibling names are
+    /// compared: canonical decomposition (<see cref="CanonicalForm.Decompose"/>) under
+    /// <see cref="BundleKeyConstraints.UnicodeFormCollisions"/>, then <see cref="FoldForCollision"/>
+    /// under <see cref="BundleKeyConstraints.CaseInsensitiveCollisions"/>; identity under
+    /// neither. It runs on every structural name, refused ones included: a decomposed name
+    /// that <see cref="BundleKeyConstraints.RequireNfc"/> refuses is still a file beside its
+    /// precomposed twin (seventh review, decision 17).
+    /// </summary>
+    public string FoldSegment(string segment)
+    {
+        ArgumentNullException.ThrowIfNull(segment);
+        var folded = Effective.HasFlag(BundleKeyConstraints.UnicodeFormCollisions) ? CanonicalForm.Decompose(segment) : segment;
+        return Effective.HasFlag(BundleKeyConstraints.CaseInsensitiveCollisions) ? FoldForCollision(folded) : folded;
+    }
+
+    /// <summary>
     /// The text under which a key is remembered as a rejected prefix (decision 11): every
-    /// segment through <see cref="FoldForCollision"/> when the effective constraints fold case
-    /// or Unicode form, the key's own text otherwise. Two spellings that would collide fold
-    /// to the same text, so a condemned prefix condemns every spelling of itself.
+    /// segment through <see cref="FoldSegment"/>. Two spellings that would collide fold to the
+    /// same text, so a condemned prefix condemns every spelling of itself.
     /// </summary>
     public string FoldKeyText(BundleKey key)
     {
@@ -1030,7 +1593,7 @@ public sealed class BundleKeyValidator
             return key.ToString();
         }
 
-        return string.Join('/', key.Segments.Select(FoldForCollision));
+        return string.Join('/', key.Segments.Select(FoldSegment));
     }
 
     /// <summary>Checks one key's segments against the effective constraints and the extra validators; <see langword="null"/> when accepted.</summary>
@@ -1126,7 +1689,11 @@ public sealed class BundleKeyValidator
                 {
                     var parent = string.Join('/', key.Segments.Take(depth - 1));
                     var name = key.Segments[depth - 1];
-                    var g = (parent, FoldForCollision(name));
+                    // Grouped by the SAME fold Bundle later matches rejected prefixes with
+                    // (FoldKeyText): canonical decomposition and/or case, per the effective
+                    // constraints. r7 grouped by case alone and let `café` stand beside the
+                    // refused `cafe` + U+0301 (seventh review).
+                    var g = (parent, FoldSegment(name));
                     if (!groups.TryGetValue(g, out var names))
                     {
                         names = new HashSet<string>(StringComparer.Ordinal);
@@ -1140,7 +1707,7 @@ public sealed class BundleKeyValidator
             var colliding = groups.Where(kv => kv.Value.Count > 1)
                 .SelectMany(kv => kv.Value.Select(name => kv.Key.Parent.Length == 0 ? name : kv.Key.Parent + "/" + name))
                 .Select(BundleKey.Parse)
-                .ToList();
+                .ToHashSet();
 
             // The condemned prefixes come from the STRUCTURAL collision, not from the candidates
             // it dooms: when every offender is a duplicate there is no candidate left to doom,
@@ -1149,10 +1716,9 @@ public sealed class BundleKeyValidator
 
             foreach (var (raw, key) in candidates)
             {
-                var hit = colliding.FirstOrDefault(c => key.Equals(c) || key.StartsWith(c));
+                var hit = OutermostCondemned(key, colliding);
                 if (hit is not null && doomed.Add(key))
                 {
-                    rejectedPrefixes.Add(hit);
                     rejected.Add(new BundleKeyRejection(raw, $"'{hit}' collides with a sibling that differs only by case or Unicode form"));
                 }
             }
@@ -1173,7 +1739,7 @@ public sealed class BundleKeyValidator
                 }
             }
 
-            var conflicts = keys.Where(prefixes.Contains).ToList();
+            var conflicts = keys.Where(prefixes.Contains).ToHashSet();
             rejectedPrefixes.UnionWith(conflicts); // likewise: structural, not candidate-driven
             foreach (var (raw, key) in candidates)
             {
@@ -1182,11 +1748,10 @@ public sealed class BundleKeyValidator
                     continue;
                 }
 
-                var conflict = conflicts.FirstOrDefault(c => key.Equals(c) || key.StartsWith(c));
+                var conflict = OutermostCondemned(key, conflicts);
                 if (conflict is not null)
                 {
                     doomed.Add(key);
-                    rejectedPrefixes.Add(conflict);
                     rejected.Add(new BundleKeyRejection(raw, $"'{conflict}' is both an object and a prefix of other keys"));
                 }
             }
@@ -1194,6 +1759,26 @@ public sealed class BundleKeyValidator
 
         var accepted = candidates.Where(c => !doomed.Contains(c.Key)).Select(c => c.Key).ToList();
         return new BundleKeyTreeResult(accepted, rejected, rejectedPrefixes.OrderBy(k => k).ToList());
+    }
+
+    /// <summary>
+    /// The outermost prefix of <paramref name="key"/> (the key itself included) that is in
+    /// <paramref name="condemned"/>, or <see langword="null"/>: one set lookup per segment, so
+    /// the whole pass is linear in the listing times its depth. r7 scanned the condemned list
+    /// once per candidate — 26 s for 65 536 names under two colliding roots (seventh review).
+    /// </summary>
+    private static BundleKey? OutermostCondemned(BundleKey key, HashSet<BundleKey> condemned)
+    {
+        for (var depth = 1; depth <= key.Segments.Count; depth++)
+        {
+            var prefix = depth == key.Segments.Count ? key : BundleKey.FromSegments(key.Segments.Take(depth).ToList());
+            if (condemned.Contains(prefix))
+            {
+                return prefix;
+            }
+        }
+
+        return null;
     }
 
     private string? CheckSegment(string segment)
@@ -1233,6 +1818,13 @@ public sealed class BundleKeyValidator
                         return $"contains the combining character U+{rune.Value:X4}, whose NFC form cannot be decided without composition tables; use the precomposed form";
                 }
             }
+
+            // Every rune is a starter or a non-composing mark here; NFC would still reorder
+            // marks of decreasing class (decision 17 closed this residual).
+            if (!CanonicalForm.IsCanonicallyOrdered(segment))
+            {
+                return "has combining marks out of canonical order, so it is not in Unicode NFC";
+            }
         }
 
         return null;
@@ -1244,27 +1836,30 @@ Convert every new source file and test file to CRLF.
 
 - [ ] **Step 7: Generate and paste the tables**
 
-Now everything compiles. Run `dotnet test OKF4net.sln --filter "FullyQualifiedName~NfcQuickCheckTableTests.Tables_match"`: it **fails by design** and prints both literals (the derivation catches the normalizer's `ArgumentException`, so it reaches the assertion). Paste them into `NfcQuickCheck.cs`, fill the "Generated on" note (OS, .NET version, and the Unicode version of the host's ICU — on Windows the OS-shipped ICU, e.g. `Windows 11 24H2 / .NET 10.0.x / ICU 72, Unicode 15.0`), rerun: green. Sanity: `No` ≈ 1 120 code points plus the refused noncharacters (≈ 66: U+FDD0–U+FDEF and U+nFFFE/U+nFFFF of every plane), `Maybe` ≈ 110. If the counts are wildly off, the host's `Normalize` is not working — do not paste.
+Now everything compiles. Run `dotnet test OKF4net.sln --filter "FullyQualifiedName~UnicodeTableTests.Tables_match"`: it **fails by design** (the derivation catches the normalizer's `ArgumentException`, so it reaches the assertion) and names the file holding the four literals (`unicode-tables.generated.txt` beside the test assembly). Paste `No` and `Maybe` into `NfcQuickCheck.cs`, `DecompositionData` and `CombiningClassData` into `CanonicalForm.cs`, fill both "Generated on" notes (OS, .NET version, and the Unicode version of the host's ICU — on Windows the OS-shipped ICU, e.g. `Windows 11 24H2 / .NET 10.0.x / ICU 72, Unicode 15.0`), rerun: green. Sanity: `No` ≈ 1 120 code points plus the refused noncharacters (≈ 66: U+FDD0–U+FDEF and U+nFFFE/U+nFFFF of every plane), `Maybe` ≈ 110, decompositions ≈ 2 060 entries (≈ 8 500 ints, ≈ 34 KB in the binary), combining classes ≈ 900–950 code points in ≈ 55 ranks (UCD has 56 distinct non-zero classes in Unicode 15). If the counts are wildly off, the host's `Normalize` is not working — do not paste. The derivation takes a few seconds (two `Normalize` calls per scalar, six more per mark); `Decompose_agrees_with_the_host_normalizer…` then compares every scalar and 20 000 random three-mark sequences with the host's NFD.
 
 - [ ] **Step 8: Run the tests to verify they pass**
 
-Run: `dotnet test OKF4net.sln --filter "FullyQualifiedName~NfcQuickCheck|FullyQualifiedName~BundleKeyValidatorTests"`
-Expected: all green, `Tables_match_the_host_normalizer` **not skipped** on the dev box (the test host has ICU).
+Run: `dotnet test OKF4net.sln --filter "FullyQualifiedName~UnicodeTableTests|FullyQualifiedName~BundleKeyValidatorTests"`
+Expected: all green, the three `SkippableFact`s **not skipped** on the dev box (the test host has ICU). Note the duration of `Large_listings_with_collisions_at_the_root_validate_in_one_pass` (milliseconds; r7's scan took 26 s on this shape).
 
 - [ ] **Step 9: Commit**
 
 ```bash
-git add src/OKF4net/Providers/BundleKeyConstraints.cs src/OKF4net/Providers/NfcQuickCheck.cs src/OKF4net/Providers/BundleKeyValidator.cs tests/OKF4net.Tests/Providers/NfcQuickCheckTableTests.cs tests/OKF4net.Tests/Providers/BundleKeyValidatorTests.cs
+git add src/OKF4net/Providers/BundleKeyConstraints.cs src/OKF4net/Providers/NfcQuickCheck.cs src/OKF4net/Providers/CanonicalForm.cs src/OKF4net/Providers/BundleKeyValidator.cs tests/OKF4net.Tests/Providers/UnicodeTableTests.cs tests/OKF4net.Tests/Providers/BundleKeyValidatorTests.cs
 git commit -F - <<'MSG'
 feat(providers): native constraints, Strict/Native policy, NFC quick check and tree validation
 
-NFC is decided by UAX #15 quick-check tables derived from ICU and guarded by
-an exhaustive cross-check test (noncharacters the normalizer refuses are
-classified No), never by string.Normalize, which is a no-op under invariant
-globalization. Collisions fold per code point with ToUpperInvariant, the way
-an NTFS upcase table does. Per-level collisions, file/directory conflicts
-and the Windows reserved names are checked on the whole listing, and the
-condemned prefixes are reported.
+NFC is decided by UAX #15 quick-check tables plus a canonical-ordering check,
+all derived from ICU and guarded by an exhaustive cross-check test
+(noncharacters the normalizer refuses are classified No), never by
+string.Normalize, which is a no-op under invariant globalization. Sibling
+names are compared in canonical decomposition (table-driven NFD, Hangul by
+arithmetic) where the storage folds Unicode forms, and per code point with
+ToUpperInvariant, the way an NTFS upcase table does, where it folds case.
+Per-level collisions, file/directory conflicts and the Windows reserved
+names are checked on the whole listing in one pass, and the condemned
+prefixes are reported.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
@@ -3040,6 +3635,8 @@ public class BundleProviderLoadTests
     [InlineData("Ab/x.sql", "aB/y.sql", "AB/new.sql", true)]        // every offender duplicated: the collision is structural only
     [InlineData("x", "x/y.sql", "x/new.sql", true)]                 // same for the file/directory conflict
     [InlineData("x.md/A.sql", "x.md/a.sql", "x.md/new.sql", false)] // case-doomed children: the parent `x.md` stays an object-and-prefix
+    [InlineData("caf\u00e9/x.sql", "cafe\u0301/y.sql", "caf\u00e9/new.sql", false)] // canonically equivalent prefixes: the NFC spelling is condemned with the refused NFD one (decision 17)
+    [InlineData("\u212b/x.sql", "\u00c5/y.sql", "\u00c5/new.sql", false)]            // ANGSTROM SIGN beside Å
     public void Prefixes_condemned_only_structurally_still_guard_late_objects(string first, string second, string late, bool duplicated)
     {
         var p = new InMemoryBundleProvider()
@@ -4115,7 +4712,11 @@ Under `## [Unreleased]`:
   host filesystem's own rules. Case collisions are detected with a
   per-code-point upper-case fold, a **conservative over-approximation** of
   NTFS's table: siblings NTFS keeps distinct but the fold merges (`σ.sql` and
-  `ς.sql`) are rejected under `Native` on Windows too.
+  `ς.sql`) are rejected under `Native` on Windows too. Unicode-form collisions
+  (`café.sql` beside `cafe` + U+0301 `.sql`, one file on APFS) are detected by
+  comparing canonical decompositions from tables derived from ICU, so the
+  answer is the same under the AOT binaries, where `string.Normalize` is a
+  no-op; NFC itself is checked the same way, canonical ordering included.
 - **Exact-case resource resolution** on case-folding volumes (Windows, macOS):
   `references/a.sql` no longer resolves `References/A.sql`; it is `Missing`.
 - **A backslash in a §6.2 path-valued field is `Unsafe`** on every OS;
@@ -4152,7 +4753,7 @@ MSG
 - [ ] **Step 1: `CLAUDE.md`** — in the `Internal/ReparsePoints.cs` bullet, replace `three walks (`Bundle.cs:500`, the load walk `CollectMarkdown`, and the two `IndexGenerator` walks)` with `three walks (`Providers/FileSystemBundleProvider.Walk`, the load walk that replaced `Bundle.CollectMarkdown`, and the two `IndexGenerator` walks)`, and keep the sentence about `TryResolveResource` (it is unchanged in this lot). Add a bullet after the `Internal/AuditText.cs` one:
 
 ```markdown
-  - `Providers/` — the storage seam under `Bundle` (design: `docs/superpowers/specs/2026-10-07-bundle-provider-seam-design.md`, lot A). `IBundleProvider` is a key space of byte objects that knows nothing of concepts; the core validates every raw name as a **tree** (`BundleKeyValidator`: base rules, the provider's `NativeConstraints`, the host's `BundleKeyPolicy` — `Strict` by default and never below `Native`), enforces the `BundleLimits` by counting bytes itself, resolves §6.2 paths lexically on keys (`ResourceKeyResolver`, never dereferencing a URL), and keeps the historical members (`Concept.Path`, `Bundle.Root`, `ParseErrors`) as projections of the new ones by the display rule (`BundleDisplayPath`: location + OS separator + segments, byte-identical to the old `Path.Combine`). `FileSystemBundleProvider` is the default and read-only until lot B; with a confinement boundary it re-checks the chain boundary→root STRICTly before **every** access, because the ancestor walk stops before the root. Under `InvariantGlobalization` `string.Normalize` is a silent no-op, so NFC is decided by `NfcQuickCheck`'s tables (UAX #15's quick check: `NFC_QC=No` plus the derived composing-mark set), never by `Normalize`; the tables are derived from ICU by `NfcQuickCheckTableTests`, which fails with the literal to paste whenever a host normalizer disagrees with them — that test is the tables' executable guard.
+  - `Providers/` — the storage seam under `Bundle` (design: `docs/superpowers/specs/2026-10-07-bundle-provider-seam-design.md`, lot A). `IBundleProvider` is a key space of byte objects that knows nothing of concepts; the core validates every raw name as a **tree** (`BundleKeyValidator`: base rules, the provider's `NativeConstraints`, the host's `BundleKeyPolicy` — `Strict` by default and never below `Native`), enforces the `BundleLimits` by counting bytes itself, resolves §6.2 paths lexically on keys (`ResourceKeyResolver`, never dereferencing a URL), and keeps the historical members (`Concept.Path`, `Bundle.Root`, `ParseErrors`) as projections of the new ones by the display rule (`BundleDisplayPath`: location + OS separator + segments, byte-identical to the old `Path.Combine`). `FileSystemBundleProvider` is the default and read-only until lot B; with a confinement boundary it re-checks the chain boundary→root STRICTly before **every** access, because the ancestor walk stops before the root. Under `InvariantGlobalization` `string.Normalize` is a silent no-op, so NFC is decided by `NfcQuickCheck`'s tables (UAX #15's quick check: `NFC_QC=No` plus the derived composing-mark set) and canonical equivalence between sibling names by `CanonicalForm` (table-driven canonical decomposition with canonical ordering — the NFD — Hangul by arithmetic), never by `Normalize`; all four tables are derived from ICU by `UnicodeTableTests`, which fails with the literals to paste whenever a host normalizer disagrees with them and compares `Decompose` with the host's NFD on every scalar — that test is the tables' executable guard.
 ```
 
 - [ ] **Step 2: Full runs, with numbers**
@@ -4163,6 +4764,7 @@ dotnet format OKF4net.sln --verify-no-changes
 for i in 1 2 3; do dotnet test OKF4net.sln --filter "Category!=ContainerIntegration"; done   # 3× green, same counts
 dotnet test producers/OkfProducer.sln                      # green (references src/OKF4net; Concept keeps its three positional parameters)
 dotnet test OKF4net.sln --filter "FullyQualifiedName~BundleLoadPerformanceTests"              # still under its ceiling; note the load figures in the PR
+dotnet test OKF4net.sln --filter "FullyQualifiedName~Large_listings_with_collisions" -v n     # note its duration in the PR: milliseconds, not the 26 s of r7's scan
 ```
 
 On Windows, additionally run the `Providers` tests as an account that can create symlinks and junctions and confirm **0 skipped** at least once: `dotnet test OKF4net.sln --filter "FullyQualifiedName~OKF4net.Tests.Providers"`.
