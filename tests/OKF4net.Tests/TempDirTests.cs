@@ -78,12 +78,15 @@ public sealed class TempDirTests
     }
 
     [SkippableFact]
-    public void A_junction_that_cannot_be_inspected_is_never_followed_and_the_failure_is_thrown()
+    public void A_directory_whose_listing_is_denied_makes_dispose_throw_and_leaves_the_junction_target_intact()
     {
-        // Disposing in the wrong order: the junction's parent cannot be listed,
-        // so TempDir cannot tell what is under it. It must not guess (it may
-        // be a link) and must not pass silently; once the ACEs are lifted the
-        // same TempDir disposes cleanly and the target is untouched.
+        // Disposing in the wrong order: the junction's parent "x" cannot be
+        // listed, so the walk throws while listing "x" and never reaches the
+        // junction "y" itself (the entry-level guard on an uninspectable entry
+        // is not exercised here; see the comment in
+        // TempDir.DeleteWithoutFollowingLinks). The failure must not pass
+        // silently; once the ACEs are lifted the same TempDir disposes
+        // cleanly and the target is untouched.
         using var outside = new TempDir();
         var expected = PopulateTarget(outside);
 

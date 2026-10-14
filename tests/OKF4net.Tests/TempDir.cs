@@ -341,6 +341,17 @@ public sealed class TempDir : IDisposable
             // opened through the link), on Windows and on Unix alike. A
             // failure other than "absent" propagates: an entry we cannot
             // inspect may be a link, so it is not descended into.
+            //
+            // This entry-level guard is correct by construction (nothing
+            // here maps a failure to "plain directory") but no test
+            // exercises it: every entry below the root is reached through
+            // its parent's listing, and on Windows .NET falls back to that
+            // same listing (FindFirstFile on the parent) when it cannot open
+            // the entry, so a listable parent yields readable attributes. A
+            // parent whose listing is denied fails one level up, at
+            // Directory.EnumerateFileSystemEntries, which is what
+            // TempDirTests covers. (On Unix, a directory with read but not
+            // search permission would reach it; no test builds one.)
             attributes = File.GetAttributes(path);
         }
         catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
@@ -373,6 +384,7 @@ public sealed class TempDir : IDisposable
 
         if ((attributes & FileAttributes.ReadOnly) != 0)
         {
+            // Limitation: on a hard link this also clears ReadOnly on every other link to the file, even one outside the tree (NTFS keeps attributes per file, not per link); content is untouched, and no test creates hard links.
             IgnoreAbsent(() => File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly));
         }
 
