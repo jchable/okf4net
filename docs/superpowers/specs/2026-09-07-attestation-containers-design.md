@@ -1,7 +1,11 @@
 # Orchestrateur d'attestation par conteneurs — design
 
 Date : 2026-09-07
-Statut : proposé
+Statut : implémenté — mergé dans `dev` par la PR #94, puis par des PR de suivi
+(dont #96, #103, #104) ; `src/OKF4net.Attestation.Containers/`, consigné dans la
+0.6.0 du CHANGELOG mais délibérément non packagé (voir `CLAUDE.md`) ; plan :
+`docs/superpowers/plans/2026-09-10-attestation-containers.md`. Ce document reste
+le design révisé ci-dessous : le code fait foi.
 
 **Révision (round 1)** : ce document intègre les corrections issues d'une
 relecture adversariale indépendante (voir

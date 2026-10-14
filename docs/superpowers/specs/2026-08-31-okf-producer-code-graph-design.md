@@ -1,20 +1,20 @@
 # Design — Étage graphe de code du producer (`producers/OkfProducer`)
 
 - **Date** : 2026-08-31
-- **Statut** : design validé en brainstorming (sections 1 à 7), prêt pour plan d'implémentation
+- **Statut** : implémenté — `OkfProducer.CodeGraph.TreeSitter` et `OkfProducer.CodeGraph.Roslyn`, mergés dans `dev` par la PR #78, consignés dans la 0.6.0 du CHANGELOG (`okfgen` reste non publié et hors CI par décision) ; plans : `docs/superpowers/plans/2026-08-31-okf-producer-code-graph-gates.md` puis `2026-08-31-okf-producer-code-graph.md`. Design validé en brainstorming (sections 1 à 7) ; ce document reste le design d'origine : le code et `producers/README.md` font foi.
 - **Portée** : ajoute un étage d'extraction de code (types, membres, graphe d'appels) au producer existant. Ne modifie **rien** dans `src/OKF4net` — aucune évolution de la bibliothèque n'est requise.
 - **Design amont** : [`2026-07-31-okf-producer-design.md`](2026-07-31-okf-producer-design.md) (walking skeleton livré : scanner npm/NuGet/README → bundle v0.2).
 - **Prior art** : **okf-rs**, producer Rust qui extrait types, fonctions, méthodes et un graphe d'appels sur 11 langages via tree-sitter. Sert de référence de capacité et de repère de comparaison ; aucun code repris.
 - **Spike de faisabilité** : worktree `spike-treesitter-dotnet`. Résultats en annexe A — **provenance cassée, chiffres non reproductibles**, voir l'avertissement en tête d'annexe.
 
-> ## ✅ Statut : les deux verrous sont levés — le design est prêt pour un plan d'implémentation
+> ## ✅ Verrous du design : tous deux levés le 2026-08-31 (avant l'implémentation — l'état actuel est la ligne « Statut » ci-dessus)
 >
 > Deux audits indépendants (interne et externe, 2026-08-31) ont chacun trouvé des défauts porteurs. Les révisions rédactionnelles sont appliquées, et les deux blocages sont traités :
 >
 > 1. ~~**L'étage Roslyn n'est pas démontré**~~ → **LEVÉ le 2026-08-31.** Le prototype atteint **zéro erreur de compilation** sur trois projets réels sans `MSBuildWorkspace` (mesure et protocole en §7.2 ; code jetable, conservé dans l'historique au commit `0db6e9a`). Il corrige au passage trois hypothèses de §7.2 — dont la plus lourde : le dépôt doit être **construit**, pas seulement restauré.
 > 2. ~~**Le critère d'exploitabilité échoue**~~ → **LEVÉ le 2026-08-31.** `ConceptSearch.TopDiversified` fait tourner la sélection entre familles d'ids, branché dans `okf_search` et `OkfContextProvider`. Sur le même corpus, les places curatées dans le top 5 passent de **1/55 à 23/55**, et les requêtes sans aucun curaté dans le top 20 de **5/11 à 0/11** (§8.7).
 >
-> Reste à écrire : le plan d'implémentation du générateur lui-même, dont la séquence est donnée en fin de `docs/superpowers/plans/2026-08-31-okf-producer-code-graph-gates.md`.
+> Le plan d'implémentation du générateur lui-même, dont la séquence était donnée en fin de `docs/superpowers/plans/2026-08-31-okf-producer-code-graph-gates.md`, a depuis été écrit (`docs/superpowers/plans/2026-08-31-okf-producer-code-graph.md`) et exécuté (PR #78).
 >
 > Corrigé depuis le premier jet : résolution de `resource` (§4.3), granularité de `generated.at` (§6.1), unités de colonne entre les deux moteurs (§2.1), politique d'entrée hostile (§2.3), transactionnalité de l'élagage (§6.3), définition de `--check` (§6.2), appartenance des fichiers à un projet (§5.1), provenance du spike (annexe A).
 

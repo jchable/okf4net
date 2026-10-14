@@ -60,6 +60,19 @@ OKF4net implements the [OKF v0.2 spec](https://github.com/GoogleCloudPlatform/kn
 Behavioural changes must stay conformant with the spec — cite the relevant
 section (§) in your PR description. The spec is the authority; where this implementation deliberately reads it differently, or departs from the OKF reference implementation's behaviour, the reason is recorded in `docs/spec-conformance/`.
 
+## Design documents
+
+Larger changes are designed in `docs/superpowers/specs/` (their implementation
+plans live in `docs/superpowers/plans/`). Each design carries a status line in
+its header — `**Status:**` or `**Statut** :`, in the document's own language;
+several are in French and are not translated. That line is the one part of a
+design that must stay true: the change that ships the work updates it, in the
+same PR, to say it is implemented and where (merge PR, release, main paths),
+and a design that is abandoned or superseded says so. The body records the
+design as approved and is not kept in step with the code unless its status line
+says it is; the code, the README and `docs/spec/SPEC.md` are the authority.
+`docs/design/` is different: historical migration specs and plans, context only.
+
 ## Submitting changes
 
 1. Fork and create a topic branch from `main`.

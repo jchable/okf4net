@@ -1,8 +1,11 @@
 # Design — `okf verify` : enregistrer une relecture, refermer la boucle d'audit
 
 Date : 2026-08-28
-Statut : validé en brainstorming (design approuvé section par section, second avis
-indépendant intégré), prêt pour le plan d'implémentation
+Statut : implémenté — mergé dans `dev` par la PR #53, publié dans la 0.6.0
+(`okf verify`, outil `okf_verify`, `BundleConceptWriter.RecordVerifications`) ;
+plan : `docs/superpowers/plans/2026-08-28-okf-verify.md`. Validé en brainstorming
+(design approuvé section par section, second avis indépendant intégré) ; ce
+document reste le design d'origine : le code et le README font foi.
 
 > **Correction 2026-08-29 (post-audit).** Ce document présentait `agent:<producer>/<version>`
 > comme une des trois formes d'acteur §7. C'est faux : `Actor.Parse` ne connaît que

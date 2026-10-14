@@ -1,6 +1,7 @@
 # §5 Timestamp Spelling — Design
 
-**Status:** implemented on `fix/temporal-conformance`. This document is
+**Status:** implemented on `fix/temporal-conformance`, merged into `dev` (PR #54)
+and released in 0.6.0. This document is
 maintained to describe the code as it shipped, not the first draft of it: the
 grammar widened twice and narrowed once during implementation and review, §6's
 out-of-scope list lost an entry that turned out not to belong there, and §4's

@@ -1,6 +1,6 @@
 # §5.1 Per-entry `usage_window` override — Design
 
-**Status:** implemented, merged into `dev` (PR #57). This document is maintained
+**Status:** implemented, merged into `dev` (PR #57), released in 0.6.0. This document is maintained
 to describe the code as it shipped, not the draft that preceded it: verification
 came back false on two of its claims (C6 and C10 in §6) and the text was
 corrected in place rather than left standing. §7's predictions held — the suite

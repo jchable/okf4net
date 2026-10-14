@@ -1,7 +1,11 @@
 # Design — API d'ergonomie producer pour OKF4net (Provenance.ToYaml, ConceptId.Slugify, OkfDocumentBuilder)
 
 - **Date** : 2026-07-31
-- **Statut** : design validé en brainstorming, prêt pour plan d'implémentation
+- **Statut** : implémenté — `Provenance.ToYaml`, `ConceptId.Slugify`, la surcharge
+  `BundleConceptWriter.WriteConcept(string, Frontmatter, string)` et
+  `OkfDocumentBuilder`, publiés dans la 0.5.0 ; plan :
+  `docs/superpowers/plans/2026-07-31-okf4net-producer-ergonomics-api.md`. Ce
+  document reste le design d'origine : le code fait foi.
 - **Contexte amont** : identifié en évaluant un producer OKF externe (`tommypacker/okf-generator`, TS) comme prior art, puis en brainstormant un producer natif OKF4net (repo-scanner → bundle OKF v0.2) dans `producers/`. Ce lot est un **prérequis** du producer, extrait en sous-projet séparé à exécuter en premier : le producer construira des `Frontmatter`/`OkfDocument` en mémoire à chaque concept généré, et bute sinon sur trois manques vérifiés par lecture directe de `src/OKF4net/`.
 
 ## 1. Objectif
