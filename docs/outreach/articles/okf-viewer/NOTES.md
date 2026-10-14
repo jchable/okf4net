@@ -26,12 +26,13 @@ Checked:
   header documents it); it could not be dry-run on the Windows machine the
   article was prepared on, so the article claims only what the script's own
   help says.
-- **winget.** `Coderise.OKF4net.Render` was submitted for 0.6.0
-  (microsoft/winget-pkgs PR 444993) and was still open on 2026-10-14; the
-  0.7.0 submission for it is skipped by the workflow until
-  `WINGET_RENDER_PUBLISHED` is set. The article says "submitted and waiting
-  in the moderation queue". Re-check before publishing: if that PR has been
-  merged, the sentence in *Getting it* must change.
+- **winget.** `Coderise.OKF4net.Render` was first submitted for 0.6.0
+  (microsoft/winget-pkgs PR 444993), which was closed on 2026-10-14 because
+  the 0.6.0 binary exited 1 without arguments, and submitted again for 0.7.0
+  (PR 452891), open on 2026-10-14. The workflow skips the render submission
+  until `WINGET_RENDER_PUBLISHED` is set. The article says "submitted and
+  waiting in the moderation queue". Re-check before publishing: if PR 452891
+  has been merged, the sentence in *Getting it* must change.
 - **Links.** The docs page <https://jchable.github.io/okf4net/docs/viewer/>
   returned 200 on 2026-10-14 (the site deploys from `main` on every release).
   #163 and #177 were open and still about the VS Code extension and the IME /
