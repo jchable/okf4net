@@ -831,6 +831,7 @@ This table is also published as the
 | [0.4.0](CHANGELOG.md#040---2026-07-30) | v0.2     | `okf-mcp` bundle auto-discovery, `OkfBundleTools.WriteToolNames`, `ComputationExtractor` fence-safety fix, path-containment comparison hardening |
 | [0.5.0](CHANGELOG.md#050---2026-07-31) | v0.2     | `--json` diagnostics on `validate`/`info`, §11 conformance now enforced for malformed reserved files, YAML multi-line scalar support, producer-facing in-memory concept API |
 | [0.6.0](CHANGELOG.md#060---2026-10-01) | v0.2     | `okf audit` / `okf verify` (§5.2–§5.5), `okf-render` split out of `okf`, `okf-mcp` read-only by default, §6.2 paths resolved from the bundle root, container-based §10 host (unpublished), hardened model-facing output and link guards |
+| [0.7.0](CHANGELOG.md#070---2026-10-14) | v0.2     | Interactive `okf-render` sites (explorer, palette, local and global link graphs), `okf` as the `OKF4net.Cli` dotnet tool, one YAML nesting rule, `okf verify` output hardened against forged lines, bounded `YamlValue` equality and emitter |
 
 ## Contributing & roadmap
 

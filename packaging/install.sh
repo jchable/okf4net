@@ -7,7 +7,7 @@
 #
 # Usage:
 #   curl -sSL https://raw.githubusercontent.com/jchable/okf4net/main/packaging/install.sh | sh
-#   curl -sSL .../install.sh | sh -s -- --bin okf-render --version v0.6.0
+#   curl -sSL .../install.sh | sh -s -- --bin okf-render --version v0.7.0
 #
 # Options (each also settable via an env var; a flag wins over its env var):
 #   --bin <okf|okf-render>   Which binary to install.
