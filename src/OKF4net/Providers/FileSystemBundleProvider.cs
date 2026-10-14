@@ -260,21 +260,28 @@ public sealed class FileSystemBundleProvider : IBundleProvider
     /// Maps a key to its on-disk path. With <see cref="MatchesCaseExactly"/>, each segment must
     /// match an existing entry's name <b>exactly</b> (ordinal) — spec §2's correspondence rule —
     /// else <see langword="null"/>. Otherwise the OS compares bytes already and the joined path
-    /// is returned as is.
+    /// is returned as is. The segment is handed to the OS as a literal-name search pattern, so
+    /// the OS filters by name rather than the code listing each directory in full. A segment that
+    /// cannot be a literal pattern is "no such entry": on Windows one containing any of
+    /// <c>&lt; &gt; : " | ? *</c>, or that is rooted (<c>C:</c>, <c>a:b.md</c>), because no NTFS or
+    /// FAT name can carry those and .NET rejects such a pattern with an
+    /// <see cref="ArgumentException"/> (a layer-1-valid key must not make a question throw). On
+    /// every OS a segment containing <c>*</c> or <c>?</c> is looked up by listing the directory
+    /// and comparing names ordinally, since the pattern would otherwise match as a wildcard.
+    /// Each traversed directory is still STRICT-guarded before it is listed, ahead of this rule.
     /// </summary>
     private string? ResolveExact(BundleKey key)
     {
-        var parts = new string[key.Segments.Count + 1];
-        parts[0] = _fullRoot;
-        for (var i = 0; i < key.Segments.Count; i++)
-        {
-            parts[i + 1] = key.Segments[i];
-        }
-
-        var joined = Path.Combine(parts);
         if (!MatchesCaseExactly)
         {
-            return joined;
+            var parts = new string[key.Segments.Count + 1];
+            parts[0] = _fullRoot;
+            for (var i = 0; i < key.Segments.Count; i++)
+            {
+                parts[i + 1] = key.Segments[i];
+            }
+
+            return Path.Combine(parts);
         }
 
         var current = _fullRoot;
@@ -291,10 +298,17 @@ public sealed class FileSystemBundleProvider : IBundleProvider
                 throw new BundleAccessRefusedException(key, "it resolves through a reparse point or an entry that could not be inspected");
             }
 
+            if (CannotBeLiteralName(segment))
+            {
+                return null;
+            }
+
+            // A wildcard character in the segment would be matched, not read literally: list everything instead.
+            var pattern = segment.AsSpan().ContainsAny('*', '?') ? "*" : segment;
             string? match = null;
             try
             {
-                foreach (var entry in new DirectoryInfo(current).EnumerateFileSystemInfos(segment, SearchOption.TopDirectoryOnly))
+                foreach (var entry in new DirectoryInfo(current).EnumerateFileSystemInfos(pattern, SearchOption.TopDirectoryOnly))
                 {
                     if (string.Equals(entry.Name, segment, StringComparison.Ordinal))
                     {
@@ -318,6 +332,11 @@ public sealed class FileSystemBundleProvider : IBundleProvider
 
         return current;
     }
+
+    /// <summary>Windows only: a segment no NTFS/FAT entry can be named, and that .NET would reject as a search pattern.</summary>
+    private static bool CannotBeLiteralName(string segment) =>
+        OperatingSystem.IsWindows()
+        && (segment.AsSpan().ContainsAny("<>:\"|?*") || Path.IsPathRooted(segment));
 
     private sealed class Counter
     {

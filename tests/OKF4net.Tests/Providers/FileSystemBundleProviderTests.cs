@@ -284,4 +284,115 @@ public class FileSystemBundleProviderTests
         var bounded = new FileSystemBundleProvider(link, confinementBoundary: tmp.Path);
         Assert.Throws<BundleAccessRefusedException>(() => bounded.Read(K("a.md")));
     }
+
+    [SkippableTheory]
+    [InlineData("a:b.md")]
+    [InlineData("C:")]
+    [InlineData("C:x")]
+    [InlineData("a:b/x.md")]
+    public void On_Windows_a_segment_no_name_can_carry_is_no_such_entry_not_an_exception(string keyText)
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "a Windows name rule: ':' makes a segment a drive or stream, which .NET rejects as a search pattern");
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "a");
+        var p = new FileSystemBundleProvider(tmp.Path);
+        var key = K(keyText); // layer 1 forbids no colon: the key parses
+        Assert.False(p.Exists(key));
+        Assert.Throws<BundleObjectNotFoundException>(() => p.Read(key));
+        Assert.Empty(p.Enumerate(key, BundleLimits.Default));
+        Assert.Equal(["a.md"], p.Enumerate(null, BundleLimits.Default).Select(l => l.RawName)); // the real entry is unaffected
+    }
+
+    [SkippableFact]
+    public void On_Windows_a_wildcard_segment_is_no_such_entry()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "no Windows name can carry '*' or '?'");
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "a");
+        var p = new FileSystemBundleProvider(tmp.Path);
+        Assert.False(p.Exists(K("*")));
+        Assert.False(p.Exists(K("?.md")));
+        Assert.Throws<BundleObjectNotFoundException>(() => p.Read(K("*")));
+        Assert.Empty(p.Enumerate(K("?"), BundleLimits.Default));
+    }
+
+    [SkippableFact]
+    public void On_Unix_a_wildcard_in_a_name_is_read_literally()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "a Unix name rule: Windows names cannot carry '*' or '?'");
+        using var tmp = new TempDir();
+        tmp.Write("*.sql", "star");
+        tmp.Write("a.sql", "a");
+        var p = new FileSystemBundleProvider(tmp.Path, additionalConstraints: BundleKeyConstraints.CaseInsensitiveCollisions); // exact-case matching on: ResolveExact runs
+        Assert.True(p.MatchesCaseExactly);
+        Assert.True(p.Exists(K("*.sql")));
+        using var star = p.Read(K("*.sql"));
+        Assert.Equal(4, star.Length);
+        var anyChar = K("?.sql"); // as a pattern it would match a.sql
+        Assert.False(p.Exists(anyChar));
+        Assert.Throws<BundleObjectNotFoundException>(() => p.Read(anyChar));
+        Assert.True(p.Exists(K("a.sql")));
+    }
+
+    [SkippableFact]
+    public void A_root_that_is_an_uninspectable_junction_is_refused_strictly_under_a_boundary()
+    {
+        // "x/y" is a junction to `external` whose attributes the current user cannot read (deny
+        // ReadAttributes on it, deny listing on "x"); the OS still lets a read traverse it. Both
+        // predicates answer differently here: the lenient IsReparsePoint says "not a link", the
+        // STRICT one says "refuse". Both classify an ordinary junction as a link, which is why the
+        // junction tests above cannot tell them apart.
+        using var tmp = new TempDir();
+        Directory.CreateDirectory(Path.Combine(tmp.Path, "x"));
+        using var external = new TempDir();
+        external.Write("a.md", "OUTSIDE-THE-BUNDLE");
+        external.Write("z/b.md", "OUTSIDE-THE-BUNDLE");
+        using var junction = tmp.TryCreateUninspectableJunction(Path.Combine("x", "y"), external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+        var p = new FileSystemBundleProvider(Path.Combine(tmp.Path, "x", "y"), confinementBoundary: tmp.Path);
+        Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("a.md")));
+        Assert.Throws<BundleAccessRefusedException>(() => p.Enumerate(null, BundleLimits.Default));
+        Assert.Throws<BundleAccessRefusedException>(() => p.Enumerate(K("z"), BundleLimits.Default));
+        Assert.Throws<BundleAccessRefusedException>(() => p.GetVersion(BundleLimits.Default));
+        Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("a.md")));
+    }
+
+    [SkippableFact]
+    public void A_root_under_an_uninspectable_junction_is_refused_strictly_under_a_boundary()
+    {
+        // The root itself ("x/y/z", a real directory seen through the junction) is readable and
+        // is no link; only the ancestor between the boundary and the root is uninspectable, so
+        // this pins the ancestor half of the boundary check (HasReparsePointOrUninspectableAncestor).
+        using var tmp = new TempDir();
+        Directory.CreateDirectory(Path.Combine(tmp.Path, "x"));
+        using var external = new TempDir();
+        external.Write("z/b.md", "OUTSIDE-THE-BUNDLE");
+        using var junction = tmp.TryCreateUninspectableJunction(Path.Combine("x", "y"), external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+        var p = new FileSystemBundleProvider(Path.Combine(tmp.Path, "x", "y", "z"), confinementBoundary: tmp.Path);
+        Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("b.md")));
+        Assert.Throws<BundleAccessRefusedException>(() => p.Enumerate(null, BundleLimits.Default));
+        Assert.Throws<BundleAccessRefusedException>(() => p.GetVersion(BundleLimits.Default));
+        Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("b.md")));
+    }
+
+    [SkippableFact]
+    public void An_uninspectable_junction_below_the_root_reads_as_absent_and_the_walk_cannot_enter_it()
+    {
+        // Without a boundary the root is trusted; below it, a junction whose parent denies
+        // listing is never read through: a read says "not found", a question says false, a
+        // prefix lists nothing — and nothing outside the bundle is returned.
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "a");
+        Directory.CreateDirectory(Path.Combine(tmp.Path, "x"));
+        using var external = new TempDir();
+        external.Write("z/b.md", "OUTSIDE-THE-BUNDLE");
+        using var junction = tmp.TryCreateUninspectableJunction(Path.Combine("x", "y"), external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+        var p = new FileSystemBundleProvider(tmp.Path);
+        Assert.False(p.Exists(K("x/y/z/b.md")));
+        Assert.Throws<BundleObjectNotFoundException>(() => p.Read(K("x/y/z/b.md")));
+        Assert.Empty(p.Enumerate(K("x/y/z"), BundleLimits.Default));
+        Assert.Empty(p.Enumerate(K("x/y"), BundleLimits.Default));
+    }
 }
