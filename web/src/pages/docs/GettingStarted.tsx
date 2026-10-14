@@ -86,7 +86,7 @@ export default function GettingStarted() {
           <pre className="block" dangerouslySetInnerHTML={{ __html: dotnetVersionHtml }} />
         </Chapter>
 
-        <Chapter id="install" title="Install" refText="library from NuGet · CLI via winget or from source">
+        <Chapter id="install" title="Install" refText="library from NuGet · CLI via winget, a dotnet tool, or from source">
           <p>
             Use the <strong>library</strong> to work with bundles from C#. Add the package to any project:
           </p>
@@ -100,6 +100,12 @@ export default function GettingStarted() {
             <a href="https://github.com/microsoft/winget-pkgs">winget</a>:
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: wingetInstallHtml }} />
+          <p>
+            Since you already have the .NET SDK, it is also one command on any OS as the <code>OKF4net.Cli</code>{' '}
+            dotnet tool — or pin it per repository with a tool manifest (see the{' '}
+            <Link to="/docs/cli#ci">CLI reference</Link>):
+          </p>
+          <pre className="block">$ dotnet tool install -g OKF4net.Cli</pre>
           <p>On any OS, build it from source:</p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: cloneAndPublishHtml }} />
         </Chapter>
