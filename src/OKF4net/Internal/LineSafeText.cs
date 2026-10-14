@@ -30,10 +30,13 @@ internal static class LineSafeText
     /// not close it. The value is refused before it is quoted.</item>
     /// </list>
     ///
-    /// That is what lets the renderers stay simple: they interpolate these
-    /// values into a line with no escaping at all, which is safe precisely
-    /// because a control-bearing one never reaches them. A forked character
-    /// test would let the call sites drift — the failure mode
+    /// A refusal here is the first line of defence, not the only one: the
+    /// shared record renderer, <c>AuditText.FormatVerificationRecord</c>, uses
+    /// this same predicate to decide which of the values it interpolates must
+    /// be quoted (#123), so a control-bearing value that reached it some other
+    /// way -- the superseded <c>at</c> it echoes is read from the bundle, not
+    /// from a caller -- still cannot break its line. A forked character test
+    /// would let the call sites drift — the failure mode
     /// <see cref="LfLines"/> and <c>ConceptSearch</c> exist to prevent — and it
     /// is how the <c>at</c> path stayed open after the actor path was closed.
     ///
