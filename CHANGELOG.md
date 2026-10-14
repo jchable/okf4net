@@ -10,6 +10,18 @@ and this project adheres to
 
 ### Added
 
+- **`okf` as a dotnet tool: `OKF4net.Cli` on nuget.org.** A repository with
+  the .NET SDK can now pin `okf` in its tool manifest and gate CI on it with
+  `dotnet tool restore` then `dotnet okf validate`. `dotnet tool install -g
+  OKF4net.Cli` and `dnx OKF4net.Cli --yes` work too. The package is portable
+  IL: it needs the .NET 10 runtime or a later major one (`RollForward` is
+  `Major`), with the same invariant globalization as the native binary. The
+  Native AOT binaries for winget and `install.sh` are unchanged and built from
+  the same project. `release.yml` packs it beside the other packages, and a new
+  CI job, `dotnet tool smoke test`, packs it on Ubuntu and Windows, checks the
+  package's contents and runtime settings, restores it from a manifest in a
+  fresh directory, and asserts `okf validate`'s exit code on a conformant and a
+  non-conformant bundle.
 - **Interactive `okf-render` pages.** Delivered in slices on one branch (P1,
   P1.1, P2 and P3 are all in); the OKF4net core API and `viewer.js` are
   unchanged throughout.

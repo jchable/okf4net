@@ -188,6 +188,21 @@ curl -s https://api.nuget.org/v3-flatcontainer/okf4net/index.json
 spot-check https://www.nuget.org/packages/OKF4net — README rendered, license
 `LGPL-3.0-or-later`, version listed.
 
+The `okf` dotnet tool is a package of its own, `OKF4net.Cli`, and a green
+workflow does not show that it installs from the feed. Once
+`https://api.nuget.org/v3-flatcontainer/okf4net.cli/index.json` lists the
+version, install it into a throwaway tool path and run it:
+
+```sh
+TOOL_DIR="$(mktemp -d)"
+dotnet tool install OKF4net.Cli --version X.Y.Z --tool-path "$TOOL_DIR"
+"$TOOL_DIR/okf" --version
+```
+
+It must print `okf X.Y.Z (OKF spec v0.2)`. The first release that carries
+`OKF4net.Cli` creates a new package ID on nuget.org: if the push rejected that
+package alone, look at the Trusted Publishing policy before retrying.
+
 ## 6. GitHub Release page
 
 `release.yml`'s `publish GitHub Release` job **already creates the release**,
@@ -206,7 +221,9 @@ ran to ~2 300 lines), use the digest at its top — the "Breaking changes at a
 glance" and "What is new" parts — and rewrite any sentence that points at
 "the sections below", which do not exist on the release page. End with a link
 to the version's CHANGELOG anchor and an install block:
-`dotnet add package OKF4net --version X.Y.Z` and
+`dotnet add package OKF4net --version X.Y.Z`,
+`dotnet tool install -g OKF4net.Cli --version X.Y.Z` (the `okf` tool's
+PackageId is `OKF4net.Cli`) and
 `dotnet tool install -g OKF4net.Mcp --version X.Y.Z` (the `okf-mcp` tool's
 PackageId is `OKF4net.Mcp`).
 

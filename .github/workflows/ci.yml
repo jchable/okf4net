@@ -86,6 +86,126 @@ jobs:
         working-directory: tools/viewer-security-check
         run: npm test
 
+  # The `okf` dotnet tool (OKF4net.Cli on nuget.org) has no other guard: the
+  # in-process CliTests never see the package, its runtimeconfig or the tool
+  # shim. This job packs it the way release.yml does, checks what the package
+  # holds, then consumes it the way a user's CI would -- a committed tool
+  # manifest, `dotnet tool restore` in a fresh clone, `dotnet okf validate` --
+  # and asserts both verdicts' exit codes. Ubuntu and Windows only: the tool is
+  # IL, so macOS would exercise the same bytes through the same Unix shim.
+  dotnet-tool:
+    name: dotnet tool smoke test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      # A version no feed can already hold. Once OKF4net.Cli is on nuget.org,
+      # the declared version is usually published too, and an install that also
+      # queries nuget.org could then take that copy instead of this build.
+      - name: Derive a CI-only version
+        shell: pwsh
+        run: |
+          $declared = (Select-String -Path Directory.Build.props -Pattern '<Version>([^<]*)</Version>').Matches[0].Groups[1].Value
+          echo "TOOL_VERSION=$declared-ci.${{ github.run_id }}.${{ github.run_attempt }}" >> $env:GITHUB_ENV
+          echo "TOOL_FEED=${{ runner.temp }}/okf-tool-feed" >> $env:GITHUB_ENV
+
+      - name: Pack the okf tool
+        shell: pwsh
+        run: |
+          dotnet pack src/OKF4net.Cli/OKF4net.Cli.csproj -c Release -o $env:TOOL_FEED -p:Version=$env:TOOL_VERSION
+          if ($LASTEXITCODE -ne 0) { throw "dotnet pack failed" }
+
+      - name: Package holds the tool, its README and NOTICE, and the runtime settings it needs
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $nupkg = Join-Path $env:TOOL_FEED "OKF4net.Cli.$env:TOOL_VERSION.nupkg"
+          if (-not (Test-Path $nupkg)) { throw "package not found: $nupkg" }
+          $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $nupkg).Path)
+          try {
+            $entries = @($zip.Entries | ForEach-Object { $_.FullName })
+            $entry = $zip.GetEntry('tools/net10.0/any/okf.runtimeconfig.json')
+            if (-not $entry) { throw "no tools/net10.0/any/okf.runtimeconfig.json in $nupkg" }
+            $reader = New-Object System.IO.StreamReader($entry.Open())
+            try { $runtimeConfig = $reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() }
+          } finally { $zip.Dispose() }
+
+          foreach ($required in 'tools/net10.0/any/okf.dll', 'tools/net10.0/any/OKF4net.dll',
+                                'tools/net10.0/any/DotnetToolSettings.xml', 'README.md', 'NOTICE') {
+            if ($entries -notcontains $required) { throw "$nupkg lacks $required" }
+          }
+          # Portable means IL only: a runtimes/ folder or a native okf
+          # executable would mean PublishAot leaked into the pack.
+          $native = @($entries | Where-Object { $_ -like 'runtimes/*' -or $_ -like 'tools/*/okf' -or $_ -like 'tools/*/okf.exe' })
+          if ($native) { throw "$nupkg carries native payload: $($native -join ', ')" }
+          # OKF4net.xml is excluded by AllowedReferenceRelatedFileExtensions.
+          $docs = @($entries | Where-Object { $_ -like 'tools/*.xml' -and $_ -notlike '*/DotnetToolSettings.xml' })
+          if ($docs) { throw "$nupkg carries API documentation: $($docs -join ', ')" }
+
+          $options = $runtimeConfig.runtimeOptions
+          if ($options.rollForward -ne 'Major') { throw "runtimeconfig rollForward is '$($options.rollForward)', expected Major" }
+          if ($options.configProperties.'System.Globalization.Invariant' -ne $true) { throw "runtimeconfig does not enable invariant globalization" }
+          Write-Host "OK: $nupkg holds $($entries.Count) entries, rollForward Major, invariant globalization"
+
+      - name: A fresh clone restores the pinned tool and gates on its verdict
+        shell: pwsh
+        run: |
+          $repo = $env:GITHUB_WORKSPACE
+          $author = Join-Path $env:RUNNER_TEMP 'okf-tool-author'
+          $clone = Join-Path $env:RUNNER_TEMP 'okf-tool-clone'
+          New-Item -ItemType Directory -Force -Path $author, $clone | Out-Null
+
+          # The author pins the tool in a manifest...
+          Push-Location $author
+          dotnet new tool-manifest
+          if ($LASTEXITCODE -ne 0) { throw "dotnet new tool-manifest failed" }
+          dotnet tool install OKF4net.Cli --version $env:TOOL_VERSION --add-source $env:TOOL_FEED
+          if ($LASTEXITCODE -ne 0) { throw "dotnet tool install (manifest) failed" }
+          $manifest = Get-ChildItem -Recurse -Filter dotnet-tools.json | Select-Object -First 1
+          if (-not $manifest) { throw "no dotnet-tools.json written" }
+          Pop-Location
+
+          # ...and a clone that holds only that manifest gets the same tool back.
+          $relative = [System.IO.Path]::GetRelativePath($author, $manifest.FullName)
+          $target = Join-Path $clone $relative
+          New-Item -ItemType Directory -Force -Path (Split-Path $target) | Out-Null
+          Copy-Item $manifest.FullName $target
+          Push-Location $clone
+          dotnet tool restore --add-source $env:TOOL_FEED
+          if ($LASTEXITCODE -ne 0) { throw "dotnet tool restore failed" }
+
+          $actual = dotnet okf --version
+          Write-Host "expected=$env:TOOL_VERSION actual=$actual"
+          if ($actual -notlike "okf $env:TOOL_VERSION *") { throw "restored tool reports '$actual', expected version $env:TOOL_VERSION" }
+
+          dotnet okf validate (Join-Path $repo 'tests/fixtures/appendix_a')
+          if ($LASTEXITCODE -ne 0) { throw "okf validate failed on a conformant bundle (exit $LASTEXITCODE)" }
+
+          dotnet okf validate (Join-Path $repo 'tests/fixtures/okf_v02_reserved')
+          if ($LASTEXITCODE -ne 1) { throw "okf validate exited $LASTEXITCODE on a non-conformant bundle, expected 1" }
+          Pop-Location
+
+          # The global form goes through a different shim (an apphost on
+          # Windows): install it into a tool path and ask it its version.
+          $toolPath = Join-Path $env:RUNNER_TEMP 'okf-tool-global'
+          dotnet tool install OKF4net.Cli --version $env:TOOL_VERSION --add-source $env:TOOL_FEED --tool-path $toolPath
+          if ($LASTEXITCODE -ne 0) { throw "dotnet tool install --tool-path failed" }
+          $shim = Join-Path $toolPath ($IsWindows ? 'okf.exe' : 'okf')
+          $actual = & $shim --version
+          if ($actual -notlike "okf $env:TOOL_VERSION *") { throw "global shim reports '$actual', expected version $env:TOOL_VERSION" }
+          Write-Host "OK: manifest restore, both verdicts and the global shim all run $env:TOOL_VERSION"
+
+          # The expected exit 1 above must not become this step's exit code.
+          $global:LASTEXITCODE = 0
+
   # Exercises the real release-packaging script (packaging/Publish-Cli.ps1) on
   # every CI run, not just on a tag push, so a broken archive/permission bug
   # is caught here instead of on the first real release. This covers
