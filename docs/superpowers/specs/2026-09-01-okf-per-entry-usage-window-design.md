@@ -24,8 +24,11 @@ against §5, and no consumer can obtain it.
 before any change: `Frontmatter` wraps an order-preserving `YamlMapping` and
 re-serializes the raw tree, so a nested key it has no typed accessor for
 survives untouched. `Provenance.ToYaml` has exactly one caller
-(`OkfDocumentBuilder.cs:176`), so the serializer reaches only the
-producer/builder path, never `fmt`. The gap is therefore **blindness, not data
+(`OkfDocumentBuilder.Build`), so the serializer reaches only the
+producer/builder path, never `fmt`. Both halves of that — and so sections 1, 4
+and 8 of this document — are pinned by `ProvenanceSerializerReachTests`: `okf fmt` must keep a
+`sources` entry `ToYaml` would rewrite, and a new direct caller of `ToYaml` fails
+a smoke check that names this document. The gap is therefore **blindness, not data
 loss**: the value sits in the file, correctly preserved, and the library cannot
 see it, cannot check it, and cannot hand it to anyone.
 
