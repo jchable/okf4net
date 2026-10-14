@@ -514,14 +514,26 @@ public sealed class Bundle
     }
 
     /// <summary>
-    /// Builds the outbound link and backlink maps for all concepts.
+    /// Builds the outbound link and backlink maps for all concepts. Internal
+    /// rather than private only so <c>BundleBacklinksTests</c> can run it on
+    /// in-memory concepts at a scale no test should write to disk.
     /// </summary>
-    private static (Dictionary<ConceptId, List<ResolvedLink>> Outbound, Dictionary<ConceptId, List<ConceptId>> Backlinks) BuildGraph(
+    internal static (Dictionary<ConceptId, List<ResolvedLink>> Outbound, Dictionary<ConceptId, List<ConceptId>> Backlinks) BuildGraph(
         List<Concept> concepts,
         Dictionary<ConceptId, int> index)
     {
         var outbound = new Dictionary<ConceptId, List<ResolvedLink>>();
         var backlinks = new Dictionary<ConceptId, List<ConceptId>>();
+
+        // The (target, source) edges already credited as backlinks. A source is
+        // added to a target's list only on its first citation of that target, so
+        // each list stays de-duplicated in first-citation order, i.e. in concept
+        // order; the set makes that membership test O(1) where a scan of the
+        // list was quadratic in a target's citer count (#148). It is exactly
+        // equivalent to scanning the list, since a target's list holds precisely
+        // the sources recorded in the set for that target -- including when two
+        // concepts share an id, which Load does not prevent.
+        var credited = new HashSet<(ConceptId Target, ConceptId Source)>();
 
         foreach (var c in concepts)
         {
@@ -535,7 +547,7 @@ public sealed class Bundle
                 }
 
                 var exists = index.ContainsKey(target);
-                if (exists)
+                if (exists && credited.Add((target, c.Id)))
                 {
                     if (!backlinks.TryGetValue(target, out var entry))
                     {
@@ -543,10 +555,7 @@ public sealed class Bundle
                         backlinks[target] = entry;
                     }
 
-                    if (!entry.Contains(c.Id))
-                    {
-                        entry.Add(c.Id);
-                    }
+                    entry.Add(c.Id);
                 }
 
                 resolved.Add(new ResolvedLink(target, exists, link.Text, link.Target));
