@@ -46,6 +46,7 @@ Lot A is additive on the public API and changes behaviour only where §10 of the
 - **r6 (2026-10-14)** — after a fifth **executed** review of r5 (`93f3bac`): verdict "ready after two targeted corrections", every r4 reproduction closed, one blocker and one fixture failure left. Fixed here:
   - **Blocking.** The file/directory conflict check still excluded case-doomed keys (`keys = structural.Where(k => !doomed.Contains(k))`), so for `x.md`, `x.md/A.sql`, `x.md/a.sql` the children were rejected but `x.md` — an object that is also a prefix — was loaded, and a late `x.md/new.sql` resolved: conflicts are computed on **all** structural keys (Task 2), with the mixed case added to the validator and loader tests (Tasks 2, 6).
   - **Important.** The deferred-replacement test now ran, and failed in its own cleanup: `Directory.Delete(root, recursive: true)` refuses to traverse the junction it had planted; the junction is deleted first, non-recursively (Task 4).
+- **r7 (2026-10-14)** — after a sixth **executed** review of r6 (`a092d16`): both r6 corrections confirmed (91 targeted tests green, an independent oracle agreeing on 26 244 duplicate/collision/conflict combinations), one blocker left. `structural` was built from the admitted candidates, so a key refused by `CheckKey` — a host validator refusing `x.md`, or `Strict` refusing `x.md/con.sql` — lost its physical presence and its child or parent came back in. Every name that parses now enters `structural` **before** `CheckKey` and before duplicate handling; admission decides what is accepted and diagnosed, never what exists (Task 2, with validator and loader regressions in Tasks 2 and 6).
 
 ## Global Constraints
 
@@ -746,6 +747,21 @@ public class BundleKeyValidatorTests
     }
 
     [Fact]
+    public void A_restricting_validator_cannot_erase_an_objects_structural_presence()
+    {
+        // The host refuses the parent: the child must not come back in through the gap.
+        var v = new BundleKeyValidator(BundleKeyConstraintSets.Linux, BundleKeyPolicy.Native, [k => k.ToString() == "x.md" ? "refused by the host" : null]);
+        var r = v.ValidateTree(["x.md", "x.md/ok.sql"]);
+        Assert.Empty(r.Accepted);
+        Assert.Equal([BundleKey.Parse("x.md")], r.RejectedPrefixes);
+
+        // Same with a Strict rejection of the child: the parent is still an object-and-prefix.
+        var strict = Strict().ValidateTree(["x.md", "x.md/con.sql"]);
+        Assert.Empty(strict.Accepted);
+        Assert.Equal([BundleKey.Parse("x.md")], strict.RejectedPrefixes);
+    }
+
+    [Fact]
     public void FoldKeyText_folds_only_when_a_folding_constraint_is_in_force()
     {
         Assert.Equal("AB/X.MD", Strict().FoldKeyText(BundleKey.Parse("Ab/x.md")));
@@ -1058,6 +1074,12 @@ public sealed class BundleKeyValidator
         var candidates = new List<(string Raw, BundleKey Key)>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var duplicates = new HashSet<string>(StringComparer.Ordinal);
+        // Structural presence: every name that is a key at all, recorded BEFORE CheckKey and
+        // before duplicate handling. Admission (policy, extra validators) decides what is
+        // accepted and diagnosed; it never erases the fact that an object is THERE, which is
+        // what the collision and conflict checks reason about (sixth review: a host validator
+        // refusing `x.md` must not rehabilitate `x.md/ok.sql`).
+        var structural = new HashSet<BundleKey>();
 
         foreach (var raw in rawNames)
         {
@@ -1077,6 +1099,7 @@ public sealed class BundleKeyValidator
                 continue;
             }
 
+            structural.Add(key);
             var keyReason = CheckKey(key);
             if (keyReason is not null)
             {
@@ -1087,18 +1110,9 @@ public sealed class BundleKeyValidator
             candidates.Add((raw, key));
         }
 
-        // A duplicated name is rejected, but the object it names is still THERE: it keeps
-        // its structural presence for the collision and conflict checks (a duplicated `x`
-        // still conflicts with `x/y.sql`; r3 dropped it first and let `x/y.sql` through).
-        var structural = new HashSet<BundleKey>(candidates.Select(c => c.Key));
-        foreach (var raw in duplicates)
-        {
-            if (BundleKey.TryParse(raw, out var dupKey, out _))
-            {
-                structural.Add(dupKey);
-            }
-        }
-
+        // A duplicated name is rejected, but the object it names is still THERE: its first
+        // occurrence entered `structural` above, so a duplicated `x` still conflicts with
+        // `x/y.sql` (r3 dropped it first and let `x/y.sql` through).
         candidates.RemoveAll(c => duplicates.Contains(c.Raw));
 
         var doomed = new HashSet<BundleKey>();
@@ -3045,6 +3059,32 @@ public class BundleProviderLoadTests
         bundle.TryResolveResourceKey(concept, "/" + late, out _, out var status);
         Assert.Equal(ResourceResolutionStatus.Unsafe, status);
         Assert.Throws<UnauthorizedAccessException>(() => bundle.ReadResourceText(BundleKey.Parse(late)));
+    }
+
+    [Fact]
+    public void A_host_validator_that_refuses_a_parent_does_not_rehabilitate_its_children()
+    {
+        var p = new InMemoryBundleProvider(BundleKeyConstraintSets.Linux) // native: FileDirectoryConflict
+            .Add("c/rev.md", "---\ntype: Attested Computation\n---\n")
+            .Add("x.md", "---\ntype: T\n---\n")
+            .Add("x.md/ok.sql", "ok");
+        var options = new BundleLoadOptions
+        {
+            KeyPolicy = BundleKeyPolicy.Native,
+            ExtraKeyValidators = [k => k.ToString() == "x.md" ? "refused by the host" : null],
+        };
+        var bundle = Bundle.Load(p, options);
+        var concept = bundle.Get(ConceptId.Parse("c/rev"))!;
+        Assert.DoesNotContain(bundle.Concepts, c => c.Id == ConceptId.Parse("x"));
+        Assert.Equal([BundleKey.Parse("x.md")], bundle.RejectedPrefixes);
+
+        bundle.TryResolveResourceKey(concept, "/x.md/ok.sql", out _, out var status);
+        Assert.Equal(ResourceResolutionStatus.Unsafe, status);
+        Assert.Throws<UnauthorizedAccessException>(() => bundle.ReadResourceText(BundleKey.Parse("x.md/ok.sql")));
+
+        p.Add("x.md/new.sql", "late");
+        bundle.TryResolveResourceKey(concept, "/x.md/new.sql", out _, out status);
+        Assert.Equal(ResourceResolutionStatus.Unsafe, status);
     }
 
     [Fact]
