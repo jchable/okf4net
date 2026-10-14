@@ -89,6 +89,13 @@ internal static class AuditText
         return $"recorded {Field(record.ConceptId)}  {Field(by)}  {Field(record.At)}{replaces}";
     }
 
+    /// <summary>Renders one <c>okf verify --dry-run</c> line.</summary>
+    /// <param name="conceptId">The id as the caller named it.</param>
+    /// <param name="by">The actor the caller would verify as.</param>
+    /// <param name="at">The caller's <c>--at</c>, or <see langword="null"/> when the stamp would be "now".</param>
+    public static string FormatDryRunRecord(string conceptId, string by, string? at) =>
+        $"would record {conceptId}  {by}  {at ?? "(now)"}";
+
     /// <summary>
     /// One interpolated value, made safe to sit inside a single rendered
     /// line: returned verbatim when it carries nothing that would break a

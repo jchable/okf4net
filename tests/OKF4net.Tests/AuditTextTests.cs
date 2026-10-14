@@ -184,6 +184,110 @@ public class AuditTextTests
     }
 
     /// <summary>
+    /// The superseded stamp is the one value read from the BUNDLE rather than
+    /// from a caller, so "no control character" is not enough for it to be
+    /// printed raw: a stored value made of literal <c>"</c> and <c>\</c>
+    /// characters used to render byte-identical to a genuinely quoted LF
+    /// value, and an empty or blank one shifted the two-space field
+    /// separators a <c>cut</c>-based pipeline splits on. It is raw ONLY when
+    /// it is a canonical stamp in exactly the form <c>okf verify</c> writes,
+    /// and quoted otherwise -- so a raw value is always a real timestamp, and
+    /// a quoted one always means "stored non-canonical value".
+    /// </summary>
+    /// <param name="stored">The <c>at</c> already stored in the concept.</param>
+    /// <param name="rendered">What the <c>(replaces …)</c> suffix must show.</param>
+    [Theory]
+    // Literal quote, backslash and 'n' -- no control character at all.
+    [InlineData("\"2026-01-01T00:00:00Z\\nrecorded secrets/master-key  human:ceo  2020-01-01T00:00:00Z\"",
+        "\"\\\"2026-01-01T00:00:00Z\\\\nrecorded secrets/master-key  human:ceo  2020-01-01T00:00:00Z\\\"\"")]
+    [InlineData("", "\"\"")]
+    [InlineData("   ", "\"   \"")]
+    // Readable, even §5-conformant, but not the form verify writes.
+    [InlineData("2026-01-01", "\"2026-01-01\"")]
+    [InlineData("2026-01-01T00:00:00+00:00", "\"2026-01-01T00:00:00+00:00\"")]
+    [InlineData(" 2026-01-01T00:00:00Z", "\" 2026-01-01T00:00:00Z\"")]
+    [InlineData("2026-02-30T00:00:00Z", "\"2026-02-30T00:00:00Z\"")]
+    public void FormatVerificationRecord_quotes_a_non_canonical_superseded_stamp(string stored, string rendered)
+    {
+        var record = new VerificationRecord("metrics/dau", "2026-08-28T09:14:00Z", stored);
+
+        var line = AuditText.FormatVerificationRecord(record, "human:ada");
+
+        Assert.Equal($"recorded metrics/dau  human:ada  2026-08-28T09:14:00Z  (replaces {rendered})", line);
+        AssertOneInertLine(line);
+    }
+
+    /// <summary>
+    /// The mimicry case of the theory above, stated as the property it
+    /// protects: a stored value spelled to LOOK like an escaped LF can no
+    /// longer render the same bytes as a value that really holds one.
+    /// </summary>
+    [Fact]
+    public void A_stored_lookalike_cannot_render_like_a_genuinely_escaped_value()
+    {
+        const string Tail = "recorded secrets/master-key  human:ceo  2020-01-01T00:00:00Z";
+        var genuine = new VerificationRecord("metrics/dau", "2026-08-28T09:14:00Z", "2026-01-01T00:00:00Z" + (char)0x000A + Tail);
+        var lookalike = new VerificationRecord("metrics/dau", "2026-08-28T09:14:00Z", "\"2026-01-01T00:00:00Z\\n" + Tail + "\"");
+
+        Assert.NotEqual(
+            AuditText.FormatVerificationRecord(genuine, "human:ada"),
+            AuditText.FormatVerificationRecord(lookalike, "human:ada"));
+    }
+
+    /// <summary>
+    /// <c>okf verify --dry-run</c>'s line goes through the same renderer as the
+    /// real one, so the two record shapes cannot drift. Ordinary values render
+    /// exactly as the CLI always printed them (<c>CliTests</c> pins the same
+    /// bytes end to end); an absent stamp is the fixed placeholder
+    /// <c>(now)</c>, never quoted.
+    /// </summary>
+    [Fact]
+    public void FormatDryRunRecord_matches_the_cli_bytes()
+    {
+        Assert.Equal(
+            "would record metrics/dau  human:ada  2026-08-28T09:14:00Z",
+            AuditText.FormatDryRunRecord("metrics/dau", "human:ada", "2026-08-28T09:14:00Z"));
+        Assert.Equal(
+            "would record metrics/dau  human:ada  (now)",
+            AuditText.FormatDryRunRecord("metrics/dau", "human:ada", null));
+    }
+
+    /// <summary>
+    /// The dry-run line holds the same contract as the record line: a hostile
+    /// id, actor or stamp, fed straight in past every caller-side refusal,
+    /// comes out quoted on one line.
+    /// </summary>
+    /// <param name="field">Which interpolated field carries the hostile value.</param>
+    /// <param name="c">The hostile character, as a code point.</param>
+    /// <param name="escaped">How <c>DebugQuote</c> spells that character.</param>
+    [Theory]
+    [MemberData(nameof(HostileFields))]
+    public void FormatDryRunRecord_keeps_a_hostile_field_on_one_line(string field, int c, string escaped)
+    {
+        var hostile = "x" + (char)c + Forged;
+        var quoted = "\"x" + escaped + Forged + "\"";
+
+        var (line, expected) = field switch
+        {
+            "id" => (
+                AuditText.FormatDryRunRecord(hostile, "human:ada", null),
+                $"would record {quoted}  human:ada  (now)"),
+            "by" => (
+                AuditText.FormatDryRunRecord("metrics/dau", hostile, null),
+                $"would record metrics/dau  {quoted}  (now)"),
+            // The dry run has no superseded stamp: both stamp rows land on `at`.
+            _ => (
+                AuditText.FormatDryRunRecord("metrics/dau", "human:ada", hostile),
+                $"would record metrics/dau  human:ada  {quoted}"),
+        };
+
+        Assert.Equal(expected, line);
+        Assert.Single(line.Split('\n', '\r', (char)0x000B, (char)0x000C, (char)0x0085, (char)0x2028, (char)0x2029));
+        Assert.False(LineSafeText.ContainsControlCharacter(line), $"control character survived in: {line}");
+        Assert.StartsWith("would record ", line, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// One line, and nothing in it that ends a line or drives a terminal:
     /// split on every terminator (not on <c>\n</c> alone -- the blind spot an
     /// external audit of PR #108 found), then check no C0/C1 control or
