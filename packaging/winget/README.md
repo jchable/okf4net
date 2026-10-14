@@ -10,8 +10,9 @@ scripts:
 
 Both are portable zips (a single `.exe` nested inside).
 **`Coderise.OKF4net.Render` was first submitted by hand for 0.6.0** (microsoft/winget-pkgs
-PR 444993, a new package) and was still waiting in moderation on 2026-10-14. Until it is
-merged, `winget-submit-render` stays skipped — see *Submitting a brand-new package* below.
+PR 444993, closed on 2026-10-14: the 0.6.0 binary exited 1 without arguments, which the
+validator rejects) and again for 0.7.0 (PR 452891, waiting in moderation on 2026-10-14).
+Until it is merged, `winget-submit-render` stays skipped — see *Submitting a brand-new package* below.
 
 ## How it works
 
