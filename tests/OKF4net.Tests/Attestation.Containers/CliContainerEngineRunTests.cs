@@ -250,18 +250,48 @@ public class CliContainerEngineRunTests
     /// for that child with no bound at all: an engine whose daemon has gone away hangs
     /// on <c>kill</c>, which turned the timeout <see cref="CliContainerEngine.RunAsync"/>
     /// promised into a hang. The "engine" here always hangs on <c>run</c> (so the
-    /// outer run genuinely times out) and hangs 20 s on <c>kill</c> too, standing in
-    /// for exactly that unresponsive daemon, and records one line per <c>kill</c>
-    /// invocation to a marker file so this test can also assert no retry was
-    /// attempted -- a kill that already hung once will not answer a second time
-    /// either, and the caller is already past its own deadline.
+    /// outer run genuinely times out) and hangs on <c>kill</c> too, standing in for
+    /// exactly that unresponsive daemon. Its <c>kill</c> writes a <c>kill</c> line to a
+    /// marker file as it starts, sleeps <see cref="HungKillSeconds"/>, then writes a
+    /// <c>done</c> line -- a line only a <c>kill</c> child that was left to run out its
+    /// hang can write. The <c>kill</c> lines let this test assert no retry was attempted
+    /// -- a kill that already hung once will not answer a second time either, and the
+    /// caller is already past its own deadline.
     /// <para>
-    /// <see cref="CliContainerEngine.TeardownBudget"/> is shrunk to 1 s here instead of
-    /// asserting against its 3 s production default: the old, unbounded-per-attempt
-    /// behaviour this replaces takes at least 5 s regardless of that budget (its bound
-    /// was a hardcoded per-attempt 5 s, never a shared deadline), so a 1 s budget still
-    /// gives a wide, CI-safe margin either side of the 4 s assertion below, wider than
-    /// a straight 3 s-budget-vs-old-5 s comparison would on a loaded runner.
+    /// The hung child is the clock (issue #149). This test used to time the whole
+    /// <see cref="CliContainerEngine.RunAsync"/> call against a fixed 4 s, so that one
+    /// number had to absorb spawning the <c>run</c> process (a freshly written script,
+    /// on a shared Windows runner), the 300 ms timeout, spawning <c>kill</c>, the 1 s
+    /// budget and two process-tree kills; a GitHub Windows runner needed 4.25-4.3 s
+    /// for all of that, against ~1 s locally. Now the assertion is "no <c>done</c>
+    /// line by the time <see cref="CliContainerEngine.RunAsync"/> returns", and the
+    /// window it measures starts only when the <c>kill</c> child itself starts its
+    /// sleep: nothing before that point -- spawning <c>run</c>, the timeout, JIT, an
+    /// antivirus scan of the script -- can fail it any more.
+    /// </para>
+    /// <para>
+    /// The margins, with <see cref="CliContainerEngine.TeardownBudget"/> shrunk to 1 s
+    /// and a <see cref="HungKillSeconds"/> (4 s) hang. The budget's cancellation starts
+    /// once <c>kill</c> has been started, and the child's sleep starts after that (once
+    /// its shell is up), so the correct code fails this test only if killing the
+    /// <c>kill</c> process tree takes more than 4 - 1 = 3 s beyond the budget firing --
+    /// a margin for teardown latency alone, wider than the ~2.7 s the old bound left
+    /// for the whole run. The regressions it guards against: an unbounded wait on
+    /// <c>kill</c> lets the child finish and write <c>done</c> whatever the timing; the
+    /// fixed 5 s per-attempt bound that the shared budget replaced does too,
+    /// as long as the child's shell reaches its sleep within 5 - 4 = 1 s of being
+    /// started -- on a run where it does not, that variant goes unnoticed for that run
+    /// (a missed detection, never a false failure). The budget stays at 1 s rather
+    /// than smaller so the one-<c>kill</c>-line assertion still means something: a
+    /// <c>kill</c> that failed fast would leave more than <c>RetryThreshold</c> (500 ms)
+    /// of a 1 s budget and be retried, so only the hang consuming the budget explains
+    /// a single attempt.
+    /// </para>
+    /// <para>
+    /// The elapsed-time check is a backstop, not the proof: it catches a teardown that
+    /// waits out the 20 s <c>run</c> hang instead (e.g. one that stopped killing the
+    /// <c>run</c> process tree), with a 15 s bound that is more than ten times the
+    /// ~1.3 s the correct path spends on timeout plus budget.
     /// </para>
     /// </summary>
     [Fact]
@@ -277,10 +307,14 @@ public class CliContainerEngineRunTests
 
         var ex = await Assert.ThrowsAsync<ContainerExecutionException>(
             async () => await engine.RunAsync(Spec(TimeSpan.FromMilliseconds(300))));
+        var elapsed = clock.Elapsed;
 
         Assert.Contains("exceeded its timeout", ex.Message);
-        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(4), $"the timed-out run took {clock.Elapsed}");
-        Assert.Equal(1, CountMarkerLines(marker));
+        Assert.False(
+            CountMarkerLines(marker, "done") > 0,
+            $"the hung kill ran out its {HungKillSeconds} s sleep before the timed-out run returned (after {elapsed}): teardown waited on it instead of cutting it off at the 1 s budget");
+        Assert.Equal(1, CountMarkerLines(marker, "kill"));
+        Assert.True(elapsed < TimeSpan.FromSeconds(15), $"the timed-out run took {elapsed}");
     }
 
     /// <summary>
@@ -339,17 +373,29 @@ public class CliContainerEngineRunTests
         var bound = budget + TimeSpan.FromSeconds(3);
         Assert.Contains("exceeded its timeout", ex.Message);
         Assert.True(clock.Elapsed < bound, $"the timed-out run took {clock.Elapsed} against a bound of {bound} (budget {budget})");
-        Assert.Equal(2, CountMarkerLines(marker));
+        Assert.Equal(2, CountMarkerLines(marker, "kill"));
     }
 
-    private static int CountMarkerLines(string markerFile) =>
+    /// <summary>
+    /// How long the <see cref="KillMode.Hang"/> fake <c>kill</c> sleeps before writing its
+    /// <c>done</c> line; see <see cref="A_hung_engine_kill_does_not_hang_the_timed_out_run"/>
+    /// for why 4 s. On Windows the sleep is <c>ping -n 5 127.0.0.1</c>, whose four
+    /// one-second intervals only ever run long, never short.
+    /// </summary>
+    private const int HungKillSeconds = 4;
+
+    private static int CountMarkerLines(string markerFile, string token) =>
         File.Exists(markerFile)
-            ? File.ReadAllLines(markerFile).Count(static line => line.Length > 0)
+            ? File.ReadAllLines(markerFile).Count(line => line.Trim() == token)
             : 0;
 
     private enum KillMode
     {
-        /// <summary>Hangs for 20 s and never exits on its own -- the unresponsive-daemon case.</summary>
+        /// <summary>
+        /// Sleeps <see cref="HungKillSeconds"/>, then writes a <c>done</c> marker line and
+        /// exits non-zero -- the unresponsive-daemon case, which teardown must cut off
+        /// before that line is written.
+        /// </summary>
         Hang,
 
         /// <summary>Targets roughly 750 ms then exits non-zero -- the slow-but-responsive, still-failing case.</summary>
@@ -360,16 +406,18 @@ public class CliContainerEngineRunTests
     /// An "engine" that dispatches on its first argument the way a real one does:
     /// <c>run</c> always hangs for <paramref name="runHangSeconds"/> (so
     /// <see cref="CliContainerEngine.RunAsync"/> genuinely times out and proceeds to
-    /// teardown), while <c>kill</c> appends one line to <paramref name="markerFile"/>
-    /// -- so a test can count how many kill attempts actually ran -- and then behaves
-    /// per <paramref name="killMode"/>.
+    /// teardown), while <c>kill</c> appends one <c>kill</c> line to
+    /// <paramref name="markerFile"/> -- so a test can count how many kill attempts
+    /// actually ran -- and then behaves per <paramref name="killMode"/>.
     /// </summary>
     private static string DispatchingEngine(TempDir tmp, string markerFile, int runHangSeconds, KillMode killMode)
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
+            // `echo kill>>file`, not `echo kill >> file`: cmd would keep the space
+            // before the redirection as part of the line.
             var killBody = killMode == KillMode.Hang
-                ? "ping -n 21 127.0.0.1 >nul\r\nexit /b 1\r\n"
+                ? $"ping -n {HungKillSeconds + 1} 127.0.0.1 >nul\r\necho done>>\"{markerFile}\"\r\nexit /b 1\r\n"
                 : "ping -n 1 -w 750 192.0.2.1 >nul\r\nexit /b 1\r\n";
             return tmp.Write(
                 "engine.cmd",
@@ -378,18 +426,18 @@ public class CliContainerEngineRunTests
                 + $"ping -n {runHangSeconds + 1} 127.0.0.1 >nul\r\n"
                 + "exit /b 0\r\n"
                 + ":kill\r\n"
-                + $"echo x >> \"{markerFile}\"\r\n"
+                + $"echo kill>>\"{markerFile}\"\r\n"
                 + killBody);
         }
 
         var killBodySh = killMode == KillMode.Hang
-            ? "sleep 20\n"
+            ? $"sleep {HungKillSeconds}\n  echo done >> '{markerFile}'\n  exit 1\n"
             : "sleep 0.75\nexit 1\n";
         var path = tmp.Write(
             "engine.sh",
             "#!/bin/sh\n"
             + "if [ \"$1\" = \"kill\" ]; then\n"
-            + $"  echo x >> '{markerFile}'\n"
+            + $"  echo kill >> '{markerFile}'\n"
             + $"  {killBodySh}"
             + "else\n"
             + $"  sleep {runHangSeconds}\n"
