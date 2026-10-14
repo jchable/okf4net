@@ -7,10 +7,10 @@
     <!--
       Single source of truth for the version across every project: the
       packages release.yml packs (the libraries, the OKF4net.Cli and
-      OKF4net.Mcp tools) and what the okf and okf-render binaries report with
-      --version; harmless for the projects nothing packs or ships, such as
-      OKF4net.Tests, which just inherit an unused MSBuild property. release.yml's `dotnet pack -p:Version=$VERSION`
-      passes the version as a command-line property at tag time, which
+      OKF4net.Mcp tools) and the version the okf and okf-render binaries
+      report; harmless for the projects nothing packs or ships, such as
+      OKF4net.Tests, which just inherit an unused MSBuild property.
+      release.yml's `dotnet pack -p:Version=$VERSION` passes the version as a command-line property at tag time, which
       overrides this MSBuild-file value, so this default only matters for
       local/dev builds and `dotnet pack` runs without an explicit -p:Version.
     -->
