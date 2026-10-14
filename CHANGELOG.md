@@ -145,9 +145,60 @@ and this project adheres to
   thread with too little stack left, a document or value within the limit is
   refused with `nesting depth limit exceeded: not enough stack left on this
   thread`, where it would otherwise have crashed the process.
+- **Dependencies (#190):** `Microsoft.Agents.AI` 1.23.0 → 1.24.0,
+  `Microsoft.Extensions.DependencyInjection.Abstractions` and
+  `Microsoft.Extensions.Hosting` 10.0.12 → 10.0.13; test-only
+  `Microsoft.NET.Test.Sdk` 18.10.1 → 18.11.0 and `xunit.runner.visualstudio`
+  4.0.0 → 4.0.1.
+- **Design documents say whether they shipped (#60, #61).** `CONTRIBUTING.md`
+  now describes the status line a design under `docs/superpowers/specs/`
+  should carry, and fifteen shipped designs that still read "awaiting an
+  implementation plan" now say where they shipped. A test now pins that
+  `okf fmt`, with or without `-w`, never routes `sources` through
+  `Provenance.ToYaml`, a fact three design sections rely on (#62).
 
 ### Fixed
 
+- **`okf verify` and `okf_verify` no longer let stored concept text forge or
+  disguise output lines (#123).** The `(replaces …)` suffix echoed the `at`
+  already stored in the concept with no escaping, so a line break in that value
+  printed a fake `recorded …` line. `AuditText.FormatVerificationRecord`, and
+  the `--dry-run` line, which now goes through the same renderer, make every
+  value they interpolate line-safe themselves. An id or actor carrying a
+  control character or U+2028/U+2029 is rendered as an escaped, quoted literal.
+  A timestamp is printed raw only when it is a canonical `yyyy-MM-ddTHH:mm:ssZ`
+  stamp, and is quoted otherwise. A stored frontmatter key named in the
+  in-place-edit refusal is quoted the same way. Ordinary values render exactly
+  as before. Bidirectional-control characters are left to #122.
+- **`YamlEmitter` no longer writes without bound a value that reuses
+  collections or long strings, and never produces a text over 256 MiB
+  characters (#189).** The OKF YAML subset has no anchors or aliases, so every
+  reuse is written in full. Two kinds of value built in code are now refused
+  with `YamlEmitException` (errors-as-data, like the nesting refusal): a value
+  whose reused collections, or reused strings of 1 KiB or more (values or
+  keys), would write more than 16 MiB of rewrites; and a value whose text
+  would pass 256 MiB characters. Before, such values hung, ran out of memory,
+  or threw `ArgumentOutOfRangeException` from `ToYamlString()`, `ToString()`,
+  logs and assertion messages: for example a 60-level chain of mappings each
+  holding the next one twice, or one 1 MB string held 3 000 times. Values that
+  reuse nothing, including everything the parser returns, are unchanged byte
+  for byte, and small reuse such as one list under two keys is written as
+  before. Deciding whether a string can be written unquoted no longer runs the
+  parser over a multi-line string, a check that used to cost about 23 times
+  the string's size.
+- **`Bundle.Load` no longer takes quadratic time in a concept's citer count**
+  when it builds backlinks, and footnote-reference extraction no longer takes
+  quadratic time in a body's distinct keys (#148). Both de-duplicate with a
+  hash set instead of a linear `List.Contains` scan. A hub cited by 100,000
+  concepts drops from ~170 s to under 1 s of graph building. Backlinks and
+  footnote keys keep the same entries in the same first-seen order.
+- **Test reliability (#149, #120).** The two container-teardown tests that
+  flaked on loaded Windows runners are timed from the fake engine's own `kill`
+  events and run in a non-parallel collection; the cause was thread-pool
+  starvation during the suite's parallel phase. `TempDir` now removes
+  junctions as links instead of letting .NET's recursive delete throw half-way,
+  so a full Windows run leaves no `okf4net-*` directory behind (33 before), and
+  a cleanup failure is reported instead of swallowed. Test-only.
 - **`YamlValue.Equals` and `GetHashCode` answer for any value built in code
   (#158).** Both recursed once per nesting level, and the parser's 1000 rule
   only bounds what it reads. A value built deeper, or a `YamlMapping` that
