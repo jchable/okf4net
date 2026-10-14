@@ -157,8 +157,12 @@ and this project adheres to
   of collections once, so two values are equal when they unfold into the same
   tree, however their sharing or cycles are laid out. On a tree, which covers
   everything the parser returns, the result is unchanged, NaN included: a
-  value holding NaN is still unequal to itself. `GetHashCode` reads at most
-  256 nodes breadth first, so equal values still hash alike, at bounded cost.
+  value holding NaN is still unequal to itself. Comparing two scalars still
+  allocates nothing. `GetHashCode` reads at most 1024 nodes breadth first, so
+  equal values still hash alike, at bounded cost. The price is that two
+  values differing only past their first 1024 nodes now share a hash, where
+  the old hash read everything. `BundleConceptWriter.ContainsNaN`, which runs
+  when `okf verify`'s round-trip comparison fails, no longer recurses either.
   The deep, cyclic and shared cases run in the hostile-input probe's child
   process. The test helper that measured depth in `YamlDepthSymmetryTests`
   recursed the same way and overflowed once on a Windows runner; it is

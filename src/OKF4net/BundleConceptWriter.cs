@@ -1237,13 +1237,43 @@ public sealed class BundleConceptWriter
     /// could not confirm the edit, instead of the generic message implying a
     /// real corruption.
     /// </summary>
-    internal static bool ContainsNaN(YamlValue value) => value switch
+    /// <remarks>
+    /// Walks without recursing, like <see cref="YamlValue.Equals(object?)"/>
+    /// right before it (#158): it runs exactly when that comparison has failed,
+    /// on a frontmatter that can be up to the parser's 1000 levels deep. That
+    /// frontmatter was parsed, so it is a tree: unlike <c>Equals</c>, this walk
+    /// does not guard against a value built in code that contains itself.
+    /// </remarks>
+    internal static bool ContainsNaN(YamlValue value)
     {
-        YamlFloat f => double.IsNaN(f.Value),
-        YamlMapping m => m.Entries.Any(e => ContainsNaN(e.Key) || ContainsNaN(e.Value)),
-        YamlSequence s => s.Items.Any(ContainsNaN),
-        _ => false,
-    };
+        var pending = new Stack<YamlValue>();
+        pending.Push(value);
+        while (pending.TryPop(out var node))
+        {
+            switch (node)
+            {
+                case YamlFloat f when double.IsNaN(f.Value):
+                    return true;
+                case YamlMapping m:
+                    foreach (var (key, entryValue) in m.Entries)
+                    {
+                        pending.Push(key);
+                        pending.Push(entryValue);
+                    }
+
+                    break;
+                case YamlSequence s:
+                    foreach (var item in s.Items)
+                    {
+                        pending.Push(item);
+                    }
+
+                    break;
+            }
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// Names WHICH part of the frontmatter actually diverged, for the

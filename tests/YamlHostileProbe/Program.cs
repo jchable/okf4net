@@ -145,6 +145,17 @@ static List<string> CyclicEquality()
 
     // A different key somewhere in the cycle.
     var other = SelfLoop("a", "c");
+
+    // A length-2 cycle whose root matches a's but whose SECOND node has
+    // another key: the difference is only reached through a back edge, after
+    // a's node has already been met once (with the root) and must be compared
+    // again with a new partner.
+    var p = new YamlMapping();
+    var q = new YamlMapping();
+    p.Insert("a", q);
+    p.Insert("b", q);
+    q.Insert("a", p);
+    q.Insert("c", p);
     return
     [
         Ask("a cycle equals an identical cycle", () => a.Equals(b)),
@@ -152,6 +163,8 @@ static List<string> CyclicEquality()
         Ask("it hashes like both", () => a.GetHashCode() == b.GetHashCode() && a.GetHashCode() == m.GetHashCode()),
         Ask("a cycle with another key is unequal", () => a.Equals(other)),
         Ask("a cycle is unequal to a tree", () => a.Equals(Built(3))),
+        Ask("it is unequal to a longer cycle that differs only in its second node", () => a.Equals(p)),
+        Ask("so is that cycle to it", () => p.Equals(a)),
     ];
 
     static YamlMapping SelfLoop(string first, string second)

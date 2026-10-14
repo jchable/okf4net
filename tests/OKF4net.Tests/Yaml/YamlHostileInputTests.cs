@@ -113,6 +113,8 @@ public class YamlHostileInputTests
         "it hashes like both: True",
         "a cycle with another key is unequal: False",
         "a cycle is unequal to a tree: False",
+        "it is unequal to a longer cycle that differs only in its second node: False",
+        "so is that cycle to it: False",
     })]
     [InlineData("value-diamonds", new[]
     {

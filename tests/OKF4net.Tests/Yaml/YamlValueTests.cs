@@ -205,12 +205,33 @@ public class YamlValueTests
     }
 
     /// <summary>
-    /// The hash reads a bounded number of nodes; values far larger than that
-    /// still hash alike when equal, and still compare unequal when they differ
-    /// only in a node the hash never read.
+    /// The comparison remembers pairs it has met, never one side alone: a
+    /// node shared under two keys is compared with each of its two partners,
+    /// whichever side holds the sharing. Remembering only the left node (or
+    /// only the right) would skip the second partner and call these equal.
     /// </summary>
     [Fact]
-    public void Equal_values_larger_than_the_hash_reads_hash_alike()
+    public void A_shared_subtree_is_compared_with_each_of_its_partners()
+    {
+        var shared = YamlValue.Parse("k: [1, 2]\n");
+        var withSharing = new YamlMapping();
+        withSharing.Insert("x", shared);
+        withSharing.Insert("y", shared);
+
+        var differentSecond = YamlValue.Parse("x:\n  k: [1, 2]\ny:\n  k: [1, 3]\n");
+        Assert.NotEqual(withSharing, differentSecond);
+        Assert.NotEqual(differentSecond, withSharing);
+    }
+
+    /// <summary>
+    /// The hash reads a bounded number of nodes, so this value, larger than
+    /// that, is only partly read. Equal copies still hash alike, and two
+    /// values that differ only where the hash never reads still compare
+    /// unequal. The bound itself is guarded where breaking it would hang, by
+    /// the cyclic and diamond cases of <c>YamlHostileInputTests</c>.
+    /// </summary>
+    [Fact]
+    public void Values_larger_than_the_hash_reads_stay_consistent_with_equality()
     {
         static YamlSequence Items(string last) =>
             new([.. Enumerable.Range(0, 10_000).Select(i => (YamlValue)new YamlInt(i)), new YamlString(last)]);

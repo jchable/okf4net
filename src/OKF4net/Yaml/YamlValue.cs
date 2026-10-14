@@ -137,14 +137,22 @@ public abstract class YamlValue
     /// <inheritdoc cref="Equals(object?)"/>
     private static bool ValueEquals(YamlValue a, YamlValue b)
     {
+        // Most comparisons are of two scalars (the emitter asks one for every
+        // string it writes): those allocate nothing.
+        if (!IsCollection(a) || !IsCollection(b))
+        {
+            return ScalarEquals(a, b);
+        }
+
         // Every pair still to compare. Equality holds when every pair reachable
         // from (a, b) matches; a pair of collections met again has been or is
         // being compared already, so it is skipped rather than walked twice.
         // That is what ends the walk on a cycle and keeps shared subtrees
         // linear; on a tree no pair ever repeats, so the result is plain
-        // structural equality.
+        // structural equality. The pair is remembered as a pair: one node met
+        // twice with two different partners is compared with each.
         var pending = new Stack<(YamlValue, YamlValue)>();
-        HashSet<(YamlValue, YamlValue)>? compared = null;
+        var compared = new HashSet<(YamlValue, YamlValue)>(ReferencePairComparer.Instance);
         pending.Push((a, b));
         while (pending.TryPop(out var pair))
         {
@@ -156,7 +164,7 @@ public abstract class YamlValue
                         return false;
                     }
 
-                    if ((compared ??= new HashSet<(YamlValue, YamlValue)>(ReferencePairComparer.Instance)).Add(pair))
+                    if (compared.Add(pair))
                     {
                         // Pushed last first, so items are compared in order.
                         for (var i = x.Items.Count - 1; i >= 0; i--)
@@ -173,7 +181,7 @@ public abstract class YamlValue
                         return false;
                     }
 
-                    if ((compared ??= new HashSet<(YamlValue, YamlValue)>(ReferencePairComparer.Instance)).Add(pair))
+                    if (compared.Add(pair))
                     {
                         var xs = x.Entries;
                         var ys = y.Entries;
@@ -199,6 +207,8 @@ public abstract class YamlValue
         return true;
     }
 
+    private static bool IsCollection(YamlValue value) => value is YamlSequence or YamlMapping;
+
     /// <summary>Equality of two values that are not both sequences or both mappings.</summary>
     private static bool ScalarEquals(YamlValue a, YamlValue b) => (a, b) switch
     {
@@ -212,11 +222,11 @@ public abstract class YamlValue
 
     /// <summary>
     /// How many nodes of a value <see cref="GetHashCode"/> reads, breadth
-    /// first from the root. A frontmatter rarely holds more, so in practice
-    /// the whole value is hashed; past it, values that differ only further
-    /// down share a hash, which a hash is allowed to do.
+    /// first from the root. A frontmatter rarely holds as many, so in practice
+    /// the whole value is hashed. Values that differ only past it share a
+    /// hash: legal for a hash, and the price of a bounded cost.
     /// </summary>
-    private const int HashedNodeBudget = 256;
+    private const int HashedNodeBudget = 1024;
 
     /// <summary>
     /// Consistent with <see cref="Equals(object?)"/>: equal values always
@@ -233,65 +243,74 @@ public abstract class YamlValue
     public override int GetHashCode()
     {
         var hash = new HashCode();
+        if (!IsCollection(this))
+        {
+            AddScalar(ref hash, this);
+            return hash.ToHashCode();
+        }
+
         var queue = new Queue<YamlValue>();
         queue.Enqueue(this);
         for (var budget = HashedNodeBudget; budget > 0 && queue.TryDequeue(out var node); budget--)
         {
+            // Reads left after this node: nothing past them is queued.
+            var room = budget - 1;
             switch (node)
             {
-                case YamlNull:
-                    hash.Add(typeof(YamlNull));
-                    break;
-                case YamlBool b:
-                    hash.Add(typeof(YamlBool));
-                    hash.Add(b.Value);
-                    break;
-                case YamlInt i:
-                    hash.Add(typeof(YamlInt));
-                    hash.Add(i.Value);
-                    break;
-                case YamlFloat f:
-                    hash.Add(typeof(YamlFloat));
-                    hash.Add(f.Value == 0.0 ? 0.0 : f.Value);
-                    break;
-                case YamlString s:
-                    hash.Add(typeof(YamlString));
-                    hash.Add(s.Value);
-                    break;
                 case YamlSequence seq:
                     hash.Add(typeof(YamlSequence));
                     hash.Add(seq.Items.Count);
-                    foreach (var item in seq.Items)
+                    for (var i = 0; i < seq.Items.Count && queue.Count < room; i++)
                     {
-                        // Nothing past the budget is read, so nothing past it is queued.
-                        if (queue.Count >= budget)
-                        {
-                            break;
-                        }
-
-                        queue.Enqueue(item);
+                        queue.Enqueue(seq.Items[i]);
                     }
 
                     break;
                 case YamlMapping map:
                     hash.Add(typeof(YamlMapping));
                     hash.Add(map.Count);
-                    foreach (var (key, value) in map.Entries)
+                    var entries = map.Entries;
+                    for (var i = 0; i < entries.Count && queue.Count + 2 <= room; i++)
                     {
-                        if (queue.Count >= budget)
-                        {
-                            break;
-                        }
-
-                        queue.Enqueue(key);
-                        queue.Enqueue(value);
+                        queue.Enqueue(entries[i].Key);
+                        queue.Enqueue(entries[i].Value);
                     }
 
+                    break;
+                default:
+                    AddScalar(ref hash, node);
                     break;
             }
         }
 
         return hash.ToHashCode();
+    }
+
+    /// <summary>Adds one value that is not a collection to <paramref name="hash"/>.</summary>
+    private static void AddScalar(ref HashCode hash, YamlValue value)
+    {
+        switch (value)
+        {
+            case YamlNull:
+                hash.Add(typeof(YamlNull));
+                break;
+            case YamlBool b:
+                hash.Add(typeof(YamlBool));
+                hash.Add(b.Value);
+                break;
+            case YamlInt i:
+                hash.Add(typeof(YamlInt));
+                hash.Add(i.Value);
+                break;
+            case YamlFloat f:
+                hash.Add(typeof(YamlFloat));
+                hash.Add(f.Value == 0.0 ? 0.0 : f.Value);
+                break;
+            case YamlString s:
+                hash.Add(typeof(YamlString));
+                hash.Add(s.Value);
+                break;
+        }
     }
 
     /// <summary>Compares pairs of values by reference: the set of pairs <see cref="ValueEquals"/> has already met.</summary>
