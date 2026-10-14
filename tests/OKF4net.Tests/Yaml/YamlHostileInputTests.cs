@@ -132,6 +132,46 @@ public class YamlHostileInputTests
     }
 
     /// <summary>
+    /// Emitting a value built in code whose text would be out of proportion to
+    /// the value (#189). The OKF YAML subset has no anchors or aliases, so a
+    /// reuse can only be written in full: a chain of 60 mappings each holding
+    /// the next one under two keys unfolds into 2^60 leaves, one 10 000-entry
+    /// mapping held 100 000 times by a sequence into a billion lines, and one
+    /// 1 000 000-character string held 3 000 times (through one
+    /// <c>YamlString</c>, through 3 000 sharing the .NET string, or as the key
+    /// of 3 000 mappings) into 3 billion characters. All are refused by the
+    /// sharing limit; a short string reused 300 000 times, which that limit
+    /// lets through, is refused by the total output limit. Each refusal is the
+    /// emitter's own exception in a clean exit, instead of writing until the
+    /// deadline (a hang) or memory runs out (an "unexpected"
+    /// OutOfMemoryException or ArgumentOutOfRangeException, neither of them an
+    /// <c>OkfException</c>). A mapping that holds itself still gets the
+    /// nesting refusal, which it reaches first.
+    /// </summary>
+    [Theory]
+    [InlineData("emit-diamonds", "YamlEmitException: YAML emit error: " + SharedOutputMessage)]
+    [InlineData("emit-wide-reuse", "YamlEmitException: YAML emit error: " + SharedOutputMessage)]
+    [InlineData("emit-reused-string", "YamlEmitException: YAML emit error: " + SharedOutputMessage)]
+    [InlineData("emit-shared-string-instance", "YamlEmitException: YAML emit error: " + SharedOutputMessage)]
+    [InlineData("emit-reused-key", "YamlEmitException: YAML emit error: " + SharedOutputMessage)]
+    [InlineData("emit-total-size", "YamlEmitException: YAML emit error: " + TotalOutputMessage)]
+    [InlineData("emit-cycle", "YamlEmitException: YAML emit error: nesting depth limit exceeded")]
+    public void Emitting_a_value_that_would_write_too_much_is_refused_in_a_clean_exit(string name, string expected)
+    {
+        var (code, stdout, stderr) = RunProbe(name);
+
+        Assert.True(code == 0, $"probe exited with {code} (a crash, e.g. a stack overflow?)\nstdout:\n{stdout}\nstderr:\n{stderr}");
+        var lines = stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        Assert.Equal([expected], lines);
+    }
+
+    private const string SharedOutputMessage =
+        "shared value limit exceeded: the OKF YAML subset has no anchors or aliases, so every reuse of a collection "
+        + "or of a string of 1024 characters or more is written in full, and the reuses would write more than 16777216 characters";
+
+    private const string TotalOutputMessage = "output size limit exceeded: the text would be longer than 268435456 characters";
+
+    /// <summary>
     /// Runs the probe on <paramref name="name"/>, killing it at the deadline.
     /// The probe is built next to this test project in the same configuration
     /// and target framework (the test project's <c>ProjectReference</c> to it,

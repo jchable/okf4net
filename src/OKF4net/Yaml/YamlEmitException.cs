@@ -2,8 +2,12 @@
 namespace OKF4net.Yaml;
 
 /// <summary>
-/// An error produced while EMITTING YAML — today, only a
-/// <see cref="YamlValue"/> tree deeper than the emitter's own nesting limit.
+/// An error produced while EMITTING YAML — today, a <see cref="YamlValue"/>
+/// built in code that the emitter refuses to write: one nested deeper than
+/// the parser's nesting limit, one that reuses collections or long strings so
+/// much that writing every reuse in full, the only encoding the OKF subset
+/// allows (it has no anchors or aliases), would pass the emitter's sharing
+/// limit, or one whose text would pass the emitter's total output limit.
 ///
 /// It derives from <see cref="OkfException"/> for one reason: the parser
 /// signals the same condition as a <see cref="YamlParseException"/>, which is

@@ -24,6 +24,18 @@ using OKF4net.Yaml;
 // itself), or sharing subtrees: each must answer, never crash and never hang
 // (the harness's deadline catches a hang).
 //
+// The "emit-*" cases build values in code that reuse one object in several
+// places (a collection: YamlMapping is mutable, YamlSequence is immutable and
+// meant to be shared; or a long string, as a value or a key) and print what
+// YamlValue.ToYamlString did with them (issue #189). The OKF YAML subset has
+// no anchors or aliases, so every reuse is written in full: reuse that
+// multiplies the output (a diamond chain doubles it per level, one collection
+// or string held by many slots multiplies it by their count) must be refused
+// with a YamlEmitException, and so must any text past the emitter's total
+// output limit — never written until memory runs out (the harness's deadline
+// catches a hang; an OutOfMemoryException or ArgumentOutOfRangeException is
+// "unexpected"). A value that holds itself is refused by the 1000 rule.
+//
 // The "small-stack-*" cases run on a new thread with a 256 KB stack: smaller
 // than a 1000-deep document (block or flow) needs, so they reach the parser's and the
 // emitter's stack guard (RuntimeHelpers.TryEnsureSufficientExecutionStack)
@@ -41,6 +53,13 @@ List<string>? lines = name switch
     "value-deep-built" => DeepBuiltEquality(),
     "value-cycles" => CyclicEquality(),
     "value-diamonds" => DiamondEquality(),
+    "emit-diamonds" => [Emit(Diamonds(60, "v"))],
+    "emit-wide-reuse" => [Emit(WideReuse())],
+    "emit-cycle" => [Emit(SelfLoop("a", "b"))],
+    "emit-reused-string" => [Emit(ReusedString(sameYamlString: true))],
+    "emit-shared-string-instance" => [Emit(ReusedString(sameYamlString: false))],
+    "emit-reused-key" => [Emit(ReusedKey())],
+    "emit-total-size" => [Emit(TotalSize())],
     _ => Build(name) is { } yaml ? ParseBoth(yaml) : null,
 };
 
@@ -166,14 +185,15 @@ static List<string> CyclicEquality()
         Ask("does it equal a longer cycle that differs only in its second node", () => a.Equals(p)),
         Ask("does that cycle equal it", () => p.Equals(a)),
     ];
+}
 
-    static YamlMapping SelfLoop(string first, string second)
-    {
-        var map = new YamlMapping();
-        map.Insert(first, map);
-        map.Insert(second, map);
-        return map;
-    }
+static YamlMapping SelfLoop(string first, string second)
+{
+    // A mapping holding itself under two keys.
+    var map = new YamlMapping();
+    map.Insert(first, map);
+    map.Insert(second, map);
+    return map;
 }
 
 static List<string> DiamondEquality()
@@ -190,20 +210,75 @@ static List<string> DiamondEquality()
         Ask("does a copy with another leaf compare equal", () => a.Equals(c)),
         Ask("do equal diamond chains hash alike", () => a.GetHashCode() == b.GetHashCode()),
     ];
+}
 
-    static YamlValue Diamonds(int levels, string leaf)
+static YamlValue Diamonds(int levels, string leaf)
+{
+    // levels mappings, each holding the SAME next level under two keys.
+    YamlValue inner = new YamlString(leaf);
+    for (var i = 0; i < levels; i++)
     {
-        YamlValue inner = new YamlString(leaf);
-        for (var i = 0; i < levels; i++)
-        {
-            var map = new YamlMapping();
-            map.Insert("l", inner);
-            map.Insert("r", inner);
-            inner = map;
-        }
-
-        return inner;
+        var map = new YamlMapping();
+        map.Insert("l", inner);
+        map.Insert("r", inner);
+        inner = map;
     }
+
+    return inner;
+}
+
+static YamlValue WideReuse()
+{
+    // One mapping of 10 000 entries held 100 000 times by one sequence: two
+    // levels deep and about 20 000 objects, but a billion lines written out.
+    var shared = new YamlMapping();
+    for (var i = 0; i < 10_000; i++)
+    {
+        shared.Insert($"k{i}", new YamlString("v"));
+    }
+
+    return new YamlSequence(Enumerable.Repeat<YamlValue>(shared, 100_000).ToList());
+}
+
+static YamlValue ReusedString(bool sameYamlString)
+{
+    // One 1 000 000-character string written 3 000 times by one sequence,
+    // through the same YamlString or through 3 000 YamlStrings sharing the one
+    // .NET string: about 2 MB of value, 3 billion characters written out.
+    var big = new string('x', 1_000_000);
+    var one = new YamlString(big);
+    var items = new List<YamlValue>(3_000);
+    for (var i = 0; i < 3_000; i++)
+    {
+        items.Add(sameYamlString ? one : new YamlString(big));
+    }
+
+    return new YamlSequence(items);
+}
+
+static YamlValue ReusedKey()
+{
+    // 3 000 one-entry mappings whose keys are all the same 1 000 000-character
+    // .NET string.
+    var big = new string('k', 1_000_000);
+    var items = new List<YamlValue>(3_000);
+    for (var i = 0; i < 3_000; i++)
+    {
+        var map = new YamlMapping();
+        map.Insert(big, new YamlString("v"));
+        items.Add(map);
+    }
+
+    return new YamlSequence(items);
+}
+
+static YamlValue TotalSize()
+{
+    // One 1 000-character string, short enough to be reused freely, held
+    // 300 000 times: 300 million characters written out, past the emitter's
+    // total output limit.
+    var line = new YamlString(new string('x', 1_000));
+    return new YamlSequence(Enumerable.Repeat<YamlValue>(line, 300_000).ToList());
 }
 
 static List<string> OnSmallStack(Func<List<string>> work)
