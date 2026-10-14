@@ -216,6 +216,29 @@ else days.Insert(0, new LogDay(today, [added]));
 File.WriteAllText("./my_bundle/log.md", new ChangeLog(log.Title, days).ToMarkdown());
 ```
 
+### Loading through a provider
+
+`Bundle.Load(string root)` is now an overload over the default
+`FileSystemBundleProvider`. A host can load through any `IBundleProvider`
+(`OKF4net.Providers`) — a key space of objects, read-only unless the provider
+declares `Capabilities.CanWrite` — with `Bundle.Load(provider, new
+BundleLoadOptions { Limits = …, KeyPolicy = … })`. Keys are validated as a tree
+under the `Strict` policy by default (a bundle valid on one provider is valid on
+all: no Windows reserved names, no trailing dot, no case-colliding siblings, no
+file that is also a directory); `Native` keeps only the provider's own
+constraints. Default bounds: 16 MiB per object, 1 000 000 entries, depth 64.
+Every rejected `.md` name is a `Bundle.ParseProblems` entry (and a
+`ParseErrors` line); other rejected names are skipped silently. In this
+release the filesystem provider is read-only and no other provider ships; the
+write side and the first remote providers are tracked in #139.
+
+The historical members `Bundle.TryResolveResource` and
+`Bundle.ReadResourceText(string)` are unchanged in this release: they apply
+neither the key policy nor the rejected-key guard, and the readers that still
+use them (`AttestationOrchestrator`, `OkfBundleTools`) move to the key-based
+members in the next lots. Until then `okf validate` can report a resource name
+as `Unsafe` that `okf_run_computation` still reads — a known, temporary gap.
+
 ### As a CLI
 
 On Windows, install via [winget](https://github.com/microsoft/winget-pkgs):

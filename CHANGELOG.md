@@ -10,6 +10,16 @@ and this project adheres to
 
 ### Added
 
+- **Bundle provider seam (#139, lot A).** `OKF4net.Providers`: `IBundleProvider`
+  and its value types, `BundleKey` with three-layer validation
+  (`BundleKeyConstraints`, `BundleKeyPolicy`, `BundleKeyValidator`),
+  `FileSystemBundleProvider` (read-only in this release),
+  `ResourceKeyResolver`, `BundleLoadOptions`, `Bundle.Load(IBundleProvider,
+  BundleLoadOptions?)`, and on `Bundle`: `Provider`, `Location`, `Version`,
+  `ParseProblems`, `IndexKeys`/`LogKeys`, `ObjectVersions`, `RejectedKeys`,
+  `TryResolveResourceKey`, `ReadResourceText(BundleKey)`; `Concept.Key`
+  (init-only; the three-parameter constructor is unchanged);
+  `ConceptId.ToKey`/`FromKey`. Every existing member keeps its value.
 - **`okf` as a dotnet tool: `OKF4net.Cli` on nuget.org.** A repository with
   the .NET SDK can now pin `okf` in its tool manifest and gate CI on it with
   `dotnet tool restore` then `dotnet okf validate`. `dotnet tool install -g
@@ -94,6 +104,49 @@ and this project adheres to
 
 ### Changed
 
+- **Finite default bounds on loading** (spec §6): a concept over 16 MiB is a
+  `ParseErrors` entry instead of being loaded; a listing over 1 000 000 entries
+  (every entry counted, `.git`/`node_modules` included) or deeper than 64
+  segments aborts the load with `BundleLoadException`.
+- **Key policy `Strict` by default** (spec §2): a `.md` whose name a known
+  filesystem would alias — a Windows reserved name (`con.md`, `com¹.md`), a
+  trailing dot or space, a sibling differing only by case or Unicode form, a
+  file that is also a directory — is rejected into `ParseErrors`; a referenced
+  resource with such a name resolves as `Unsafe`. Other files were never
+  examined and still are not. Pass `BundleKeyPolicy.Native` to keep only the
+  host filesystem's own rules. Case collisions are detected with a
+  per-code-point upper-case fold, a **conservative over-approximation** of
+  NTFS's table: siblings NTFS keeps distinct but the fold merges (`σ.sql` and
+  `ς.sql`) are rejected under `Native` on Windows too. Unicode-form collisions
+  (`café.sql` beside `cafe` + U+0301 `.sql`, one file on APFS) are detected by
+  comparing canonical decompositions from tables derived from ICU, so the
+  answer is the same under the AOT binaries, where `string.Normalize` is a
+  no-op; NFC itself is checked the same way, canonical ordering included.
+- **Exact-case resource resolution** on case-folding volumes (Windows, macOS):
+  `references/a.sql` no longer resolves `References/A.sql`; it is `Missing`.
+- **A backslash in a §6.2 path-valued field is `Unsafe`** on every OS;
+  `references\a.sql` resolved on Windows before.
+- **NFC is decided by a quick check, never by `string.Normalize`** (a silent
+  no-op in the Native AOT `okf`/`okf-render` binaries): under `Strict`, a name
+  containing a character that is never NFC (e.g. U+212B) or a combining mark
+  that could compose (a decomposed `é`) is rejected with the code point named;
+  precomposed names (`café.sql`) pass everywhere, library and binaries alike.
+  Two non-composing marks in the wrong canonical order are not detected
+  (documented residual).
+- **Provider I/O failures are translated**: a `BundleLoadException` or an
+  `IOException` leaving `Bundle` names the key and the exception type, never
+  the raw OS text, which is kept as `InnerException` for the host's log.
+- **`FileSystemBundleProvider.Exists` refuses instead of answering `false`**
+  when the key's path is refused — a reparse point, an uninspectable entry, the
+  confinement boundary — and throws `BundleAccessRefusedException`, as `Read`
+  does. A resource reached through a symlink or junction is therefore still
+  reported as escaping the bundle (`FrontmatterPathUnsafe`), as before.
+- **Known, temporary gap:** `Bundle.TryResolveResource` and
+  `Bundle.ReadResourceText(string)` are kept unchanged in this lot and apply
+  neither the key policy nor the rejected-key guard. The readers that still use
+  them (`AttestationOrchestrator`, `OkfBundleTools`) follow in the next lots, so
+  until then `okf validate` can flag a resource name as `Unsafe` that
+  `okf_run_computation` still reads.
 - **The `okf-render` release archives carry its licences:** `NOTICE`, `LICENSE`,
   `LICENSE.GPL-3.0`, the embedded fonts' SIL OFL texts (`licenses/OFL-*.txt`)
   and the MIT licence text of the embedded marked (`licenses/marked-LICENSE.md`,
