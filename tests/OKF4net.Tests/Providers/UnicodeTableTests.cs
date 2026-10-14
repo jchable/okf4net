@@ -15,7 +15,7 @@ namespace OKF4net.Tests.Providers;
 /// </summary>
 public class UnicodeTableTests
 {
-    private static bool NormalizationWorks => "é".Normalize(NormalizationForm.FormC).Length == 1;
+    private static bool NormalizationWorks => "e\u0301".Normalize(NormalizationForm.FormC).Length == 1;
 
     private static string Nfc(string s) => s.Normalize(NormalizationForm.FormC);
 
