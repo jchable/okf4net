@@ -275,6 +275,9 @@ public static class LinkScanner
     internal static IReadOnlyList<string> ExtractFootnoteReferences(string body)
     {
         var keys = new List<string>();
+        // Membership for the de-duplication; the list keeps first-seen order. A
+        // scan of the list here was quadratic in a body's distinct keys (#148).
+        var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var line in CodeFreeLines(body))
         {
             var scanFrom = 0;
@@ -300,7 +303,7 @@ public static class LinkScanner
                 }
 
                 var key = m.Groups[1].Value;
-                if (!keys.Contains(key, StringComparer.Ordinal))
+                if (seen.Add(key))
                 {
                     keys.Add(key);
                 }

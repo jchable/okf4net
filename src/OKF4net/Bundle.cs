@@ -515,13 +515,38 @@ public sealed class Bundle
 
     /// <summary>
     /// Builds the outbound link and backlink maps for all concepts.
+    /// <para>
+    /// Called by <see cref="Load"/>. It is internal rather than private so that
+    /// <c>BundleBacklinksScaleTests</c> can run it on in-memory concepts at a scale
+    /// no test should write to disk. Being internal also makes it callable from
+    /// every assembly this one grants <c>InternalsVisibleTo</c> (<c>okf</c>,
+    /// <c>okf-render</c>, <c>OKF4net.Agents</c>, <c>OKF4net.Catalog</c>,
+    /// <c>OKF4net.Viewer</c>), but only the tests call it.
+    /// </para>
+    /// <para>
+    /// Precondition, not checked: <paramref name="concepts"/> and <paramref name="index"/>
+    /// come from the same snapshot, with <paramref name="index"/> mapping every id in
+    /// <paramref name="concepts"/>, as <see cref="Load"/> builds them. The index decides
+    /// whether a link target exists; a mismatched pair gives wrong existence flags and
+    /// backlinks, with no error.
+    /// </para>
     /// </summary>
-    private static (Dictionary<ConceptId, List<ResolvedLink>> Outbound, Dictionary<ConceptId, List<ConceptId>> Backlinks) BuildGraph(
+    internal static (Dictionary<ConceptId, List<ResolvedLink>> Outbound, Dictionary<ConceptId, List<ConceptId>> Backlinks) BuildGraph(
         List<Concept> concepts,
         Dictionary<ConceptId, int> index)
     {
         var outbound = new Dictionary<ConceptId, List<ResolvedLink>>();
         var backlinks = new Dictionary<ConceptId, List<ConceptId>>();
+
+        // The (target, source) edges already credited as backlinks. A source is
+        // added to a target's list only on its first citation of that target, so
+        // each list stays de-duplicated in first-citation order, i.e. in concept
+        // order; the set makes that membership test O(1) where a scan of the
+        // list was quadratic in a target's citer count (#148). It is exactly
+        // equivalent to scanning the list, since a target's list holds precisely
+        // the sources recorded in the set for that target -- including when two
+        // concepts share an id, which Load does not prevent.
+        var credited = new HashSet<(ConceptId Target, ConceptId Source)>();
 
         foreach (var c in concepts)
         {
@@ -535,7 +560,7 @@ public sealed class Bundle
                 }
 
                 var exists = index.ContainsKey(target);
-                if (exists)
+                if (exists && credited.Add((target, c.Id)))
                 {
                     if (!backlinks.TryGetValue(target, out var entry))
                     {
@@ -543,10 +568,7 @@ public sealed class Bundle
                         backlinks[target] = entry;
                     }
 
-                    if (!entry.Contains(c.Id))
-                    {
-                        entry.Add(c.Id);
-                    }
+                    entry.Add(c.Id);
                 }
 
                 resolved.Add(new ResolvedLink(target, exists, link.Text, link.Target));
