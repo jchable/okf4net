@@ -120,7 +120,7 @@ jobs:
       - name: Pack the okf tool
         shell: pwsh
         run: |
-          dotnet pack src/OKF4net.Cli/OKF4net.Cli.csproj -c Release -o $env:TOOL_FEED -p:Version=$env:TOOL_VERSION
+          dotnet pack src/OKF4net.Cli/OKF4net.Cli.csproj -c Release -o $env:TOOL_FEED -p:Version=$env:TOOL_VERSION -p:ContinuousIntegrationBuild=true
           if ($LASTEXITCODE -ne 0) { throw "dotnet pack failed" }
 
       - name: Package holds the tool, its README and NOTICE, and the runtime settings it needs
@@ -151,9 +151,16 @@ jobs:
           if ($docs) { throw "$nupkg carries API documentation: $($docs -join ', ')" }
 
           $options = $runtimeConfig.runtimeOptions
+          # The floor must be the TFM's .0 patch (10.0.0 for net10.0), never
+          # the packing SDK's latest patch: PublishAot turns that on for any
+          # publish, pack included, and the csproj turns it off for pack only.
+          # This runner has the latest patch, so a raised floor would pass
+          # every run below; only this assertion sees it.
+          $floor = ($options.tfm -replace '^net', '') + '.0'
+          if ($options.framework.version -ne $floor) { throw "runtimeconfig requires Microsoft.NETCore.App $($options.framework.version), expected $floor" }
           if ($options.rollForward -ne 'Major') { throw "runtimeconfig rollForward is '$($options.rollForward)', expected Major" }
           if ($options.configProperties.'System.Globalization.Invariant' -ne $true) { throw "runtimeconfig does not enable invariant globalization" }
-          Write-Host "OK: $nupkg holds $($entries.Count) entries, rollForward Major, invariant globalization"
+          Write-Host "OK: $nupkg holds $($entries.Count) entries, needs Microsoft.NETCore.App $floor, rollForward Major, invariant globalization"
 
       - name: A fresh clone restores the pinned tool and gates on its verdict
         shell: pwsh

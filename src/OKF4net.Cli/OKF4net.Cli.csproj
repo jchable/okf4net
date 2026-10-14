@@ -53,10 +53,23 @@
     -->
     <RollForward>Major</RollForward>
     <!--
+      PublishAot makes the SDK target the latest runtime patch whenever it
+      publishes, and pack publishes, so the tool's runtimeconfig would demand
+      the packing SDK's patch (10.0.8, say) instead of 10.0.0, and a 10.0.x
+      machine below it would refuse to start the tool. Only for pack: the AOT
+      binary must keep the latest patch, since it embeds that runtime. `dotnet
+      pack` sets _IsPacking; ci.yml's `dotnet tool smoke test` asserts the
+      packaged runtimeconfig asks for 10.0.0, so it fails if that ever stops
+      holding.
+    -->
+    <TargetLatestRuntimePatch Condition="'$(_IsPacking)' == 'true'">false</TargetLatestRuntimePatch>
+    <!--
       Keeps OKF4net.xml, the library's API documentation, out of the output and
       so out of the tool package: it is larger than both assemblies together
       and nothing running okf reads it. The SDK default is
       .pdb;.xml;.pri;.dll.config;.exe.config, and none of the others apply.
+      The PDBs stay: they put file and line numbers in the stack trace a user
+      pastes from a crashed CI run.
     -->
     <AllowedReferenceRelatedFileExtensions>.pdb</AllowedReferenceRelatedFileExtensions>
   </PropertyGroup>
