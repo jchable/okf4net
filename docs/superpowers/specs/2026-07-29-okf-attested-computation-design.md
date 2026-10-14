@@ -1,7 +1,11 @@
 # Design — OKF §10 Attested Computation dans OKF4net
 
 - **Date** : 2026-07-29
-- **Statut** : design validé en brainstorming, en attente de relecture avant plan d'implémentation
+- **Statut** : implémenté — `src/OKF4net.Attestation/` et le support §10 du cœur,
+  publiés dans la 0.3.1-preview.1 (PR #38, `dev` → `main`) ; plan :
+  `docs/superpowers/plans/2026-07-29-okf-attested-computation.md`. L'hôte par
+  conteneurs est venu ensuite (`2026-09-07-attestation-containers-design.md`).
+  Ce document reste le design d'origine : le code et le README font foi.
 - **Spec de référence** : OKF v0.2 — [`GoogleCloudPlatform/knowledge-catalog/okf/SPEC.md`](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md), sections **§10** (+ dépendances **§4.2**, **§6.2**)
 - **Contexte amont** : [`2026-07-27-okf-v0.2-upgrade-design.md`](2026-07-27-okf-v0.2-upgrade-design.md) — le bump v0.2 a **différé §10** (décision assumée). Ce document lève ce report.
 - **Branche cible** : à créer en worktree, basée sur `dev` **après merge de PR #37** (stratégies de resolver — voir §16).

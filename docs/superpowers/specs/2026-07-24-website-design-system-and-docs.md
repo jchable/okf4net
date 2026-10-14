@@ -2,7 +2,11 @@
 
 **Date:** 2026-07-24
 **Branch:** `worktree-website-docs` (off `main`)
-**Status:** approved (brainstorming) — pending implementation plan
+**Status:** implemented — shipped in 0.1.1 (`design-system/` and the developer
+docs section of the then-static `website/`). `website/` was replaced in 0.2.0 by
+the Vite + React app in `web/`, and `design-system/` was repointed to it. This
+document is the design as approved on 2026-07-24, not a description of today's
+site: `web/` and `design-system/DESIGN.md` are the authority.
 
 ## Goal
 

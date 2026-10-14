@@ -1,7 +1,11 @@
 # Design — CLI Ergonomics: Richer Diagnostics + `--json` Output
 
 - **Date** : 2026-07-31
-- **Statut** : design validé en brainstorming, prêt pour plan d'implémentation
+- **Statut** : implémenté — `--json` sur `validate` et `info`, publié dans la 0.5.0
+  (`src/OKF4net.Cli/JsonOutput.cs`) ; plan :
+  `docs/superpowers/plans/2026-07-31-cli-json-diagnostics.md`. `audit --json` est
+  venu ensuite (0.6.0). Ce document reste le design d'origine : le code, le README
+  et `MachineOutputTests` font foi.
 - **Contexte amont** : `ROADMAP.md` "Next" — "CLI ergonomics: richer diagnostics and machine-readable (`--json`) output where it aids tooling."
 
 ## 1. Objectif

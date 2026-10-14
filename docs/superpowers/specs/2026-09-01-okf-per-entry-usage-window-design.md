@@ -1,6 +1,6 @@
 # §5.1 Per-entry `usage_window` override — Design
 
-**Status:** implemented, merged into `dev` (PR #57). This document is maintained
+**Status:** implemented, merged into `dev` (PR #57), released in 0.6.0. This document is maintained
 to describe the code as it shipped, not the draft that preceded it: verification
 came back false on two of its claims (C6 and C10 in §6) and the text was
 corrected in place rather than left standing. §7's predictions held — the suite
@@ -24,8 +24,16 @@ against §5, and no consumer can obtain it.
 before any change: `Frontmatter` wraps an order-preserving `YamlMapping` and
 re-serializes the raw tree, so a nested key it has no typed accessor for
 survives untouched. `Provenance.ToYaml` has exactly one caller
-(`OkfDocumentBuilder.cs:176`), so the serializer reaches only the
-producer/builder path, never `fmt`. The gap is therefore **blindness, not data
+(`OkfDocumentBuilder.Build`), so the serializer reaches only the
+producer/builder path, never `fmt`. `ProvenanceSerializerReachTests` pins what
+sections 1, 4 and 8 of this document need from that: `okf fmt`, both printing
+to stdout and writing back with `-w`, must keep a `sources` entry `ToYaml`
+would rewrite (an unknown key, a non-canonical key order, an entry with no
+`resource`), however `fmt` is wired. The single-caller fact itself is only
+smoke-checked — a whole-word text match on `ToYaml` under `src/`, which fails
+on a new direct caller and names this document, but cannot see an indirect
+one. Other writers are not covered, and this document makes no claim about
+them. The gap is therefore **blindness, not data
 loss**: the value sits in the file, correctly preserved, and the library cannot
 see it, cannot check it, and cannot hand it to anyone.
 

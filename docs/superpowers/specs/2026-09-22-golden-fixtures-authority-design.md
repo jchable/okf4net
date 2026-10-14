@@ -1,7 +1,9 @@
 # L'autorité des fixtures golden — design
 
 Date : 2026-09-22
-Statut : proposé
+Statut : implémenté — mergé dans `dev` par la PR #133, publié dans la 0.6.0 ;
+plan : `docs/superpowers/plans/2026-09-30-golden-fixtures-authority.md`. Le
+régime en vigueur est celui de `tests/fixtures/README.md`, qui fait foi.
 
 **Révision (revue de sortie, ronde 3, 2026-09-30)** : la troisième revue,
 tournée vers l'implémentabilité, conclut « prêt pour un plan d'implémentation

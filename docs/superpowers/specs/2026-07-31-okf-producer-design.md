@@ -1,7 +1,12 @@
 # Design — Producer OKF natif (`producers/OkfProducer`)
 
 - **Date** : 2026-07-31
-- **Statut** : design validé en brainstorming, prêt pour plan d'implémentation
+- **Statut** : implémenté — walking skeleton `okfgen` (`producers/OkfProducer.sln` :
+  `OkfProducer.Core`, `OkfProducer.Cli`), consigné dans la 0.5.0 du CHANGELOG
+  (non publié sur NuGet, hors CI par décision) ; plan :
+  `docs/superpowers/plans/2026-07-31-okf-producer-core.md`. Étendu depuis par
+  l'étage graphe de code (`2026-08-31-okf-producer-code-graph-design.md`). Ce
+  document reste le design d'origine : le code et `producers/README.md` font foi.
 - **Contexte amont** : évaluation de `tommypacker/okf-generator` (TS, prior art) comme point de départ possible — écarté (v0.1 seulement, immature, hors écosystème C#) mais gardé comme référence de design pour la surface de commandes et les heuristiques de package-scope (aucun code ni mention créditée, simple inspiration générale — voir §7). Le producer natif construit à la place sur l'API OKF4net elle-même.
 - **Dépendance (levée)** : ce producer référence quatre membres ajoutés à `src/OKF4net` par le lot « producer-ergonomics API » (`Provenance.ToYaml`, `ConceptId.Slugify`, la surcharge `BundleConceptWriter.WriteConcept(string, Frontmatter, string)`, `OkfDocumentBuilder` — voir `docs/superpowers/specs/2026-07-31-okf4net-producer-ergonomics-api-design.md`). Ce lot est mergé dans `dev` (commit `fa38494`, 903/903 tests) — plus de blocage pour démarrer le plan d'implémentation de ce producer.
 

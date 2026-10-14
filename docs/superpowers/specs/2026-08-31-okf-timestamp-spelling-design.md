@@ -1,14 +1,21 @@
 # §5 Timestamp Spelling — Design
 
-**Status:** implemented on `fix/temporal-conformance`. This document is
+**Status:** implemented on `fix/temporal-conformance`, merged into `dev` (PR #54)
+and released in 0.6.0. This document is
 maintained to describe the code as it shipped, not the first draft of it: the
 grammar widened twice and narrowed once during implementation and review, §6's
 out-of-scope list lost an entry that turned out not to belong there, and §4's
 oracle claim was tightened once the test was made to match it. It deliberately
-names **no commit SHAs** — an enumerated list drifts silently every time the
-work is revised, which it already did once here; `git log --oneline -- <this
-file>` is the accurate answer. §7's predictions held: no fixture and no golden
-moved for the spelling work.
+does **not list the commits that implemented it** — such a list drifts silently
+every time the work is revised, which it already did once here; `git log
+--oneline -- <this file>` and PR #54 are the accurate answer. The few SHAs it
+does name are a different kind: fixed points in time — the tree a claim was
+reproduced or checked against (`66c0b1b`, sections 1 and 8 below), the commit
+an earlier mislabelling was fixed in (`65b7d9b`, sections 5 and 5.1), the tree
+a behaviour is compared with (`ccacfc5`, section 6) — and the upstream spec pin
+(`62432a0`). Those stay true however the work is later revised, which is why
+they are kept.
+§7's predictions held: no fixture and no golden moved for the spelling work.
 **Date:** 2026-08-31, revised 2026-09-01 (§4 oracle reach, §6 end-of-day, §11)
 **Branch:** `fix/temporal-conformance`
 **Normative source:** `docs/spec/SPEC.md` (OKF v0.2, vendored verbatim at upstream

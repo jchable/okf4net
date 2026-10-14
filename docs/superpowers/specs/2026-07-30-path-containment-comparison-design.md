@@ -1,7 +1,11 @@
 # Design — Harmonisation de la comparaison de containment des chemins (0.3.2)
 
 - **Date** : 2026-07-30
-- **Statut** : design validé en brainstorming, prêt pour plan d'implémentation
+- **Statut** : implémenté — publié dans la 0.4.0 (entrée « Path-containment
+  comparisons no longer guess case-sensitivity from the OS » du CHANGELOG) ;
+  plan : `docs/superpowers/plans/2026-07-30-path-containment-comparison-harmonization.md`.
+  Le code a évolué depuis (`CatalogPathResolver.PathComparison`, laissé tel quel
+  au §2, est aujourd'hui `Ordinal` lui aussi) : il fait foi, pas l'inventaire du §2.
 - **Contexte amont** : follow-up de la branche OKF §10 Attested Computation ([[okf-attested-computation-0.3.2-followups]] en mémoire) — le fix P1 (`Bundle.TryResolveResource` → `StringComparison.Ordinal` inconditionnel, commit `b220ffa`) a laissé plusieurs sites analogues non harmonisés dans le reste du codebase.
 
 ## 1. Objectif

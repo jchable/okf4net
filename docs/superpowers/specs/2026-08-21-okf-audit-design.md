@@ -1,7 +1,10 @@
 # Design — `okf audit` : requête corpus-level sur les signaux de confiance et de fraîcheur
 
 Date : 2026-08-21
-Statut : validé, prêt pour le plan d'implémentation
+Statut : implémenté — mergé dans `dev` par la PR #49, publié dans la 0.6.0
+(`src/OKF4net/Audit.cs`, `okf audit`, outil `okf_audit`) ; plan :
+`docs/superpowers/plans/2026-08-21-okf-audit.md`. Ce document reste le design
+d'origine : le code et le README font foi.
 
 ## 1. Objectif
 

@@ -1,7 +1,12 @@
 # Design — Distribuer la CLI `okf` via winget
 
 **Date** : 2026-07-22
-**Statut** : validé (design), en attente de plan d'implémentation
+**Statut** : implémenté — livré dans la 0.1.1 (`packaging/winget/`, binaires
+Native AOT et Release GitHub construits par `release.yml` ; la soumission
+automatique `winget-submit` est venue ensuite, PR #46) ; le paquet
+`Coderise.OKF4net` est servi par winget (microsoft/winget-pkgs#409311 pour la
+0.2.0, #432603 pour la 0.5.0). Ce document reste le design validé le
+2026-07-22 : pour l'état actuel, `packaging/winget/README.md` et le code font foi.
 **PackageIdentifier** : `Coderise.OKF4net`
 
 ## Objectif
