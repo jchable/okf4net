@@ -68,10 +68,11 @@ internal static class AuditText
     /// <c>  (replaces {previous at})</c> when the stamp superseded an earlier
     /// one.
     ///
-    /// <para><b>Line-safe by itself, not by its callers (#123).</b> All four
-    /// values go through <see cref="Field"/>, so none of them can end this
-    /// line or drive a terminal whatever its caller checked first. The
-    /// callers' own guards still stand -- <c>--by</c> is refused by
+    /// <para><b>Line-safe by itself, not by its callers (#123).</b> The id and
+    /// the actor go through <see cref="Field"/>, the two stamps through
+    /// <see cref="Stamp"/>, so none of the four can end this line or drive a
+    /// terminal whatever its caller checked first. The callers' own guards
+    /// still stand -- <c>--by</c> is refused by
     /// <see cref="LineSafeText.ContainsControlCharacter"/>, the id has passed
     /// <see cref="ConceptId"/>'s grammar, <c>at</c> is the writer's own
     /// strictly-formatted stamp -- but none of that is visible here, and the
@@ -85,16 +86,46 @@ internal static class AuditText
     /// <param name="by">The actor the caller verified as -- echoed as given, not re-read from the record.</param>
     public static string FormatVerificationRecord(VerificationRecord record, string by)
     {
-        var replaces = record.ReplacedAt is { } previous ? $"  (replaces {Field(previous)})" : string.Empty;
-        return $"recorded {Field(record.ConceptId)}  {Field(by)}  {Field(record.At)}{replaces}";
+        var replaces = record.ReplacedAt is { } previous ? $"  (replaces {Stamp(previous)})" : string.Empty;
+        return $"recorded {Field(record.ConceptId)}  {Field(by)}  {Stamp(record.At)}{replaces}";
     }
 
-    /// <summary>Renders one <c>okf verify --dry-run</c> line.</summary>
+    /// <summary>
+    /// Renders one <c>okf verify --dry-run</c> line:
+    /// <c>would record {id}  {by}  {at}</c>, with the fixed placeholder
+    /// <c>(now)</c> standing for an absent <c>--at</c>. Lives beside
+    /// <see cref="FormatVerificationRecord"/> and shares its
+    /// <see cref="Field"/>/<see cref="Stamp"/> rules, so the dry run and the
+    /// real run cannot drift into two record shapes with two safety
+    /// contracts (it used to be interpolated raw in <c>OkfCli</c>).
+    /// </summary>
     /// <param name="conceptId">The id as the caller named it.</param>
     /// <param name="by">The actor the caller would verify as.</param>
     /// <param name="at">The caller's <c>--at</c>, or <see langword="null"/> when the stamp would be "now".</param>
     public static string FormatDryRunRecord(string conceptId, string by, string? at) =>
-        $"would record {conceptId}  {by}  {at ?? "(now)"}";
+        $"would record {Field(conceptId)}  {Field(by)}  {(at is null ? "(now)" : Stamp(at))}";
+
+    /// <summary>
+    /// A timestamp field: raw ONLY when it is spelled exactly as
+    /// <c>okf verify</c> writes a stamp (<c>yyyy-MM-ddTHH:mm:ssZ</c>, checked
+    /// by <see cref="OkfTimestamp.IsEmittedUtcForm"/> -- the same strict test
+    /// <c>--at</c> and the writer apply), and ALWAYS a
+    /// <see cref="DebugQuote.Quote"/> literal otherwise, control character or
+    /// not.
+    ///
+    /// <para>Stricter than <see cref="Field"/> because the superseded stamp is
+    /// read from the bundle: a stored value of literal <c>"</c> and <c>\</c>
+    /// characters, with no control character at all, used to render
+    /// byte-identical to a genuinely quoted LF value, and an empty or blank
+    /// one shifted the two-space separators a <c>cut</c>-based pipeline
+    /// splits on. Under this rule a raw stamp is always a real, canonical
+    /// timestamp and a quoted one always means "stored non-canonical value".
+    /// Every stamp in the goldens is canonical, so their bytes do not
+    /// move.</para>
+    /// </summary>
+    /// <param name="value">A stamp about to be interpolated into one line.</param>
+    private static string Stamp(string value) =>
+        OkfTimestamp.IsEmittedUtcForm(value) ? value : DebugQuote.Quote(value);
 
     /// <summary>
     /// One interpolated value, made safe to sit inside a single rendered

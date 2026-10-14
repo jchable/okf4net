@@ -1301,7 +1301,16 @@ public sealed class BundleConceptWriter
             {
                 var key = expectedOthers[differing[0]].Key;
                 var name = key.AsDisplayString() ?? key.AsString() ?? "<non-string key>";
-                return $"the frontmatter key '{name}' changed";
+
+                // The key is stored text (a quoted YAML key can hold any
+                // character), and this detail lands inside the one-line
+                // refusal `okf verify` prints and `okf_verify` returns. A
+                // name the shared predicate flags is quoted by the shared
+                // quoter instead of echoed raw (#123); every other name keeps
+                // its 'name' form.
+                return LineSafeText.ContainsControlCharacter(name)
+                    ? $"the frontmatter key {DebugQuote.Quote(name)} changed"
+                    : $"the frontmatter key '{name}' changed";
             }
         }
 
