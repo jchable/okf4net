@@ -190,27 +190,30 @@ public sealed class FileSystemBundleProvider : IBundleProvider
     }
 
     /// <inheritdoc/>
+    /// <remarks>
+    /// Refuses, like <see cref="Read"/>, rather than answering <see langword="false"/>, when the
+    /// key or its path is refused: outside the confinement boundary, through a reparse point, or
+    /// through an entry that cannot be inspected.
+    /// </remarks>
+    /// <exception cref="BundleAccessRefusedException">The key or its path is refused.</exception>
     public bool Exists(BundleKey key)
     {
         ArgumentNullException.ThrowIfNull(key);
         CheckBoundary();
-        string? path;
-        try
-        {
-            path = ResolveExact(key);
-        }
-        catch (BundleAccessRefusedException)
-        {
-            return false; // a question, not an access: a refused traversal reads as "no such object"
-        }
-
-        if (path is null || !File.Exists(path))
+        // Refuses exactly as Read does (confinement boundary, reparse point, uninspectable
+        // entry): a link is not "absent", and the caller (Bundle.TryResolveResourceKey) reports
+        // the refusal as Unsafe. No present/absent leak: every traversed directory is STRICT
+        // guarded before it is listed, so under a junction both a present and an absent name
+        // are refused. A genuinely absent entry, a name that cannot be a literal name and a
+        // denied parent listing are "no such entry", not refusals.
+        var path = ResolveExact(key);
+        if (path is null)
         {
             return false;
         }
 
-        return !ReparsePoints.IsReparsePointOrUninspectable(path)
-            && !ReparsePoints.HasReparsePointOrUninspectableAncestor(_fullRoot, path, PathComparison);
+        GuardStrict(key, path);
+        return File.Exists(path);
     }
 
     /// <inheritdoc/>

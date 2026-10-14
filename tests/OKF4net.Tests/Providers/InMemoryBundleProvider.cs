@@ -132,7 +132,19 @@ public sealed class InMemoryBundleProvider : IBundleProvider
         return new BundleObject(new MemoryStream(bytes, writable: false), version, bytes.Length);
     }
 
-    public bool Exists(BundleKey key) => _objects.ContainsKey(key.ToString());
+    private readonly HashSet<string> _existsRefused = new(StringComparer.Ordinal);
+
+    /// <summary>Makes <see cref="Exists"/> of one key throw <see cref="BundleAccessRefusedException"/>, like a provider refusing a link or a path outside its boundary.</summary>
+    public InMemoryBundleProvider RefuseExistsOf(string rawName)
+    {
+        _existsRefused.Add(rawName);
+        return this;
+    }
+
+    public bool Exists(BundleKey key) =>
+        _existsRefused.Contains(key.ToString())
+            ? throw new BundleAccessRefusedException(key, "secret-token=123 refused by the storage")
+            : _objects.ContainsKey(key.ToString());
 
     public BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition) => throw new BundleReadOnlyException(Id);
 

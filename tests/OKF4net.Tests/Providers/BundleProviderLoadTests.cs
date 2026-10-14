@@ -403,6 +403,26 @@ public class BundleProviderLoadTests
     }
 
     [Fact]
+    public void A_provider_refusing_Exists_reads_as_Unsafe_and_a_direct_read_is_unauthorized()
+    {
+        var p = new InMemoryBundleProvider()
+            .Add("computations/rev.md", "---\ntype: Attested Computation\n---\n")
+            .Add("linked/secret.sql", "select 1")
+            .RefuseExistsOf("linked/secret.sql");
+        var bundle = Bundle.Load(p);
+        var concept = bundle.Get(ConceptId.Parse("computations/rev"))!;
+
+        Assert.True(bundle.TryResolveResourceKey(concept, "../linked/secret.sql", out var key, out var status));
+        Assert.Equal(ResourceResolutionStatus.Unsafe, status);
+        Assert.Null(key);
+
+        p.FailReadsWith = new BundleAccessRefusedException(BundleKey.Parse("linked/secret.sql"), "secret-token=123");
+        var ex = Assert.Throws<UnauthorizedAccessException>(() => bundle.ReadResourceText(BundleKey.Parse("linked/secret.sql")));
+        Assert.DoesNotContain("secret-token", ex.Message);
+        Assert.IsType<BundleAccessRefusedException>(ex.InnerException);
+    }
+
+    [Fact]
     public void ConceptId_round_trips_through_keys()
     {
         var id = ConceptId.Parse("tables/orders");

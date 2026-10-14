@@ -86,7 +86,7 @@ public class FileSystemBundleProviderTests
         var p = new FileSystemBundleProvider(tmp.Path);
         Assert.Equal(["real.md"], p.Enumerate(null, BundleLimits.Default).Select(l => l.RawName));
         Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("link.md")));
-        Assert.False(p.Exists(K("link.md")));
+        Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("link.md")));
     }
 
     [SkippableFact]
@@ -103,8 +103,8 @@ public class FileSystemBundleProviderTests
         // before the junction is ever listed (fourth review).
         Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("jump/absent.md")));
         Assert.Throws<BundleAccessRefusedException>(() => p.Enumerate(K("jump/absent"), BundleLimits.Default));
-        Assert.False(p.Exists(K("jump/secret.md")));
-        Assert.False(p.Exists(K("jump/absent.md")));
+        Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("jump/secret.md")));
+        Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("jump/absent.md")));
         Assert.Empty(p.Enumerate(null, BundleLimits.Default)); // the walk skips the junction entry and lists nothing under it
     }
 
