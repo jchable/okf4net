@@ -49,6 +49,9 @@ public class ResourceKeyResolverTests
     [InlineData("C:/x.sql")]
     [InlineData("references\\a.sql")] // backslash → Unsafe (point to validate 7)
     [InlineData("a\0b.sql")]          // control character
+    [InlineData("\0/..")]             // a NUL segment cancelled by '..': dev's GetFullPath threw on any NUL
+    [InlineData("/\0/..")]
+    [InlineData("\0/../references/a.sql")]
     public void Unsafe_rows(string raw)
     {
         Assert.Equal(ResourceKeyOutcome.Unsafe, ResourceKeyResolver.Resolve(Concept, raw, out var key));

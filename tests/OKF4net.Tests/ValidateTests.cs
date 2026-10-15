@@ -788,6 +788,7 @@ public class ValidateTests
     [InlineData("p.md", "references/a.sql/", DiagnosticCode.FrontmatterPathMissing)]
     [InlineData("p.md", "/references/a.sql/", DiagnosticCode.FrontmatterPathMissing)]
     [InlineData("sub/q.md", "../references/a.sql/", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("sub/q.md", "references/a.sql/", DiagnosticCode.FrontmatterPathMissing)]
     [InlineData("p.md", "../", DiagnosticCode.FrontmatterPathUnsafe)]
     [InlineData("p.md", "../references/a.sql/", DiagnosticCode.FrontmatterPathUnsafe)]
     [InlineData("sub/q.md", "../../", DiagnosticCode.FrontmatterPathUnsafe)]
@@ -805,6 +806,30 @@ public class ValidateTests
 
         bundle.TryResolveResourceKey(bundle.Concepts.Single(), raw, out _, out var status);
         Assert.Equal(expected == DiagnosticCode.FrontmatterPathMissing ? ResourceResolutionStatus.Missing : ResourceResolutionStatus.Unsafe, status);
+    }
+
+    /// <summary>
+    /// A value holding U+0000 is unsafe whatever follows it: <c>Path.GetFullPath</c> threw on it
+    /// on <c>dev</c>, even when a later <c>..</c> cancelled the segment. The YAML double-quoted
+    /// <c>\0</c> escape is what lets such a value through the frontmatter parser.
+    /// </summary>
+    [Theory]
+    [InlineData("\\0/..", "\0/..")]
+    [InlineData("/\\0/..", "/\0/..")]
+    [InlineData("\\0/../references/a.sql", "\0/../references/a.sql")]
+    public void A_value_holding_a_nul_is_unsafe_even_when_a_later_dotdot_cancels_it(string yamlEscaped, string raw)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("p.md", $"---\ntype: Note\ntitle: T\ndescription: D\nresource: \"{yamlEscaped}\"\n---\n");
+        tmp.Write("references/a.sql", "SELECT 1");
+        var bundle = Bundle.Load(tmp.Path);
+        var d = Assert.Single(BundleValidator.Validate(bundle).Diagnostics, x => x.Code is DiagnosticCode.FrontmatterPathMissing or DiagnosticCode.FrontmatterPathUnsafe);
+        Assert.Equal(DiagnosticCode.FrontmatterPathUnsafe, d.Code);
+        Assert.Equal($"frontmatter path 'resource' → '{raw}' escapes the bundle", d.Message);
+
+        bundle.TryResolveResourceKey(bundle.Concepts.Single(), raw, out var key, out var status);
+        Assert.Equal(ResourceResolutionStatus.Unsafe, status);
+        Assert.Null(key);
     }
 
     /// <summary>

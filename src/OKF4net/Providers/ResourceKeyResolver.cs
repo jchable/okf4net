@@ -52,6 +52,13 @@ public static class ResourceKeyResolver
             return ResourceKeyOutcome.Url;
         }
 
+        if (rawPath.Contains('\0'))
+        {
+            // U+0000 is never a path character; Path.GetFullPath threw on it, so a value holding
+            // one (even one cancelled by a later "..") was Unsafe before the seam.
+            return ResourceKeyOutcome.Unsafe;
+        }
+
         if (rawPath.Contains('\\'))
         {
             return ResourceKeyOutcome.Unsafe;
