@@ -410,10 +410,11 @@ public class BundleProviderLoadTests
 
         bundle.TryResolveResourceKey(concept, "references/missing.sql", out key, out status);
         Assert.Equal(ResourceResolutionStatus.Missing, status);
-        Assert.Equal(BundleKey.Parse("references/missing.sql"), key);
+        Assert.Null(key); // the key is non-null only for Resolved
 
         bundle.TryResolveResourceKey(concept, ".", out key, out status);
         Assert.Equal(ResourceResolutionStatus.Missing, status); // the prefix `computations` is no object
+        Assert.Null(key);
 
         bundle.TryResolveResourceKey(concept, "../../q.sql", out key, out status);
         Assert.Equal(ResourceResolutionStatus.Unsafe, status);

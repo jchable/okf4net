@@ -800,6 +800,11 @@ public sealed class Bundle
     /// then missing whatever object the provider holds under it. A value climbing above the root
     /// stays <see cref="ResourceResolutionStatus.Unsafe"/>.
     /// </para>
+    /// <para>
+    /// <paramref name="key"/> is non-<see langword="null"/> only when the status is
+    /// <see cref="ResourceResolutionStatus.Resolved"/>; for every other status it is
+    /// <see langword="null"/>, so a prefix key is never handed out as an object to read.
+    /// </para>
     /// </summary>
     public bool TryResolveResourceKey(Concept concept, string rawPath, out BundleKey? key, out ResourceResolutionStatus status)
     {
@@ -830,13 +835,21 @@ public sealed class Bundle
             return true;
         }
 
-        key = candidate;
+        key = null;
         try
         {
             // A prefix is asked about too, for the provider's refusal only: a path through a
             // reparse point is Unsafe whether or not it ends with '/'.
             var exists = Provider.Exists(candidate!);
-            status = exists && outcome == ResourceKeyOutcome.Candidate ? ResourceResolutionStatus.Resolved : ResourceResolutionStatus.Missing;
+            if (exists && outcome == ResourceKeyOutcome.Candidate)
+            {
+                key = candidate;
+                status = ResourceResolutionStatus.Resolved;
+            }
+            else
+            {
+                status = ResourceResolutionStatus.Missing;
+            }
         }
         catch (Exception e) when (e is BundleProviderException or IOException or UnauthorizedAccessException)
         {
