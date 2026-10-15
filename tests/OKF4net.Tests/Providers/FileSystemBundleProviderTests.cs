@@ -125,6 +125,62 @@ public class FileSystemBundleProviderTests
         Assert.Empty(p.Enumerate(null, BundleLimits.Default)); // the walk skips the junction entry and lists nothing under it
     }
 
+    /// <summary>The OS's own provider and one with exact-case matching forced on, so the exact branch of the resolver runs on Linux too.</summary>
+    private static FileSystemBundleProvider[] BothResolvers(string root) =>
+        [
+            new FileSystemBundleProvider(root),
+            new FileSystemBundleProvider(root, additionalConstraints: BundleKeyConstraints.CaseInsensitiveCollisions),
+        ];
+
+    [SkippableFact]
+    public void A_junction_two_levels_down_is_refused_at_its_own_level_and_its_sibling_still_reads()
+    {
+        // The resolver inspects each traversed directory once, at its own level, and the read
+        // gate then inspects only the leaf: "a" passes at level 2, the junction "a/j" must be
+        // refused at level 3 before it is listed — so an absent name under it is refused too,
+        // never "not found" (no present/absent leak) — and "a/j" as the leaf is refused by the
+        // leaf check. TempDir's disposal removes the junction as a link, never through it.
+        using var external = new TempDir();
+        external.Write("x.md", "OUTSIDE-THE-BUNDLE");
+        using var tmp = new TempDir();
+        tmp.Write("a/ok.md", "ok");
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir(Path.Combine("a", "j"), external.Path), "junctions unavailable");
+        foreach (var p in BothResolvers(tmp.Path))
+        {
+            Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("a/j/x.md")));
+            Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("a/j/x.md")));
+            Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("a/j/absent.md")));
+            Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("a/j/absent.md")));
+            Assert.Throws<BundleAccessRefusedException>(() => p.Enumerate(K("a/j"), BundleLimits.Default));
+            Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("a/j")));
+            Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("a/j")));
+            Assert.True(p.Exists(K("a/ok.md")));
+            using var ok = p.Read(K("a/ok.md"));
+            Assert.Equal(2, ok.Length);
+            Assert.Equal(["a/ok.md"], p.Enumerate(K("a"), BundleLimits.Default).Select(l => l.RawName)); // the walk skips the junction
+        }
+    }
+
+    [SkippableFact]
+    public void A_file_symlink_as_the_leaf_under_a_plain_directory_is_refused()
+    {
+        // The leaf half of the read gate: "d" is a plain directory, so only the leaf's own
+        // inspection can refuse "d/link.md". Skips on an account without the symlink privilege
+        // (Windows without Developer Mode or elevation); a directory junction as the leaf is
+        // pinned, unprivileged, by the junction test above (Read/Exists of "a/j").
+        using var tmp = new TempDir();
+        tmp.Write("d/real.md", "real");
+        Skip.IfNot(tmp.TryCreateFileSymlink(Path.Combine("d", "link.md"), Path.Combine("d", "real.md")), "symlinks unavailable");
+        foreach (var p in BothResolvers(tmp.Path))
+        {
+            Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("d/link.md")));
+            Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("d/link.md")));
+            Assert.True(p.Exists(K("d/real.md")));
+            using var real = p.Read(K("d/real.md"));
+            Assert.Equal(4, real.Length);
+        }
+    }
+
     [SkippableFact]
     public void An_enumeration_taken_before_a_prefix_or_root_is_replaced_never_sees_the_replacement()
     {

@@ -108,13 +108,13 @@ public sealed class FileSystemBundleProvider : IBundleProvider
         var start = _fullRoot;
         if (prefix is not null)
         {
-            var resolved = ResolveExact(prefix);
+            var resolved = ResolveExact(prefix, out var ancestorsGuarded);
             if (resolved is null)
             {
                 return Array.Empty<BundleListing>();
             }
 
-            GuardStrict(prefix, resolved); // a junction prefix is refused, not walked
+            GuardResolved(prefix, resolved, ancestorsGuarded); // a junction prefix is refused, not walked
             if (!Directory.Exists(resolved))
             {
                 return Array.Empty<BundleListing>();
@@ -153,8 +153,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider
     {
         ArgumentNullException.ThrowIfNull(key);
         CheckBoundary();
-        var path = ResolveExact(key) ?? throw new BundleObjectNotFoundException(key);
-        GuardStrict(key, path);
+        var path = ResolveExact(key, out var ancestorsGuarded) ?? throw new BundleObjectNotFoundException(key);
+        GuardResolved(key, path, ancestorsGuarded);
         if (!File.Exists(path))
         {
             throw new BundleObjectNotFoundException(key);
@@ -193,7 +193,9 @@ public sealed class FileSystemBundleProvider : IBundleProvider
     /// <remarks>
     /// Refuses, like <see cref="Read"/>, rather than answering <see langword="false"/>, when the
     /// key or its path is refused: outside the confinement boundary, through a reparse point, or
-    /// through an entry that cannot be inspected.
+    /// through an entry that cannot be inspected. A directory on the path whose listing this
+    /// provider is denied answers <see langword="false"/>, as an absent entry does: no object is
+    /// read and nothing outside the root is reached.
     /// </remarks>
     /// <exception cref="BundleAccessRefusedException">The key or its path is refused.</exception>
     public bool Exists(BundleKey key)
@@ -206,13 +208,13 @@ public sealed class FileSystemBundleProvider : IBundleProvider
         // guarded before it is listed, so under a junction both a present and an absent name
         // are refused. A genuinely absent entry, a name that cannot be a literal name and a
         // denied parent listing are "no such entry", not refusals.
-        var path = ResolveExact(key);
+        var path = ResolveExact(key, out var ancestorsGuarded);
         if (path is null)
         {
             return false;
         }
 
-        GuardStrict(key, path);
+        GuardResolved(key, path, ancestorsGuarded);
         return File.Exists(path);
     }
 
@@ -256,6 +258,31 @@ public sealed class FileSystemBundleProvider : IBundleProvider
         }
     }
 
+    /// <summary>
+    /// The read gate for a path <see cref="ResolveExact"/> returned. When
+    /// <paramref name="ancestorsGuarded"/> is <see langword="true"/> (the exact-case branch),
+    /// every directory between the root and <paramref name="path"/> was already STRICT-inspected
+    /// by that same call, before it was listed, so only the leaf is left: it must be under the
+    /// root and must itself be neither a reparse point nor uninspectable (one inspection).
+    /// Otherwise (the joined-path branch, which inspects nothing) <see cref="GuardStrict"/>
+    /// inspects the leaf and every ancestor up to the root. The root itself is never inspected
+    /// here, in either case.
+    /// </summary>
+    private void GuardResolved(BundleKey key, string path, bool ancestorsGuarded)
+    {
+        if (!ancestorsGuarded)
+        {
+            GuardStrict(key, path);
+            return;
+        }
+
+        if (!ReparsePoints.IsWithin(_fullRoot, path, PathComparison)
+            || (!string.Equals(path, _fullRoot, PathComparison) && ReparsePoints.IsReparsePointOrUninspectable(path)))
+        {
+            throw new BundleAccessRefusedException(key, "it resolves outside the bundle root, or through a reparse point or an entry that could not be inspected");
+        }
+    }
+
     /// <summary>STRICT: the path must be under the root and neither it nor any directory between the root and it may be a reparse point or uninspectable. The root itself is not inspected here: <see cref="CheckBoundary"/> inspects it when a confinement boundary is set, and without one it is trusted host configuration.</summary>
     private void GuardStrict(BundleKey? key, string path)
     {
@@ -292,11 +319,31 @@ public sealed class FileSystemBundleProvider : IBundleProvider
     /// up with the pattern <c>*</c> and compared ordinally (<see cref="NeedsFullListing"/>).
     /// Each traversed directory is still STRICT-guarded before it is listed, ahead of this
     /// rule.</para>
+    /// <para><b>Guarding (exact matching).</b> Each traversed directory below the root is
+    /// STRICT-inspected once, on its own (<see cref="ReparsePoints.IsReparsePointOrUninspectable"/>),
+    /// before it is listed: every one of its ancestors below the root was inspected at an
+    /// earlier level of the same call, so re-walking them would inspect nothing new. The root is
+    /// skipped, as everywhere in the per-key guards (<see cref="CheckBoundary"/> covers it when a
+    /// boundary is set). <paramref name="ancestorsGuarded"/> is then <see langword="true"/> and
+    /// the caller's <see cref="GuardResolved"/> inspects the leaf alone, so for a key
+    /// <c>a/b/c.md</c> the entries <c>a</c>, <c>a/b</c> and <c>a/b/c.md</c> are each inspected
+    /// exactly once before the object is opened. Without exact matching nothing is inspected
+    /// here, <paramref name="ancestorsGuarded"/> is <see langword="false"/>, and the caller runs
+    /// the full <see cref="GuardStrict"/> walk.</para>
+    /// <para><b>Accepted window.</b> With exact matching, a directory on the path is inspected
+    /// once, when this call reaches it, and is not re-inspected by a second walk at read time: a
+    /// directory replaced by a junction after its own inspection and before the final open is
+    /// not seen. That window lasts one call of this method plus the open. It lies inside the
+    /// inter-process window already accepted for every path-based guard (a check on a path
+    /// always precedes the open of that path, and another process can act in between; the OS
+    /// lock that would close it is deferred to issue #178); a second walk would only have
+    /// narrowed it, never closed it.</para>
     /// </summary>
-    private string? ResolveExact(BundleKey key)
+    private string? ResolveExact(BundleKey key, out bool ancestorsGuarded)
     {
         if (!MatchesCaseExactly)
         {
+            ancestorsGuarded = false;
             var parts = new string[key.Segments.Count + 1];
             parts[0] = _fullRoot;
             for (var i = 0; i < key.Segments.Count; i++)
@@ -307,16 +354,19 @@ public sealed class FileSystemBundleProvider : IBundleProvider
             return Path.Combine(parts);
         }
 
+        ancestorsGuarded = true;
         var current = _fullRoot;
         foreach (var segment in key.Segments)
         {
             // STRICT before listing a traversed directory (the root excepted: a symlinked root
             // without a boundary stays loadable, Review Focus 4). Otherwise an absent name under
             // a junction could be told apart from a present one before the read gate ever ran
-            // (fourth review: NotFound vs refused). AnyEntryUpTo inspects `current` itself first;
-            // `current` is the root only at the first level, where the equality test skips it.
+            // (fourth review: NotFound vs refused). Only `current` itself: each of its ancestors
+            // below the root was `current` at an earlier level of this loop and passed this same
+            // test then. `current` is the root only at the first level, where the equality test
+            // skips it.
             if (!string.Equals(current, _fullRoot, PathComparison)
-                && ReparsePoints.HasReparsePointOrUninspectableAncestor(_fullRoot, current, PathComparison))
+                && ReparsePoints.IsReparsePointOrUninspectable(current))
             {
                 throw new BundleAccessRefusedException(key, "it resolves through a reparse point or an entry that could not be inspected");
             }
