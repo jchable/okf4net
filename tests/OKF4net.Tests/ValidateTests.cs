@@ -769,6 +769,87 @@ public class ValidateTests
     }
 
     /// <summary>
+    /// A value that resolves to the bundle root, or ends with <c>/</c>, names no object: the
+    /// validator reports it as <c>dev</c> did (its filesystem resolver asked <c>File.Exists</c>
+    /// of a directory, or of a path ending with a separator, and got <c>false</c>) — a
+    /// <see cref="DiagnosticCode.FrontmatterPathMissing"/> with no hint, even with a file
+    /// present under the same name. A value climbing above the root stays
+    /// <see cref="DiagnosticCode.FrontmatterPathUnsafe"/>.
+    /// </summary>
+    [Theory]
+    [InlineData("p.md", "/", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("p.md", "//", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("p.md", ".", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("p.md", "./", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("p.md", "sub/..", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("sub/q.md", "../", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("sub/q.md", "./", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("p.md", "references/", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("p.md", "references/a.sql/", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("p.md", "/references/a.sql/", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("sub/q.md", "../references/a.sql/", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("p.md", "../", DiagnosticCode.FrontmatterPathUnsafe)]
+    [InlineData("p.md", "../references/a.sql/", DiagnosticCode.FrontmatterPathUnsafe)]
+    [InlineData("sub/q.md", "../../", DiagnosticCode.FrontmatterPathUnsafe)]
+    public void A_path_naming_the_root_or_a_prefix_is_missing_and_one_above_the_root_unsafe(string concept, string raw, DiagnosticCode expected)
+    {
+        using var tmp = new TempDir();
+        tmp.Write(concept, $"---\ntype: Note\ntitle: T\ndescription: D\nresource: '{raw}'\n---\n");
+        tmp.Write("references/a.sql", "SELECT 1");
+        tmp.Write("sub/references/a.sql", "SELECT 1"); // a concept-relative twin: still no hint
+        var bundle = Bundle.Load(tmp.Path);
+        var d = Assert.Single(BundleValidator.Validate(bundle).Diagnostics, x => x.Code is DiagnosticCode.FrontmatterPathMissing or DiagnosticCode.FrontmatterPathUnsafe);
+        Assert.Equal(expected, d.Code);
+        var verdict = expected == DiagnosticCode.FrontmatterPathMissing ? "not found" : "escapes the bundle";
+        Assert.Equal($"frontmatter path 'resource' → '{raw}' {verdict}", d.Message);
+
+        bundle.TryResolveResourceKey(bundle.Concepts.Single(), raw, out _, out var status);
+        Assert.Equal(expected == DiagnosticCode.FrontmatterPathMissing ? ResourceResolutionStatus.Missing : ResourceResolutionStatus.Unsafe, status);
+    }
+
+    /// <summary>
+    /// The <c>h_comp</c> case of the differential run: a trailing <c>/</c> on an Attested
+    /// Computation's <c>computation</c> and <c>attester.resource</c> is
+    /// <see cref="DiagnosticCode.FrontmatterPathMissing"/> for each field, as on <c>dev</c>,
+    /// although both files exist.
+    /// </summary>
+    [Fact]
+    public void A_trailing_slash_on_a_computation_and_its_attester_is_missing()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("computations/trail.md", "---\ntype: Attested Computation\ntitle: T\ndescription: D\nruntime: python\ncomputation: 'references/q.sql/'\nattester:\n  resource: 'attesters/a.py/'\n---\n");
+        tmp.Write("references/q.sql", "SELECT 1");
+        tmp.Write("attesters/a.py", "pass\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        Assert.Equal(
+            [("attester.resource", "frontmatter path 'attester.resource' → 'attesters/a.py/' not found"), ("computation", "frontmatter path 'computation' → 'references/q.sql/' not found")],
+            report.Diagnostics.Where(x => x.Code == DiagnosticCode.FrontmatterPathMissing).Select(x => (x.Field!, x.Message)).Order());
+        Assert.DoesNotContain(report.Diagnostics, x => x.Code == DiagnosticCode.FrontmatterPathUnsafe);
+    }
+
+    /// <summary>
+    /// A trailing <c>/</c> does not lift the provider's guard: a prefix reached through a
+    /// junction is still refused, so the field stays
+    /// <see cref="DiagnosticCode.FrontmatterPathUnsafe"/> (on <c>dev</c> too, through its
+    /// reparse-point check), whether the junction is on the way or is the prefix itself.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("/linked/secret.sql/")]
+    [InlineData("/linked/")]
+    public void A_trailing_slash_through_a_junction_is_still_unsafe(string raw)
+    {
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        tmp.Write("p.md", $"---\ntype: Note\ntitle: T\ndescription: D\nresource: '{raw}'\n---\n");
+        external.Write("secret.sql", "SELECT 1\n");
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("linked", external.Path), "no junction/symlink privilege on this machine");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        var d = Assert.Single(report.Diagnostics, x => x.Code is DiagnosticCode.FrontmatterPathMissing or DiagnosticCode.FrontmatterPathUnsafe);
+        Assert.Equal(DiagnosticCode.FrontmatterPathUnsafe, d.Code);
+    }
+
+    /// <summary>
     /// The hint's second guard, pinned at the black-box (<see cref="BundleValidator.Validate"/>)
     /// level: an unadorned missing <c>./</c> path never gets a hint. This alone
     /// does not prove the <see cref="FrontmatterResourceKind.ConceptRelative"/>

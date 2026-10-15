@@ -758,13 +758,24 @@ public sealed class Bundle
     /// <see cref="IBundleProvider.Exists"/>. Never throws (§11, permissive): a provider refusal
     /// reads as <see cref="ResourceResolutionStatus.Unsafe"/>. Always returns <see langword="true"/>,
     /// like <see cref="TryResolveResource"/>.
+    /// <para>
+    /// A value that names no object is <see cref="ResourceResolutionStatus.Missing"/>, as it was
+    /// when the validator resolved it on the filesystem: one that resolves to the bundle root
+    /// itself (<c>/</c>, <c>.</c> from a top-level concept, <c>sub/..</c>; <paramref name="key"/>
+    /// is <see langword="null"/>), and one ending with <c>/</c> (<c>references/a.sql/</c>), which
+    /// names a prefix — its key goes through the policy and the provider's guards like any
+    /// candidate, so a refused path stays <see cref="ResourceResolutionStatus.Unsafe"/>, and is
+    /// then missing whatever object the provider holds under it. A value climbing above the root
+    /// stays <see cref="ResourceResolutionStatus.Unsafe"/>.
+    /// </para>
     /// </summary>
     public bool TryResolveResourceKey(Concept concept, string rawPath, out BundleKey? key, out ResourceResolutionStatus status)
     {
         ArgumentNullException.ThrowIfNull(concept);
         ArgumentNullException.ThrowIfNull(rawPath);
         var conceptKey = concept.Key ?? concept.Id.ToKey();
-        switch (ResourceKeyResolver.Resolve(conceptKey, rawPath, out var candidate))
+        var outcome = ResourceKeyResolver.Resolve(conceptKey, rawPath, out var candidate);
+        switch (outcome)
         {
             case ResourceKeyOutcome.Url:
                 key = null;
@@ -773,6 +784,10 @@ public sealed class Bundle
             case ResourceKeyOutcome.Unsafe:
                 key = null;
                 status = ResourceResolutionStatus.Unsafe;
+                return true;
+            case ResourceKeyOutcome.Root:
+                key = null;
+                status = ResourceResolutionStatus.Missing;
                 return true;
         }
 
@@ -786,7 +801,10 @@ public sealed class Bundle
         key = candidate;
         try
         {
-            status = Provider.Exists(candidate!) ? ResourceResolutionStatus.Resolved : ResourceResolutionStatus.Missing;
+            // A prefix is asked about too, for the provider's refusal only: a path through a
+            // reparse point is Unsafe whether or not it ends with '/'.
+            var exists = Provider.Exists(candidate!);
+            status = exists && outcome == ResourceKeyOutcome.Candidate ? ResourceResolutionStatus.Resolved : ResourceResolutionStatus.Missing;
         }
         catch (Exception e) when (e is BundleProviderException or IOException or UnauthorizedAccessException)
         {

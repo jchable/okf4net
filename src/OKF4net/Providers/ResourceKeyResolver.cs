@@ -7,18 +7,35 @@ public enum ResourceKeyOutcome
     /// <summary>An absolute URL; never dereferenced (spec §7).</summary>
     Url,
 
-    /// <summary>The value climbs above the root, resolves to the root itself, uses a drive form or a backslash, or breaks a base key rule.</summary>
+    /// <summary>The value climbs above the root, uses a drive form or a backslash, or breaks a base key rule.</summary>
     Unsafe,
 
     /// <summary>A syntactically valid key under the root; existence and policy are checked by the caller.</summary>
     Candidate,
+
+    /// <summary>
+    /// The value resolves to the bundle root itself (<c>/</c>, <c>//</c>, <c>.</c> or <c>./</c>
+    /// from a top-level concept, <c>sub/..</c>): it names no object and escapes nothing, so the
+    /// caller reports it missing. There is no key for the root.
+    /// </summary>
+    Root,
+
+    /// <summary>
+    /// The value ends with <c>/</c> (<c>references/a.sql/</c>, <c>./</c> from a nested concept):
+    /// it names a prefix, never an object. The key is that prefix; the caller checks it as it
+    /// checks a <see cref="Candidate"/> (policy, provider refusal), then reports it missing
+    /// whatever object the provider holds under the same key.
+    /// </summary>
+    Prefix,
 }
 
 /// <summary>
 /// Resolves a §6.2 path-valued field lexically on keys (spec §2): no OS path semantics,
 /// no percent-decoding, no filesystem access. <c>/x</c> and a bare <c>x</c> resolve from
 /// the root (this implementation's reading of §6.2, docs/spec-conformance S6.2-1);
-/// <c>./x</c> and <c>../x</c> from the concept's own prefix.
+/// <c>./x</c> and <c>../x</c> from the concept's own prefix. A value that resolves to the
+/// root itself is <see cref="ResourceKeyOutcome.Root"/> and one ending with <c>/</c> is
+/// <see cref="ResourceKeyOutcome.Prefix"/>: neither names an object, and neither escapes.
 /// </summary>
 public static class ResourceKeyResolver
 {
@@ -76,7 +93,8 @@ public static class ResourceKeyResolver
 
         if (segments.Count == 0)
         {
-            return ResourceKeyOutcome.Unsafe;
+            // Lexically the root itself; a climb ABOVE it already returned Unsafe in the loop.
+            return ResourceKeyOutcome.Root;
         }
 
         if (!BundleKey.TryParse(string.Join('/', segments), out var parsed, out _))
@@ -85,6 +103,6 @@ public static class ResourceKeyResolver
         }
 
         key = parsed;
-        return ResourceKeyOutcome.Candidate;
+        return rawPath.EndsWith('/') ? ResourceKeyOutcome.Prefix : ResourceKeyOutcome.Candidate;
     }
 }

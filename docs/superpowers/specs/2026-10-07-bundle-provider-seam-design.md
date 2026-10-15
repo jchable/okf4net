@@ -456,6 +456,8 @@ clés** (elle ne dépend plus d'aucune sémantique de chemin de l'OS) :
 | `./x`, `../x` | depuis le dossier du concept |
 | `x` (chemin nu) | depuis la racine — lecture locale du §6.2, consignée dans `docs/spec-conformance/` (S6.2-1) |
 | remonte au-dessus de la racine | `Unsafe` |
+| désigne la racine elle-même (`/`, `.` depuis un concept de premier niveau, `sub/..`) | `Missing`, sans clé (comme `File.Exists` sur un dossier avant la couture) |
+| finit par `/` (`references/a.sql/`) | un préfixe, jamais un objet : la clé passe la politique et les gardes du provider (`Unsafe` si refusée), puis `Missing` |
 | forme à lettre de lecteur (`C:\x`, `e:q.sql`) | `Unsafe` |
 | contient `\` | `Unsafe` (voir les points à valider) |
 | segments vides ou `.` | ignorés (`a//./b` → `a/b`), comme `GetFullPath` aujourd'hui |
