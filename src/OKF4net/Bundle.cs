@@ -126,10 +126,22 @@ public sealed class Bundle
         _backlinks = backlinks;
     }
 
-    private static string DisplayPathOf(string location, BundleParseError problem) =>
-        problem.Key is { } key
-            ? BundleDisplayPath.Compose(location, key)
-            : System.IO.Path.Combine(location, DebugQuote.Quote(problem.RawName).Replace('/', System.IO.Path.DirectorySeparatorChar));
+    /// <summary>
+    /// The display path of a load problem (spec §8): the key's path when the name is a key,
+    /// otherwise the raw name as listed, unquoted, with <c>/</c> turned into the OS separator —
+    /// the same <c>Path.Combine(root, …)</c> string the loader printed before the provider
+    /// seam, whatever the reason the name was rejected. Escaping, when an output needs it,
+    /// is that output's own (the JSON writer, the site's HTML encoding), never a second layer here.
+    /// </summary>
+    private static string DisplayPathOf(string location, BundleParseError problem)
+    {
+        if ((problem.Key ?? (BundleKey.TryParse(problem.RawName, out var parsed, out _) ? parsed : null)) is { } key)
+        {
+            return BundleDisplayPath.Compose(location, key);
+        }
+
+        return System.IO.Path.Combine(location, problem.RawName.Replace('/', System.IO.Path.DirectorySeparatorChar));
+    }
 
     /// <summary>
     /// Loads a bundle from a directory tree through the default
