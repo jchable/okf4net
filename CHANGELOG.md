@@ -48,11 +48,11 @@ and this project adheres to
   `FileSystemBundleProvider` for exact-case matching: `Strict` alone does not
   turn it on.
 - **A directory under the bundle root whose link status cannot be inspected
-  now aborts the load** with `BundleLoadException`: the provider's walk refuses
-  it STRICTly before listing it, where the old lenient walk took it for a plain
-  directory and entered it — following, for one, a junction the current user
-  could not inspect into a directory outside the bundle. A symlink or junction
-  seen as one is still skipped, never followed.
+  now aborts the load** with `BundleLoadException`: the provider's walk
+  inspects every directory STRICTly (it and each directory between it and the
+  root) before listing it, so a directory whose link status cannot be
+  determined is refused instead of being taken for a plain directory and
+  listed. A symlink or junction seen as one is still skipped, never followed.
 - **A backslash in a §6.2 path-valued field is `Unsafe`** on every OS;
   `references\a.sql` resolved on Windows before.
 - **NFC is decided by a quick check, never by `string.Normalize`** (a silent
