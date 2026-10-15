@@ -99,14 +99,25 @@ public class CliDisplayPathTests
     }
 
     /// <summary>
-    /// A name that is not even a key (a control character, possible only off Windows):
-    /// <c>dev</c> sent it through <c>ConceptId.FromPath</c>'s failure into
-    /// <see cref="Bundle.ParseErrors"/> with its raw path; the CLI prints that path as is.
+    /// A name that is not even a key (a control character): <c>dev</c> sent it through
+    /// <c>ConceptId.FromPath</c>'s failure into <see cref="Bundle.ParseErrors"/> with its raw
+    /// path; the CLI prints that path as is. U+0085 is a layer-1 control character that NTFS
+    /// still accepts in a file name, so this runs on every OS.
     /// </summary>
-    [SkippableFact]
+    [Fact]
     public void A_name_that_is_not_a_key_keeps_its_raw_display_path()
     {
-        Skip.If(OperatingSystem.IsWindows(), "Windows file names cannot hold a control character");
+        using var tmp = new TempDir();
+        var raw = "a\u0085b.md";
+        tmp.Write(raw, "---\ntype: Note\n---\n");
+        AssertRejectedDisplayPaths(tmp.Path, [Path.Combine(tmp.Path, raw)]);
+    }
+
+    /// <summary>The same with a C0 control character, which only Linux and macOS allow in a name.</summary>
+    [SkippableFact]
+    public void A_name_with_a_c0_control_character_keeps_its_raw_display_path()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Windows file names cannot hold a C0 control character");
         using var tmp = new TempDir();
         var raw = "a\u0001b.md";
         tmp.Write(raw, "---\ntype: Note\n---\n");
