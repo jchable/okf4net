@@ -193,9 +193,11 @@ public sealed class FileSystemBundleProvider : IBundleProvider
     /// <remarks>
     /// Refuses, like <see cref="Read"/>, rather than answering <see langword="false"/>, when the
     /// key or its path is refused: outside the confinement boundary, through a reparse point, or
-    /// through an entry that cannot be inspected. A directory on the path whose listing this
-    /// provider is denied answers <see langword="false"/>, as an absent entry does: no object is
-    /// read and nothing outside the root is reached.
+    /// through an entry that cannot be inspected. With exact matching
+    /// (<see cref="MatchesCaseExactly"/>), a directory on the path that cannot be listed — the
+    /// listing is denied, or fails with any other I/O error — answers <see langword="false"/>,
+    /// as an absent entry does: no object is read and nothing outside the root is reached.
+    /// Without exact matching nothing is listed, so that carve-out does not arise.
     /// </remarks>
     /// <exception cref="BundleAccessRefusedException">The key or its path is refused.</exception>
     public bool Exists(BundleKey key)
@@ -206,8 +208,9 @@ public sealed class FileSystemBundleProvider : IBundleProvider
         // entry): a link is not "absent", and the caller (Bundle.TryResolveResourceKey) reports
         // the refusal as Unsafe. No present/absent leak: every traversed directory is STRICT
         // guarded before it is listed, so under a junction both a present and an absent name
-        // are refused. A genuinely absent entry, a name that cannot be a literal name and a
-        // denied parent listing are "no such entry", not refusals.
+        // are refused. A genuinely absent entry, a name that cannot be a literal name and, with
+        // exact matching, a parent listing that is denied or fails are "no such entry", not
+        // refusals.
         var path = ResolveExact(key, out var ancestorsGuarded);
         if (path is null)
         {
@@ -332,8 +335,10 @@ public sealed class FileSystemBundleProvider : IBundleProvider
     /// the full <see cref="GuardStrict"/> walk.</para>
     /// <para><b>Accepted window.</b> With exact matching, a directory on the path is inspected
     /// once, when this call reaches it, and is not re-inspected by a second walk at read time: a
-    /// directory replaced by a junction after its own inspection and before the final open is
-    /// not seen. That window lasts one call of this method plus the open. It lies inside the
+    /// directory replaced by a junction after its own inspection is not seen by the remaining
+    /// listings of this call, by the leaf check, nor by the final open or <c>File.Exists</c>, so
+    /// within that window an <see cref="Exists"/> answer about a name under it, or a read through
+    /// it, is possible. That window lasts one call of this method plus the open. It lies inside the
     /// inter-process window already accepted for every path-based guard (a check on a path
     /// always precedes the open of that path, and another process can act in between; the OS
     /// lock that would close it is deferred to issue #178); a second walk would only have

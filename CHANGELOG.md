@@ -26,7 +26,10 @@ and this project adheres to
 - **Finite default bounds on loading** (spec §6): a concept over 16 MiB is a
   `ParseErrors` entry instead of being loaded; a listing over 1 000 000 entries
   (every entry counted, `.git`/`node_modules` included) or deeper than 64
-  segments aborts the load with `BundleLoadException`.
+  segments aborts the load with `BundleLoadException`. A `.md` whose key (its
+  path under the root) exceeds 1 024 UTF-8 bytes is a `ParseErrors` entry too;
+  that is the key's own limit (`BundleKey.MaxUtf8Bytes`), which a larger
+  `BundleLimits.MaxKeyBytes` does not lift.
 - **Key policy `Strict` by default** (spec §2): a `.md` whose name a known
   filesystem would alias — a Windows reserved name (`con.md`, `com¹.md`), a
   trailing dot or space, a sibling differing only by case or Unicode form, a
@@ -41,18 +44,28 @@ and this project adheres to
   comparing canonical decompositions from tables derived from ICU, so the
   answer is the same under the AOT binaries, where `string.Normalize` is a
   no-op; NFC itself is checked the same way, canonical ordering included.
+  Under `Strict`, a resource path containing `::$DATA` (an NTFS stream
+  suffix, which resolved on Windows) or `?` (which was `Missing`) resolves
+  `Unsafe`.
+- **A file literally named with a backslash** (`a\b.md`, possible where a file
+  name can hold one: Linux, macOS) was loaded as concept `a/b`; a backslash is
+  never part of a key, so it is now a `ParseErrors` entry.
+- **`OkfVersion` is read from the root `index.md` under its exact name only**:
+  an `Index.md` or `INDEX.md` standing in for a missing `index.md` on a
+  case-folding volume, or a root `index.md` that is a symlink (which the walk
+  already skipped from `IndexFiles`), now gives `null`.
 - **Exact-case resource resolution** on case-folding volumes (Windows, macOS):
   `references/a.sql` no longer resolves `References/A.sql`; it is `Missing`.
   A Linux host on a case-insensitive mount must pass
   `additionalConstraints: BundleKeyConstraints.CaseInsensitiveCollisions` to
   `FileSystemBundleProvider` for exact-case matching: `Strict` alone does not
   turn it on.
-- **A directory under the bundle root whose link status cannot be inspected
-  now aborts the load** with `BundleLoadException`: the provider's walk
-  inspects every directory STRICTly (it and each directory between it and the
-  root) before listing it, so a directory whose link status cannot be
-  determined is refused instead of being taken for a plain directory and
-  listed. A symlink or junction seen as one is still skipped, never followed.
+- **A directory the walk is about to list whose link status cannot be
+  determined now aborts the load** with `BundleLoadException`: the provider's
+  walk inspects every directory STRICTly (it and each directory between it and
+  the root) before listing it, instead of taking it for a plain directory and
+  listing it; an entry it cannot identify as a directory is not entered. A
+  symlink or junction seen as one is still skipped, never followed.
 - **A backslash in a §6.2 path-valued field is `Unsafe`** on every OS;
   `references\a.sql` resolved on Windows before.
 - **NFC is decided by a quick check, never by `string.Normalize`** (a silent
@@ -62,7 +75,10 @@ and this project adheres to
   precomposed names (`café.sql`) pass everywhere, library and binaries alike.
   Marks out of canonical order are rejected too.
 - **Provider I/O failures are translated**: a `BundleLoadException` or an
-  `IOException` leaving `Bundle` names the key and the exception type, never
+  `IOException` leaving `Bundle` for a read names the key and the exception
+  type (`I/O error reading 'a.md' (UnauthorizedAccessException)`); a listing
+  or version failure names the operation and the exception type, not a key
+  (`I/O error while listing the bundle (UnauthorizedAccessException)`). Never
   the raw OS text, which is kept as `InnerException` for the host's log.
 - **`FileSystemBundleProvider.Exists` refuses instead of answering `false`**
   when the key's path is refused — a reparse point, an uninspectable entry, the
