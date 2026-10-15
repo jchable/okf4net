@@ -8,6 +8,53 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-14
+
+The headline is the interactive `okf-render` viewer, and `okf` is now also a
+dotnet tool. What follows is the short version: what breaks, and what is new.
+The detail for every line is in the sections after it.
+
+### Breaking changes at a glance
+
+All of these are 0.x minor breaks, stated in full further down.
+
+- `Frontmatter.RequiredKeys` and `Frontmatter.RecommendedFields` are read-only
+  `IReadOnlyList<string>` properties, no longer mutable `string[]` fields
+  (#113). Binary-breaking, and source-breaking for `.Length` and element
+  assignment.
+- The YAML subset has one nesting rule for block and flow, reader and writer:
+  at most 1000 nested collections. Block documents nested 501–1000 deep now
+  load; documents mixing block and flow past 1000 in total, which used to
+  load, are now rejected; the emitter refuses values nested 1001 deep.
+- A bare `okf` or `okf-render` prints its usage on stdout and exits 0, as
+  `--help` does. It used to use stderr and exit 1. A verb missing a required
+  argument still fails.
+- `YamlEmitter` refuses, with `YamlEmitException`, a value built in code that
+  reuses collections or long strings past a 16 MiB budget, or whose text would
+  pass 256 MiB characters (#189). Everything the parser returns is unaffected.
+
+### What is new
+
+- **`okf-render` sites are interactive.** A tree explorer with trust and
+  staleness, a "Jump to" palette (Ctrl+K), a light/dark toggle, a side panel
+  with contents and backlinks, a local neighbourhood graph on each concept
+  page, a global graph page with facets, a resizable side panel, and the
+  Inter, Inter Tight and Space Mono fonts embedded. Markdown is still
+  rendered client-side behind the same DOM sanitizer, now guarded by a
+  jsdom harness that runs in CI.
+- **`okf` as a dotnet tool: `OKF4net.Cli`.** Pin it in a tool manifest and gate
+  CI with `dotnet tool restore` then `dotnet okf validate`. The Native AOT
+  binaries for winget and `install.sh` are unchanged.
+- **A hardening wave.** `okf verify` can no longer be made to print a forged
+  line from a stored timestamp (#123). `YamlValue.Equals`, `GetHashCode` and
+  the emitter answer, or refuse cleanly, for any value built in code instead of
+  overflowing the stack or running out of memory (#158, #189). A concept
+  cited by 100,000 others no longer takes minutes to load (#148). A junction
+  to a bundle shares the bundle's write lock (#86).
+- **Smaller additions.** `samples/agents-quickstart` runs `OKF4net.Agents`
+  with no LLM endpoint (#5), and `OkfDocumentBuilder.SharedUsageWindow` writes
+  the shared §5.1 `usage_window`.
+
 ### Added
 
 - **Bundle provider seam (#139, lot A).** `OKF4net.Providers`: `IBundleProvider`
@@ -3099,7 +3146,8 @@ host-scopeable long-term memory — all built on the same zero-dependency core.
 - Relicensed from Apache-2.0 to LGPL-3.0-or-later; Apache-2.0 attribution for
   upstream ported portions is preserved in `NOTICE` and `LICENSE.Apache-2.0`.
 
-[Unreleased]: https://github.com/jchable/okf4net/compare/v0.6.0...main
+[Unreleased]: https://github.com/jchable/okf4net/compare/v0.7.0...main
+[0.7.0]: https://github.com/jchable/okf4net/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jchable/okf4net/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jchable/okf4net/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jchable/okf4net/compare/v0.3.1-preview.1...v0.4.0

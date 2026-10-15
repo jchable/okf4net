@@ -92,7 +92,7 @@ export default function Home() {
             <h2>The CLI</h2>
             <span className="ref">§8–§11 — indexes, logs, conformance</span>
           </div>
-          <p>Published as a <strong>self-contained Native AOT single-file binary</strong> — no .NET runtime on the target machine. <code>okf validate</code> exits non-zero on a non-conformant bundle, so it drops straight into CI.</p>
+          <p>Published as a <strong>self-contained Native AOT single-file binary</strong> — no .NET runtime on the target machine — or, in a repository that already builds with the .NET SDK, as the <code>OKF4net.Cli</code> dotnet tool pinned in a tool manifest. <code>okf validate</code> exits non-zero on a non-conformant bundle, so it drops straight into CI.</p>
           <table className="map">
             <tbody>
               <tr><th>Command</th><th>Does</th></tr>

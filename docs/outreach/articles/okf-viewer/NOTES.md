@@ -11,35 +11,45 @@ developers and people building agent systems, objective = contributors,
 OKF4net framed as an independent implementation of the OKF spec (not a port),
 English first, no hype words.
 
-## Before you publish
+## State at publication (checked on 2026-10-14 against v0.7.0)
 
-- [ ] **Branch state.** The article says the viewer is "on the dev branch
-  today". That is true only once PR #176 (`feat/viewer-interactive-p1`) is
-  merged into `dev`. If a release has shipped the viewer by the time you
-  publish, rewrite *Getting it today*, the *Try it* commands and the
-  *Summary* bullet: prebuilt archives from the GitHub Release and
-  `install.sh --bin okf-render` become the first way to get it, and the
-  build from source the second.
-- [ ] **No version, no date, no winget.** The article names no version number
-  or release date ("the next release of `okf-render`"), and says the winget
-  package has not been submitted. Re-check that against
-  `packaging/winget/README.md` and the README's `okf-render` section: if the
-  first `Coderise.OKF4net.Render` submission has been merged, the sentence
-  must change.
-- [ ] **Links resolve.** The docs page <https://jchable.github.io/okf4net/docs/viewer/>
-  goes live only once the website is deployed from `main` (`pages.yml`): open
-  it before publishing. Open #163 and #177 and check they are still open and
-  still about the VS Code extension and the IME / screen-reader checks. Open
-  the `good first issue` label: if it lists no open issue, the call to
-  contribute leads nowhere (Phase 0 rule of the communication plan); file a
-  fresh batch first.
-- [ ] **The harness count.** "453 cases at the time of writing" is the count
-  of `npm test` in `tools/viewer-security-check/` on `e07e902`. Re-run it on
-  the commit you publish from and update the number, or drop it.
-- [ ] **Images.** Rewrite the image paths for dev.to (next section), then check
-  every image in the dev.to preview. Choose a cover image (none is generated
-  at dev.to's 1000 × 420 ratio; `graph-synthetic.png` or `concept-page.png`
-  crop acceptably) and uncomment `cover_image`.
+The article was written while the viewer was on `dev` and rewritten when
+OKF4net 0.7.0 shipped it, so it now names the release. What was checked, and
+what is left for the owner.
+
+Checked:
+
+- **The viewer is in a release.** `v0.7.0` carries `okf-render` archives for
+  Windows, Linux and macOS on x64 and arm64, and `checksums.txt`
+  (`gh release view v0.7.0`). The article says so and no longer says "dev
+  branch" or "next release". `install.sh` accepts `--bin okf-render` (its
+  header documents it); it could not be dry-run on the Windows machine the
+  article was prepared on, so the article claims only what the script's own
+  help says.
+- **winget.** `Coderise.OKF4net.Render` was first submitted for 0.6.0
+  (microsoft/winget-pkgs PR 444993), which was closed on 2026-10-14 because
+  the 0.6.0 binary exited 1 without arguments, and submitted again for 0.7.0
+  (PR 452891), open on 2026-10-14. The workflow skips the render submission
+  until `WINGET_RENDER_PUBLISHED` is set. The article says "submitted and
+  waiting in the moderation queue". Re-check before publishing: if PR 452891
+  has been merged, the sentence in *Getting it* must change.
+- **Links.** The docs page <https://jchable.github.io/okf4net/docs/viewer/>
+  returned 200 on 2026-10-14 (the site deploys from `main` on every release).
+  #163 and #177 were open and still about the VS Code extension and the IME /
+  screen-reader checks. The `good first issue` label listed six open issues.
+- **The harness count.** `npm test` in `tools/viewer-security-check/` at the
+  release commit `90adf19` printed "453 passed, 0 failed", as the article says.
+- **The nuget.org side.** The seven 0.7.0 packages, `OKF4net.Cli` included,
+  were pushed by the release workflow on 2026-10-14; confirm they are listed
+  (`curl -s https://api.nuget.org/v3-flatcontainer/okf4net.cli/index.json`)
+  before the article says `dotnet tool install OKF4net.Cli` works.
+
+Left for the owner:
+
+- [ ] **Images.** Run the `sed` line in the next section with `TAG=v0.7.0` and
+  check every image in the dev.to preview. Choose a cover image (none is
+  generated at dev.to's 1000 × 420 ratio; `graph-synthetic.png` or
+  `concept-page.png` crop acceptably) and uncomment `cover_image`.
 - [ ] **Front matter.** Set `canonical_url` to the personal-site copy (the
   canonical rule of `docs/outreach/README.md`), keep `published: false` until
   the final check, and confirm the four tags (`dotnet, opensource, showdev, ai`;
@@ -52,23 +62,23 @@ English first, no hype words.
 ## Image URLs for dev.to
 
 The article uses relative paths (`img/...`) so it renders in the repository.
-dev.to needs absolute URLs. Pick a branch or tag that holds the images
-(`main` once merged; a tag is safer, it never moves), then:
+dev.to needs absolute URLs. Use the release tag: it holds the images and,
+unlike a branch, never moves.
 
 ```sh
-BRANCH=main   # or a tag such as vX.Y.Z
-sed "s#](img/#](https://raw.githubusercontent.com/jchable/okf4net/${BRANCH}/docs/outreach/articles/okf-viewer/img/#g; s#/<BRANCH>/#/${BRANCH}/#g" \
+TAG=v0.7.0
+sed "s#](img/#](https://raw.githubusercontent.com/jchable/okf4net/${TAG}/docs/outreach/articles/okf-viewer/img/#g; s#/<TAG>/#/${TAG}/#g" \
   docs/outreach/articles/okf-viewer/article.md > article.devto.md
 ```
 
-The second expression fills the `<BRANCH>` placeholder in the commented
+The second expression fills the `<TAG>` placeholder in the commented
 `cover_image` line. Do not commit `article.devto.md`. PowerShell equivalent:
 
 ```powershell
-$b = 'main'
+$t = 'v0.7.0'
 (Get-Content docs/outreach/articles/okf-viewer/article.md -Raw) `
-  -replace '\]\(img/', "](https://raw.githubusercontent.com/jchable/okf4net/$b/docs/outreach/articles/okf-viewer/img/" `
-  -replace '/<BRANCH>/', "/$b/" | Set-Content article.devto.md -NoNewline
+  -replace '\]\(img/', "](https://raw.githubusercontent.com/jchable/okf4net/$t/docs/outreach/articles/okf-viewer/img/" `
+  -replace '/<TAG>/', "/$t/" | Set-Content article.devto.md -NoNewline
 ```
 
 ## Images
@@ -120,11 +130,11 @@ Every factual claim of the article, with the file that proves it. "Spec" is
 | `verified` (§5.2), `stale_after` (§5.5); trust tiers are "advisory signals, not access control" | `docs/spec/SPEC.md` §5.2, §5.5, line "Trust tiers are advisory signals, not access control" |
 | OKF4net: independent implementation built from the spec, BCL only, own YAML-subset parser and link scanner | `README.md` intro; `CLAUDE.md` "What this is", "Hard rules" |
 | `okf-render` 0.6.0 wrote one page per concept with a frontmatter table and an index, no transversal navigation | spec §1; the `before-static-site.png` capture of the `v0.6.0` tag |
-| Output: `index.html`, a page per concept at its path, `graph.html` (`graph-1.html` on collision), `assets/` with scripts, CSS, fonts, licences, `okf-index.js` | docs page "What you get"; spec §12.6, A25; CHANGELOG [Unreleased] P3 |
+| Output: `index.html`, a page per concept at its path, `graph.html` (`graph-1.html` on collision), `assets/` with scripts, CSS, fonts, licences, `okf-index.js` | docs page "What you get"; spec §12.6, A25; CHANGELOG [0.7.0] P3 |
 | Opens from `file://`, nothing fetched from the network | Viewer README; spec control 14; recette `C14-requests` |
 | `okf-render` is a self-contained Native AOT binary, separate from `okf` so `okf` carries no marked or fonts | `README.md` "`okf-render` — generate a static HTML site"; `CLAUDE.md` `OKF4net.Render` |
-| Not released yet; build with `dotnet publish src/OKF4net.Render -c Release` (.NET SDK 10+) | CHANGELOG [Unreleased]; `README.md` Building & testing |
-| Release archives for Windows, Linux, macOS; `install.sh --bin okf-render`; winget package not submitted yet | docs page "Install it"; `README.md` As a CLI and the `okf-render` section |
+| Released in 0.7.0; builds from the tag with `dotnet run --project src/OKF4net.Render` (.NET SDK 10+) | CHANGELOG [0.7.0]; `README.md` Building & testing |
+| Release archives for Windows, Linux, macOS on x64 and arm64, with `checksums.txt`; `install.sh --bin okf-render`; winget package submitted (PR 444993), not merged | `gh release view v0.7.0` (assets); `packaging/install.sh` header; `gh api repos/microsoft/winget-pkgs/pulls/444993` (open on 2026-10-14) |
 | Header: bundle name, counts, Jump to, Filters, Global graph, theme; *Reading view* on the graph page | docs page "anatomy"; spec §2, §11.1 |
 | Three columns from 1,100 px; stacked below (page, context, explorer) | docs page; spec §10 R6 |
 | Chips: type, status, trust with verifier and date, staleness; frontmatter folded to four entries not already shown | CHANGELOG P1.1; spec A15, A27 |
@@ -151,7 +161,7 @@ Every factual claim of the article, with the file that proves it. "Spec" is
 | Contrast targets 4.5:1 text, 3:1 shapes, both themes, measured by the recette | spec §6, §11.0, §12.8 |
 | Reduced motion: layout runs, only start and end drawn | `okf-graph.js` (comment above `calm`); spec r12 |
 | IME and screen-reader manual checks not done, tracked in #177; Safari best effort | spec §7, A14, A21 |
-| `OKF4net.Viewer` references only `OKF4net`; vendored marked v15.0.12 (MIT) and Inter, Inter Tight, Space Mono (SIL OFL 1.1); licences in every site and beside the binary; `okf` never references them | `CLAUDE.md`; Viewer README "Licensing"; CHANGELOG [Unreleased] Changed |
+| `OKF4net.Viewer` references only `OKF4net`; vendored marked v15.0.12 (MIT) and Inter, Inter Tight, Space Mono (SIL OFL 1.1); licences in every site and beside the binary; `okf` never references them | `CLAUDE.md`; Viewer README "Licensing"; CHANGELOG [0.7.0] Changed |
 | `okf-index.js` sets `window.OKF_INDEX`; a script because `fetch` of local JSON is blocked under `file://` | spec §3 |
 | Classic scripts, not ES modules (blocked under `file://`); one global each, inert if a dependency is missing | spec §4.1, §12.6 |
 | Every bundle string through one quoting function escaping `<`, `>`, `&`, U+2028, U+2029; no object keyed by id (`__proto__`, `constructor`, `toString`) | `src/OKF4net.Viewer/IndexScript.cs` (class remarks); `HtmlSafeJson.cs`; spec §3.4 |
@@ -164,7 +174,7 @@ Every factual claim of the article, with the file that proves it. "Spec" is
 | Renderer hooks removed: stopped nothing more, emptied a `<details>` block, could not see the unescaped `alt` of `Renderer.image()` | `tools/viewer-security-check/README.md` "Why this exists" |
 | Sanitizer keeps `class` only on `<code>` | `viewer.js` `ALLOWED_ATTRS` (`CODE: { class: 1 }`) |
 | Chrome selectors anchored to chrome containers; chrome lookups start from a fixed id or an anchored selector (`document.getElementById`, an anchored `document.querySelector`) and class queries stay inside those roots; the fragment-to-heading lookup (`okf-toc.js` `targetOf`) calls `document.getElementById` on fragment-derived ids, then checks the result is inside `#okf-body`; three-layer guard | spec §12.6 "Ancrage, propriété de sécurité"; `run.js` comment above `CHROME_PROPS` ("Three layers, each with its own reach and none a proof") |
-| jsdom harness: real marked + scripts on a site rendered from a hostile fixture; injected scheduler; CI job `viewer sanitizer (JS)`; 453 cases | `tools/viewer-security-check/README.md`; `.github/workflows/ci.yml`; `npm test` output on `e07e902`: "453 passed, 0 failed" |
+| jsdom harness: real marked + scripts on a site rendered from a hostile fixture; injected scheduler; CI job `viewer sanitizer (JS)`; 453 cases | `tools/viewer-security-check/README.md`; `.github/workflows/ci.yml`; `npm test` output on `90adf19` (the v0.7.0 tag): "453 passed, 0 failed" |
 | Mutants: splitter cases killed 50, enlarged-dialog cases 30 | spec r14 ("`cases/p4.js` (27 cas, 50 mutants tués)") and r15 ("`cases/p2-modal.js` (20 cas, 30 mutants tués)") |
 | Recette: Chrome, Edge, Firefox, WebKit from `file://`; fonts, contrast, widths, no outside request; Playwright never a dependency | `tools/viewer-security-check/README.md` "Recette"; spec §12.8; `recette/lib.js` |
 | AOT smoke in CI on Linux, macOS, Windows; runs the native binary; executes its `okf-index.js` | `.github/workflows/ci.yml` job `aot-publish` (`check-index.js`) |
@@ -172,6 +182,13 @@ Every factual claim of the article, with the file that proves it. "Spec" is
 | Palette scans every concept on each keystroke | `okf-site.js` `rank` (one loop over `index.concepts`) |
 | Spec in 15 revisions, slices P1, P1.1, P2, P3, then r14 (splitter) and r15 (dialog); each with plan, cases, recette | spec header and §9 |
 | Real-browser catches: overlapping labels (→ boxes, r11), Firefox `content-visibility` pushing the list entry below the fold, long tasks near the limit (r12) | spec r11, r12; `tools/viewer-security-check/ACCEPTANCE.md` P3-css-1 |
+| `okf` is also the `OKF4net.Cli` dotnet tool: tool manifest, `dotnet tool restore`, `dotnet okf validate`, `dotnet tool install -g`, `dnx OKF4net.Cli --yes`; portable IL, .NET 10 runtime or later | `src/OKF4net.Cli/README.md`; CHANGELOG [0.7.0]; `.github/workflows/ci.yml` job `dotnet tool smoke test`; `dnx` and the manifest flow run locally on 2026-10-14 (`dnx` fails non-interactively without `--yes`) |
+| `okf validate` exits 1 on a non-conformant bundle; warnings never fail it | `src/OKF4net.Cli/OkfCli.cs`; the `dotnet tool smoke test` job asserts exit 0 on `tests/fixtures/appendix_a` and exit 1 on `okf_v02_reserved` |
+| `okf verify` printed a forged `recorded …` line from a stored timestamp, now line-safe in the renderer | CHANGELOG [0.7.0] (#123); `tests/OKF4net.Tests/AuditTextTests.cs`, `CliTests.cs` (reproduced with the real CLI before the fix) |
+| A self-holding mapping, or a 60-level mapping sharing a sub-mapping, overflowed the stack, ran out of memory or never finished when hashed, compared or printed; now answers or refuses; parser output unaffected | CHANGELOG [0.7.0] (#158, #189); `tests/YamlHostileProbe` cases `value-*` and `emit-*`, run by `YamlHostileInputTests` in a child process |
+| A concept cited by 100,000 others: ~170 s to build backlinks, under 1 s now, same order | CHANGELOG [0.7.0] (#148); PR 192 measured 169,550 ms before and 701 ms after for 100,000 citers |
+| A junction or symlink to a bundle shares its write lock; in-process only | CHANGELOG [0.7.0] (#86, "Still in-process only") |
+| The four upgrade changes: `RequiredKeys` / `RecommendedFields`, one YAML nesting rule, bare `okf` exits 0, emitter refusals | CHANGELOG [0.7.0] "Breaking changes at a glance" |
 
 Removed while checking (they were in the first draft and the code says
 otherwise or nothing): "the index is serialized by `System.Text.Json` with a
@@ -198,6 +215,10 @@ the link as is (both shorten it).
 **Mastodon / Bluesky**
 
 > How do you get a force-directed graph to give the same layout in Chromium, Firefox and WebKit? No Math.random, no clock, only exactly-rounded Math functions, and work counted instead of timed. Notes from building the okf-render viewer: <URL>
+
+**Release post (X / Mastodon)**
+
+> OKF4net 0.7.0: okf-render becomes an interactive viewer (explorer, Ctrl+K palette, local and global link graphs; static files, no server) and okf is now a dotnet tool you can pin in CI. Notes and the upgrade checklist: <URL>
 
 **Hacker News** (link to the repository, not to the article, for a Show HN):
 
