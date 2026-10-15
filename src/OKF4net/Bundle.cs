@@ -5,9 +5,15 @@ using OKF4net.Providers;
 namespace OKF4net;
 
 /// <summary>
-/// Error raised when loading or operating on a bundle on disk, restricted to
-/// the conditions <see cref="Bundle.Load(string)"/> itself can raise: I/O failures and
-/// a non-directory root. Per-file parse failures are recorded in
+/// Error raised by <see cref="Bundle.Load(string)"/> and
+/// <see cref="Bundle.Load(IBundleProvider, BundleLoadOptions?)"/>, and only by them: a root
+/// that is not a directory (the <see cref="string"/> overload); an I/O error while listing
+/// the bundle, taking its version or reading a concept; a concept that is not valid UTF-8;
+/// a provider failure or refusal (a path through a reparse point or an entry that cannot be
+/// inspected, a root outside its confinement boundary, an object gone or changed while it
+/// was read); or a global bound exceeded (entries, depth). The message is library-authored
+/// (spec §7); the raw cause, when there is one, is the inner exception. Per-file problems —
+/// a rejected name, an oversized or unparseable concept — are recorded in
 /// <see cref="Bundle.ParseErrors"/> instead (loading is permissive, §11).
 /// </summary>
 public sealed class BundleLoadException : OkfException
@@ -129,10 +135,14 @@ public sealed class Bundle
     /// Loads a bundle from a directory tree through the default
     /// <see cref="FileSystemBundleProvider"/> (spec §8).
     ///
-    /// Throws only for I/O failures or a non-directory root. Per-file parse
-    /// failures are recorded in <see cref="ParseErrors"/>.
+    /// Throws for a non-directory root, an I/O failure, a concept that is not valid UTF-8, a
+    /// global bound exceeded (<see cref="BundleLimits.Default"/>: entries, depth) and a refusal
+    /// by the provider's STRICT guards — a directory under the root whose link status cannot be
+    /// inspected aborts the load before it is listed. A symlink or junction under the root is
+    /// skipped, never followed. Per-file problems — a rejected name, an oversized or
+    /// unparseable concept — are recorded in <see cref="ParseErrors"/>.
     /// </summary>
-    /// <exception cref="BundleLoadException"><paramref name="root"/> does not exist or is not a directory, or an I/O error occurred.</exception>
+    /// <exception cref="BundleLoadException"><paramref name="root"/> does not exist or is not a directory, an I/O error occurred, a concept is not valid UTF-8, a global bound was exceeded, or the provider refused an access.</exception>
     public static Bundle Load(string root)
     {
         if (!Directory.Exists(root))
@@ -248,6 +258,7 @@ public sealed class Bundle
         var indexKeys = new List<BundleKey>();
         var logKeys = new List<BundleKey>();
         var objectVersions = new Dictionary<BundleKey, BundleObjectVersion>();
+        var chunk = new byte[ReadChunkBytes]; // one copy buffer for every object of this load
 
         foreach (var key in mdKeys)
         {
@@ -264,7 +275,7 @@ public sealed class Bundle
                         string text;
                         try
                         {
-                            text = ReadText(provider, key, limits, out var objectVersion);
+                            text = ReadText(provider, key, limits, chunk, out var objectVersion);
                             objectVersions[key] = objectVersion;
                         }
                         catch (BundleObjectTooLargeException e)
@@ -318,7 +329,7 @@ public sealed class Bundle
         }
 
         var (outbound, backlinks) = BuildGraph(concepts, index);
-        var okfVersion = ComputeOkfVersion(provider, limits, indexKeys);
+        var okfVersion = ComputeOkfVersion(provider, limits, indexKeys, chunk);
 
         return new Bundle(provider, options, validator, version, okfVersion, concepts, index, indexKeys, logKeys, parseProblems, rejectedKeys, tree.RejectedPrefixes.ToList(), objectVersions, outbound, backlinks);
     }
@@ -339,13 +350,23 @@ public sealed class Bundle
         _ => new BundleLoadException(key is null ? $"provider failure ({e.GetType().Name})" : $"provider failure reading '{key}' ({e.GetType().Name})", e),
     };
 
-    /// <summary>Reads one object as strict UTF-8, counting bytes against the bound (spec §6) whatever the provider says.</summary>
-    private static string ReadText(IBundleProvider provider, BundleKey key, BundleLimits limits, out BundleObjectVersion version)
+    /// <summary>The size of the copy buffer <see cref="ReadText"/> reads through.</summary>
+    private const int ReadChunkBytes = 81920;
+
+    /// <summary>
+    /// Reads one object as strict UTF-8, counting bytes against the bound (spec §6) whatever the
+    /// provider says. <paramref name="chunk"/> is the caller's copy buffer, reused across the
+    /// objects of one load. The destination is pre-sized from <see cref="BundleObject.Length"/>
+    /// when the provider declares one within the bound — a hint only: the bytes are still
+    /// counted and an overrun still throws, whatever the declared length.
+    /// </summary>
+    private static string ReadText(IBundleProvider provider, BundleKey key, BundleLimits limits, byte[] chunk, out BundleObjectVersion version)
     {
         using var obj = provider.Read(key);
         version = obj.Version;
-        using var buffer = new MemoryStream();
-        var chunk = new byte[81920];
+        using var buffer = obj.Length is { } declared && declared >= 0 && declared <= limits.MaxObjectBytes && declared <= Array.MaxLength
+            ? new MemoryStream((int)declared)
+            : new MemoryStream();
         long total = 0;
         int read;
         while ((read = obj.Content.Read(chunk, 0, chunk.Length)) > 0)
@@ -506,19 +527,22 @@ public sealed class Bundle
     /// frontmatter, if present (<c>okf_version</c>, §12). This is the only
     /// place frontmatter is permitted in an <c>index.md</c>.
     ///
-    /// Computed once while <see cref="Load(string)"/> builds the bundle and stored, so
-    /// it reflects the same load-time snapshot as the rest of this
-    /// <see cref="Bundle"/>: a later change to the root <c>index.md</c> on disk
+    /// Computed once while <see cref="Load(IBundleProvider, BundleLoadOptions?)"/> builds the
+    /// bundle and stored, so it reflects the same load-time snapshot as the rest of this
+    /// <see cref="Bundle"/>: a later change to the root <c>index.md</c> in storage
     /// does not affect an already-loaded instance. A legitimate <c>null</c> (no
-    /// root <c>index.md</c>, no <c>okf_version</c> key, or an unreadable file) is
-    /// a stored value like any other. The backing field is <c>readonly</c> and
+    /// root <c>index.md</c>, no <c>okf_version</c> key, unparseable frontmatter, or a
+    /// root <c>index.md</c> that is gone, over the byte bound, unreadable or not valid
+    /// UTF-8 when it is read) is a stored value like any other. Any other provider failure
+    /// while reading it — a refusal by the provider's STRICT guards, for instance — is not a
+    /// <c>null</c>: the load throws <see cref="BundleLoadException"/>. The backing field is <c>readonly</c> and
     /// set in the constructor before the instance is published, so
     /// <see cref="Bundle"/> instances shared and read concurrently (e.g. across
     /// tool invocations in <c>OkfBundleTools</c>) need no lock.
     /// </summary>
     public string? OkfVersion => _okfVersion;
 
-    private static string? ComputeOkfVersion(IBundleProvider provider, BundleLimits limits, List<BundleKey> indexKeys)
+    private static string? ComputeOkfVersion(IBundleProvider provider, BundleLimits limits, List<BundleKey> indexKeys, byte[] chunk)
     {
         var key = BundleKey.Parse(IndexFilename);
         if (!indexKeys.Contains(key))
@@ -529,7 +553,7 @@ public sealed class Bundle
         string text;
         try
         {
-            text = ReadText(provider, key, limits, out _);
+            text = ReadText(provider, key, limits, chunk, out _);
         }
         catch (Exception e) when (e is BundleObjectNotFoundException or BundleObjectTooLargeException or IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
         {
@@ -782,7 +806,7 @@ public sealed class Bundle
 
         try
         {
-            return ReadText(Provider, key, Options.Limits, out _);
+            return ReadText(Provider, key, Options.Limits, new byte[ReadChunkBytes], out _);
         }
         catch (BundleAccessRefusedException e)
         {

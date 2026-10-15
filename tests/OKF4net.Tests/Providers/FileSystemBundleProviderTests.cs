@@ -78,6 +78,23 @@ public class FileSystemBundleProviderTests
     }
 
     [SkippableFact]
+    public void Enumerate_counts_skipped_junctions_too()
+    {
+        // The junction twin of the test above: mklink /J needs no privilege, so this runs on an
+        // unprivileged Windows account where the symlink variant skips.
+        using var external = new TempDir();
+        external.Write("outside.md", "o");
+        using var tmp = new TempDir();
+        tmp.Write("real.md", "r");
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("j1", external.Path) && tmp.TryCreateJunctionToExternalDir("j2", external.Path), "junctions unavailable");
+        var p = new FileSystemBundleProvider(tmp.Path);
+        Assert.Equal(["real.md"], p.Enumerate(null, BundleLimits.Default).Select(l => l.RawName)); // both junctions skipped, nothing under them listed
+        var ex = Assert.Throws<BundleLimitExceededException>(() => p.Enumerate(null, new BundleLimits { MaxEntries = 2 })); // 3 entries inspected: j1, j2, real.md
+        Assert.Equal(BundleBound.Entries, ex.Bound);
+        Assert.Single(p.Enumerate(null, new BundleLimits { MaxEntries = 3 }));
+    }
+
+    [SkippableFact]
     public void Enumerate_skips_a_symlinked_entry_but_read_refuses_it_strictly()
     {
         using var tmp = new TempDir();
@@ -334,6 +351,33 @@ public class FileSystemBundleProviderTests
         Assert.True(p.Exists(K("a.sql")));
     }
 
+    [SkippableTheory]
+    [InlineData("a\"b.sql")]
+    [InlineData("x<y.sql")]
+    [InlineData("x>y.sql")]
+    [InlineData("name.")]
+    [InlineData("d\"<>./f.sql")]
+    public void On_Unix_a_name_carrying_a_DOS_wildcard_or_a_trailing_dot_resolves_exactly(string name)
+    {
+        // '"', '<' and '>' are DOS wildcards under MatchType.Win32 and a trailing '.' is special
+        // in that syntax: each such name must still resolve to itself, and only to itself.
+        Skip.If(OperatingSystem.IsWindows(), "a Unix name rule: Windows names cannot carry these");
+        using var tmp = new TempDir();
+        tmp.Write(name, "exact");
+        tmp.Write("decoy.sql", "decoy");
+        var p = new FileSystemBundleProvider(tmp.Path, additionalConstraints: BundleKeyConstraints.CaseInsensitiveCollisions); // exact-case matching on: ResolveExact runs
+        Assert.True(p.MatchesCaseExactly);
+        var key = K(name);
+        Assert.True(p.Exists(key));
+        using var obj = p.Read(key);
+        Assert.Equal(5, obj.Length);
+        Assert.Equal([name], p.Enumerate(null, BundleLimits.Default).Select(l => l.RawName).Where(n => n != "decoy.sql"));
+        if (name.Contains('/'))
+        {
+            Assert.Equal([name], p.Enumerate(K(name[..name.IndexOf('/')]), BundleLimits.Default).Select(l => l.RawName));
+        }
+    }
+
     [SkippableFact]
     public void A_root_that_is_an_uninspectable_junction_is_refused_strictly_under_a_boundary()
     {
@@ -381,7 +425,8 @@ public class FileSystemBundleProviderTests
     {
         // Without a boundary the root is trusted; below it, a junction whose parent denies
         // listing is never read through: a read says "not found", a question says false, a
-        // prefix lists nothing — and nothing outside the bundle is returned.
+        // prefix lists nothing, the whole walk cannot list the parent and aborts — and nothing
+        // outside the bundle is returned.
         using var tmp = new TempDir();
         tmp.Write("a.md", "a");
         Directory.CreateDirectory(Path.Combine(tmp.Path, "x"));
@@ -394,5 +439,10 @@ public class FileSystemBundleProviderTests
         Assert.Throws<BundleObjectNotFoundException>(() => p.Read(K("x/y/z/b.md")));
         Assert.Empty(p.Enumerate(K("x/y/z"), BundleLimits.Default));
         Assert.Empty(p.Enumerate(K("x/y"), BundleLimits.Default));
+        // The whole-bundle walk reaches "x", a plain directory, and is denied its listing: the
+        // OS error ends the walk before the junction is ever seen, and the load aborts on it.
+        Assert.Throws<UnauthorizedAccessException>(() => p.Enumerate(null, BundleLimits.Default));
+        var load = Assert.Throws<BundleLoadException>(() => Bundle.Load(tmp.Path));
+        Assert.IsType<UnauthorizedAccessException>(load.InnerException);
     }
 }

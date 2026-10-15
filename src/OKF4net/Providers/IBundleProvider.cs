@@ -32,7 +32,15 @@ public interface IBundleProvider
     /// <exception cref="BundleObjectNotFoundException">No object under the key.</exception>
     BundleObject Read(BundleKey key, BundleObjectVersion? expected = null);
 
-    /// <summary>Whether an object exists under the key, matching it exactly (case and Unicode form).</summary>
+    /// <summary>
+    /// Whether an object exists under the key, matching it exactly (case and Unicode form).
+    /// <see langword="false"/> means only that no such object exists. When the key's path is
+    /// refused — a reparse point, an entry that cannot be inspected, the confinement boundary —
+    /// a provider throws <see cref="BundleAccessRefusedException"/>, exactly as
+    /// <see cref="Read"/> would, and never answers <see langword="false"/>: a refused path is
+    /// not an absent one.
+    /// </summary>
+    /// <exception cref="BundleAccessRefusedException">The key's path is refused.</exception>
     bool Exists(BundleKey key);
 
     /// <summary>Writes an object atomically if <paramref name="condition"/> holds; returns the new version.</summary>

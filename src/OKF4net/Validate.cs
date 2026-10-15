@@ -640,32 +640,32 @@ public static class BundleValidator
 
     /// <summary>
     /// For a bare §6.2 path that resolved to <see cref="ResourceResolutionStatus.Missing"/>,
-    /// looks for a file at the concept-relative location the path would have
-    /// named under a caller's likely mental model (beside the concept, the
-    /// pre-existing behaviour before bare paths were read as bundle-rooted),
-    /// and if one exists there, returns a suffix pointing at it. Returns
-    /// <see langword="null"/> when no hint applies: <paramref name="resource"/>
-    /// is not <see cref="FrontmatterResourceKind.BundleRelative"/>, its raw
-    /// path is already rooted (a leading <c>/</c> or <c>\</c> is an explicit
-    /// root-relative statement -- suggesting <c>./</c> would contradict it),
-    /// or no file exists at the concept-relative candidate.
+    /// asks whether the same path written concept-relative (<c>./</c> + the raw path) names
+    /// an object — the location a caller's likely mental model expects (beside the concept,
+    /// the pre-existing behaviour before bare paths were read as bundle-rooted). It asks
+    /// <see cref="Bundle.TryResolveResourceKey"/>, so the candidate is a key resolved
+    /// lexically from the concept's prefix, under the bundle's key policy, through the
+    /// bundle's provider; only a <see cref="ResourceResolutionStatus.Resolved"/> answer gives
+    /// a suffix, which names that key. Returns <see langword="null"/> when no hint applies:
+    /// <paramref name="resource"/> is not <see cref="FrontmatterResourceKind.BundleRelative"/>,
+    /// its raw path is already rooted (a leading <c>/</c> or <c>\</c> is an explicit
+    /// root-relative statement -- suggesting <c>./</c> would contradict it), or the
+    /// concept-relative path escapes the bundle, or its key is missing, not allowed, or
+    /// refused by the provider.
     ///
     /// The <see cref="FrontmatterResourceKind.BundleRelative"/> guard cannot be
     /// exercised end-to-end through <see cref="Validate"/>: for a
-    /// <see cref="FrontmatterResourceKind.ConceptRelative"/> resource, the
-    /// candidate this method would compute (<paramref name="bundle"/>'s root
-    /// combined with the concept's own directory and the raw path) is
-    /// byte-for-byte the same candidate <see cref="Bundle.TryResolveResource"/>
-    /// already tried to resolve *that very resource* -- both use the concept's
-    /// directory as the base. A sibling file placed there therefore flips the
+    /// <see cref="FrontmatterResourceKind.ConceptRelative"/> resource, <c>./</c> + its raw path
+    /// (<c>././x</c>, <c>./../x</c>) resolves to the very key
+    /// <see cref="Bundle.TryResolveResourceKey"/> already resolved for that resource, since
+    /// both start from the concept's prefix. An object under that key therefore flips the
     /// caller's resolution status to <see cref="ResourceResolutionStatus.Resolved"/>
     /// before this method is ever reached, for identical reasons with or
     /// without the guard, so no <see cref="Validate"/>-level test can turn red
     /// by only deleting the guard. <c>internal</c> so
     /// <c>OKF4net.Tests</c> can call it directly with a hand-built
-    /// <see cref="FrontmatterResourceKind.ConceptRelative"/> resource and an
-    /// existing candidate file, independent of what <see cref="Bundle.TryResolveResource"/>
-    /// would say about it.
+    /// <see cref="FrontmatterResourceKind.ConceptRelative"/> resource whose key names an
+    /// existing object, independent of how the validator reached it.
     /// </summary>
     internal static string? ConceptRelativeHint(Bundle bundle, Concept concept, FrontmatterResource resource)
     {

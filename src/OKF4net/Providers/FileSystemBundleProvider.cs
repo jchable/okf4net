@@ -227,7 +227,13 @@ public sealed class FileSystemBundleProvider : IBundleProvider
     /// <summary>
     /// With a boundary: the root must be under it, and neither the root nor any entry
     /// between the boundary and the root may be a reparse point or uninspectable — STRICT,
-    /// at every storage access, because the ancestor walk stops <i>before</i> the root.
+    /// at every storage access. Every per-key walk (<see cref="GuardStrict"/>,
+    /// <see cref="ResolveExact"/>) has the bundle root as its own upper bound, which it never
+    /// inspects, so the chain boundary→root lies outside all of them and is checked here.
+    /// <c>AnyEntryUpTo</c> inspects its starting path itself before walking up, so when the
+    /// root is strictly below the boundary the one ancestor walk covers the root too; when
+    /// the root <i>is</i> the boundary that walk inspects nothing, and the root is checked on
+    /// its own.
     /// </summary>
     private void CheckBoundary()
     {
@@ -241,18 +247,21 @@ public sealed class FileSystemBundleProvider : IBundleProvider
             throw new BundleAccessRefusedException(null, "the bundle root is outside its confinement boundary");
         }
 
-        if (ReparsePoints.IsReparsePointOrUninspectable(_fullRoot)
-            || ReparsePoints.HasReparsePointOrUninspectableAncestor(ConfinementBoundary, _fullRoot, PathComparison))
+        // AnyEntryUpTo inspects _fullRoot itself first unless it equals the boundary, where it stops at once.
+        if (string.Equals(_fullRoot, ConfinementBoundary, PathComparison)
+                ? ReparsePoints.IsReparsePointOrUninspectable(_fullRoot)
+                : ReparsePoints.HasReparsePointOrUninspectableAncestor(ConfinementBoundary, _fullRoot, PathComparison))
         {
             throw new BundleAccessRefusedException(null, "the bundle root, or a directory between the boundary and it, is a reparse point or cannot be inspected");
         }
     }
 
-    /// <summary>STRICT: the path must be under the root and neither it nor any directory between the root and it may be a reparse point or uninspectable.</summary>
+    /// <summary>STRICT: the path must be under the root and neither it nor any directory between the root and it may be a reparse point or uninspectable. The root itself is not inspected here: <see cref="CheckBoundary"/> inspects it when a confinement boundary is set, and without one it is trusted host configuration.</summary>
     private void GuardStrict(BundleKey? key, string path)
     {
+        // AnyEntryUpTo inspects `path` itself first, then each directory up to (not including)
+        // the root; for `path` == root it inspects nothing, which is the root exception.
         if (!ReparsePoints.IsWithin(_fullRoot, path, PathComparison)
-            || (!string.Equals(path, _fullRoot, PathComparison) && ReparsePoints.IsReparsePointOrUninspectable(path))
             || ReparsePoints.HasReparsePointOrUninspectableAncestor(_fullRoot, path, PathComparison))
         {
             throw new BundleAccessRefusedException(key, "it resolves outside the bundle root, or through a reparse point or an entry that could not be inspected");
@@ -263,15 +272,26 @@ public sealed class FileSystemBundleProvider : IBundleProvider
     /// Maps a key to its on-disk path. With <see cref="MatchesCaseExactly"/>, each segment must
     /// match an existing entry's name <b>exactly</b> (ordinal) — spec §2's correspondence rule —
     /// else <see langword="null"/>. Otherwise the OS compares bytes already and the joined path
-    /// is returned as is. The segment is handed to the OS as a literal-name search pattern, so
-    /// the OS filters by name rather than the code listing each directory in full. A segment that
-    /// cannot be a literal pattern is "no such entry": on Windows one containing any of
-    /// <c>&lt; &gt; : " | ? *</c>, or that is rooted (<c>C:</c>, <c>a:b.md</c>), because no NTFS or
-    /// FAT name can carry those and .NET rejects such a pattern with an
-    /// <see cref="ArgumentException"/> (a layer-1-valid key must not make a question throw). On
-    /// every OS a segment containing <c>*</c> or <c>?</c> is looked up by listing the directory
-    /// and comparing names ordinally, since the pattern would otherwise match as a wildcard.
-    /// Each traversed directory is still STRICT-guarded before it is listed, ahead of this rule.
+    /// is returned as is.
+    /// <para><b>Cost (exact matching).</b> Each segment is passed to
+    /// <see cref="DirectoryInfo.EnumerateFileSystemInfos(string, SearchOption)"/> as a search
+    /// pattern, but .NET does not hand the pattern to the OS: on Windows the enumerator asks
+    /// <c>NtQueryDirectoryFile</c> for every entry (no file-name filter), on Unix it reads every
+    /// entry with <c>readdir</c>, and on both the pattern is matched in managed code
+    /// (<c>FileSystemName.MatchesWin32Expression</c>) over that full listing. Every level of
+    /// every <see cref="Read"/>, <see cref="Exists"/> and prefixed <see cref="Enumerate"/>
+    /// therefore costs O(n) in the n entries of that directory; the <c>*</c> fallback below is
+    /// not a different cost class. The literal-name pattern is kept (the managed match then
+    /// builds a <see cref="FileSystemInfo"/> for the matching entry only) and the ordinal
+    /// comparison decides. A per-load memo of directory listings is a possible follow-up.</para>
+    /// <para>A segment that cannot be a literal pattern is "no such entry" on Windows: one
+    /// containing any of <c>&lt; &gt; : " | ? *</c>, or that is rooted (<c>C:</c>, <c>a:b.md</c>),
+    /// because no NTFS or FAT name can carry those and .NET rejects such a pattern with an
+    /// <see cref="ArgumentException"/> (a layer-1-valid key must not make a question throw).
+    /// Elsewhere, a segment the Win32 pattern syntax could read as anything but itself is looked
+    /// up with the pattern <c>*</c> and compared ordinally (<see cref="NeedsFullListing"/>).
+    /// Each traversed directory is still STRICT-guarded before it is listed, ahead of this
+    /// rule.</para>
     /// </summary>
     private string? ResolveExact(BundleKey key)
     {
@@ -293,10 +313,10 @@ public sealed class FileSystemBundleProvider : IBundleProvider
             // STRICT before listing a traversed directory (the root excepted: a symlinked root
             // without a boundary stays loadable, Review Focus 4). Otherwise an absent name under
             // a junction could be told apart from a present one before the read gate ever ran
-            // (fourth review: NotFound vs refused).
+            // (fourth review: NotFound vs refused). AnyEntryUpTo inspects `current` itself first;
+            // `current` is the root only at the first level, where the equality test skips it.
             if (!string.Equals(current, _fullRoot, PathComparison)
-                && (ReparsePoints.IsReparsePointOrUninspectable(current)
-                    || ReparsePoints.HasReparsePointOrUninspectableAncestor(_fullRoot, current, PathComparison)))
+                && ReparsePoints.HasReparsePointOrUninspectableAncestor(_fullRoot, current, PathComparison))
             {
                 throw new BundleAccessRefusedException(key, "it resolves through a reparse point or an entry that could not be inspected");
             }
@@ -306,8 +326,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider
                 return null;
             }
 
-            // A wildcard character in the segment would be matched, not read literally: list everything instead.
-            var pattern = segment.AsSpan().ContainsAny('*', '?') ? "*" : segment;
+            var pattern = NeedsFullListing(segment) ? "*" : segment;
             string? match = null;
             try
             {
@@ -335,6 +354,21 @@ public sealed class FileSystemBundleProvider : IBundleProvider
 
         return current;
     }
+
+    /// <summary>
+    /// Whether <see cref="ResolveExact"/> lists the directory with <c>*</c> instead of passing the
+    /// segment as its own pattern. On every OS, a segment containing <c>*</c> or <c>?</c>, which
+    /// would match as a wildcard. Elsewhere than Windows (where <see cref="CannotBeLiteralName"/>
+    /// has already answered for those characters), also one containing <c>"</c>, <c>&lt;</c> or
+    /// <c>&gt;</c> — the DOS wildcards of <see cref="MatchType.Win32"/> — or ending with
+    /// <c>.</c>, which that syntax treats specially. .NET 10 escapes those three characters on
+    /// Unix before matching and matches a trailing <c>.</c> literally, so such a name matches
+    /// its own pattern today; listing in full keeps the answer from depending on that internal
+    /// detail, at the same O(n) cost.
+    /// </summary>
+    private static bool NeedsFullListing(string segment) =>
+        segment.AsSpan().ContainsAny('*', '?')
+        || (!OperatingSystem.IsWindows() && (segment.AsSpan().ContainsAny('"', '<', '>') || segment.EndsWith('.')));
 
     /// <summary>Windows only: a segment no NTFS/FAT entry can be named, and that .NET would reject as a search pattern.</summary>
     private static bool CannotBeLiteralName(string segment) =>
@@ -401,11 +435,50 @@ public sealed class FileSystemBundleProvider : IBundleProvider
         }
     }
 
-    private static byte[] ReadBounded(Stream stream, long max, BundleKey key)
+    /// <summary>
+    /// Reads the whole file into one array sized from <see cref="FileStream.Length"/>, checked
+    /// against <paramref name="max"/> again here (the file may have grown since the caller's
+    /// check, and nothing is allocated past the bound). A file that shrank between that length
+    /// and the read is returned at its new length; one that grew is read on, counting every
+    /// byte against <paramref name="max"/> exactly as a chunked read would, and refused past it.
+    /// </summary>
+    private static byte[] ReadBounded(FileStream stream, long max, BundleKey key)
     {
+        var length = stream.Length;
+        if (length > max)
+        {
+            throw new BundleObjectTooLargeException(key, length, max);
+        }
+
+        if (length > Array.MaxLength)
+        {
+            throw new IOException("Stream was too long."); // what the MemoryStream this replaces threw
+        }
+
+        var bytes = new byte[length];
+        var filled = stream.ReadAtLeast(bytes, bytes.Length, throwOnEndOfStream: false);
+        if (filled < bytes.Length)
+        {
+            return bytes.AsSpan(0, filled).ToArray(); // shrank between the length check and the read
+        }
+
+        var next = stream.ReadByte();
+        if (next < 0)
+        {
+            return bytes;
+        }
+
+        // Grew between the length check and the read: go on counting, as before.
         using var buffer = new MemoryStream();
+        buffer.Write(bytes);
+        buffer.WriteByte((byte)next);
+        long total = bytes.Length + 1L;
+        if (total > max)
+        {
+            throw new BundleObjectTooLargeException(key, total, max);
+        }
+
         var chunk = new byte[81920];
-        long total = 0;
         int read;
         while ((read = stream.Read(chunk, 0, chunk.Length)) > 0)
         {
