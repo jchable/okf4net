@@ -37,8 +37,9 @@ public interface IBundleProvider
     /// <see langword="false"/> means that no such object exists, with one carve-out: a listing
     /// the provider is denied, or that fails (the filesystem provider, when it matches names
     /// exactly, cannot list a directory on the key's path), also counts as "no such entry" — no
-    /// object is read and nothing outside the root is reached. When the key's path is refused at an entry the provider reached — a reparse
-    /// point, an entry that cannot be inspected, the confinement boundary — a provider throws
+    /// object is read and nothing outside the root is reached. When the key's path is refused
+    /// at an entry the provider reached — a reparse point, an entry that cannot be inspected,
+    /// the confinement boundary — a provider throws
     /// <see cref="BundleAccessRefusedException"/>, exactly as <see cref="Read"/> would, and
     /// never answers <see langword="false"/>: a refused path is not an absent one.
     /// </summary>

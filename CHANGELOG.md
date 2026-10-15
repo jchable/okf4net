@@ -45,8 +45,8 @@ and this project adheres to
   answer is the same under the AOT binaries, where `string.Normalize` is a
   no-op; NFC itself is checked the same way, canonical ordering included.
   Under `Strict`, a resource path containing `::$DATA` (an NTFS stream
-  suffix, which resolved on Windows) or `?` (which was `Missing`) resolves
-  `Unsafe`.
+  suffix, which resolved on Windows) or `?` (which was `Missing` on Windows)
+  resolves `Unsafe`.
 - **A file literally named with a backslash** (`a\b.md`, possible where a file
   name can hold one: Linux, macOS) was loaded as concept `a/b`; a backslash is
   never part of a key, so it is now a `ParseErrors` entry.
@@ -68,6 +68,13 @@ and this project adheres to
   symlink or junction seen as one is still skipped, never followed.
 - **A backslash in a §6.2 path-valued field is `Unsafe`** on every OS;
   `references\a.sql` resolved on Windows before.
+- **A §6.2 path that climbs out of the bundle root and re-enters it**
+  (`../<bundle>/references/a.sql`) resolved through the OS path normalisation
+  before; it is now `Unsafe`, like any climb above the root.
+- **When the bundle root is itself a symlink or junction**, a path naming the
+  root (`/`, `.`, `./`, `/./`, `sub/..`, or `../` from `sub/`) was reported
+  `Unsafe` ("escapes the bundle") by the old check on the root's own link
+  status; it is now `Missing` ("not found"), as it is under a plain root.
 - **NFC is decided by a quick check, never by `string.Normalize`** (a silent
   no-op in the Native AOT `okf`/`okf-render` binaries): under `Strict`, a name
   containing a character that is never NFC (e.g. U+212B) or a combining mark
