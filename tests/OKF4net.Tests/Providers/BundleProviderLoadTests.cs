@@ -64,6 +64,37 @@ public class BundleProviderLoadTests
         Assert.Equal(BundleKey.Parse("a.md"), (concept with { Key = BundleKey.Parse("a.md") }).Key);
     }
 
+    /// <summary>
+    /// Record equality, hash and <c>ToString</c> stay over the three positional members, as the
+    /// compiler synthesised them on <c>dev</c> before <see cref="Concept.Key"/> existed: a loaded
+    /// concept (which carries a key) equals a hand-built one with the same id, path and document.
+    /// </summary>
+    [Fact]
+    public void A_loaded_concept_equals_a_hand_built_one_with_the_same_three_members()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("tables/customers.md", Customers);
+        var loaded = Bundle.Load(tmp.Path).Concepts.Single();
+        Assert.NotNull(loaded.Key);
+
+        var handBuilt = new Concept(loaded.Id, loaded.Path, loaded.Document);
+        Assert.Null(handBuilt.Key);
+        Assert.Equal(handBuilt, loaded);
+        Assert.True(loaded == handBuilt);
+        Assert.True(handBuilt.Equals((object)loaded));
+        Assert.Equal(handBuilt.GetHashCode(), loaded.GetHashCode());
+        Assert.Equal(handBuilt.ToString(), loaded.ToString());
+        Assert.Equal($"Concept {{ Id = {loaded.Id}, Path = {loaded.Path}, Document = {loaded.Document} }}", loaded.ToString());
+
+        var copy = loaded with { };
+        Assert.Equal(loaded.Key, copy.Key); // `with` still copies the key
+        Assert.Equal(loaded, loaded with { Key = BundleKey.Parse("other.md") });
+        Assert.NotEqual(loaded, loaded with { Path = loaded.Path + "x" });
+        Assert.NotEqual(loaded, loaded with { Id = ConceptId.Parse("other") });
+        Assert.NotEqual(loaded, loaded with { Document = OkfDocument.Parse(Orders) });
+        Assert.False(loaded.Equals(null));
+    }
+
     [Fact]
     public void Strict_rejections_land_in_ParseProblems_with_the_raw_name_and_no_key()
     {

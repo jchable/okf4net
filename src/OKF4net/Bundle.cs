@@ -34,10 +34,42 @@ public sealed class BundleLoadException : OkfException
 /// <summary>
 /// A single concept within a bundle (one markdown document).
 /// </summary>
+/// <remarks>
+/// Equality, hashing and <see cref="object.ToString"/> cover the three positional members
+/// only, as they did before <see cref="Key"/> existed: a loaded concept equals a hand-built
+/// one with the same id, path and document. <c>with</c> still copies <see cref="Key"/>.
+/// </remarks>
 public sealed record Concept(ConceptId Id, string Path, OkfDocument Document)
 {
     /// <summary>The concept's key in its provider; set by <see cref="Bundle.Load(IBundleProvider, BundleLoadOptions?)"/>, <see langword="null"/> for a hand-built instance.</summary>
     public BundleKey? Key { get; init; }
+
+    /// <summary>Compares the three positional members (<see cref="Id"/>, <see cref="Path"/>, <see cref="Document"/>), never <see cref="Key"/>.</summary>
+    public bool Equals(Concept? other) =>
+        ReferenceEquals(this, other)
+        || (other is not null
+            && EqualityContract == other.EqualityContract
+            && EqualityComparer<ConceptId>.Default.Equals(Id, other.Id)
+            && EqualityComparer<string>.Default.Equals(Path, other.Path)
+            && EqualityComparer<OkfDocument>.Default.Equals(Document, other.Document));
+
+    /// <summary>Hashes the three positional members, as the compiler-synthesised hash did before <see cref="Key"/> existed.</summary>
+    public override int GetHashCode() => unchecked(
+        (((EqualityComparer<Type>.Default.GetHashCode(EqualityContract) * -1521134295)
+            + EqualityComparer<ConceptId>.Default.GetHashCode(Id)) * -1521134295
+            + EqualityComparer<string>.Default.GetHashCode(Path)) * -1521134295
+            + EqualityComparer<OkfDocument>.Default.GetHashCode(Document));
+
+    private bool PrintMembers(System.Text.StringBuilder builder)
+    {
+        builder.Append("Id = ");
+        builder.Append(Id);
+        builder.Append(", Path = ");
+        builder.Append(Path);
+        builder.Append(", Document = ");
+        builder.Append(Document);
+        return true;
+    }
 }
 
 /// <summary>
