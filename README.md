@@ -227,7 +227,10 @@ BundleLoadOptions { Limits = …, KeyPolicy = … })`. Keys are validated as a t
 under the `Strict` policy by default (a bundle valid on one provider is valid on
 all: no Windows reserved names, no trailing dot, no case-colliding siblings, no
 file that is also a directory); `Native` keeps only the provider's own
-constraints. Default bounds: 16 MiB per object, 1 000 000 entries, depth 64.
+constraints. A Linux host whose bundle sits on a case-insensitive mount must
+pass `additionalConstraints: BundleKeyConstraints.CaseInsensitiveCollisions` to
+`FileSystemBundleProvider` to get exact-case matching: `Strict` alone does not
+turn it on. Default bounds: 16 MiB per object, 1 000 000 entries, depth 64.
 Every rejected `.md` name is a `Bundle.ParseProblems` entry (and a
 `ParseErrors` line); other rejected names are skipped silently. In this
 release the filesystem provider is read-only and no other provider ships; the
