@@ -100,9 +100,11 @@ public static class YamlEmitter
     /// written as before. A limit, rather than a refusal of every reuse, keeps
     /// that ordinary case working. Whatever the rule lets through, the text is
     /// still bounded by <see cref="MaxOutputChars"/>. A collection that holds
-    /// itself is refused by the nesting rule (<see cref="CheckDepth"/>), which
-    /// it reaches first. Reaching the refusal is errors-as-data on every
-    /// caller's path, like the nesting refusal — see <see cref="YamlEmitException"/>.
+    /// itself is refused too, by whichever rule it reaches first: the nesting
+    /// rule (<see cref="CheckDepth"/>) for a small cycle, this one when each
+    /// level writes enough (more than about 16 KiB) to pass the limit before
+    /// the nesting limit is reached. Reaching the refusal is errors-as-data on
+    /// every caller's path, like the nesting refusal — see <see cref="YamlEmitException"/>.
     /// </summary>
     internal const int MaxRepeatedOutputChars = 16 * 1024 * 1024;
 

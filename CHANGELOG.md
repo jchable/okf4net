@@ -60,7 +60,9 @@ All of these are 0.x minor breaks, stated in full further down.
 - **`okf` as a dotnet tool: `OKF4net.Cli` on nuget.org.** A repository with
   the .NET SDK can now pin `okf` in its tool manifest and gate CI on it with
   `dotnet tool restore` then `dotnet okf validate`. `dotnet tool install -g
-  OKF4net.Cli` and `dnx OKF4net.Cli --yes` work too. The package is portable
+  OKF4net.Cli` and `dnx OKF4net.Cli` work too (`dnx` asks before it downloads;
+  its `--yes`, which answers in advance for a non-interactive run, needs the
+  .NET 11 SDK, not the .NET 10 one). The package is portable
   IL: it needs the .NET 10 runtime or a later major one (`RollForward` is
   `Major`), with the same invariant globalization as the native binary. The
   Native AOT binaries for winget and `install.sh` are unchanged and built from
