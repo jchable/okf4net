@@ -253,8 +253,9 @@ dotnet okf validate ./knowledge
 ```
 
 `dotnet tool install -g OKF4net.Cli` installs it globally instead, and
-`dnx OKF4net.Cli --yes validate ./knowledge` runs it once without installing
-anything. The tool is portable IL and needs the .NET 10 runtime or a later
+`dnx OKF4net.Cli validate ./knowledge` runs it once without installing
+anything (it asks before downloading; `--yes` answers in advance for a
+non-interactive run, but only the .NET 11 SDK and later have it). The tool is portable IL and needs the .NET 10 runtime or a later
 one. It is built from the same source as the native binary and gives the same
 verdicts. If both are installed, the first `okf` on `PATH` wins, while
 `dotnet okf` always runs the manifest's version.
