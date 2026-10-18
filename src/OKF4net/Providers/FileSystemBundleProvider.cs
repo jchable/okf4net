@@ -15,7 +15,7 @@ namespace OKF4net.Providers;
 /// chain boundary→root is re-checked before every storage access. Versions are SHA-256
 /// of content; the bundle token is a digest of the listing (name, length, mtime),
 /// deliberately weak and never used for pinning. Within one load or one validation, each
-/// directory's entry names are listed once and reused (<see cref="IProviderScope.BeginScope"/>);
+/// directory's entry names are listed once for sequential lookups and reused (<c>IProviderScope.BeginScope</c>);
 /// nothing is kept past it.
 /// </summary>
 public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
@@ -85,11 +85,12 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// Opens a listing scope on the calling flow (<see cref="IProviderScope"/>): until the handle
     /// is disposed, each directory this flow lists — by a walk (<see cref="GetVersion"/>,
     /// <see cref="Enumerate"/>) or by an exact-case lookup (<see cref="ResolveExact"/>) — is
-    /// listed once and its entry names are reused by the scope's later calls, instead of listing
-    /// that directory again for every key under it. <see cref="Bundle.Load(IBundleProvider, BundleLoadOptions?)"/>
+    /// listed once (for sequential lookups: flows forked inside the scope that miss together may
+    /// each list it) and its entry names are reused by the scope's later calls, instead of
+    /// listing that directory again for every key under it. <see cref="Bundle.Load(IBundleProvider, BundleLoadOptions?)"/>
     /// and <see cref="BundleValidator.Validate"/> each open one around their own work.
-    /// <para><b>What is memoised.</b> Only the names a directory listing returned (or the fact
-    /// that the listing could not be opened). Every guard still runs at access time, inside the
+    /// <para><b>What is memoised.</b> Only the names a directory listing returned; a listing
+    /// that fails is not kept, so the next lookup tries again. Every guard still runs at access time, inside the
     /// scope as outside it: <see cref="CheckBoundary"/> on every call, the STRICT inspection of
     /// each traversed directory before its names are used, the leaf inspection
     /// (<see cref="GuardResolved"/>), the walk's STRICT guard on every directory and its
@@ -100,15 +101,18 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// scope shares the memo, which is locked for that case. Disposing the handle closes the memo
     /// for good — even a flow that captured it stops using it — so nothing learned in one load or
     /// one validation is used by the next: a file created, deleted or renamed (case-only renames
-    /// included) after the scope ended is seen. A scope opened inside an open one joins it.</para>
+    /// included) after the scope ended is seen. The scope lasts while a load or a validation
+    /// runs, until it returns. A scope opened inside an open one joins it.</para>
     /// <para><b>Bound.</b> The memo counts each listed directory plus its names against this
     /// provider's <see cref="BundleLimits.MaxEntries"/>; a listing that would pass it is not
     /// kept, and from then on the scope stops memoising and every later lookup lists, as without
     /// a scope. Never an exception for that reason.</para>
     /// <para><b>Accepted window.</b> With exact matching, the name-to-entry correspondence is
     /// established when a directory is first listed in the scope, not at each access: a
-    /// case-only rename made by another process during a load can make a later access of the
-    /// same scope open the renamed entry under its former name on a case-folding volume. The
+    /// case-only rename made by another process during a load or a validation can make a later
+    /// access of the same scope open the renamed entry under its former name on a case-folding
+    /// volume, and a file created or renamed by another process during the scope may not be seen
+    /// until the scope ends (a deletion is seen, through the final existence check). The
     /// STRICT guards still inspect that entry, and each directory above it, at access time
     /// exactly as without a scope, so the memo lets no access reach anything — outside the root,
     /// or through a reparse point — that an unmemoised access would refuse. For the name
@@ -412,9 +416,11 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// lock that would close it is deferred to issue #178); a second walk would only have
     /// narrowed it, never closed it. Inside a scope, the name correspondence itself — which entry
     /// a segment names — comes from the scope's first listing of that directory, so for names
-    /// that window is the whole scope: a case-only rename by another process during a load can
-    /// make a later lookup of that load return the renamed entry's path under its former name,
-    /// which a case-folding volume then opens. The STRICT inspections above still run on every
+    /// that window is the whole scope, from the start of a load or a validation until it
+    /// returns: a case-only rename by another process during it can make a later lookup return
+    /// the renamed entry's path under its former name, which a case-folding volume then opens,
+    /// and a file created or renamed by another process during it may not be seen until it
+    /// ends (a deletion is seen, through the final existence check). The STRICT inspections above still run on every
     /// call, before the names are used, and the leaf check and the open still follow, so nothing
     /// outside the root and no reparse point is reached that an unmemoised lookup would refuse.</para>
     /// </summary>
@@ -498,19 +504,26 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// <summary>
     /// Inside a scope: the same answer as <see cref="FindEntry"/>, from the scope's memo of
     /// <paramref name="directory"/>'s names, listing it in full (and keeping the names, sorted
-    /// ordinally) only the first time the scope needs it. A listing that cannot be opened at all
-    /// is kept as "no such entry". One that fails after returning some entries is not kept: this
-    /// lookup answers from the entries read before the failure — those
-    /// <see cref="FindEntry"/>, which reads the same entries in the same order and stops at its
-    /// first match, would have reached — and the next lookup lists again.
+    /// ordinally) only the first time the scope needs it. A listing that fails, at once or after
+    /// returning some entries, is not kept: this lookup answers from the entries read before the
+    /// failure — none, or those <see cref="FindEntry"/>, which reads the same entries in the same
+    /// order and stops at its first match, would have reached — and the next lookup lists again.
+    /// Once the memo has stopped (its bound was reached), a directory it does not hold is
+    /// looked up by <see cref="FindEntry"/>, which streams the listing instead of copying and
+    /// sorting names the memo would drop.
     /// </summary>
     private string? FindEntryMemoised(ListingMemo memo, string directory, string segment)
     {
         if (memo.TryGet(directory, out var known))
         {
-            return known is not null && Array.BinarySearch(known, segment, StringComparer.Ordinal) >= 0
+            return Array.BinarySearch(known, segment, StringComparer.Ordinal) >= 0
                 ? Path.Join(directory, segment)
                 : null;
+        }
+
+        if (memo.IsStopped)
+        {
+            return FindEntry(directory, segment);
         }
 
         Interlocked.Increment(ref _directoryListings);
@@ -524,11 +537,6 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            if (listed.Count == 0)
-            {
-                memo.Add(directory, null);
-            }
-
             return listed.Contains(segment, StringComparer.Ordinal) ? Path.Join(directory, segment) : null;
         }
 
@@ -540,8 +548,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
 
     /// <summary>
     /// The entry names of the directories one scope listed, keyed by the directory's full path
-    /// (<see cref="IProviderScope.BeginScope"/>): sorted ordinally, or <see langword="null"/> for
-    /// a listing that could not be opened. Bounded: each kept directory costs one plus its names
+    /// (<see cref="IProviderScope.BeginScope"/>), sorted ordinally; only listings that completed
+    /// are kept. Bounded: each kept directory costs one plus its names
     /// against <c>budget</c>; the first listing that would pass it is dropped and nothing more is
     /// kept. Locked, since a flow forked inside the scope shares it; closed for good when the
     /// scope ends, after which it answers nothing and keeps nothing.
@@ -549,14 +557,26 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     private sealed class ListingMemo(int budget)
     {
         private readonly Lock _gate = new();
-        private readonly Dictionary<string, string[]?> _listings = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, string[]> _listings = new(StringComparer.Ordinal);
         private long _held;
         private bool _stopped;
         private volatile bool _open = true;
 
         public bool IsOpen => _open;
 
-        public bool TryGet(string directory, out string[]? names)
+        /// <summary>Whether the bound was reached: nothing more is kept, so a lookup need not list in full.</summary>
+        public bool IsStopped
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _stopped;
+                }
+            }
+        }
+
+        public bool TryGet(string directory, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out string[]? names)
         {
             lock (_gate)
             {
@@ -570,7 +590,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
             return false;
         }
 
-        public void Add(string directory, string[]? names)
+        public void Add(string directory, string[] names)
         {
             lock (_gate)
             {
@@ -579,7 +599,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
                     return;
                 }
 
-                var cost = 1L + (names?.Length ?? 0);
+                var cost = 1L + names.Length;
                 if (_held + cost > budget)
                 {
                     _stopped = true; // stop memoising; every later lookup lists, as without a scope
@@ -663,7 +683,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
         GuardStrict(null, dir);
         var memo = ActiveMemo;
         string[] names;
-        if (memo is not null && memo.TryGet(dir, out var known) && known is not null)
+        if (memo is not null && memo.TryGet(dir, out var known))
         {
             // Listed earlier in this scope: counted as a fresh listing would be, every entry
             // before the skip (the bound throws iff the running total passes it).

@@ -207,10 +207,12 @@ public class FileSystemBundleProviderScopeTests
 
         Assert.Equal(expected, first);
         Assert.Equal(expected, second);
-        // root, a, a/sub, Up, and the two files a key asks to list as directories (a/B.md,
-        // a/sub/x.md: "no such entry"), each once for 14 keys asked twice; the prefixed walks of
-        // a and a/sub reuse the lookups' listings.
-        Assert.Equal(6, listingsInScope);
+        // root, a, a/sub and Up are each listed once for 14 keys asked twice; the prefixed walks
+        // of a and a/sub reuse the lookups' listings. The two files a key asks to list as
+        // directories (a/B.md, a/sub/x.md: "no such entry") fail to list, and a failed listing is
+        // not kept: each is tried again by the Exists, Read and Enumerate of each of the two
+        // rounds (2 files x 3 calls x 2 rounds = 12).
+        Assert.Equal(4 + 12, listingsInScope);
     }
 
     [Fact]
@@ -260,6 +262,68 @@ public class FileSystemBundleProviderScopeTests
         var bundle = Bundle.Load(p);
         Assert.Equal(10, bundle.Count);
         Assert.Equal(12, p.DirectoryListings); // two walks and ten lookups, as without a scope
+    }
+
+    [Fact]
+    public void A_stopped_memo_still_resolves_every_lookup_as_the_unscoped_provider_does()
+    {
+        using var tmp = Flat(10);
+        tmp.Write("d/e.md", "e");
+        var p = Exact(tmp.Path, new BundleLimits { MaxEntries = 5 });
+        using (((IProviderScope)p).BeginScope())
+        {
+            Assert.True(p.Exists(K(Name(0)))); // lists the root: 11 names and a directory pass 5, the memo stops
+            var before = p.DirectoryListings;
+            Assert.True(p.Exists(K(Name(9))));
+            Assert.False(p.Exists(K("C009.md"))); // exact case, as without a scope
+            Assert.False(p.Exists(K("nope.md")));
+            Assert.True(p.Exists(K("d/e.md")));
+            Assert.False(p.Exists(K("d/E.md")));
+            Assert.Equal("e", new StreamReader(p.Read(K("d/e.md")).Content).ReadToEnd());
+            Assert.Equal(1 + 1 + 1 + 2 + 2 + 2, p.DirectoryListings - before); // nothing is kept: each lookup lists
+        }
+    }
+
+    [Fact]
+    public void A_listing_that_fails_is_not_kept_for_the_scope()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("x.md", "file");
+        var p = Exact(tmp.Path);
+        using (((IProviderScope)p).BeginScope())
+        {
+            Assert.False(p.Exists(K("x.md/y"))); // x.md is a file: its listing fails, "no such entry"
+            File.Delete(Path.Combine(tmp.Path, "x.md"));
+            tmp.Write("x.md/y", "now a directory");
+            Assert.True(p.Exists(K("x.md/y"))); // the failure was not memoised: the next lookup lists again
+        }
+    }
+
+    [SkippableFact]
+    public void A_directory_turned_into_a_junction_after_it_was_memoised_is_still_refused_inside_the_scope()
+    {
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        tmp.Write("a/B.md", "inside");
+        external.Write("B.md", "outside");
+        var p = Exact(tmp.Path);
+        using (((IProviderScope)p).BeginScope())
+        {
+            Assert.True(p.Exists(K("a/B.md"))); // memoises the root and a
+            Assert.Single(p.Enumerate(K("a"), BundleLimits.Default));
+            var before = p.DirectoryListings;
+
+            Directory.Delete(Path.Combine(tmp.Path, "a"), recursive: true);
+            Skip.IfNot(tmp.TryCreateJunctionToExternalDir("a", external.Path), "no junction/symlink privilege on this machine");
+
+            Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("a/B.md")));
+            Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("a/B.md")));
+            Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("a/nope.md")));
+            Assert.ThrowsAny<BundleProviderException>(() => p.Enumerate(K("a"), BundleLimits.Default).ToList());
+            Assert.DoesNotContain("a/B.md", p.Enumerate(null, BundleLimits.Default).Select(l => l.RawName));
+            // Every refusal came from a guard that ran at access time, none from a fresh listing.
+            Assert.Equal(before, p.DirectoryListings);
+        }
     }
 
     [Fact]

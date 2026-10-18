@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Text;
 using OKF4net.Internal;
+using OKF4net.Providers;
 using OKF4net.Yaml;
 
 namespace OKF4net;
@@ -328,7 +329,7 @@ public static class BundleValidator
         // One provider scope for the whole validation: the §6.2 path checks below ask the
         // provider about many keys, and a provider that supports it lists each directory once
         // for all of them, keeping nothing past this call.
-        using var scope = OKF4net.Providers.ProviderScopes.Begin(bundle.Provider);
+        using var scope = ProviderScopes.Begin(bundle.Provider);
         var now = (clock ?? new SystemClock()).Now;
         var diagnostics = new List<Diagnostic>();
 
