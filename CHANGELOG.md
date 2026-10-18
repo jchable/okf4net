@@ -59,7 +59,14 @@ and this project adheres to
   A Linux host on a case-insensitive mount must pass
   `additionalConstraints: BundleKeyConstraints.CaseInsensitiveCollisions` to
   `FileSystemBundleProvider` for exact-case matching: `Strict` alone does not
-  turn it on.
+  turn it on. Exact matching lists the directory of each path segment; within
+  one `Bundle.Load` or one `BundleValidator.Validate`, each directory is listed
+  once and its entry names are reused by every later lookup of that call (up to
+  the provider's `BundleLimits.MaxEntries` names in all, past which it lists
+  again), and nothing is kept after it returns. A case-only rename made by another process
+  while a load runs can therefore be read under the former name until that
+  load ends; the reparse-point and confinement checks still run at every
+  access.
 - **A directory the walk is about to list whose link status cannot be
   determined now aborts the load** with `BundleLoadException`: the provider's
   walk inspects every directory STRICTly (it and each directory between it and

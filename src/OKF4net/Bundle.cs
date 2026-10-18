@@ -213,6 +213,11 @@ public sealed class Bundle
         var limits = options.Limits;
         var validator = new BundleKeyValidator(provider.NativeConstraints, options.KeyPolicy, options.ExtraKeyValidators);
 
+        // One provider scope for the whole load: a provider that supports it lists each
+        // directory once for the listing, the version and every read, and keeps nothing past
+        // this call (FileSystemBundleProvider's BeginScope says what is and is not reused).
+        using var scope = ProviderScopes.Begin(provider);
+
         // The listing is consumed under the core's own bounds, whatever the provider does:
         // entries while consuming; depth and key length on every name that parses, before the
         // tree validation, so a too-deep key rejected for another reason still aborts.

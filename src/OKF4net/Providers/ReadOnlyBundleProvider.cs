@@ -2,7 +2,7 @@
 namespace OKF4net.Providers;
 
 /// <summary>Downgrades a provider to read-only (spec §3): every read delegates, every write throws <see cref="BundleReadOnlyException"/> before reaching the inner provider.</summary>
-public sealed class ReadOnlyBundleProvider : IBundleProvider
+public sealed class ReadOnlyBundleProvider : IBundleProvider, IProviderScope
 {
     private readonly IBundleProvider _inner;
 
@@ -35,6 +35,9 @@ public sealed class ReadOnlyBundleProvider : IBundleProvider
 
     /// <inheritdoc/>
     public bool Exists(BundleKey key) => _inner.Exists(key);
+
+    /// <summary>The inner provider's scope, when it has one: the downgrade changes what can be written, never what is read.</summary>
+    IDisposable IProviderScope.BeginScope() => (_inner as IProviderScope)?.BeginScope() ?? ProviderScopes.None;
 
     /// <inheritdoc/>
     public BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition) =>

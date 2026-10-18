@@ -325,6 +325,10 @@ public static class BundleValidator
     /// <param name="clock">Supplies "now" for staleness checks (§5.5); defaults to <see cref="SystemClock"/>.</param>
     public static ValidationReport Validate(Bundle bundle, IOkfClock? clock = null)
     {
+        // One provider scope for the whole validation: the §6.2 path checks below ask the
+        // provider about many keys, and a provider that supports it lists each directory once
+        // for all of them, keeping nothing past this call.
+        using var scope = OKF4net.Providers.ProviderScopes.Begin(bundle.Provider);
         var now = (clock ?? new SystemClock()).Now;
         var diagnostics = new List<Diagnostic>();
 
