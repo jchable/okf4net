@@ -2,6 +2,7 @@
 using System.Globalization;
 using System.Text;
 using OKF4net.Providers;
+using Xunit.Abstractions;
 
 namespace OKF4net.Tests.Providers;
 
@@ -9,12 +10,50 @@ namespace OKF4net.Tests.Providers;
 /// Derives four Unicode tables from the host's ICU and compares them with the ones
 /// shipped in <see cref="NfcQuickCheck"/> (the NFC quick-check sets) and
 /// <see cref="CanonicalForm"/> (canonical decompositions and combining-class ranks).
-/// Runs only where normalization works (never under invariant globalization). On a
-/// mismatch — first run with empty tables, or a host ICU with a newer Unicode than
-/// the tables — the failure names a file holding the exact C# literals to paste.
+/// Runs only where normalization works (never under invariant globalization). The
+/// host's relation to the tables is read from the data itself
+/// (<see cref="CompareWithHost"/>), on the Unicode stability policy — the canonical
+/// decomposition and the combining class of an assigned character never change — so a
+/// host can only add entries for code points a later Unicode assigned. Three cases:
+/// <list type="bullet">
+/// <item><b>Same version</b> — the host reproduces every table entry and adds none: the
+/// shipped literals must equal the host's exactly, and any difference fails naming a
+/// file holding the exact C# literals to paste.</item>
+/// <item><b>Newer host</b> — it reproduces every table entry, and its only additions are
+/// code points the tables do not mention at all: every No/Maybe code point, every
+/// decomposition record and the ORDER of the combining-class ranks (not their numbers,
+/// which shift when a later Unicode inserts a class) must be the host's;
+/// <see cref="CanonicalForm.Decompose"/> is compared with the host only on what the
+/// tables cover (<see cref="IsInsideTableCoverage"/>); the test output gives the number
+/// of host-only code points, so a CI log shows the version gap.</item>
+/// <item><b>Older host</b> — a table entry is missing or different on the host, a table
+/// is empty (a first run), or a code point the tables mention gains an entry only on the
+/// host: that host cannot validate the tables, and the failure names the file of
+/// literals.</item>
+/// </list>
 /// </summary>
-public class UnicodeTableTests
+public class UnicodeTableTests(ITestOutputHelper output)
 {
+    /// <summary>How the host's ICU relates to the shipped tables (see the class summary).</summary>
+    internal enum HostRelation
+    {
+        /// <summary>The host's tables are the shipped ones.</summary>
+        Same,
+
+        /// <summary>The host reproduces every shipped entry and adds entries only for code points the tables never mention.</summary>
+        Newer,
+
+        /// <summary>The host does not reproduce the shipped tables: it cannot validate them.</summary>
+        Older,
+    }
+
+    /// <summary>
+    /// The outcome of <see cref="CompareWithHost"/>: the relation, the shipped entries the
+    /// host does not reproduce (non-empty exactly when <see cref="HostRelation.Older"/>), and
+    /// the code points the tables never mention that the host gives an entry.
+    /// </summary>
+    internal sealed record TableComparison(HostRelation Relation, IReadOnlyList<string> Unreproduced, IReadOnlySet<int> HostOnly);
+
     private static bool NormalizationWorks => "e\u0301".Normalize(NormalizationForm.FormC).Length == 1;
 
     private static string Nfc(string s) => s.Normalize(NormalizationForm.FormC);
@@ -282,6 +321,200 @@ public class UnicodeTableTests
         return sb.Append("    ];\n").ToString();
     }
 
+    /// <summary>The code points of range pairs — the layout of <see cref="NfcQuickCheck.No"/> and <see cref="NfcQuickCheck.Maybe"/>.</summary>
+    internal static SortedSet<int> ExpandRanges(IEnumerable<(int Start, int End)> ranges)
+    {
+        var set = new SortedSet<int>();
+        foreach (var (start, end) in ranges)
+        {
+            for (var cp = start; cp <= end; cp++)
+            {
+                set.Add(cp);
+            }
+        }
+
+        return set;
+    }
+
+    /// <summary>The records of <see cref="CanonicalForm.DecompositionData"/>, read back: code point → decomposition.</summary>
+    internal static SortedDictionary<int, string> ParseDecompositionData(IReadOnlyList<int> data)
+    {
+        var decompositions = new SortedDictionary<int, string>();
+        for (var i = 0; i < data.Count; i += 2 + data[i + 1])
+        {
+            decompositions[data[i]] = string.Concat(Enumerable.Range(i + 2, data[i + 1]).Select(k => new Rune(data[k]).ToString()));
+        }
+
+        return decompositions;
+    }
+
+    /// <summary>The triples of <see cref="CanonicalForm.CombiningClassData"/>, read back: code point → rank.</summary>
+    internal static SortedDictionary<int, int> ExpandClassTriples(IReadOnlyList<int> data)
+    {
+        var ranks = new SortedDictionary<int, int>();
+        for (var i = 0; i < data.Count; i += 3)
+        {
+            for (var cp = data[i]; cp <= data[i + 1]; cp++)
+            {
+                ranks[cp] = data[i + 2];
+            }
+        }
+
+        return ranks;
+    }
+
+    /// <summary>
+    /// Classifies the host's tables against the shipped ones. A shipped entry the host does
+    /// not reproduce — a No or Maybe code point that is not No or Maybe on the host, a
+    /// decomposition the host lacks or gives differently, a ranked mark the host calls a
+    /// starter, two marks the host orders differently (each shipped rank must map to exactly
+    /// one host rank, and increasingly: the induced order, not the rank numbers, which a
+    /// later Unicode shifts by inserting a class) — or an empty shipped table, or an entry
+    /// the host alone gives a code point the tables mention, is <see cref="HostRelation.Older"/>.
+    /// Otherwise the host's extra entries, all for code points the tables never mention,
+    /// make it <see cref="HostRelation.Newer"/>; none make it <see cref="HostRelation.Same"/>.
+    /// </summary>
+    internal static TableComparison CompareWithHost(
+        IReadOnlySet<int> tableNo,
+        IReadOnlySet<int> tableMaybe,
+        IReadOnlyDictionary<int, string> tableDecompositions,
+        IReadOnlyDictionary<int, int> tableRanks,
+        IReadOnlySet<int> hostNo,
+        IReadOnlySet<int> hostMaybe,
+        IReadOnlyDictionary<int, string> hostDecompositions,
+        IReadOnlyDictionary<int, int> hostRanks)
+    {
+        static string Hex(string s) => string.Join(" ", s.EnumerateRunes().Select(r => $"U+{r.Value:X4}"));
+
+        var unreproduced = new List<string>();
+        foreach (var (name, tableCount, hostCount) in new[]
+        {
+            ("No", tableNo.Count, hostNo.Count),
+            ("Maybe", tableMaybe.Count, hostMaybe.Count),
+            ("Decompositions", tableDecompositions.Count, hostDecompositions.Count),
+            ("Combining classes", tableRanks.Count, hostRanks.Count),
+        })
+        {
+            if (tableCount == 0 && hostCount > 0)
+            {
+                unreproduced.Add($"{name}: the shipped table is empty (a first run)");
+            }
+        }
+
+        unreproduced.AddRange(tableNo.Where(cp => !hostNo.Contains(cp)).Select(cp => $"No: U+{cp:X4} is not No on the host"));
+        unreproduced.AddRange(tableMaybe.Where(cp => !hostMaybe.Contains(cp)).Select(cp => $"Maybe: U+{cp:X4} is not Maybe on the host"));
+        foreach (var (cp, decomposition) in tableDecompositions)
+        {
+            if (!hostDecompositions.TryGetValue(cp, out var host))
+            {
+                unreproduced.Add($"Decompositions: U+{cp:X4} does not decompose on the host");
+            }
+            else if (!string.Equals(host, decomposition, StringComparison.Ordinal))
+            {
+                unreproduced.Add($"Decompositions: U+{cp:X4} is {Hex(decomposition)} in the table, {Hex(host)} on the host");
+            }
+        }
+
+        var hostRanksOfTableRank = new SortedDictionary<int, SortedSet<int>>();
+        foreach (var (cp, rank) in tableRanks)
+        {
+            if (!hostRanks.TryGetValue(cp, out var hostRank))
+            {
+                unreproduced.Add($"Combining classes: U+{cp:X4} (table rank {rank}) is a starter on the host");
+                continue;
+            }
+
+            if (!hostRanksOfTableRank.TryGetValue(rank, out var hostRanksOfRank))
+            {
+                hostRanksOfTableRank[rank] = hostRanksOfRank = [];
+            }
+
+            hostRanksOfRank.Add(hostRank);
+        }
+
+        var previous = 0;
+        foreach (var (rank, hostRanksOfRank) in hostRanksOfTableRank)
+        {
+            if (hostRanksOfRank.Count != 1)
+            {
+                unreproduced.Add($"Combining classes: the marks of table rank {rank} have host ranks {string.Join(", ", hostRanksOfRank)}");
+            }
+            else if (hostRanksOfRank.Min <= previous)
+            {
+                unreproduced.Add($"Combining classes: table rank {rank} is host rank {hostRanksOfRank.Min}, not above the previous table rank's host rank {previous}");
+            }
+
+            previous = hostRanksOfRank.Max;
+        }
+
+        var mentioned = new HashSet<int>(tableNo);
+        mentioned.UnionWith(tableMaybe);
+        mentioned.UnionWith(tableDecompositions.Keys);
+        mentioned.UnionWith(tableRanks.Keys);
+        var hostOnly = new SortedSet<int>();
+        foreach (var (name, extra) in new[]
+        {
+            ("No", hostNo.Where(cp => !tableNo.Contains(cp))),
+            ("Maybe", hostMaybe.Where(cp => !tableMaybe.Contains(cp))),
+            ("Decompositions", hostDecompositions.Keys.Where(cp => !tableDecompositions.ContainsKey(cp))),
+            ("Combining classes", hostRanks.Keys.Where(cp => !tableRanks.ContainsKey(cp))),
+        })
+        {
+            foreach (var cp in extra)
+            {
+                if (mentioned.Contains(cp))
+                {
+                    unreproduced.Add($"{name}: U+{cp:X4} is mentioned by the tables, yet has this entry only on the host");
+                }
+                else
+                {
+                    hostOnly.Add(cp);
+                }
+            }
+        }
+
+        var relation = unreproduced.Count > 0 ? HostRelation.Older : hostOnly.Count > 0 ? HostRelation.Newer : HostRelation.Same;
+        return new TableComparison(relation, unreproduced, hostOnly);
+    }
+
+    /// <summary>
+    /// The failure message for a comparison, or null when the guard passes:
+    /// <see cref="HostRelation.Same"/> passes only when the shipped literals equal the host's
+    /// exactly; <see cref="HostRelation.Newer"/> passes, its checks being the absence of any
+    /// unreproduced entry; <see cref="HostRelation.Older"/> fails, naming the first entries.
+    /// </summary>
+    internal static string? Judge(TableComparison comparison, bool literalsEqual, string pasteMessage) => comparison.Relation switch
+    {
+        HostRelation.Same => literalsEqual ? null : pasteMessage,
+        HostRelation.Newer => null,
+        _ => pasteMessage + $"\nThis host does not reproduce {comparison.Unreproduced.Count} shipped entries, so it cannot validate "
+            + "the tables (an older Unicode than theirs, a first run, or a change the stability policy rules out); the first ones:\n"
+            + string.Join("\n", comparison.Unreproduced.Take(20)),
+    };
+
+    /// <summary>
+    /// Whether the shipped tables cover a scalar's host NFD: not when the host decomposes it
+    /// and the tables have no record (Hangul syllables excepted, being arithmetic), nor when
+    /// one of its code points has a host class and no table class. On a same-version host
+    /// every scalar is covered, the tables being the host's.
+    /// </summary>
+    internal static bool IsInsideTableCoverage(
+        int cp,
+        string hostNfd,
+        IReadOnlyDictionary<int, string> tableDecompositions,
+        IReadOnlyDictionary<int, int> tableRanks,
+        IReadOnlyDictionary<int, int> hostRanks)
+    {
+        if (!string.Equals(hostNfd, new Rune(cp).ToString(), StringComparison.Ordinal)
+            && !IsHangulSyllable(cp)
+            && !tableDecompositions.ContainsKey(cp))
+        {
+            return false;
+        }
+
+        return !hostNfd.EnumerateRunes().Any(r => hostRanks.ContainsKey(r.Value) && !tableRanks.ContainsKey(r.Value));
+    }
+
     [SkippableFact]
     public void Tables_match_the_host_normalizer()
     {
@@ -303,10 +536,138 @@ public class UnicodeTableTests
             + $"(No: {no.Count} code points in {expectedNo.Count} ranges, {refused} of them refused by the normalizer; "
             + $"Maybe: {maybe.Count} in {expectedMaybe.Count}; Decompositions: {decompositions.Count} entries, {expectedDecompositions.Count} ints; "
             + $"combining classes: {ranks.Count} code points in {ranks.Values.Distinct().Count()} ranks, {expectedClasses.Count / 3} triples.)";
-        Assert.True(expectedNo.SequenceEqual(NfcQuickCheck.No), message);
-        Assert.True(expectedMaybe.SequenceEqual(NfcQuickCheck.Maybe), message);
-        Assert.True(expectedDecompositions.SequenceEqual(CanonicalForm.DecompositionData), message);
-        Assert.True(expectedClasses.SequenceEqual(CanonicalForm.CombiningClassData), message);
+        var comparison = CompareWithHost(
+            ExpandRanges(NfcQuickCheck.No),
+            ExpandRanges(NfcQuickCheck.Maybe),
+            ParseDecompositionData(CanonicalForm.DecompositionData),
+            ExpandClassTriples(CanonicalForm.CombiningClassData),
+            no,
+            maybe,
+            decompositions,
+            ranks);
+        output.WriteLine($"Host relation to the shipped tables: {comparison.Relation}; host-only code points: {comparison.HostOnly.Count}"
+            + (comparison.HostOnly.Count > 0 ? $" (first: {string.Join(", ", comparison.HostOnly.Take(10).Select(cp => $"U+{cp:X4}"))})" : "")
+            + $"; unreproduced shipped entries: {comparison.Unreproduced.Count}.");
+        var literalsEqual = expectedNo.SequenceEqual(NfcQuickCheck.No)
+            && expectedMaybe.SequenceEqual(NfcQuickCheck.Maybe)
+            && expectedDecompositions.SequenceEqual(CanonicalForm.DecompositionData)
+            && expectedClasses.SequenceEqual(CanonicalForm.CombiningClassData);
+        var failure = Judge(comparison, literalsEqual, message);
+        Assert.True(failure is null, failure);
+    }
+
+    [Fact]
+    public void The_shipped_tables_read_back_to_their_own_literals()
+    {
+        // The newer-host branch compares the tables as read back by these three helpers, so
+        // they must invert the layouts exactly (host-independent: no normalizer involved).
+        Assert.Equal(NfcQuickCheck.No, ToRanges(ExpandRanges(NfcQuickCheck.No)));
+        Assert.Equal(NfcQuickCheck.Maybe, ToRanges(ExpandRanges(NfcQuickCheck.Maybe)));
+        Assert.Equal(CanonicalForm.DecompositionData, ToDecompositionData(ParseDecompositionData(CanonicalForm.DecompositionData)));
+        Assert.Equal(CanonicalForm.CombiningClassData, ToClassTriples(ExpandClassTriples(CanonicalForm.CombiningClassData)));
+    }
+
+    private static string Text(params int[] codePoints) => string.Concat(codePoints.Select(cp => new Rune(cp).ToString()));
+
+    /// <summary>A miniature of the four tables: two No, two Maybe, two decompositions, five marks in four ranks.</summary>
+    private static (SortedSet<int> No, SortedSet<int> Maybe, SortedDictionary<int, string> Decompositions, SortedDictionary<int, int> Ranks) Sample() =>
+    (
+        [0x212B, 0xF900],
+        [0x0301, 0x0327],
+        new SortedDictionary<int, string> { [0x00E9] = Text(0x0065, 0x0301), [0x212B] = Text(0x0041, 0x030A) },
+        new SortedDictionary<int, int> { [0x0335] = 1, [0x0327] = 2, [0x0300] = 3, [0x0301] = 3, [0x0345] = 4 }
+    );
+
+    private static TableComparison CompareSample(
+        Action<SortedSet<int>, SortedSet<int>, SortedDictionary<int, string>, SortedDictionary<int, int>> changeHost)
+    {
+        var table = Sample();
+        var host = Sample();
+        changeHost(host.No, host.Maybe, host.Decompositions, host.Ranks);
+        return CompareWithHost(table.No, table.Maybe, table.Decompositions, table.Ranks, host.No, host.Maybe, host.Decompositions, host.Ranks);
+    }
+
+    [Fact]
+    public void Classification_same_version_passes_only_on_equal_literals()
+    {
+        var comparison = CompareSample((_, _, _, _) => { });
+        Assert.Equal(HostRelation.Same, comparison.Relation);
+        Assert.Empty(comparison.HostOnly);
+        Assert.Null(Judge(comparison, literalsEqual: true, "paste"));
+        Assert.Equal("paste", Judge(comparison, literalsEqual: false, "paste"));
+    }
+
+    [Fact]
+    public void Classification_newer_host_with_new_code_points_and_an_inserted_class_passes()
+    {
+        var comparison = CompareSample((no, maybe, decompositions, ranks) =>
+        {
+            no.Add(0x105E5);
+            maybe.Add(0x105D3);
+            decompositions[0x105C9] = Text(0x105D2, 0x0307); // Unicode 16: TODHRI LETTER EI
+            // A new class between table ranks 2 and 3: every rank above it shifts by one.
+            ranks[0x16D70] = 3;
+            ranks[0x0300] = 4;
+            ranks[0x0301] = 4;
+            ranks[0x0345] = 5;
+        });
+        Assert.Equal(HostRelation.Newer, comparison.Relation);
+        Assert.Empty(comparison.Unreproduced);
+        Assert.Equal(new[] { 0x105C9, 0x105D3, 0x105E5, 0x16D70 }, comparison.HostOnly);
+        Assert.Null(Judge(comparison, literalsEqual: false, "paste"));
+    }
+
+    /// <summary>Each older (or inconsistent) host, keyed by the unreproduced line it must produce.</summary>
+    private static readonly Dictionary<string, Action<SortedSet<int>, SortedSet<int>, SortedDictionary<int, string>, SortedDictionary<int, int>>> OlderHostChanges = new()
+    {
+        { "No: U+F900", (no, _, _, _) => no.Remove(0xF900) },
+        { "Maybe: U+0327", (_, maybe, _, _) => maybe.Remove(0x0327) },
+        { "Decompositions: U+00E9 does not decompose", (_, _, d, _) => d.Remove(0x00E9) },
+        { "Decompositions: U+212B is U+0041 U+030A in the table, U+00C5 on the host", (_, _, d, _) => d[0x212B] = Text(0x00C5) },
+        { "Combining classes: U+0345 (table rank 4) is a starter", (_, _, _, r) => r.Remove(0x0345) },
+        { "the marks of table rank 3 have host ranks 3, 4", (_, _, _, r) => { r[0x0301] = 4; r[0x0345] = 5; } },
+        { "table rank 3 is host rank 2", (_, _, _, r) => { r[0x0300] = 2; r[0x0301] = 2; r[0x0345] = 3; } },
+        { "table rank 2 is host rank 1", (_, _, _, r) => { r[0x0335] = 2; r[0x0327] = 1; } },
+        { "Maybe: U+0345 is mentioned by the tables", (_, maybe, _, _) => maybe.Add(0x0345) },
+        { "Decompositions: U+0301 is mentioned by the tables", (_, _, d, _) => d[0x0301] = Text(0x0300) },
+    };
+
+    public static TheoryData<string> OlderHosts => new(OlderHostChanges.Keys);
+
+    [Theory]
+    [MemberData(nameof(OlderHosts))]
+    public void Classification_older_host_fails_with_the_paste_message(string expected)
+    {
+        var comparison = CompareSample(OlderHostChanges[expected]);
+        Assert.Equal(HostRelation.Older, comparison.Relation);
+        Assert.Contains(comparison.Unreproduced, line => line.Contains(expected, StringComparison.Ordinal));
+        var failure = Judge(comparison, literalsEqual: false, "The shipped Unicode tables differ from this host's ICU.");
+        Assert.NotNull(failure);
+        Assert.StartsWith("The shipped Unicode tables differ from this host's ICU.", failure, StringComparison.Ordinal);
+        Assert.Contains(expected, failure, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Classification_empty_shipped_tables_are_a_first_run_not_a_newer_host()
+    {
+        var host = Sample();
+        var comparison = CompareWithHost(
+            new SortedSet<int>(), new SortedSet<int>(), new SortedDictionary<int, string>(), new SortedDictionary<int, int>(),
+            host.No, host.Maybe, host.Decompositions, host.Ranks);
+        Assert.Equal(HostRelation.Older, comparison.Relation);
+        Assert.Contains("Decompositions: the shipped table is empty (a first run)", comparison.Unreproduced);
+    }
+
+    [Fact]
+    public void Coverage_excludes_what_only_a_newer_host_decomposes_or_ranks()
+    {
+        var table = Sample();
+        var hostRanks = new SortedDictionary<int, int>(table.Ranks) { [0x16D70] = 3 };
+        Assert.True(IsInsideTableCoverage(0x00E9, Text(0x0065, 0x0301), table.Decompositions, table.Ranks, hostRanks));
+        Assert.True(IsInsideTableCoverage(0xAC00, Text(0x1100, 0x1161), table.Decompositions, table.Ranks, hostRanks));
+        Assert.True(IsInsideTableCoverage(0x0041, Text(0x0041), table.Decompositions, table.Ranks, hostRanks));
+        Assert.False(IsInsideTableCoverage(0x105C9, Text(0x105D2, 0x0307), table.Decompositions, table.Ranks, hostRanks));
+        Assert.False(IsInsideTableCoverage(0x16D70, Text(0x16D70), table.Decompositions, table.Ranks, hostRanks));
     }
 
     [SkippableFact]
@@ -324,6 +685,10 @@ public class UnicodeTableTests
     public void Decompose_agrees_with_the_host_normalizer_on_every_scalar_and_on_mark_sequences()
     {
         Skip.IfNot(NormalizationWorks, "string.Normalize is a no-op here (invariant globalization): nothing to compare with");
+        var tableDecompositions = ParseDecompositionData(CanonicalForm.DecompositionData);
+        var tableRanks = ExpandClassTriples(CanonicalForm.CombiningClassData);
+        var hostRanks = DeriveCombiningClassRanks();
+        var outside = 0;
         for (var cp = 0; cp <= 0x10FFFF; cp++)
         {
             if (cp is >= 0xD800 and <= 0xDFFF)
@@ -342,11 +707,21 @@ public class UnicodeTableTests
                 continue; // a noncharacter: refused by the quick check before any fold
             }
 
+            // Only a newer host has scalars outside the tables' coverage; Tables_match_the_host_normalizer
+            // rules on whether that host is newer or cannot validate the tables.
+            if (!IsInsideTableCoverage(cp, nfd, tableDecompositions, tableRanks, hostRanks))
+            {
+                outside++;
+                continue;
+            }
+
             Assert.Equal(nfd, CanonicalForm.Decompose(s));
         }
 
-        // Reordering: every pair of non-starters after a base, both orders.
-        var marks = DeriveCombiningClassRanks().Keys.ToList();
+        // Reordering: every pair of non-starters after a base, both orders — among the marks
+        // both the host and the tables rank.
+        var marks = hostRanks.Keys.Where(tableRanks.ContainsKey).ToList();
+        output.WriteLine($"Scalars outside the tables' coverage, not compared: {outside}; marks ranked by the host only: {hostRanks.Count - marks.Count}.");
         var rng = new Random(20261014);
         for (var i = 0; i < 20_000; i++)
         {
