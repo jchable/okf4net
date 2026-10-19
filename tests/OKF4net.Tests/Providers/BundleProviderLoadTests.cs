@@ -304,6 +304,21 @@ public class BundleProviderLoadTests
     }
 
     [Fact]
+    public void A_20_MiB_concept_and_a_70_deep_tree_load_under_the_default_bounds()
+    {
+        using var tmp = new TempDir();
+        var big = Customers + new string('x', 20 * 1024 * 1024);
+        tmp.Write("big.md", big);
+        var deep = string.Join('/', Enumerable.Repeat("d", 69)) + "/deep.md"; // 70 segments
+        tmp.Write(deep, Customers);
+
+        var bundle = Bundle.Load(tmp.Path);
+        Assert.Empty(bundle.ParseProblems);
+        Assert.True(bundle.Get(ConceptId.Parse("big"))!.Document.Body.Length > 20 * 1024 * 1024);
+        Assert.NotNull(bundle.Get(ConceptId.Parse(deep[..^3])));
+    }
+
+    [Fact]
     public void The_core_enforces_entries_depth_and_key_bytes_even_when_the_provider_does_not()
     {
         var entries = new InMemoryBundleProvider { ObeyLimits = false }.Add("a.md", Customers).Add("b.md", Customers);

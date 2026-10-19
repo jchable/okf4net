@@ -66,17 +66,21 @@ public sealed record BundleProviderCapabilities(bool CanWrite);
 /// <summary>The bounds of spec §6. The core enforces sizes, counts and depth on what it receives; a provider enforces the same on its own walks, and the network bounds on its requests.</summary>
 public sealed record BundleLimits
 {
-    /// <summary>The spec's defaults.</summary>
+    /// <summary>
+    /// The spec's defaults: finite, so that a hostile or runaway provider cannot exhaust
+    /// memory, and large enough that no real bundle reaches them (OKF §11 imposes no size
+    /// constraint). Hosts reading untrusted storage should lower them.
+    /// </summary>
     public static BundleLimits Default { get; } = new();
 
-    /// <summary>Largest object the core reads, in bytes (16 MiB).</summary>
-    public long MaxObjectBytes { get; init; } = 16L * 1024 * 1024;
+    /// <summary>Largest object the core reads, in bytes (256 MiB).</summary>
+    public long MaxObjectBytes { get; init; } = 256L * 1024 * 1024;
 
-    /// <summary>Largest listing, every entry counted whatever its name (1 000 000).</summary>
-    public int MaxEntries { get; init; } = 1_000_000;
+    /// <summary>Largest listing, every entry counted whatever its name (10 000 000).</summary>
+    public int MaxEntries { get; init; } = 10_000_000;
 
-    /// <summary>Deepest key, in segments (64).</summary>
-    public int MaxDepth { get; init; } = 64;
+    /// <summary>Deepest key, in segments (256).</summary>
+    public int MaxDepth { get; init; } = 256;
 
     /// <summary>Longest key, in UTF-8 bytes (1 024; also <see cref="BundleKey.MaxUtf8Bytes"/>).</summary>
     public int MaxKeyBytes { get; init; } = BundleKey.MaxUtf8Bytes;

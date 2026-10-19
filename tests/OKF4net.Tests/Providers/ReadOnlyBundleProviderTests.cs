@@ -64,9 +64,9 @@ public class ReadOnlyBundleProviderTests
     public void Default_limits_match_the_spec()
     {
         var l = BundleLimits.Default;
-        Assert.Equal(16L * 1024 * 1024, l.MaxObjectBytes);
-        Assert.Equal(1_000_000, l.MaxEntries);
-        Assert.Equal(64, l.MaxDepth);
+        Assert.Equal(256L * 1024 * 1024, l.MaxObjectBytes);
+        Assert.Equal(10_000_000, l.MaxEntries);
+        Assert.Equal(256, l.MaxDepth);
         Assert.Equal(1024, l.MaxKeyBytes);
         Assert.Equal(TimeSpan.FromSeconds(30), l.RequestTimeout);
         Assert.Equal(16, l.MaxConcurrentRequests);
