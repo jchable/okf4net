@@ -58,7 +58,8 @@ public class CliDisplayPathTests
     /// <c>validate</c>'s text and in <c>validate --json</c>'s <c>path</c> (JSON-escaped by the
     /// writer, never pre-quoted). A decomposed <c>é</c> is an unparseable document on every
     /// OS, as on <c>dev</c>: its name is a key every native set holds, but no concept id (the
-    /// id rule is ASCII).
+    /// id rule is ASCII). Under the default policy it is also a non-portable name, reported
+    /// under the same display path.
     /// </summary>
     [Fact]
     public void A_rejected_name_keeps_its_unquoted_display_path_on_every_os()
@@ -69,6 +70,7 @@ public class CliDisplayPathTests
         tmp.Write("sub/cafe\u0301.md", "---\ntype: Note\n---\n");
         string[] expected = [Path.Combine(tmp.Path, nfd), Path.Combine(tmp.Path, "sub", nfd)];
         AssertRejectedDisplayPaths(tmp.Path, expected);
+        AssertNotPortableDisplayPaths(tmp.Path, expected);
     }
 
     /// <summary>
@@ -76,7 +78,7 @@ public class CliDisplayPathTests
     /// printed as <c>root\con.md</c>. On Windows it is now a parse error (announced): the
     /// Windows native set refuses it, since the name cannot be created through Win32 (the file
     /// can only be created and removed through the <c>\\?\</c> namespace). Elsewhere it loads,
-    /// as on <c>dev</c>.
+    /// as on <c>dev</c>, with a non-portable-name warning under the same path string.
     /// </summary>
     [Fact]
     public void A_reserved_name_keeps_its_unquoted_display_path()
@@ -100,6 +102,7 @@ public class CliDisplayPathTests
             else
             {
                 Assert.Equal(2, Bundle.Load(tmp.Path).Count);
+                AssertNotPortableDisplayPaths(tmp.Path, expected);
             }
         }
         finally
@@ -153,6 +156,26 @@ public class CliDisplayPathTests
         using var json = System.Text.Json.JsonDocument.Parse(Run("validate", root, "--json").Out);
         var jsonPaths = json.RootElement.GetProperty("diagnostics").EnumerateArray()
             .Where(d => d.GetProperty("code").GetString() == "UnparseableDocument")
+            .Select(d => d.GetProperty("path").GetString()!);
+        Assert.Equal(expected.Order(StringComparer.Ordinal), jsonPaths.Order(StringComparer.Ordinal));
+    }
+
+    /// <summary>The same display-path checks for the <see cref="DiagnosticCode.KeyNotPortable"/> warnings.</summary>
+    private static void AssertNotPortableDisplayPaths(string root, string[] expected)
+    {
+        var bundle = Bundle.Load(root);
+        var diagnostics = BundleValidator.Validate(bundle).Diagnostics.Where(d => d.Code == DiagnosticCode.KeyNotPortable);
+        Assert.Equal(expected.Order(StringComparer.Ordinal), diagnostics.Select(d => d.Path!).Order(StringComparer.Ordinal));
+
+        var text = Run("validate", root).Out;
+        foreach (var path in expected)
+        {
+            Assert.Contains("[warning] " + path + ": the name is not portable: ", text, StringComparison.Ordinal);
+        }
+
+        using var json = System.Text.Json.JsonDocument.Parse(Run("validate", root, "--json").Out);
+        var jsonPaths = json.RootElement.GetProperty("diagnostics").EnumerateArray()
+            .Where(d => d.GetProperty("code").GetString() == "KeyNotPortable")
             .Select(d => d.GetProperty("path").GetString()!);
         Assert.Equal(expected.Order(StringComparer.Ordinal), jsonPaths.Order(StringComparer.Ordinal));
     }

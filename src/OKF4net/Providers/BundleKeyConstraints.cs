@@ -50,7 +50,8 @@ public enum BundleKeyConstraints
 /// The constraint sets of the storages this library knows (spec §2, table of native
 /// constraints). A native set refuses only what its storage itself cannot hold, or would
 /// alias: names that cannot be created there, or two names that would designate the same
-/// object. Anything stricter is portability, which belongs to <see cref="Strict"/>.
+/// object. Anything stricter is portability, which belongs to <see cref="Strict"/> and is
+/// reported as a warning under the default <see cref="BundleKeyPolicy.Native"/>.
 /// </summary>
 public static class BundleKeyConstraintSets
 {
@@ -122,7 +123,8 @@ public enum BundleKeyPolicy
     /// <summary>
     /// The default (<see cref="BundleLoadOptions.KeyPolicy"/>): the provider's own constraint
     /// set, never below it. Refuses only what this provider's storage itself cannot hold or
-    /// would alias.
+    /// would alias; what <see cref="Strict"/> would refuse beyond that is reported in
+    /// <see cref="Bundle.PortabilityIssues"/>, not refused.
     /// </summary>
     Native,
 }

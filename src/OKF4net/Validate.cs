@@ -234,6 +234,17 @@ public enum DiagnosticCode
     /// cause, reported next to the <see cref="MissingType"/> error it explains.
     /// </summary>
     FrontmatterFenceNotAtColumn0,
+
+    /// <summary>
+    /// A <c>.md</c> name the load accepted, which the portable profile
+    /// (<see cref="Providers.BundleKeyPolicy.Strict"/>) would have refused: a reserved Windows
+    /// device name, a trailing dot or space, a character Windows forbids, a decomposed
+    /// Unicode form, or a sibling that differs only by case or Unicode form
+    /// (<see cref="Bundle.PortabilityIssues"/>). A <see cref="Severity.Warning"/>: OKF §11
+    /// imposes no naming constraint, so the bundle stays conformant, but the name would not
+    /// survive every filesystem.
+    /// </summary>
+    KeyNotPortable,
 }
 
 /// <summary>
@@ -344,6 +355,33 @@ public static class BundleValidator
                 DiagnosticCode.UnparseableDocument));
         }
 
+        // (1b) Names the load accepted but the portable profile would refuse (spec §2,
+        // layer 3): a warning, since §11 imposes no naming constraint. A concept's is reported
+        // among its own warnings below; any other `.md` (index.md, log.md, a document that did
+        // not parse) here, under its display path.
+        var notPortable = new Dictionary<BundleKey, string>();
+        foreach (var issue in bundle.PortabilityIssues)
+        {
+            notPortable.TryAdd(issue.Key, issue.Reason);
+        }
+
+        if (notPortable.Count > 0)
+        {
+            var conceptKeys = bundle.Concepts.Select(c => c.Key).OfType<BundleKey>().ToHashSet();
+            foreach (var issue in bundle.PortabilityIssues)
+            {
+                if (!conceptKeys.Contains(issue.Key))
+                {
+                    diagnostics.Add(new Diagnostic(
+                        Severity.Warning,
+                        BundleDisplayPath.Compose(bundle.Location, issue.Key),
+                        null,
+                        $"the name is not portable: {issue.Reason}",
+                        DiagnosticCode.KeyNotPortable));
+                }
+            }
+        }
+
         // (2) Every concept must carry a non-empty `type`; recommended fields are
         // soft guidance.
         foreach (var concept in bundle.Concepts)
@@ -371,6 +409,16 @@ public static class BundleValidator
                     concept.Id,
                     $"line 1 looks like a frontmatter fence but {fenceCause}, so the file has no frontmatter (§4)",
                     DiagnosticCode.FrontmatterFenceNotAtColumn0));
+            }
+
+            if (concept.Key is { } conceptKey && notPortable.TryGetValue(conceptKey, out var portabilityReason))
+            {
+                diagnostics.Add(new Diagnostic(
+                    Severity.Warning,
+                    concept.Path,
+                    concept.Id,
+                    $"the name is not portable: {portabilityReason}",
+                    DiagnosticCode.KeyNotPortable));
             }
 
             foreach (var field in Frontmatter.RecommendedFieldsFor(fm))

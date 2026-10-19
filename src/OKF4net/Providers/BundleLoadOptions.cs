@@ -14,9 +14,11 @@ public sealed record BundleLoadOptions
     /// The portability policy applied on top of the provider's native constraints.
     /// <see cref="BundleKeyPolicy.Native"/> by default: the load refuses only what this
     /// provider's storage itself cannot hold or would alias, because OKF §11 makes a bundle
-    /// conformant whatever its names. <see cref="BundleKeyPolicy.Strict"/> is the opt-in
-    /// portable profile, for hosts that must produce or consume bundles that survive any
-    /// filesystem.
+    /// conformant whatever its names. What the portable profile would refuse beyond that is
+    /// reported in <see cref="Bundle.PortabilityIssues"/> and, by the validator, as
+    /// <see cref="DiagnosticCode.KeyNotPortable"/> warnings. <see cref="BundleKeyPolicy.Strict"/>
+    /// is the opt-in portable profile, for hosts that must produce or consume bundles that
+    /// survive any filesystem.
     /// </summary>
     public BundleKeyPolicy KeyPolicy { get; init; } = BundleKeyPolicy.Native;
 

@@ -133,6 +133,7 @@ public sealed class Bundle
         List<BundleParseError> parseProblems,
         HashSet<BundleKey> rejectedKeys,
         List<BundleKey> rejectedPrefixes,
+        List<BundlePortabilityIssue> portabilityIssues,
         Dictionary<BundleKey, BundleObjectVersion> objectVersions,
         Dictionary<ConceptId, List<ResolvedLink>> outbound,
         Dictionary<ConceptId, List<ConceptId>> backlinks)
@@ -153,6 +154,7 @@ public sealed class Bundle
         RejectedKeys = rejectedKeys;
         RejectedPrefixes = rejectedPrefixes;
         _rejectedPrefixFolds = rejectedPrefixes.Select(validator.FoldKeyText).ToHashSet(StringComparer.Ordinal);
+        PortabilityIssues = portabilityIssues;
         ObjectVersions = objectVersions;
         _outbound = outbound;
         _backlinks = backlinks;
@@ -306,6 +308,7 @@ public sealed class Bundle
 
         var mdKeys = tree.Accepted.Where(k => k.IsMarkdown).ToList();
         mdKeys.Sort((a, b) => PathOrdering.CompareComponentWise(a.ToString(), b.ToString()));
+        var portabilityIssues = FindPortabilityIssues(provider, options, treeInput, overLength, mdKeys);
 
         var concepts = new List<Concept>();
         var indexKeys = new List<BundleKey>();
@@ -384,7 +387,46 @@ public sealed class Bundle
         var (outbound, backlinks) = BuildGraph(concepts, index);
         var okfVersion = ComputeOkfVersion(provider, limits, indexKeys, chunk);
 
-        return new Bundle(provider, options, validator, version, okfVersion, concepts, index, indexKeys, logKeys, parseProblems, rejectedKeys, tree.RejectedPrefixes.ToList(), objectVersions, outbound, backlinks);
+        return new Bundle(provider, options, validator, version, okfVersion, concepts, index, indexKeys, logKeys, parseProblems, rejectedKeys, tree.RejectedPrefixes.ToList(), portabilityIssues, objectVersions, outbound, backlinks);
+    }
+
+    /// <summary>
+    /// The second, portability pass of a load under a policy other than
+    /// <see cref="BundleKeyPolicy.Strict"/> (spec §2, layer 3): the same raw names — the
+    /// unadmitted ones included — through a <see cref="BundleKeyPolicy.Strict"/> validator with
+    /// the same provider constraints and extra validators. Every accepted <c>.md</c> key in
+    /// <paramref name="acceptedMarkdown"/> that it refuses, by <see cref="BundleKeyValidator.CheckKey"/>
+    /// or by a tree rejection, gives one issue with its reason, in the order of
+    /// <paramref name="acceptedMarkdown"/>. One more linear tree validation over names already
+    /// in memory: no provider I/O. Empty under <see cref="BundleKeyPolicy.Strict"/>.
+    /// </summary>
+    private static List<BundlePortabilityIssue> FindPortabilityIssues(IBundleProvider provider, BundleLoadOptions options, List<string> treeInput, List<string> overLength, List<BundleKey> acceptedMarkdown)
+    {
+        var issues = new List<BundlePortabilityIssue>();
+        if (options.KeyPolicy == BundleKeyPolicy.Strict || acceptedMarkdown.Count == 0)
+        {
+            return issues;
+        }
+
+        var strict = new BundleKeyValidator(provider.NativeConstraints, BundleKeyPolicy.Strict, options.ExtraKeyValidators);
+        var reasons = new Dictionary<BundleKey, string>();
+        foreach (var rejection in strict.ValidateTree(treeInput, overLength).Rejected)
+        {
+            if (BundleKey.TryParse(rejection.RawName, out var key, out _))
+            {
+                reasons.TryAdd(key, rejection.Reason);
+            }
+        }
+
+        foreach (var key in acceptedMarkdown)
+        {
+            if (reasons.TryGetValue(key, out var reason))
+            {
+                issues.Add(new BundlePortabilityIssue(key, reason));
+            }
+        }
+
+        return issues;
     }
 
     /// <summary>
@@ -465,6 +507,16 @@ public sealed class Bundle
 
     /// <summary>The colliding or conflicting keys the tree validation condemned (spec §2), as listed. <see cref="IsKeyAllowed"/> matches them in their <b>folded</b> form, so every spelling of a condemned prefix is refused, even for an object created after the load.</summary>
     public IReadOnlyList<BundleKey> RejectedPrefixes { get; }
+
+    /// <summary>
+    /// The accepted <c>.md</c> keys whose names the portable profile
+    /// (<see cref="BundleKeyPolicy.Strict"/>) would have refused (spec §2, layer 3), in path
+    /// order: they loaded, but would not survive every filesystem.
+    /// <see cref="BundleValidator.Validate"/> reports each as a
+    /// <see cref="DiagnosticCode.KeyNotPortable"/> warning. Always empty when the bundle was
+    /// loaded under <see cref="BundleKeyPolicy.Strict"/>.
+    /// </summary>
+    public IReadOnlyList<BundlePortabilityIssue> PortabilityIssues { get; }
 
     /// <summary>The version of every concept object read at load time (spec §5.1).</summary>
     public IReadOnlyDictionary<BundleKey, BundleObjectVersion> ObjectVersions { get; }
