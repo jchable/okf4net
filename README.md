@@ -247,7 +247,10 @@ colliding siblings refused at load rather than reported adds
 `UnicodeFormCollisions`). Default bounds, finite but
 out of reach of real bundles: 256 MiB per object, 10 000 000 entries, depth
 1 024 (every listed name counted, `node_modules` included), keys of 1 024
-bytes; hosts reading untrusted storage should lower them.
+bytes; hosts reading untrusted storage should lower them. The filesystem
+walk is recursive and needs roughly 0.6 KB of stack per level, so the default
+depth takes about 0.6 MB: a host that runs `Bundle.Load` over untrusted storage
+on a thread of 512 KB or less should lower `MaxDepth`.
 Every rejected `.md` name is a `Bundle.ParseProblems` entry (and a
 `ParseErrors` line); other rejected names are skipped silently. In this
 release the filesystem provider is read-only and no other provider ships; the

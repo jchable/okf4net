@@ -84,6 +84,10 @@ public sealed record BundleLimits
     /// <c>.git</c>, <c>node_modules</c> and non-<c>.md</c> files included, so the default sits
     /// well above the deepest key the 1 024-byte <see cref="BundleKey.MaxUtf8Bytes"/> admits
     /// (at most 512 segments).
+    /// <para><b>Stack.</b> <see cref="FileSystemBundleProvider"/> walks the tree recursively and
+    /// needs roughly 0.6 KB of stack per level, so the default depth takes about 0.6 MB. A host
+    /// that runs <c>Bundle.Load</c> over untrusted storage on a thread of 512 KB or less should
+    /// lower this bound: a stack overflow cannot be caught.</para>
     /// </summary>
     public int MaxDepth { get; init; } = 1024;
 

@@ -683,7 +683,12 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// <para><b>Accepted window.</b> An ancestor replaced by a link after its own inspection is
     /// not seen again by the listings of its descendants in this walk. That window lies inside the
     /// inter-process window already accepted for every path-based guard (issue #178), as for
-    /// <see cref="ResolveExact"/>; re-walking the ancestors would only have narrowed it.</para>
+    /// <see cref="ResolveExact"/>; re-walking the ancestors would only have narrowed it. The
+    /// window spans the walk of the swapped directory's whole subtree. What can leak in it is
+    /// names, lengths and modification times of the link's target, through
+    /// <see cref="Enumerate"/> and <see cref="GetVersion"/>; never content, because every
+    /// <see cref="Read"/> resolves the key again and re-inspects each of its path segments
+    /// STRICTly.</para>
     /// </summary>
     private void Walk(string dir, string rel, int depth, BundleLimits limits, Counter counter, Action<WalkEntry> visit, bool isStart)
     {

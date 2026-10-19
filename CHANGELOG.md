@@ -56,9 +56,14 @@ and this project adheres to
   needed), `dev` loaded them, and the default still does, with a
   `KeyNotPortable` warning (`git` refuses them on Windows).
   `BundleKeyPolicy.Strict` refuses them. No
-  `.md` file name ends with a dot or a space, and a directory that does
+  `.md` file name ends with a dot or a space. A lone directory that does
   (`dir.`, or `dir` and a space, created through `\\?\`) is skipped by the
-  walk, as it was before: Win32 cannot list it. Siblings differing only by
+  walk, as it was before: Win32 cannot list it. Beside a twin without the dot
+  or space (`dir.` next to `dir`) it is an alias: Win32 strips the dot, so the
+  walk enters `dir.` and lists `dir`, and `dev` loaded `dir./y.md` as a concept,
+  a second copy of `dir/y.md`. That is a change: such a name is now a
+  `ParseErrors` entry (`segment "dir." ends with '.' or a space`), and
+  `okf validate` exits 1 for a bundle that holds one. Siblings differing only by
   case or Unicode form are not a native rule on any OS: `FileSystemBundleProvider` matches stored names exactly, so
   no key opens another key's object, and on a volume that holds both names
   (Linux, case-sensitive APFS, a case-sensitive Windows directory) they are
@@ -125,8 +130,9 @@ and this project adheres to
   walk inspects every directory STRICTly (it and each directory between it and
   the root) before listing it, instead of taking it for a plain directory and
   listing it; an entry it cannot identify as a directory is not entered. Each
-  directory is inspected once per walk, when the walk enters it, so a deep
-  tree costs time linear in its depth. A
+  directory is inspected once per walk, when the walk enters it, so the
+  walk's cost is linear in the depth of the tree; reading a concept
+  re-inspects each directory on its key's path. A
   symlink or junction seen as one is still skipped, never followed.
 - **A backslash in a §6.2 path-valued field is `Unsafe`** on every OS;
   `references\a.sql` resolved on Windows before.
