@@ -13,6 +13,7 @@ public class BundleProviderLoadTests
     private const string Broken = "---\ntype: Note\nk: *a\n---\nbody\n"; // a YAML alias: the subset rejects it → ParseErrors
 
     private static string Sha(string s) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(s)));
+    private static readonly BundleLoadOptions StrictOptions = new() { KeyPolicy = BundleKeyPolicy.Strict };
 
     [Fact]
     public void Loading_through_the_filesystem_provider_equals_loading_by_path()
@@ -102,7 +103,7 @@ public class BundleProviderLoadTests
             .Add("con.md", Customers)
             .Add("ok.md", Customers)
             .Add("a:b.txt", "not a concept, silently skipped");
-        var bundle = Bundle.Load(p);
+        var bundle = Bundle.Load(p, StrictOptions);
         Assert.Equal([ConceptId.Parse("ok")], bundle.Concepts.Select(c => c.Id));
         var problem = Assert.Single(bundle.ParseProblems);
         Assert.Equal("con.md", problem.RawName);
@@ -118,7 +119,7 @@ public class BundleProviderLoadTests
     public void Native_policy_keeps_what_strict_rejects()
     {
         var p = new InMemoryBundleProvider().Add("A/x.md", Customers).Add("a/y.md", Customers);
-        var strict = Bundle.Load(p);
+        var strict = Bundle.Load(p, StrictOptions);
         Assert.Empty(strict.Concepts);
         Assert.Equal(2, strict.ParseProblems.Count);
         Assert.Contains(BundleKey.Parse("A/x.md"), strict.RejectedKeys);
@@ -140,7 +141,7 @@ public class BundleProviderLoadTests
             .Add("con.sql", "reserved")
             .Add("index.md", "---\nokf_version: \"0.2\"\n---\n")
             .Add("INDEX.md", "# shadow\n");
-        var bundle = Bundle.Load(p);
+        var bundle = Bundle.Load(p, StrictOptions);
         var concept = bundle.Get(ConceptId.Parse("c/rev"))!;
 
         // Diagnostics follow the enumeration scope (§2): only the two .md names.
@@ -179,7 +180,7 @@ public class BundleProviderLoadTests
             .Add("c/rev.md", "---\ntype: Attested Computation\n---\n")
             .Add("Ab/x.sql", "x")
             .Add("aB/y.sql", "y");
-        var bundle = Bundle.Load(p);
+        var bundle = Bundle.Load(p, StrictOptions);
         var concept = bundle.Get(ConceptId.Parse("c/rev"))!;
         Assert.Equal([BundleKey.Parse("Ab"), BundleKey.Parse("aB")], bundle.RejectedPrefixes);
 
@@ -208,7 +209,7 @@ public class BundleProviderLoadTests
         {
             p.ListTwice(first).ListTwice(second);
         }
-        var bundle = Bundle.Load(p);
+        var bundle = Bundle.Load(p, StrictOptions);
         var concept = bundle.Get(ConceptId.Parse("c/rev"))!;
         Assert.NotEmpty(bundle.RejectedPrefixes);
 
@@ -340,7 +341,7 @@ public class BundleProviderLoadTests
             .Add("c/rev.md", "---\ntype: Attested Computation\n---\n")
             .Add("x.md", "---\ntype: T\n---\n")
             .Add("x.md/longname.sql", "long");
-        var bundle = Bundle.Load(p, new BundleLoadOptions { Limits = new BundleLimits { MaxKeyBytes = 12 } });
+        var bundle = Bundle.Load(p, new BundleLoadOptions { KeyPolicy = BundleKeyPolicy.Strict, Limits = new BundleLimits { MaxKeyBytes = 12 } });
         var concept = bundle.Get(ConceptId.Parse("c/rev"))!;
         Assert.Equal([ConceptId.Parse("c/rev")], bundle.Concepts.Select(c => c.Id));
         Assert.Equal([BundleKey.Parse("x.md")], bundle.RejectedPrefixes);
@@ -381,7 +382,7 @@ public class BundleProviderLoadTests
             .Add("Docs/a.md", Customers)
             .Add(tooLong, Customers)
             .Add("ok.md", Customers);
-        var bundle = Bundle.Load(p, new BundleLoadOptions { Limits = new BundleLimits { MaxKeyBytes = maxKeyBytes } });
+        var bundle = Bundle.Load(p, new BundleLoadOptions { KeyPolicy = BundleKeyPolicy.Strict, Limits = new BundleLimits { MaxKeyBytes = maxKeyBytes } });
         Assert.Equal([ConceptId.Parse("ok")], bundle.Concepts.Select(c => c.Id));
         Assert.Equal([BundleKey.Parse("Docs"), BundleKey.Parse("docs")], bundle.RejectedPrefixes);
         Assert.False(bundle.IsKeyAllowed(BundleKey.Parse("DOCS/new.md"), out _));
@@ -466,7 +467,7 @@ public class BundleProviderLoadTests
             .Add("computations/rev.md", "---\ntype: Attested Computation\n---\n")
             .Add("references/q.sql", "select 1")
             .Add("computations/sibling.sql", "select 2");
-        var bundle = Bundle.Load(p);
+        var bundle = Bundle.Load(p, StrictOptions);
         var concept = bundle.Get(ConceptId.Parse("computations/rev"))!;
 
         Assert.True(bundle.TryResolveResourceKey(concept, "/references/q.sql", out var key, out var status));

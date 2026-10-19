@@ -11,13 +11,33 @@ public class BundleKeyValidatorTests
     private static BundleKeyValidator NativeMacOS() => new(BundleKeyConstraintSets.MacOS, BundleKeyPolicy.Native);
 
     [Fact]
-    public void Strict_is_the_union_of_every_known_native_set()
+    public void Strict_is_the_union_of_every_known_native_set_plus_RequireNfc()
     {
         var v = Strict();
         Assert.Equal(BundleKeyConstraintSets.Strict, v.Effective);
+        Assert.Equal(
+            BundleKeyConstraintSets.Windows | BundleKeyConstraintSets.MacOS | BundleKeyConstraintSets.Linux | BundleKeyConstraints.RequireNfc,
+            BundleKeyConstraintSets.Strict);
         Assert.True(v.Effective.HasFlag(BundleKeyConstraints.WindowsReservedNames));
         Assert.True(v.Effective.HasFlag(BundleKeyConstraints.RequireNfc));
         Assert.True(v.Effective.HasFlag(BundleKeyConstraints.FileDirectoryConflict));
+    }
+
+    [Fact]
+    public void No_native_set_requires_NFC_since_no_storage_does()
+    {
+        // HFS+ stores names decomposed and APFS keeps the form written: a decomposed name is
+        // an ordinary file there. Only the portable profile asks for NFC.
+        Assert.False(BundleKeyConstraintSets.MacOS.HasFlag(BundleKeyConstraints.RequireNfc));
+        Assert.False(BundleKeyConstraintSets.Windows.HasFlag(BundleKeyConstraints.RequireNfc));
+        Assert.False(BundleKeyConstraintSets.Linux.HasFlag(BundleKeyConstraints.RequireNfc));
+        var nfd = BundleKey.Parse("cafe" + (char)0x0301 + ".md");
+        Assert.Null(NativeMacOS().CheckKey(nfd));
+        Assert.NotNull(Strict().CheckKey(nfd));
+
+        // macOS still refuses the two forms side by side: one entry on a default volume.
+        var nfc = "caf" + (char)0x00E9 + ".md";
+        Assert.Empty(NativeMacOS().ValidateTree([nfc, nfd.ToString()]).Accepted);
     }
 
     [Fact]

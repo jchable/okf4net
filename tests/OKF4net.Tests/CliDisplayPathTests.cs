@@ -56,7 +56,9 @@ public class CliDisplayPathTests
     /// provider seam: <c>Path.Combine(root, …)</c> over the name as found on disk, unquoted —
     /// in <see cref="Bundle.ParseErrors"/>, in <see cref="Diagnostic.Path"/>, in
     /// <c>validate</c>'s text and in <c>validate --json</c>'s <c>path</c> (JSON-escaped by the
-    /// writer, never pre-quoted). A decomposed <c>é</c> is rejected on every OS.
+    /// writer, never pre-quoted). A decomposed <c>é</c> is an unparseable document on every
+    /// OS, as on <c>dev</c>: its name is a key every native set holds, but no concept id (the
+    /// id rule is ASCII).
     /// </summary>
     [Fact]
     public void A_rejected_name_keeps_its_unquoted_display_path_on_every_os()
@@ -65,13 +67,16 @@ public class CliDisplayPathTests
         var nfd = "cafe\u0301.md";
         tmp.Write(nfd, "---\ntype: Note\n---\n");
         tmp.Write("sub/cafe\u0301.md", "---\ntype: Note\n---\n");
-        AssertRejectedDisplayPaths(tmp.Path, [Path.Combine(tmp.Path, nfd), Path.Combine(tmp.Path, "sub", nfd)]);
+        string[] expected = [Path.Combine(tmp.Path, nfd), Path.Combine(tmp.Path, "sub", nfd)];
+        AssertRejectedDisplayPaths(tmp.Path, expected);
     }
 
     /// <summary>
     /// The same for a Windows reserved name (<c>con.md</c>), which <c>dev</c> loaded and
-    /// printed as <c>root\con.md</c>: now a parse error (announced), with the same path string.
-    /// On Windows the file can only be created and removed through the <c>\\?\</c> namespace.
+    /// printed as <c>root\con.md</c>. On Windows it is now a parse error (announced): the
+    /// Windows native set refuses it, since the name cannot be created through Win32 (the file
+    /// can only be created and removed through the <c>\\?\</c> namespace). Elsewhere it loads,
+    /// as on <c>dev</c>.
     /// </summary>
     [Fact]
     public void A_reserved_name_keeps_its_unquoted_display_path()
@@ -87,7 +92,15 @@ public class CliDisplayPathTests
                 File.WriteAllText(prefix + Path.Combine(tmp.Path, name), "---\ntype: Note\n---\n");
             }
 
-            AssertRejectedDisplayPaths(tmp.Path, [.. names.Select(n => Path.Combine(tmp.Path, n))]);
+            string[] expected = [.. names.Select(n => Path.Combine(tmp.Path, n))];
+            if (OperatingSystem.IsWindows())
+            {
+                AssertRejectedDisplayPaths(tmp.Path, expected);
+            }
+            else
+            {
+                Assert.Equal(2, Bundle.Load(tmp.Path).Count);
+            }
         }
         finally
         {
