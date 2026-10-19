@@ -304,6 +304,30 @@ public class BundleProviderLoadTests
     }
 
     [Fact]
+    public void Parse_problems_are_in_the_component_wise_path_order_whatever_stage_found_them()
+    {
+        // Two YAML failures (read stage), a file/directory conflict and a backslash (tree
+        // stage), a name over the key bound (listing stage): one path order, the one the
+        // loader before the seam sorted its files by (`/` and `\` both separate components).
+        var p = new InMemoryBundleProvider(BundleKeyConstraintSets.Linux) { ObeyLimits = false }
+            .Add("z.md", Broken)
+            .Add("m\\n.md", Customers)
+            .Add("c.md", Customers)
+            .Add("c.md/x.md", Customers)
+            .Add("a.md", Broken)
+            .Add("b/" + new string('l', 20) + ".md", Customers)
+            .Add("ok.md", Customers);
+        var bundle = Bundle.Load(p, new BundleLoadOptions { Limits = new BundleLimits { MaxKeyBytes = 16 } });
+        string[] expected = ["a.md", "b/" + new string('l', 20) + ".md", "c.md", "c.md/x.md", "m\\n.md", "z.md"];
+        Assert.Equal(expected, bundle.ParseProblems.Select(e => e.RawName));
+        Assert.Equal(expected.Length, bundle.ParseErrors.Count);
+        for (var i = 0; i < expected.Length; i++)
+        {
+            Assert.EndsWith(expected[i].Replace('/', Path.DirectorySeparatorChar), bundle.ParseErrors[i].Path, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public void A_20_MiB_concept_and_a_70_deep_tree_load_under_the_default_bounds()
     {
         using var tmp = new TempDir();

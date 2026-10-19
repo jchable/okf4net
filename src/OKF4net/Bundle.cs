@@ -387,6 +387,13 @@ public sealed class Bundle
         var (outbound, backlinks) = BuildGraph(concepts, index);
         var okfVersion = ComputeOkfVersion(provider, limits, indexKeys, chunk);
 
+        // One path order for every problem, whatever stage found it (a bound, the tree
+        // validation, the read, the parse): the order the loader before the seam reported its
+        // errors in — every `.md` path sorted component-wise, `/` and `\` both separating —
+        // so a rejected name sits among the others instead of ahead of them. Stable: two
+        // names that compare equal (`a\b.md` and `a/b.md`) keep the order they were found in.
+        parseProblems = [.. parseProblems.OrderBy(p => p.RawName, Comparer<string>.Create(PathOrdering.CompareComponentWise))];
+
         return new Bundle(provider, options, validator, version, okfVersion, concepts, index, indexKeys, logKeys, parseProblems, rejectedKeys, tree.RejectedPrefixes.ToList(), portabilityIssues, objectVersions, outbound, backlinks);
     }
 
