@@ -319,6 +319,44 @@ public class BundleProviderLoadTests
     }
 
     [Fact]
+    public void A_child_refused_for_its_length_still_condemns_its_parent_object()
+    {
+        // `x.md/longname.sql` (17 bytes) is over the 12-byte bound: refused, but physically under `x.md`.
+        var p = new InMemoryBundleProvider()
+            .Add("c/rev.md", "---\ntype: Attested Computation\n---\n")
+            .Add("x.md", "---\ntype: T\n---\n")
+            .Add("x.md/longname.sql", "long");
+        var bundle = Bundle.Load(p, new BundleLoadOptions { Limits = new BundleLimits { MaxKeyBytes = 12 } });
+        var concept = bundle.Get(ConceptId.Parse("c/rev"))!;
+        Assert.Equal([ConceptId.Parse("c/rev")], bundle.Concepts.Select(c => c.Id));
+        Assert.Equal([BundleKey.Parse("x.md")], bundle.RejectedPrefixes);
+        Assert.Contains(bundle.ParseProblems, e => e.RawName == "x.md" && e.Error.Contains("both an object and a prefix"));
+        Assert.Contains(BundleKey.Parse("x.md/longname.sql"), bundle.RejectedKeys); // the length diagnostics are kept
+
+        p.Add("x.md/new.sql", "late"); // 12 bytes: within the bound, refused for its condemned parent
+        bundle.TryResolveResourceKey(concept, "/x.md/new.sql", out _, out var status);
+        Assert.Equal(ResourceResolutionStatus.Unsafe, status);
+        Assert.False(bundle.IsKeyAllowed(BundleKey.Parse("x.md/new.sql"), out var reason));
+        Assert.Contains("under 'x.md'", reason);
+    }
+
+    [Theory]
+    [InlineData(BundleKey.MaxUtf8Bytes)] // refused by the core bound: an unadmitted name
+    [InlineData(4096)]                   // past the bound, refused by BundleKey.TryParse: no key at all
+    public void A_directory_implied_only_by_a_name_over_the_key_limit_still_collides_with_its_sibling(int maxKeyBytes)
+    {
+        var tooLong = "docs/" + new string('x', BundleKey.MaxUtf8Bytes) + ".md"; // no key at all
+        var p = new InMemoryBundleProvider { ObeyLimits = false }
+            .Add("Docs/a.md", Customers)
+            .Add(tooLong, Customers)
+            .Add("ok.md", Customers);
+        var bundle = Bundle.Load(p, new BundleLoadOptions { Limits = new BundleLimits { MaxKeyBytes = maxKeyBytes } });
+        Assert.Equal([ConceptId.Parse("ok")], bundle.Concepts.Select(c => c.Id));
+        Assert.Equal([BundleKey.Parse("Docs"), BundleKey.Parse("docs")], bundle.RejectedPrefixes);
+        Assert.False(bundle.IsKeyAllowed(BundleKey.Parse("DOCS/new.md"), out _));
+    }
+
+    [Fact]
     public void Bounds_also_apply_to_keys_that_appear_after_the_load()
     {
         var p = new InMemoryBundleProvider().Add("c/rev.md", "---\ntype: Attested Computation\n---\n");

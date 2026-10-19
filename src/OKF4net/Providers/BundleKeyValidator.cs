@@ -134,8 +134,18 @@ public sealed class BundleKeyValidator
     /// <see cref="BundleKeyConstraints.FileDirectoryConflict"/>, an object that is also a prefix of
     /// other keys is rejected with everything under it. A raw name listed twice is rejected.
     /// The colliding and conflicting keys are returned as <see cref="BundleKeyTreeResult.RejectedPrefixes"/>.
+    /// <para>
+    /// Physical presence never depends on admission: the proper ancestors (<c>a</c>,
+    /// <c>a/b</c>, …) of a raw name that is no key at all, and of every name in
+    /// <paramref name="unadmittedNames"/>, are directories that are there. Each one that parses
+    /// as a key takes part, as a prefix only, in the sibling collisions and the file/directory
+    /// conflict — an object <c>x.md</c> listed beside an unparseable or unadmitted
+    /// <c>x.md/…</c> is condemned — but is never accepted and never rejected on its own.
+    /// </para>
     /// </summary>
-    public BundleKeyTreeResult ValidateTree(IEnumerable<string> rawNames)
+    /// <param name="rawNames">The listing to validate.</param>
+    /// <param name="unadmittedNames">Names the caller refused for a reason of its own (a bound) before the validation, but that physically exist: they are not validated themselves, only their proper ancestors are counted as prefixes.</param>
+    public BundleKeyTreeResult ValidateTree(IEnumerable<string> rawNames, IEnumerable<string>? unadmittedNames = null)
     {
         ArgumentNullException.ThrowIfNull(rawNames);
         var rejected = new List<BundleKeyRejection>();
@@ -148,6 +158,11 @@ public sealed class BundleKeyValidator
         // what the collision and conflict checks reason about (sixth review: a host validator
         // refusing `x.md` must not rehabilitate `x.md/ok.sql`).
         var structural = new HashSet<BundleKey>();
+        // Directories implied by a name that never became a structural key — it is no key at
+        // all, or the caller refused it for a bound — yet is physically there: prefixes only,
+        // never objects. Without them, `x.md` beside an over-long or unparseable `x.md/…` read
+        // as an ordinary file and the conflict went unnoticed (external review).
+        var prefixOnly = new HashSet<BundleKey>();
 
         foreach (var raw in rawNames)
         {
@@ -164,6 +179,7 @@ public sealed class BundleKeyValidator
             if (!BundleKey.TryParse(raw, out var key, out var reason))
             {
                 rejected.Add(new BundleKeyRejection(raw, reason));
+                AddProperAncestors(raw, prefixOnly);
                 continue;
             }
 
@@ -178,6 +194,14 @@ public sealed class BundleKeyValidator
             candidates.Add((raw, key));
         }
 
+        if (unadmittedNames is not null)
+        {
+            foreach (var raw in unadmittedNames)
+            {
+                AddProperAncestors(raw, prefixOnly);
+            }
+        }
+
         // A duplicated name is rejected, but the object it names is still THERE: its first
         // occurrence entered `structural` above, so a duplicated `x` still conflicts with
         // `x/y.sql` (r3 dropped it first and let `x/y.sql` through).
@@ -188,7 +212,9 @@ public sealed class BundleKeyValidator
         if (Effective.HasFlag(BundleKeyConstraints.CaseInsensitiveCollisions) || Effective.HasFlag(BundleKeyConstraints.UnicodeFormCollisions))
         {
             var groups = new Dictionary<(string Parent, string Folded), HashSet<string>>();
-            foreach (var key in structural)
+            // Prefix-only entries too: `docs` implied by an over-long `docs/…` still collides
+            // with a listed `Docs/a.md`.
+            foreach (var key in structural.Concat(prefixOnly))
             {
                 for (var depth = 1; depth <= key.Segments.Count; depth++)
                 {
@@ -244,6 +270,16 @@ public sealed class BundleKeyValidator
                 }
             }
 
+            // A prefix-only entry is a directory: it and its ancestors are prefixes. It is never
+            // an object, so it only lands in `conflicts` when an object of the same key is listed.
+            foreach (var key in prefixOnly)
+            {
+                for (var prefix = key; prefix is not null; prefix = prefix.Parent)
+                {
+                    prefixes.Add(prefix);
+                }
+            }
+
             var conflicts = keys.Where(prefixes.Contains).ToHashSet();
             rejectedPrefixes.UnionWith(conflicts); // likewise: structural, not candidate-driven
             foreach (var (raw, key) in candidates)
@@ -285,6 +321,26 @@ public sealed class BundleKeyValidator
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Adds to <paramref name="into"/> every proper ancestor of <paramref name="raw"/>
+    /// (<c>a</c>, <c>a/b</c>, … — never the name itself) that parses as a key. Every base-rule
+    /// failure carries over to the longer prefixes (a forbidden character, an empty, <c>.</c>
+    /// or <c>..</c> segment, a leading <c>/</c>, the 1 024-byte bound), so the walk stops at
+    /// the first ancestor that does not parse.
+    /// </summary>
+    private static void AddProperAncestors(string raw, HashSet<BundleKey> into)
+    {
+        for (var slash = raw.IndexOf('/'); slash >= 0; slash = raw.IndexOf('/', slash + 1))
+        {
+            if (!BundleKey.TryParse(raw[..slash], out var ancestor, out _))
+            {
+                return;
+            }
+
+            into.Add(ancestor);
+        }
     }
 
     private string? CheckSegment(string segment)

@@ -222,6 +222,9 @@ public sealed class Bundle
         // entries while consuming; depth and key length on every name that parses, before the
         // tree validation, so a too-deep key rejected for another reason still aborts.
         var treeInput = new List<string>();
+        // Names refused for their length are still physically there: the tree validation counts
+        // their ancestors as prefixes, so `x.md` beside an over-long `x.md/…` is a conflict.
+        var overLength = new List<string>();
         var parseProblems = new List<BundleParseError>();
         var rejectedKeys = new HashSet<BundleKey>();
         try
@@ -256,6 +259,7 @@ public sealed class Bundle
                         parseProblems.Add(new BundleParseError(raw, longKey, $"key is longer than the {limits.MaxKeyBytes}-byte bound"));
                     }
 
+                    overLength.Add(raw);
                     continue;
                 }
 
@@ -285,7 +289,7 @@ public sealed class Bundle
             throw new BundleLoadException($"I/O error while reading the bundle version ({e.GetType().Name})", e);
         }
 
-        var tree = validator.ValidateTree(treeInput);
+        var tree = validator.ValidateTree(treeInput, overLength);
         foreach (var rejection in tree.Rejected)
         {
             if (BundleKey.TryParse(rejection.RawName, out var rejectedKey, out _))

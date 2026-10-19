@@ -230,6 +230,63 @@ public class BundleKeyValidatorTests
     }
 
     [Fact]
+    public void An_unadmitted_child_still_makes_its_parent_object_a_prefix()
+    {
+        // The caller refused `x.md/longname.sql` (a bound): it is still under `x.md`.
+        var r = Strict().ValidateTree(["x.md", "ok.md"], ["x.md/longname.sql"]);
+        Assert.Equal([BundleKey.Parse("ok.md")], r.Accepted);
+        Assert.Equal([BundleKey.Parse("x.md")], r.RejectedPrefixes);
+        var rej = Assert.Single(r.Rejected);
+        Assert.Equal("x.md", rej.RawName);
+        Assert.Contains("both an object and a prefix", rej.Reason);
+
+        // Native Linux keeps FileDirectoryConflict: same outcome without the policy.
+        Assert.Equal([BundleKey.Parse("x.md")], NativeLinux().ValidateTree(["x.md"], ["x.md/longname.sql"]).RejectedPrefixes);
+    }
+
+    [Fact]
+    public void A_sibling_implied_only_by_a_name_over_the_key_bound_still_collides()
+    {
+        var tooLong = "docs/" + new string('x', BundleKey.MaxUtf8Bytes) + ".md"; // fails TryParse: never a key
+        var r = Strict().ValidateTree(["Docs/a.md", tooLong, "ok.md"]);
+        Assert.Equal([BundleKey.Parse("ok.md")], r.Accepted);
+        Assert.Contains(r.Rejected, rej => rej.RawName == "Docs/a.md" && rej.Reason.Contains("collides"));
+        Assert.Contains(r.Rejected, rej => rej.RawName == tooLong && rej.Reason.Contains("longer"));
+        Assert.Equal([BundleKey.Parse("Docs"), BundleKey.Parse("docs")], r.RejectedPrefixes);
+
+        // Under a case-sensitive native set, the two directories are distinct.
+        Assert.Contains(BundleKey.Parse("Docs/a.md"), NativeLinux().ValidateTree(["Docs/a.md", tooLong]).Accepted);
+    }
+
+    [Fact]
+    public void A_parent_object_is_condemned_by_a_child_whose_deeper_segment_is_no_key()
+    {
+        // `x.md/bad<U+0085>` fails the base rules, but `x.md` is still a directory there.
+        var r = NativeLinux().ValidateTree(["x.md", "x.md/bad\u0085/y.sql", "ok.md"]);
+        Assert.Equal([BundleKey.Parse("ok.md")], r.Accepted);
+        Assert.Equal([BundleKey.Parse("x.md")], r.RejectedPrefixes);
+        Assert.Contains(r.Rejected, rej => rej.RawName == "x.md" && rej.Reason.Contains("both an object and a prefix"));
+        Assert.Contains(r.Rejected, rej => rej.RawName == "x.md/bad\u0085/y.sql" && rej.Reason.Contains("control"));
+    }
+
+    [Fact]
+    public void A_prefix_only_entry_is_never_accepted_nor_rejected_on_its_own()
+    {
+        var r = Strict().ValidateTree(["ok.md", "a/b/bad\\name.sql"], ["c/d/longname.sql"]);
+        Assert.Equal([BundleKey.Parse("ok.md")], r.Accepted);
+        var rej = Assert.Single(r.Rejected); // the unparseable name itself, not `a` nor `a/b`; nothing for `c/d`
+        Assert.Equal("a/b/bad\\name.sql", rej.RawName);
+        Assert.Empty(r.RejectedPrefixes);
+
+        // And a prefix-only entry colliding with nothing but another prefix-only entry is
+        // condemned as a prefix, still with no rejection of its own.
+        var both = Strict().ValidateTree(["ok.md"], ["P/longname.sql", "p/longname.sql"]);
+        Assert.Equal([BundleKey.Parse("ok.md")], both.Accepted);
+        Assert.Empty(both.Rejected);
+        Assert.Equal([BundleKey.Parse("P"), BundleKey.Parse("p")], both.RejectedPrefixes);
+    }
+
+    [Fact]
     public void The_outermost_condemned_prefix_is_the_one_named_in_the_reason()
     {
         var r = Strict().ValidateTree(["A/x.md", "a/B/y.md", "a/b/z.md"]);
