@@ -561,4 +561,89 @@ public class FileSystemBundleProviderTests
         var load = Assert.Throws<BundleLoadException>(() => Bundle.Load(tmp.Path));
         Assert.IsType<UnauthorizedAccessException>(load.InnerException);
     }
+
+    /// <summary>
+    /// The walk inspects each directory once, on its own, before listing it (its ancestors
+    /// were inspected when the same walk entered them). A junction met as an entry is skipped
+    /// at whatever depth it sits, and nothing under it is listed.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(5)]
+    public void A_junction_is_skipped_by_the_walk_at_any_depth(int depth)
+    {
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        external.Write("secret.md", "OUTSIDE-THE-BUNDLE");
+        var parent = string.Join('/', Enumerable.Repeat("d", depth - 1));
+        var prefix = parent.Length == 0 ? string.Empty : parent + "/";
+        tmp.Write(prefix + "real.md", "r");
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir((prefix + "j").Replace('/', Path.DirectorySeparatorChar), external.Path), "junctions unavailable");
+        var p = new FileSystemBundleProvider(tmp.Path);
+        Assert.Equal([prefix + "real.md"], p.Enumerate(null, BundleLimits.Default).Select(l => l.RawName));
+        _ = p.GetVersion(BundleLimits.Default); // the version walk skips it too, without refusing
+        if (depth > 1)
+        {
+            Assert.Equal(["real.md"], p.Enumerate(K(parent), BundleLimits.Default).Select(l => l.RawName[(parent.Length + 1)..]));
+        }
+    }
+
+    /// <summary>
+    /// A directory swapped for a junction after the walk examined it as an entry of its parent,
+    /// and before the walk enters it, is refused by the walk's own check on that directory —
+    /// at depth 3, below two directories the walk entered before. The swap stands in for
+    /// another process acting in that window (<c>BeforeWalkEntersDirectory</c>). With
+    /// <paramref name="uninspectable"/>, the junction also denies reading its attributes and its
+    /// parent denies listing, so only the STRICT predicate refuses it: a lenient check would
+    /// list the junction's target, outside the bundle.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_directory_swapped_for_a_junction_before_the_walk_enters_it_is_refused(bool uninspectable)
+    {
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        external.Write("secret.md", "OUTSIDE-THE-BUNDLE");
+        tmp.Write("a.md", "a");
+        tmp.Write("x/y/z/in.md", "in");
+        var target = Path.Combine(tmp.Path, "x", "y", "z");
+        var p = new FileSystemBundleProvider(tmp.Path);
+        UninspectableJunction? handle = null;
+        var swapped = false;
+        p.BeforeWalkEntersDirectory = full =>
+        {
+            if (swapped || !string.Equals(full, target, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            File.Delete(Path.Combine(full, "in.md"));
+            Directory.Delete(full);
+            var link = Path.Combine("x", "y", "z");
+            if (uninspectable)
+            {
+                handle = tmp.TryCreateUninspectableJunction(link, external.Path);
+                swapped = handle is not null;
+            }
+            else
+            {
+                swapped = tmp.TryCreateJunctionToExternalDir(link, external.Path);
+            }
+        };
+
+        try
+        {
+            var thrown = Record.Exception(() => p.Enumerate(null, BundleLimits.Default));
+            Skip.IfNot(swapped, uninspectable ? "needs Windows (a junction plus deny ACEs)" : "junctions unavailable");
+            Assert.IsType<BundleAccessRefusedException>(thrown);
+            Assert.DoesNotContain("OUTSIDE", thrown.Message);
+        }
+        finally
+        {
+            handle?.Dispose();
+        }
+    }
 }

@@ -81,6 +81,13 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     internal int DirectoryListings => Volatile.Read(ref _directoryListings);
 
     /// <summary>
+    /// Test hook: called with a directory's full path after the walk has examined it as an entry
+    /// of its parent and before it enters it, so a test can stand in for another process acting
+    /// in that window (a directory swapped for a junction). <see langword="null"/> outside tests.
+    /// </summary>
+    internal Action<string>? BeforeWalkEntersDirectory { get; set; }
+
+    /// <summary>
     /// Opens a listing scope on the calling flow (<see cref="IProviderScope"/>): until the handle
     /// is disposed, each directory this flow lists — by a walk (<see cref="GetVersion"/>,
     /// <see cref="Enumerate"/>) or by an exact-case lookup (<see cref="ResolveExact"/>) — is
@@ -162,7 +169,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
             }
 
             sb.Append(entry.RawName).Append('\0').Append(length).Append('\0').Append(mtime).Append('\n');
-        });
+        }, isStart: true);
 
         return new BundleVersion(Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString()))));
     }
@@ -210,7 +217,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
 
             var raw = prefix is null ? entry.RawName : prefix + "/" + entry.RawName;
             result.Add(new BundleListing(raw, length, null));
-        });
+        }, isStart: true);
 
         return result;
     }
@@ -353,6 +360,20 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
             || ReparsePoints.HasReparsePointOrUninspectableAncestor(_fullRoot, path, PathComparison))
         {
             throw new BundleAccessRefusedException(key, "it resolves outside the bundle root, or through a reparse point or an entry that could not be inspected");
+        }
+    }
+
+    /// <summary>
+    /// The walk's guard for a directory below its start: under the root, and itself neither a
+    /// reparse point nor uninspectable (one inspection). Its ancestors between the start and it
+    /// were inspected when the same walk entered them, and the start by <see cref="GuardStrict"/>,
+    /// so together they cover what <see cref="GuardStrict"/> on this directory would inspect.
+    /// </summary>
+    private void GuardEntered(string dir)
+    {
+        if (!ReparsePoints.IsWithin(_fullRoot, dir, PathComparison) || ReparsePoints.IsReparsePointOrUninspectable(dir))
+        {
+            throw new BundleAccessRefusedException(null, "it resolves outside the bundle root, or through a reparse point or an entry that could not be inspected");
         }
     }
 
@@ -648,14 +669,37 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// counted the same way and visited after the same guards, so the second walk of a load
     /// (<see cref="GetVersion"/> after <see cref="Enumerate"/>) and the exact-case lookups reuse
     /// the first walk's listings.
+    /// <para><b>Guarding.</b> The walk's start (<paramref name="isStart"/>) gets the full
+    /// <see cref="GuardStrict"/>: the start and every directory between it and the root. For the
+    /// root (<see cref="GetVersion"/>, an unprefixed <see cref="Enumerate"/>) that inspects
+    /// nothing, as before; for a prefixed <see cref="Enumerate"/> the chain was also inspected by
+    /// <see cref="ResolveExact"/> and <see cref="GuardResolved"/> just before. Every directory
+    /// below the start is then STRICT-inspected on its own
+    /// (<see cref="ReparsePoints.IsReparsePointOrUninspectable"/>), once, before it is listed:
+    /// each of its ancestors between the start and itself was entered by this same walk, and so
+    /// inspected before being listed, so re-walking them would inspect nothing new. The set of
+    /// entries inspected before a listing is unchanged; each is inspected once per walk instead
+    /// of once per descendant, which keeps a deep tree linear rather than quadratic.</para>
+    /// <para><b>Accepted window.</b> An ancestor replaced by a link after its own inspection is
+    /// not seen again by the listings of its descendants in this walk. That window lies inside the
+    /// inter-process window already accepted for every path-based guard (issue #178), as for
+    /// <see cref="ResolveExact"/>; re-walking the ancestors would only have narrowed it.</para>
     /// </summary>
-    private void Walk(string dir, string rel, int depth, BundleLimits limits, Counter counter, Action<WalkEntry> visit)
+    private void Walk(string dir, string rel, int depth, BundleLimits limits, Counter counter, Action<WalkEntry> visit, bool isStart)
     {
         CheckBoundary();
         // The path alone: a directory whose relative name is no valid key (U+0085, > 1 024
         // bytes) is still a directory to guard; its entries are rejected BY NAME later, by the
         // loader, never by an exception here (the third review hit BundleKeyException).
-        GuardStrict(null, dir);
+        if (isStart)
+        {
+            GuardStrict(null, dir);
+        }
+        else
+        {
+            GuardEntered(dir);
+        }
+
         var memo = ActiveMemo;
         string[] names;
         if (memo is not null && memo.TryGet(dir, out var known))
@@ -706,7 +750,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
             if (Directory.Exists(full))
             {
                 visit(new WalkEntry(full, raw, true));
-                Walk(full, raw, depth + 1, limits, counter, visit);
+                BeforeWalkEntersDirectory?.Invoke(full);
+                Walk(full, raw, depth + 1, limits, counter, visit, isStart: false);
             }
             else if (File.Exists(full))
             {

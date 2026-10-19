@@ -124,7 +124,9 @@ and this project adheres to
   determined now aborts the load** with `BundleLoadException`: the provider's
   walk inspects every directory STRICTly (it and each directory between it and
   the root) before listing it, instead of taking it for a plain directory and
-  listing it; an entry it cannot identify as a directory is not entered. A
+  listing it; an entry it cannot identify as a directory is not entered. Each
+  directory is inspected once per walk, when the walk enters it, so a deep
+  tree costs time linear in its depth. A
   symlink or junction seen as one is still skipped, never followed.
 - **A backslash in a §6.2 path-valued field is `Unsafe`** on every OS;
   `references\a.sql` resolved on Windows before.
