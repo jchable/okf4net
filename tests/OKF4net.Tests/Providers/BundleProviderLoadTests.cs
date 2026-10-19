@@ -581,6 +581,78 @@ public class BundleProviderLoadTests
         Assert.Throws<FileNotFoundException>(() => bundle.ReadResourceText(BundleKey.Parse("references/missing.sql")));
     }
 
+    private static Bundle LoadWithDriveShapedNames(BundleKeyConstraints native, BundleLoadOptions options, out Concept concept)
+    {
+        var p = new InMemoryBundleProvider(native)
+            .Add("computations/rev.md", "---\ntype: Attested Computation\n---\n")
+            .Add("a:b.sql", "select 1")
+            .Add("C:x.sql", "select 2");
+        var bundle = Bundle.Load(p, options);
+        concept = bundle.Get(ConceptId.Parse("computations/rev"))!;
+        return bundle;
+    }
+
+    /// <summary>
+    /// Where a colon is an ordinary name character (the Linux and macOS native sets), a value
+    /// whose first segment looks like a drive is a name like any other, as it was on
+    /// <c>dev</c>: <c>a:b.sql</c> and <c>C:x.sql</c> resolve when they exist, and
+    /// <c>C:/Windows/win.ini</c> is simply missing.
+    /// </summary>
+    [Theory]
+    [InlineData("Linux")]
+    [InlineData("MacOS")]
+    public void Where_a_colon_is_a_name_character_a_drive_shaped_path_is_an_ordinary_name(string os)
+    {
+        var native = os == "Linux" ? BundleKeyConstraintSets.Linux : BundleKeyConstraintSets.MacOS;
+        var bundle = LoadWithDriveShapedNames(native, BundleLoadOptions.Default, out var concept);
+
+        foreach (var (raw, expected) in new[] { ("a:b.sql", "a:b.sql"), ("/a:b.sql", "a:b.sql"), ("C:x.sql", "C:x.sql"), ("/C:x.sql", "C:x.sql") })
+        {
+            Assert.True(bundle.TryResolveResourceKey(concept, raw, out var key, out var status));
+            Assert.Equal(ResourceResolutionStatus.Resolved, status);
+            Assert.Equal(BundleKey.Parse(expected), key);
+        }
+
+        foreach (var raw in new[] { "C:/Windows/win.ini", "/C:/Windows/win.ini", "e:q.sql", "C:/x/" })
+        {
+            Assert.True(bundle.TryResolveResourceKey(concept, raw, out var key, out var status));
+            Assert.Equal(ResourceResolutionStatus.Missing, status);
+            Assert.Null(key);
+        }
+
+        Assert.Equal("select 1", bundle.ReadResourceText(BundleKey.Parse("a:b.sql")));
+    }
+
+    /// <summary>
+    /// Where a colon cannot be a name character — the Windows native set, and <c>Strict</c>
+    /// on any set — the key policy refuses every drive-shaped value: <c>Unsafe</c>, whether or
+    /// not an object of that name exists, and a direct read is refused by the same guard.
+    /// </summary>
+    [Theory]
+    [InlineData("Windows", false)]
+    [InlineData("Linux", true)]
+    [InlineData("MacOS", true)]
+    public void Under_windows_constraints_or_strict_a_drive_shaped_path_is_unsafe(string os, bool strict)
+    {
+        var native = os switch
+        {
+            "Windows" => BundleKeyConstraintSets.Windows,
+            "Linux" => BundleKeyConstraintSets.Linux,
+            _ => BundleKeyConstraintSets.MacOS,
+        };
+        var bundle = LoadWithDriveShapedNames(native, strict ? StrictOptions : BundleLoadOptions.Default, out var concept);
+
+        foreach (var raw in new[] { "a:b.sql", "/a:b.sql", "C:x.sql", "C:/Windows/win.ini", "/C:/Windows/win.ini", "e:q.sql", "./C:/x.sql", "C:/x/" })
+        {
+            Assert.True(bundle.TryResolveResourceKey(concept, raw, out var key, out var status));
+            Assert.Equal(ResourceResolutionStatus.Unsafe, status);
+            Assert.Null(key);
+        }
+
+        Assert.Throws<UnauthorizedAccessException>(() => bundle.ReadResourceText(BundleKey.Parse("a:b.sql")));
+        Assert.Throws<UnauthorizedAccessException>(() => bundle.ReadResourceText(BundleKey.Parse("C:/Windows/win.ini")));
+    }
+
     [Fact]
     public void A_provider_refusing_Exists_reads_as_Unsafe_and_a_direct_read_is_unauthorized()
     {

@@ -7,7 +7,7 @@ public enum ResourceKeyOutcome
     /// <summary>An absolute URL; never dereferenced (spec §7).</summary>
     Url,
 
-    /// <summary>The value climbs above the root, uses a drive form or a backslash, or breaks a base key rule.</summary>
+    /// <summary>The value climbs above the root, contains a backslash or U+0000, or breaks a base key rule.</summary>
     Unsafe,
 
     /// <summary>A syntactically valid key under the root; existence and policy are checked by the caller.</summary>
@@ -64,13 +64,12 @@ public static class ResourceKeyResolver
             return ResourceKeyOutcome.Unsafe;
         }
 
+        // A first segment shaped like a drive (`C:/x`, `e:q.sql`) is an ordinary name here: on
+        // Linux and macOS `C:x.sql` is a legitimate file. Where a colon cannot be a name
+        // character (Windows-native constraints, Strict), the caller's key policy refuses the
+        // key (Bundle.IsKeyAllowed), and FileSystemBundleProvider on Windows never takes such a
+        // segment for a literal name, so no drive form ever reaches a path there.
         var relative = rawPath.TrimStart('/');
-        if (relative.Length >= 2 && char.IsAsciiLetter(relative[0]) && relative[1] == ':')
-        {
-            // A drive-relative or drive-absolute form (e:q.sql, C:/x): never a bundle path.
-            return ResourceKeyOutcome.Unsafe;
-        }
-
         var segments = new List<string>();
         if (kind == FrontmatterResourceKind.ConceptRelative && conceptKey.Parent is { } parent)
         {

@@ -398,6 +398,46 @@ public class FileSystemBundleProviderTests
         Assert.Equal(["a.md"], p.Enumerate(null, BundleLimits.Default).Select(l => l.RawName)); // the real entry is unaffected
     }
 
+    /// <summary>
+    /// The lexical resolver leaves a drive-shaped first segment to the key policy, so on a real
+    /// Windows run every drive form must still stay inside the root: the native set refuses
+    /// the colon (<c>Unsafe</c>), and the provider, asked directly, answers "no such entry"
+    /// without combining the segment into a path — even when the value names, through the
+    /// bundle's own drive, a file that exists outside the root.
+    /// </summary>
+    [SkippableFact]
+    public void On_Windows_a_drive_form_never_leaves_the_root_and_never_throws()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "a Windows path rule: elsewhere a colon is a name character");
+        using var tmp = new TempDir();
+        tmp.Write("outside.sql", "secret");
+        tmp.Write("b/computations/rev.md", "---\ntype: Attested Computation\n---\n");
+        tmp.Write("b/x.sql", "inside");
+        var root = Path.Combine(tmp.Path, "b");
+        var outside = Path.Combine(tmp.Path, "outside.sql");
+        Skip.IfNot(outside.Length > 2 && outside[1] == ':', "the temp directory is not on a drive letter");
+        var drive = outside[..2];                          // C:
+        var driveAbsolute = outside.Replace('\\', '/');   // C:/…/outside.sql, a file that exists
+        var bundle = Bundle.Load(root);
+        var concept = bundle.Get(ConceptId.Parse("computations/rev"))!;
+        var provider = new FileSystemBundleProvider(root);
+
+        foreach (var raw in new[] { driveAbsolute, "/" + driveAbsolute, drive + "x.sql", drive, drive + "/", "./" + drive + "x.sql", "C:/Windows/win.ini", "C:/x" })
+        {
+            Assert.True(bundle.TryResolveResourceKey(concept, raw, out var key, out var status));
+            Assert.Equal(ResourceResolutionStatus.Unsafe, status);
+            Assert.Null(key);
+        }
+
+        foreach (var keyText in new[] { driveAbsolute, drive + "x.sql", "C:/x" })
+        {
+            var key = K(keyText); // layer 1 forbids no colon: the key parses
+            Assert.False(provider.Exists(key));
+            Assert.Throws<BundleObjectNotFoundException>(() => provider.Read(key));
+            Assert.Throws<UnauthorizedAccessException>(() => bundle.ReadResourceText(key));
+        }
+    }
+
     [SkippableFact]
     public void On_Windows_a_wildcard_segment_is_no_such_entry()
     {

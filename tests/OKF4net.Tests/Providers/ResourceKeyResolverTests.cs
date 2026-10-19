@@ -43,10 +43,7 @@ public class ResourceKeyResolverTests
     [InlineData("/../q.sql")]
     [InlineData("../../")]            // above the root, trailing '/' or not
     [InlineData("references/../../../")]
-    [InlineData("C:\\x.sql")]         // drive forms
-    [InlineData("e:q.sql")]
-    [InlineData("/e:q.sql")]
-    [InlineData("C:/x.sql")]
+    [InlineData("C:\\x.sql")]         // a backslash, whatever precedes it
     [InlineData("references\\a.sql")] // backslash → Unsafe (point to validate 7)
     [InlineData("a\0b.sql")]          // control character
     [InlineData("\0/..")]             // a NUL segment cancelled by '..': dev's GetFullPath threw on any NUL
@@ -56,6 +53,27 @@ public class ResourceKeyResolverTests
     {
         Assert.Equal(ResourceKeyOutcome.Unsafe, ResourceKeyResolver.Resolve(Concept, raw, out var key));
         Assert.Null(key);
+    }
+
+    /// <summary>
+    /// A first segment shaped like a drive is an ordinary name to the lexical resolver: on
+    /// Linux and macOS <c>C:x.sql</c> is a legitimate file, and <c>dev</c> resolved it. Whether a
+    /// colon may be part of a name is the key policy's question, asked by the caller
+    /// (<see cref="Bundle.TryResolveResourceKey"/>); see the bundle-level tests in
+    /// <c>BundleProviderLoadTests</c>.
+    /// </summary>
+    [Theory]
+    [InlineData("e:q.sql", "e:q.sql")]
+    [InlineData("/e:q.sql", "e:q.sql")]
+    [InlineData("C:/x.sql", "C:/x.sql")]
+    [InlineData("C:x.sql", "C:x.sql")]
+    [InlineData("a:b.sql", "a:b.sql")]
+    [InlineData("C:/Windows/win.ini", "C:/Windows/win.ini")]
+    [InlineData("./C:/x.sql", "computations/C:/x.sql")]
+    public void A_drive_shaped_segment_is_a_candidate_left_to_the_key_policy(string raw, string expected)
+    {
+        Assert.Equal(ResourceKeyOutcome.Candidate, ResourceKeyResolver.Resolve(Concept, raw, out var key));
+        Assert.Equal(BundleKey.Parse(expected), key);
     }
 
     [Theory]
@@ -113,6 +131,7 @@ public class ResourceKeyResolverTests
     [InlineData("references/a.sql/./", "references/a.sql")]
     [InlineData("references/", "references")]
     [InlineData("../references/", "references")]
+    [InlineData("C:/x/", "C:/x")]
     public void A_trailing_slash_names_a_prefix(string raw, string expected)
     {
         Assert.Equal(ResourceKeyOutcome.Prefix, ResourceKeyResolver.Resolve(Concept, raw, out var key));
@@ -121,7 +140,6 @@ public class ResourceKeyResolverTests
 
     [Theory]
     [InlineData("references\\a.sql/")]  // base rules still win over the trailing '/'
-    [InlineData("C:/x/")]
     [InlineData("a\0b/")]
     public void A_trailing_slash_does_not_lift_an_unsafe_value(string raw)
     {
