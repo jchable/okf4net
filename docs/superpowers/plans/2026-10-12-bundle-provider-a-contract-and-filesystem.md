@@ -2316,6 +2316,8 @@ MSG
   - Exceptions added: `BundleAccessRefusedException : BundleProviderException` with `BundleKey? Key` and `string Detail`; `public enum BundleBound { Entries, Depth, KeyBytes }` and `BundleLimitExceededException : BundleProviderException` with `BundleBound Bound`, `long Limit` and `static string Describe(BundleBound)` (decision 16).
 - **`Enumerate` is eager** (decision 12): the walk runs to completion inside the call and the result is a materialised `List<BundleListing>`; there is no deferred storage access for a caller's interleaved filesystem change to exploit. Every directory — the root, a prefix, every subdirectory — passes the STRICT guard before it is listed; the walk is lenient only in that a reparse-point *entry* is skipped rather than followed (the one lenient site this lot adds); every inspected entry is counted before the skip and before sorting; the confinement boundary is re-checked before every storage access.
 
+> **Superseded.** `MatchesCaseExactly` and the `ancestorsGuarded` flag no longer exist: `ResolveExact` always takes the exact branch (commit `cb281ab`); the code below shows the original design.
+
 - [ ] **Step 1: Write the failing tests**
 
 ```csharp
