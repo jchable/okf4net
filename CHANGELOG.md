@@ -103,7 +103,9 @@ and this project adheres to
   still run at every access.
 - **A directory whose listing is denied or fails is "no such entry" on every
   OS**, as it already was on Windows and macOS: a key under it is `Missing`,
-  never read. Under Linux, an execute-only directory (`--x`) is the one input
+  never read (a direct provider `Read`/`Exists` through it, or after a
+  permission change following a load; a load itself aborts on such a
+  directory). Under Linux, an execute-only directory (`--x`) is the one input
   whose answer changes: a file in it was read by its joined path before.
 - **A directory the walk is about to list whose link status cannot be
   determined now aborts the load** with `BundleLoadException`: the provider's
