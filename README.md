@@ -226,19 +226,22 @@ declares `Capabilities.CanWrite` — with `Bundle.Load(provider, new
 BundleLoadOptions { Limits = …, KeyPolicy = … })`. Keys are validated as a tree
 under the `Native` policy by default: the loader refuses only what the
 provider's storage itself cannot hold or would alias (OKF §11 imposes no naming
-constraint), so on Linux `con.md`, `Orders.md` beside `orders.md` or a
-decomposed `café.md` load as they always did. On Windows `con.md` stays
-refused, since no such name can be created through Win32. A name the portable
+constraint), so `Orders.md` beside `orders.md` (on any volume that holds
+both) or a decomposed `café.md` load as they always did, and so does `con.md`
+on Linux and macOS. On Windows `con.md` stays refused, since no such name can
+be created through Win32. Sibling collisions are not a native rule on any OS:
+the provider matches stored names exactly, so no key opens another key's
+object. A name the portable
 profile would refuse is listed in `Bundle.PortabilityIssues` and reported by
 `okf validate` as a `KeyNotPortable` warning (`the name is not portable: …`).
 `Strict` is the opt-in portable profile, for hosts that must produce or
 consume bundles that survive any filesystem: no Windows reserved names, no
 trailing dot, no case- or Unicode-form-colliding siblings, NFC names only (a
 quick check), no file that is also a directory. `FileSystemBundleProvider`
-always matches the stored name exactly, on every OS; a Linux host whose bundle
-sits on a case-insensitive mount adds
-`additionalConstraints: BundleKeyConstraints.CaseInsensitiveCollisions` so that
-the loader also rejects siblings that collide there. Default bounds, finite but
+always matches the stored name exactly, on every OS; a host that wants
+colliding siblings refused at load rather than reported adds
+`additionalConstraints: BundleKeyConstraints.CaseInsensitiveCollisions` (or
+`UnicodeFormCollisions`). Default bounds, finite but
 out of reach of real bundles: 256 MiB per object, 10 000 000 entries, depth
 256, keys of 1 024 bytes; hosts reading untrusted storage should lower them.
 Every rejected `.md` name is a `Bundle.ParseProblems` entry (and a

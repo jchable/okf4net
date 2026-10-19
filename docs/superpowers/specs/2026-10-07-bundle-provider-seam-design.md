@@ -349,6 +349,20 @@ objet.
 | Filesystem sous Linux | conflit fichier/dossier ; Unicode bien formé |
 | S3 | Unicode bien formé |
 
+> **Note du 2026-10-19 (arbitrage du mainteneur).** Les lignes Windows et macOS
+> perdent leurs collisions entre frères, et la ligne macOS perd « NFC exigé » :
+> Windows = pas de `.` ni d'espace final, pas de `<>:"\|?*`, pas de nom réservé,
+> conflit fichier/dossier ; macOS = conflit fichier/dossier, Unicode bien formé.
+> Le provider filesystem compare toujours le nom stocké exactement : aucune clé
+> n'ouvre l'objet d'une autre ; sur un volume qui replie la casse ou la forme
+> Unicode, deux tels noms ne peuvent pas coexister, et sur un volume qui ne la
+> replie pas, ce sont deux fichiers légitimes que `dev` chargeait. La détection
+> des collisions entre frères est donc une affaire de portabilité : elle passe au
+> profil `Strict` (`Windows | MacOS | Linux | CaseInsensitiveCollisions |
+> UnicodeFormCollisions | RequireNfc`), qui n'a rien perdu, et à tout provider qui
+> la déclare (`additionalConstraints` compris). Par défaut, de tels frères se
+> chargent, chacun avec un avertissement `KeyNotPortable`.
+
 **Unicode bien formé** (`WellFormedUnicode`) : un segment ne contient aucun
 surrogate isolé. Un stockage qui écrit ses noms en UTF-8 ne peut pas le
 représenter : l'encodeur remplace chaque surrogate isolé par U+FFFD, si bien que

@@ -23,8 +23,8 @@ and this project adheres to
   `ConceptId.ToKey`/`FromKey`. Display paths and concept ids are unchanged.
 - **`KeyNotPortable` warnings** (spec §2, layer 3): a `.md` name the load
   accepts but the portable profile (`BundleKeyPolicy.Strict`) would refuse —
-  `con.md` or `Orders.md` beside `orders.md` on Linux, a decomposed `café.md`
-  on macOS or Linux — is listed in `Bundle.PortabilityIssues` and reported by
+  `con.md` on Linux or macOS, `Orders.md` beside `orders.md` on any volume
+  that holds both, a decomposed `café.md` — is listed in `Bundle.PortabilityIssues` and reported by
   `okf validate` (and `--json`) as one warning, `the name is not portable:
   {reason}`, under the file's display path. A warning never changes the exit
   code: OKF §11 imposes no naming constraint.
@@ -45,24 +45,32 @@ and this project adheres to
   refuses only a `.md` name the provider's storage itself cannot hold or would
   alias, into `ParseErrors`; a referenced resource with such a name resolves
   `Unsafe`. Other files were never examined and still are not. On Windows that
-  is a reserved device name (`con.md`, `com¹.md`), a trailing dot or space, a
-  character Windows forbids — none can be created through Win32 — a sibling
-  differing only by case, and a file that is also a directory; on macOS, a
-  sibling differing only by case or Unicode form (`café.sql` beside `cafe` +
-  U+0301 `.sql`, one file on APFS) and a file that is also a directory; on
-  Linux, a file that is also a directory. The macOS set does not require NFC:
-  HFS+ stores names decomposed and APFS keeps the form written. Everything
-  else loads as it did, with a `KeyNotPortable` warning when the portable
-  profile would refuse it. `BundleKeyPolicy.Strict` is the opt-in profile for
-  hosts that must produce or consume bundles that survive any filesystem: the
-  union of every native set plus an NFC requirement. Case collisions are
-  detected with a per-code-point upper-case fold, a **conservative
-  over-approximation** of NTFS's table: siblings NTFS keeps distinct but the
-  fold merges (`σ.sql` and `ς.sql`) are rejected on Windows too.
-  Unicode-form collisions are detected by comparing canonical decompositions
-  from tables derived from ICU, so the answer is the same under the AOT
-  binaries, where `string.Normalize` is a no-op; under `Strict`, NFC itself is
-  checked the same way, canonical ordering included. On Windows, and under
+  is a reserved device name (`con.md`, `com¹.md`), a trailing dot or space or
+  a character Windows forbids — none can be created through Win32 — and a
+  file that is also a directory; on macOS and Linux, a file that is also a
+  directory. Siblings differing only by case or Unicode form are not a native
+  rule on any OS: `FileSystemBundleProvider` matches stored names exactly, so
+  no key opens another key's object, and on a volume that holds both names
+  (Linux, case-sensitive APFS, a case-sensitive Windows directory) they are
+  two files. The macOS set does not require NFC either: HFS+ stores names
+  decomposed and APFS keeps the form written. Everything else loads as it
+  did, with a `KeyNotPortable` warning when the portable profile would refuse
+  it. `BundleKeyPolicy.Strict` is the opt-in profile for hosts that must
+  produce or consume bundles that survive any filesystem: the union of every
+  native set plus sibling collisions by case and by Unicode form and an NFC
+  requirement. Case collisions are detected with a per-code-point upper-case
+  fold, a **conservative over-approximation** of NTFS's table: siblings NTFS
+  keeps distinct but the fold merges (`σ.sql` and `ς.sql`) are flagged too —
+  refused under `Strict`, reported as not portable by default. Unicode-form
+  collisions (`café.sql` beside `cafe` + U+0301 `.sql`, one file on APFS) are
+  detected by comparing canonical decompositions from tables derived from
+  ICU, so the answer is the same under the AOT binaries, where
+  `string.Normalize` is a no-op; under `Strict`, NFC itself is checked the
+  same way, canonical ordering included. A host that wants colliding siblings
+  refused at load adds `CaseInsensitiveCollisions` or `UnicodeFormCollisions`
+  to `FileSystemBundleProvider`'s `additionalConstraints`. `ParseErrors` lists
+  every problem in component-wise path order, rejected names included, as
+  before the seam. On Windows, and under
   `Strict`, a resource path containing `::$DATA` (an NTFS stream suffix, which
   resolved on Windows) or `?` (which was `Missing` on Windows) resolves
   `Unsafe`.
