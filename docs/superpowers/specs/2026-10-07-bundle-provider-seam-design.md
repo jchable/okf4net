@@ -363,6 +363,18 @@ objet.
 > la déclare (`additionalConstraints` compris). Par défaut, de tels frères se
 > chargent, chacun avec un avertissement `KeyNotPortable`.
 
+> **Note du 2026-10-19 (second arbitrage du mainteneur).** La ligne Windows perd
+> aussi « pas de nom réservé » (`WindowsReservedNames`) : Windows 11 crée et
+> ouvre `con.md`, `COM1.md`, `aux.txt.md` ou un dossier `con` par les API
+> ordinaires (aucun chemin `\\?\` n'est nécessaire), `dev` les chargeait, et
+> seuls des outils comme `git` les refusent. C'est une règle de portabilité : elle
+> reste dans `Strict` (liste explicite `Windows | MacOS | Linux |
+> WindowsReservedNames | CaseInsensitiveCollisions | UnicodeFormCollisions |
+> RequireNfc`, qui n'a rien perdu), et par défaut ces noms se chargent avec un
+> avertissement `KeyNotPortable`. Windows natif = pas de `.` ni d'espace final
+> (Win32 les retire : le nom ouvre l'objet d'un autre), pas de `<>:"|?*` (`:`
+> ouvre aussi un flux NTFS), conflit fichier/dossier.
+
 **Unicode bien formé** (`WellFormedUnicode`) : un segment ne contient aucun
 surrogate isolé. Un stockage qui écrit ses noms en UTF-8 ne peut pas le
 représenter : l'encodeur remplace chaque surrogate isolé par U+FFFD, si bien que
@@ -1141,8 +1153,10 @@ l'arbitrage du 2026-10-08).
     > que l'OKF §11 n'impose aucune contrainte de nommage ni de taille ; `Strict`
     > est un profil sur option ; bornes relevées à 256 Mio / 10 000 000 / 1 024.
     > Seul ce que le stockage ne peut pas contenir ou confondrait est écarté (sous
-    > Windows, `con.md` reste refusé : un tel nom ne se crée que par un chemin
-    > étendu `\\?\`, que `git` et l'Explorateur refusent, et `dev` le chargeait) ;
+    > Windows : un point ou une espace final, un caractère interdit, un conflit
+    > fichier/dossier ; pas `con.md`, que Windows 11 crée et ouvre par les API
+    > ordinaires et que `dev` chargeait : `git` le refuse, d'où l'avertissement
+    > `KeyNotPortable` par défaut et le refus sous `Strict`) ;
     > le reste se charge comme sur `dev`, avec un avertissement
     > `KeyNotPortable` quand `Strict` l'aurait refusé ;
   - **dossiers vides** : un dossier sans aucun fichier n'est plus référencé par

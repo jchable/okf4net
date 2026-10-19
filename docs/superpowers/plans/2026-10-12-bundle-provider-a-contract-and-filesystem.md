@@ -56,6 +56,8 @@ Lot A is additive on the public API and changes behaviour only where §10 of the
 
 - **r10 (2026-10-19)** — maintainer ruling ("option X"): no bundle that loads on `dev` (`32a48bc`) may break by default. `BundleLoadOptions.KeyPolicy` defaults to `Native`; `Strict` is opt-in. `BundleKeyConstraintSets.MacOS` loses `RequireNfc` (HFS+ stores names decomposed, APFS keeps the form written), which `Strict` keeps (`Windows | MacOS | Linux | RequireNfc`). A second, `Strict` tree validation of the same names fills `Bundle.PortabilityIssues`, reported as `DiagnosticCode.KeyNotPortable` warnings. `BundleLimits.Default` becomes 256 MiB / 10 000 000 / 256 (key bytes stay 1 024). An unadmitted name that parses now counts as a structural object in `ValidateTree`. A second ruling the same day removes `CaseInsensitiveCollisions` and `UnicodeFormCollisions` from the native Windows and macOS sets (`Strict` spells them out, so it loses nothing), and `ParseProblems` is listed in component-wise path order. The text below is left as it was reviewed; the places it contradicts carry a *Superseded* note.
 
+- **r11 (2026-10-19)** — a third executed review found that Windows 11 creates and opens reserved device names (`con.md`, `COM1.md`, `aux.txt.md`, a directory `con`) through ordinary APIs, without a `\\?\` path, and that `dev` loads them. Maintainer rule: no bundle that loads on `dev` breaks by default. `BundleKeyConstraintSets.Windows` loses `WindowsReservedNames` (it keeps `TrailingDotOrSpace`, `WindowsIllegalCharacters` and `FileDirectoryConflict`, which guard against aliasing); `Strict` adds it to its explicit list, so it refuses what it refused. The flag stays defined. Everywhere this plan says the Windows native set refuses a reserved name (decision 1 below, the Task 2 tests and code, the Task 7 README and CHANGELOG drafts) is *superseded*: the default loads such a name on every OS with a `KeyNotPortable` warning.
+
 ## Global Constraints
 
 - **Branch and worktree.** Execute in a dedicated worktree on branch `feat/bundle-provider-a`, created from `origin/dev` **after** the spec + plan docs PR (`docs/bundle-provider-spec`) is merged into `dev`, or rebased on it. Never work in `E:\Sources\okf` (shared checkout; `dev` is checked out there). To start from `dev`: `git worktree add .claude/worktrees/bundle-provider-a -b feat/bundle-provider-a origin/dev`. Never `git checkout dev`.
@@ -102,7 +104,7 @@ Lot A is additive on the public API and changes behaviour only where §10 of the
 
 Inputs the spec implies but no task's tests exercise directly, each pinned to the owning task:
 
-1. **A `.md` whose stem is a reserved name only once lower-cased** (`Con.md`, `lPt¹.md`): Windows reserves them case-insensitively — Task 2 tests `Con.md` and `lpt¹.md`.
+1. **A `.md` whose stem is a reserved name only once lower-cased** (`Con.md`, `lPt¹.md`): Windows reserves them case-insensitively — Task 2 tests `Con.md` and `lpt¹.md`. *Superseded for the native Windows set (2026-10-19, r11):* the case-insensitive match is now a `Strict` rule only.
 2. **A directory named `index.md` or `log.md`**: through keys it is a prefix, and `tables/index.md/x.md` is a concept `tables/index.md/x`, as today — Task 6 pins it.
 3. **A key exactly at 1 024 UTF-8 bytes vs 1 025** — Task 1 tests both edges; Task 6 tests a lower `limits.MaxKeyBytes` enforced by the core.
 4. **A root that is itself a symlink**: loads without a boundary, refused with one — Task 4.

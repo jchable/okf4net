@@ -66,6 +66,56 @@ public class BundlePortabilityTests
         Assert.DoesNotContain(BundleValidator.Validate(strict).Diagnostics, d => d.Code == DiagnosticCode.KeyNotPortable);
     }
 
+    [Theory]
+    [InlineData("con.md", "con", "reserved Windows device name 'CON'")]
+    [InlineData("Con.md", "Con", "reserved Windows device name 'CON'")]
+    [InlineData("COM1.md", "COM1", "reserved Windows device name 'COM1'")]
+    [InlineData("nul.txt.md", "nul.txt", "reserved Windows device name 'NUL'")]
+    [InlineData("con/x.md", "con/x", "reserved Windows device name 'CON'")]
+    public void On_windows_constraints_a_reserved_name_loads_as_a_concept_with_a_warning(string raw, string id, string expectedInReason)
+    {
+        // Windows 11 creates and opens these names through ordinary APIs and `dev` loaded them:
+        // the native Windows set no longer refuses them; the portable profile still does.
+        var p = new InMemoryBundleProvider(BundleKeyConstraintSets.Windows).Add(raw, Doc).Add("ok.md", Doc);
+        var bundle = Bundle.Load(p);
+        var concept = bundle.Get(ConceptId.Parse(id));
+        Assert.NotNull(concept);
+        Assert.Empty(bundle.ParseProblems);
+        Assert.Empty(bundle.RejectedKeys);
+
+        var reason = StrictReason(BundleKeyConstraintSets.Windows, raw);
+        Assert.Contains(expectedInReason, reason);
+        Assert.Equal([new BundlePortabilityIssue(BundleKey.Parse(raw), reason)], bundle.PortabilityIssues);
+        var warning = Assert.Single(BundleValidator.Validate(bundle).Diagnostics, d => d.Code == DiagnosticCode.KeyNotPortable);
+        Assert.Equal(Severity.Warning, warning.Severity);
+        Assert.Equal("the name is not portable: " + reason, warning.Message);
+
+        var strict = Bundle.Load(p, StrictOptions);
+        Assert.Null(strict.Get(ConceptId.Parse(id)));
+        var problem = Assert.Single(strict.ParseProblems);
+        Assert.Equal(raw, problem.RawName);
+        Assert.Equal(reason, problem.Error);
+    }
+
+    [Fact]
+    public void On_windows_constraints_a_superscript_device_name_is_accepted_and_reported_but_is_no_concept_id()
+    {
+        // As on `dev`, the concept id rule (ASCII) refuses `COM\u00b9` ; the key itself is one
+        // Windows holds, so the default load reports it as not portable and Strict refuses it.
+        var raw = "COM\u00b9.md";
+        var p = new InMemoryBundleProvider(BundleKeyConstraintSets.Windows).Add(raw, Doc).Add("ok.md", Doc);
+        var bundle = Bundle.Load(p);
+        Assert.Equal([ConceptId.Parse("ok")], bundle.Concepts.Select(c => c.Id));
+        Assert.Empty(bundle.RejectedKeys);
+        Assert.Contains("Invalid concept id segment", Assert.Single(bundle.ParseProblems).Error);
+        var reason = StrictReason(BundleKeyConstraintSets.Windows, raw);
+        Assert.Contains("reserved Windows device name 'COM\u00b9'", reason);
+        Assert.Equal([new BundlePortabilityIssue(BundleKey.Parse(raw), reason)], bundle.PortabilityIssues);
+
+        var strict = Bundle.Load(p, StrictOptions);
+        Assert.Equal(reason, Assert.Single(strict.ParseProblems).Error);
+    }
+
     [Fact]
     public void A_space_before_the_extension_is_portable_and_no_concept_id_as_on_dev()
     {
@@ -286,6 +336,45 @@ public class BundlePortabilityTests
         var bundle = Bundle.Load(p, options);
         Assert.Contains(bundle.ParseProblems, e => e.RawName == "x.md" && e.Error == "host refuses x");
         Assert.Equal([BundleKey.Parse("con.md")], bundle.PortabilityIssues.Select(i => i.Key));
+    }
+
+    /// <summary>
+    /// End to end on Windows 11, which creates and opens reserved device names through ordinary
+    /// APIs (no extended-length path): the default load takes the files and the directory as
+    /// `dev` did, one `KeyNotPortable` warning each, and the portable profile refuses them.
+    /// Skipped off Windows, and on a Windows that maps such names to devices (the file is then
+    /// not created).
+    /// </summary>
+    [SkippableFact]
+    public void On_windows_reserved_device_names_created_with_ordinary_apis_load_by_default_and_strict_refuses_them()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows reserved device names");
+        using var tmp = new TempDir();
+        Directory.CreateDirectory(Path.Combine(tmp.Path, "con"));
+        string[] names = ["con.md", "nul.md", "COM1.md", Path.Combine("con", "x.md")];
+        foreach (var name in names)
+        {
+            var path = Path.Combine(tmp.Path, name);
+            File.WriteAllText(path, Doc);
+            Skip.IfNot(File.Exists(path), "this Windows maps a reserved name to a device: the file cannot be created");
+        }
+
+        var bundle = Bundle.Load(tmp.Path);
+        Assert.Equal(["COM1", "con", "con/x", "nul"], bundle.Concepts.Select(c => c.Id.ToString()).Order(StringComparer.Ordinal));
+        Assert.Empty(bundle.ParseErrors);
+        Assert.Equal(
+            ["COM1.md", "con.md", "con/x.md", "nul.md"],
+            bundle.PortabilityIssues.Select(i => i.Key.ToString()).Order(StringComparer.Ordinal));
+        Assert.All(bundle.PortabilityIssues, i => Assert.Contains("reserved Windows device name", i.Reason));
+
+        var stdout = new StringWriter { NewLine = "\n" };
+        Assert.Equal(0, OkfCli.Run(["validate", tmp.Path], TextReader.Null, stdout, new StringWriter()));
+        Assert.Equal(4, stdout.ToString().Split('\n').Count(l => l.Contains(": the name is not portable: ", StringComparison.Ordinal)));
+
+        var strict = Bundle.Load(new FileSystemBundleProvider(tmp.Path), StrictOptions);
+        Assert.Empty(strict.Concepts);
+        Assert.Equal(4, strict.ParseProblems.Count);
+        Assert.All(strict.ParseProblems, e => Assert.Contains("reserved Windows device name", e.Error));
     }
 
     /// <summary>

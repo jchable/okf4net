@@ -75,43 +75,29 @@ public class CliDisplayPathTests
 
     /// <summary>
     /// The same for a Windows reserved name (<c>con.md</c>), which <c>dev</c> loaded and
-    /// printed as <c>root\con.md</c>. On Windows it is now a parse error (announced): the
-    /// Windows native set refuses it, since the name cannot be created through Win32 (the file
-    /// can only be created and removed through the <c>\\?\</c> namespace). Elsewhere it loads,
-    /// as on <c>dev</c>, with a non-portable-name warning under the same path string.
+    /// printed as <c>root\con.md</c>. It still loads on every OS, Windows included (Windows 11
+    /// creates and opens such names through ordinary APIs; only the portable profile refuses
+    /// them), with a non-portable-name warning under the same path string. A name the Windows
+    /// native set still refuses keeps its rejected display path in the two tests around this
+    /// one (a decomposed name on every OS, the U+0085 name on Windows included). Skipped on a
+    /// Windows that maps reserved names to devices, where the file cannot be created.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public void A_reserved_name_keeps_its_unquoted_display_path()
     {
         using var tmp = new TempDir();
         string[] names = ["con.md", Path.Combine("sub", "nul.txt.md")];
         Directory.CreateDirectory(Path.Combine(tmp.Path, "sub"));
-        var prefix = OperatingSystem.IsWindows() ? @"\\?\" : string.Empty;
-        try
+        foreach (var name in names)
         {
-            foreach (var name in names)
-            {
-                File.WriteAllText(prefix + Path.Combine(tmp.Path, name), "---\ntype: Note\n---\n");
-            }
+            var path = Path.Combine(tmp.Path, name);
+            File.WriteAllText(path, "---\ntype: Note\n---\n");
+            Skip.IfNot(File.Exists(path), "this Windows maps a reserved name to a device: the file cannot be created");
+        }
 
-            string[] expected = [.. names.Select(n => Path.Combine(tmp.Path, n))];
-            if (OperatingSystem.IsWindows())
-            {
-                AssertRejectedDisplayPaths(tmp.Path, expected);
-            }
-            else
-            {
-                Assert.Equal(2, Bundle.Load(tmp.Path).Count);
-                AssertNotPortableDisplayPaths(tmp.Path, expected);
-            }
-        }
-        finally
-        {
-            foreach (var name in names)
-            {
-                File.Delete(prefix + Path.Combine(tmp.Path, name));
-            }
-        }
+        string[] expected = [.. names.Select(n => Path.Combine(tmp.Path, n))];
+        Assert.Equal(2, Bundle.Load(tmp.Path).Count);
+        AssertNotPortableDisplayPaths(tmp.Path, expected);
     }
 
     /// <summary>

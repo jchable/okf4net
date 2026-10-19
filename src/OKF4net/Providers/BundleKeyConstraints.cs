@@ -17,7 +17,12 @@ public enum BundleKeyConstraints
     /// <summary>A segment must not contain <c>&lt; &gt; : " | ? *</c> (Windows; <c>:</c> also opens an NTFS stream).</summary>
     WindowsIllegalCharacters = 1 << 1,
 
-    /// <summary>A segment's base (before the first <c>.</c>) must not be a reserved Windows device name.</summary>
+    /// <summary>
+    /// A segment's base (before the first <c>.</c>) must not be a reserved Windows device name.
+    /// A portability rule, in no native set: Windows 11 creates and opens such names through
+    /// ordinary APIs, and only tools such as <c>git</c> refuse them. Part of
+    /// <see cref="BundleKeyConstraintSets.Strict"/>.
+    /// </summary>
     WindowsReservedNames = 1 << 2,
 
     /// <summary>
@@ -76,16 +81,20 @@ public static class BundleKeyConstraintSets
 {
     /// <summary>
     /// NTFS/FAT as Windows exposes them through Win32. A name carrying
-    /// <c>&lt; &gt; : " | ? *</c> cannot be created at all; one ending in <c>.</c> or a space, or
-    /// whose base is a reserved device name (<c>con.md</c>), only through an extended-length
-    /// (<c>\\?\</c>) path, which <c>git</c> and Explorer refuse. Names are stored in UTF-16, so an
-    /// unpaired surrogate is no alias: no <see cref="BundleKeyConstraints.WellFormedUnicode"/>.
-    /// No collision flag, whether the directory folds case or not (see the class remarks).
+    /// <c>&lt; &gt; : " | ? *</c> cannot be created at all; one ending in <c>.</c> or a space is
+    /// stripped by Win32 path normalisation and so opens another name's object (and <c>:</c>
+    /// opens an NTFS stream). Those aliasing rules, with the file/directory conflict, are all
+    /// this set keeps. It does not carry <see cref="BundleKeyConstraints.WindowsReservedNames"/>:
+    /// Windows 11 creates and opens <c>con.md</c>, <c>COM1.md</c> or a directory <c>con</c>
+    /// through ordinary APIs, so the storage can hold them; they are a portability concern
+    /// (<c>git</c> refuses them) and belong to <see cref="Strict"/>. Names are stored in UTF-16,
+    /// so an unpaired surrogate is no alias: no
+    /// <see cref="BundleKeyConstraints.WellFormedUnicode"/>. No collision flag, whether the
+    /// directory folds case or not (see the class remarks).
     /// </summary>
     public static BundleKeyConstraints Windows =>
         BundleKeyConstraints.TrailingDotOrSpace
         | BundleKeyConstraints.WindowsIllegalCharacters
-        | BundleKeyConstraints.WindowsReservedNames
         | BundleKeyConstraints.FileDirectoryConflict;
 
     /// <summary>
@@ -112,6 +121,8 @@ public static class BundleKeyConstraintSets
 
     /// <summary>
     /// The union of every known set, plus the portability rules no native set carries:
+    /// <see cref="BundleKeyConstraints.WindowsReservedNames"/> (a device name such as
+    /// <c>con.md</c>, which Windows 11 holds but <c>git</c> refuses),
     /// <see cref="BundleKeyConstraints.CaseInsensitiveCollisions"/>,
     /// <see cref="BundleKeyConstraints.UnicodeFormCollisions"/> (siblings that would be one
     /// entry on a volume that folds case or Unicode form) and
@@ -121,6 +132,7 @@ public static class BundleKeyConstraintSets
     /// </summary>
     public static BundleKeyConstraints Strict =>
         Windows | MacOS | Linux
+        | BundleKeyConstraints.WindowsReservedNames
         | BundleKeyConstraints.CaseInsensitiveCollisions
         | BundleKeyConstraints.UnicodeFormCollisions
         | BundleKeyConstraints.RequireNfc;

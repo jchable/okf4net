@@ -23,8 +23,8 @@ and this project adheres to
   `ConceptId.ToKey`/`FromKey`. Display paths and concept ids are unchanged.
 - **`KeyNotPortable` warnings** (spec §2, layer 3): a `.md` name the load
   accepts but the portable profile (`BundleKeyPolicy.Strict`) would refuse —
-  `con.md` on Linux or macOS, `Orders.md` beside `orders.md` on any volume
-  that holds both, a decomposed `café.md` — is listed in `Bundle.PortabilityIssues` and reported by
+  `con.md` (a Windows reserved device name) on any OS, `Orders.md` beside
+  `orders.md` on any volume that holds both, a decomposed `café.md` — is listed in `Bundle.PortabilityIssues` and reported by
   `okf validate` (and `--json`) as one warning, `the name is not portable:
   {reason}`, under the file's display path. A warning never changes the exit
   code: OKF §11 imposes no naming constraint.
@@ -47,15 +47,15 @@ and this project adheres to
   refuses only a `.md` name the provider's storage itself cannot hold or would
   alias, into `ParseErrors`; a referenced resource with such a name resolves
   `Unsafe`. Other files were never examined and still are not. On Windows that
-  is a reserved device name, a trailing dot or space, a character Windows
-  forbids, and a file that is also a directory; on macOS and Linux, a file
-  that is also a directory. Of the Windows rules, only the reserved names
-  change what a load on Windows does: such a name (`con.md`, `COM1.md`,
-  `aux.txt.md`, a directory `con\`) can be created only through an
-  extended-length (`\\?\`) path — `git` and Explorer refuse it — and was
-  loaded as a concept before; it is now a `ParseErrors` entry, the one family
-  of names that loaded before and that the default refuses on Windows. Under
-  `Native` on Linux and macOS it loads, with a `KeyNotPortable` warning. No
+  is a trailing dot or space (Win32 strips it, so the name opens another
+  name's object), a character Windows forbids (`:` also opens an NTFS stream),
+  and a file that is also a directory; on macOS and Linux, a file that is
+  also a directory. A Windows reserved device name (`con.md`, `COM1.md`,
+  `aux.txt.md`, a directory `con`) is not refused on any OS: Windows 11
+  creates and opens such names through ordinary APIs (no `\\?\` path is
+  needed), `dev` loaded them, and the default still does, with a
+  `KeyNotPortable` warning (`git` refuses them on Windows).
+  `BundleKeyPolicy.Strict` refuses them. No
   `.md` file name ends with a dot or a space, and a directory that does
   (`dir.`, or `dir` and a space, created through `\\?\`) is skipped by the
   walk, as it was before: Win32 cannot list it. Siblings differing only by
@@ -67,8 +67,8 @@ and this project adheres to
   did, with a `KeyNotPortable` warning when the portable profile would refuse
   it. `BundleKeyPolicy.Strict` is the opt-in profile for hosts that must
   produce or consume bundles that survive any filesystem: the union of every
-  native set plus sibling collisions by case and by Unicode form and an NFC
-  requirement. Case collisions are detected with a per-code-point upper-case
+  native set plus the Windows reserved device names, sibling collisions by case
+  and by Unicode form and an NFC requirement. Case collisions are detected with a per-code-point upper-case
   fold, a **conservative over-approximation** of NTFS's table: siblings NTFS
   keeps distinct but the fold merges (`σ.sql` and `ς.sql`) are flagged too —
   refused under `Strict`, reported as not portable by default. Unicode-form
@@ -137,12 +137,9 @@ and this project adheres to
   in its name, a deep path to an existing file), and was `Missing` otherwise.
 - **The `ParseErrors` text changed for `.md` names that were already
   errors**: a name with a control character, one longer than 1 024 UTF-8
-  bytes, and, on Windows, `COM¹.md` (a reserved device name with a
-  superscript digit) were reported as an invalid concept id; the message now
-  names the key rule (`key contains the control character U+0001`, `key is
-  longer than the 1024-byte bound`, `segment "COM¹.md" has the reserved
-  Windows device name 'COM¹' as its base`). Verdicts and exit codes are
-  unchanged.
+  bytes were reported as an invalid concept id; the message now names the key
+  rule (`key contains the control character U+0001`, `key is longer than the
+  1024-byte bound`). Verdicts and exit codes are unchanged.
 - **A §6.2 path that climbs out of the bundle root and re-enters it**
   (`../<bundle>/references/a.sql`) resolved through the OS path normalisation
   before; it is now `Unsafe`, like any climb above the root.

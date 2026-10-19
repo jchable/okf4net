@@ -17,7 +17,7 @@ public class BundleKeyValidatorTests
         Assert.Equal(BundleKeyConstraintSets.Strict, v.Effective);
         Assert.Equal(
             BundleKeyConstraintSets.Windows | BundleKeyConstraintSets.MacOS | BundleKeyConstraintSets.Linux
-            | BundleKeyConstraints.CaseInsensitiveCollisions | BundleKeyConstraints.UnicodeFormCollisions | BundleKeyConstraints.RequireNfc,
+            | BundleKeyConstraints.WindowsReservedNames | BundleKeyConstraints.CaseInsensitiveCollisions | BundleKeyConstraints.UnicodeFormCollisions | BundleKeyConstraints.RequireNfc,
             BundleKeyConstraintSets.Strict);
 
         // Nothing Strict enforced before the native sets lost their collision flags is lost.
@@ -38,7 +38,7 @@ public class BundleKeyValidatorTests
         }
 
         Assert.Equal(
-            BundleKeyConstraints.TrailingDotOrSpace | BundleKeyConstraints.WindowsIllegalCharacters | BundleKeyConstraints.WindowsReservedNames | BundleKeyConstraints.FileDirectoryConflict,
+            BundleKeyConstraints.TrailingDotOrSpace | BundleKeyConstraints.WindowsIllegalCharacters | BundleKeyConstraints.FileDirectoryConflict,
             BundleKeyConstraintSets.Windows);
         Assert.Equal(BundleKeyConstraints.FileDirectoryConflict | BundleKeyConstraints.WellFormedUnicode, BundleKeyConstraintSets.MacOS);
 
@@ -82,7 +82,28 @@ public class BundleKeyValidatorTests
     {
         var v = NativeWindows();
         Assert.Equal(BundleKeyConstraintSets.Windows, v.Effective);
-        Assert.NotNull(v.CheckKey(BundleKey.Parse("con.md")));
+        Assert.NotNull(v.CheckKey(BundleKey.Parse("a./b.md")));  // Win32 strips the dot: an alias of a/b.md
+        Assert.NotNull(v.CheckKey(BundleKey.Parse("a:b.md")));   // cannot be created; ':' also opens an NTFS stream
+    }
+
+    [Theory]
+    [InlineData("con.md")]
+    [InlineData("Con.md")]
+    [InlineData("COM1.md")]
+    [InlineData("com\u00b9.md")] // COM¹
+    [InlineData("nul.txt.md")]
+    [InlineData("con/x.md")]     // a directory named like a device
+    public void The_native_windows_set_holds_reserved_device_names_which_only_strict_refuses(string raw)
+    {
+        // Windows 11 creates and opens these through ordinary APIs, so the storage holds them
+        // (and `dev` loaded them): a portability rule, not a native one.
+        var key = BundleKey.Parse(raw);
+        Assert.False(BundleKeyConstraintSets.Windows.HasFlag(BundleKeyConstraints.WindowsReservedNames));
+        Assert.True(BundleKeyConstraintSets.Strict.HasFlag(BundleKeyConstraints.WindowsReservedNames));
+        Assert.Null(NativeWindows().CheckKey(key));
+        Assert.Single(NativeWindows().ValidateTree([raw]).Accepted);
+        Assert.Contains("reserved Windows device name", Strict().CheckKey(key));
+        Assert.Empty(Strict().ValidateTree([raw]).Accepted);
     }
 
     [Theory]
