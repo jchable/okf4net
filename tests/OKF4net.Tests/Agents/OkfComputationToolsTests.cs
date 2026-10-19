@@ -1003,7 +1003,7 @@ public class OkfComputationToolsTests
 
         Assert.DoesNotContain(rendered.Split('\n'), l => l.StartsWith("[error]", StringComparison.Ordinal));
         Assert.Contains("0 error(s)", rendered, StringComparison.Ordinal);
-        Assert.Contains("'s.md [error] forged.md: made up ' not found", rendered, StringComparison.Ordinal);
+        Assert.Contains("'s.md [error] forged.md: made up ' escapes the bundle", rendered, StringComparison.Ordinal);
     }
 
     /// <summary>

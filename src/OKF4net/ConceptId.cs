@@ -162,6 +162,30 @@ public sealed class ConceptId : IEquatable<ConceptId>, IComparable<ConceptId>, I
         return Path.Combine(parts.ToArray());
     }
 
+    /// <summary>The key of this concept's document: its parents, then <c>Name.md</c> (spec §2).</summary>
+    public OKF4net.Providers.BundleKey ToKey()
+    {
+        var segments = new List<string>(Segments.Count);
+        segments.AddRange(Segments.Take(Segments.Count - 1));
+        segments.Add(Name + ".md");
+        return OKF4net.Providers.BundleKey.FromSegments(segments);
+    }
+
+    /// <summary>The concept id of a <c>.md</c> key: every segment validated, the last one stripped of <c>.md</c>.</summary>
+    /// <exception cref="ConceptIdException">The key does not end with <c>.md</c>, or a segment is not a valid id segment.</exception>
+    public static ConceptId FromKey(OKF4net.Providers.BundleKey key)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        if (!key.IsMarkdown)
+        {
+            throw new ConceptIdException($"{DebugQuote.Quote(key.ToString())} is not a markdown key");
+        }
+
+        var segments = key.Segments.ToList();
+        segments[^1] = segments[^1].Substring(0, segments[^1].Length - 3);
+        return New(segments);
+    }
+
     /// <summary>
     /// Validates a single path segment against the rule
     /// <c>[A-Za-z0-9_][A-Za-z0-9_.\-]*</c>.

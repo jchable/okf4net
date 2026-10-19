@@ -340,7 +340,7 @@ public static class OkfCli
     ///
     /// <c>index</c> and <c>verify</c> need this explicitly; every other bundle
     /// verb goes through <see cref="Load"/> and so inherits the identical
-    /// check <see cref="Bundle.Load"/> performs. <c>index</c> hands its path
+    /// check <see cref="Bundle.Load(string)"/> performs. <c>index</c> hands its path
     /// straight to <see cref="IndexGenerator.RegenerateIndexes"/>, whose
     /// documented contract is to return an empty list rather than throw —
     /// which the CLI used to render as "no index files written (empty
@@ -349,7 +349,7 @@ public static class OkfCli
     /// calling <see cref="Load"/> at all (it reads only the concept files
     /// named on the command line via <see cref="BundleConceptWriter.CheckVerificationTargets"/>,
     /// not the whole bundle), so it needs this same guard for the same
-    /// reason. The wording is deliberately identical to <see cref="Bundle.Load"/>'s;
+    /// reason. The wording is deliberately identical to <see cref="Bundle.Load(string)"/>'s;
     /// <c>CliTests</c> asserts all three verbs emit the same stderr so this
     /// copy cannot drift from it.
     /// </summary>

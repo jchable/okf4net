@@ -345,14 +345,55 @@ objet.
 | Provider | Contraintes natives |
 |---|---|
 | Filesystem sous Windows | pas de `.` ni d'espace final dans un segment ; pas de `<>:"\|?*` ; pas de nom réservé (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `COM¹`, `COM²`, `COM³`, `LPT1`–`LPT9`, `LPT¹`, `LPT²`, `LPT³`, avec ou sans extension, quelle que soit la casse) ; collisions de casse **à chaque niveau** de l'arborescence ; conflit fichier/dossier |
-| Filesystem sous macOS | collisions de casse et de forme Unicode à chaque niveau ; NFC exigé ; conflit fichier/dossier |
-| Filesystem sous Linux | conflit fichier/dossier |
-| S3 | aucune au-delà du socle |
+| Filesystem sous macOS | collisions de casse et de forme Unicode à chaque niveau ; NFC exigé ; conflit fichier/dossier ; Unicode bien formé |
+| Filesystem sous Linux | conflit fichier/dossier ; Unicode bien formé |
+| S3 | Unicode bien formé |
+
+> **Note du 2026-10-19 (arbitrage du mainteneur).** Les lignes Windows et macOS
+> perdent leurs collisions entre frères, et la ligne macOS perd « NFC exigé » :
+> Windows = pas de `.` ni d'espace final, pas de `<>:"\|?*`, pas de nom réservé,
+> conflit fichier/dossier ; macOS = conflit fichier/dossier, Unicode bien formé.
+> Le provider filesystem compare toujours le nom stocké exactement : aucune clé
+> n'ouvre l'objet d'une autre ; sur un volume qui replie la casse ou la forme
+> Unicode, deux tels noms ne peuvent pas coexister, et sur un volume qui ne la
+> replie pas, ce sont deux fichiers légitimes que `dev` chargeait. La détection
+> des collisions entre frères est donc une affaire de portabilité : elle passe au
+> profil `Strict` (`Windows | MacOS | Linux | CaseInsensitiveCollisions |
+> UnicodeFormCollisions | RequireNfc`), qui n'a rien perdu, et à tout provider qui
+> la déclare (`additionalConstraints` compris). Par défaut, de tels frères se
+> chargent, chacun avec un avertissement `KeyNotPortable`.
+
+> **Note du 2026-10-19 (second arbitrage du mainteneur).** La ligne Windows perd
+> aussi « pas de nom réservé » (`WindowsReservedNames`) : Windows 11 crée et
+> ouvre `con.md`, `COM1.md`, `aux.txt.md` ou un dossier `con` par les API
+> ordinaires (aucun chemin `\\?\` n'est nécessaire), `dev` les chargeait, et
+> seuls des outils comme `git` les refusent. C'est une règle de portabilité : elle
+> reste dans `Strict` (liste explicite `Windows | MacOS | Linux |
+> WindowsReservedNames | CaseInsensitiveCollisions | UnicodeFormCollisions |
+> RequireNfc`, qui n'a rien perdu), et par défaut ces noms se chargent avec un
+> avertissement `KeyNotPortable`. Windows natif = pas de `.` ni d'espace final
+> (Win32 les retire : le nom ouvre l'objet d'un autre), pas de `<>:"|?*` (`:`
+> ouvre aussi un flux NTFS), conflit fichier/dossier.
+
+**Unicode bien formé** (`WellFormedUnicode`) : un segment ne contient aucun
+surrogate isolé. Un stockage qui écrit ses noms en UTF-8 ne peut pas le
+représenter : l'encodeur remplace chaque surrogate isolé par U+FFFD, si bien que
+`\uD800.sql` et `\uD801.sql`, deux clés distinctes, désigneraient le même
+`\uFFFD.sql`. C'est une contrainte de stockage, pas une règle du socle : NTFS
+stocke ses noms en UTF-16 et tient les deux, d'où son absence de la ligne
+Windows.
 
 Le filesystem déduit ses contraintes de l'OS par défaut. **La vraie frontière est
 le volume, pas l'OS** (dossier rendu sensible à la casse sous Windows, APFS
-sensible à la casse, montage vfat/NTFS sous Linux) ; la documentation dit qu'un
-tel hôte doit rester en `Strict`.
+sensible à la casse, montage vfat/NTFS/exFAT/CIFS ou dossier ext4 insensible à
+la casse sous Linux). Deux garanties distinctes en découlent. La **correspondance
+exacte** (ci-dessous) est celle du provider lui-même : il la tient sur tout OS et
+tout volume, sans dépendre de la politique ni des contraintes déclarées. La
+**portabilité des collisions entre frères** relève de `Strict` : un hôte sous
+Linux dont le bundle est sur un volume qui ignore la casse reste en `Strict`, ou
+ajoute `CaseInsensitiveCollisions` aux contraintes natives du provider
+(`additionalConstraints`), pour que le chargement écarte aussi les frères qui y
+entrent en collision.
 
 **Couche 3 — politique de portabilité (choisie par l'hôte, jamais par le
 contenu).**
@@ -362,6 +403,16 @@ contenu).**
 - `Native` : les contraintes du provider courant seulement.
 - Des validateurs supplémentaires peuvent être ajoutés, mais **uniquement pour
   restreindre** ; aucune configuration ne descend sous `Native`.
+
+> **Note du 2026-10-19 (arbitrage du mainteneur).** Le défaut devient `Native`,
+> parce que l'OKF §11 n'impose aucune contrainte de nommage ni de taille : aucun
+> bundle chargé par `dev` ne doit casser par défaut. `Native` refuse seulement ce
+> que le stockage du provider ne peut pas contenir ou confondrait ; `Strict` est
+> un profil portable **sur option**. Ce que `Strict` refuserait en plus devient un
+> avertissement (`Bundle.PortabilityIssues`, `DiagnosticCode.KeyNotPortable`). Le
+> jeu natif macOS perd `RequireNfc` (HFS+ stocke les noms décomposés, APFS garde
+> la forme écrite), que `Strict` garde. Le texte ci-dessus est conservé tel qu'il
+> a été validé.
 
 **L'arborescence se valide comme un tout, pas clé par clé.** Comparer des clés
 complètes ne suffit pas. Exemples :
@@ -456,6 +507,8 @@ clés** (elle ne dépend plus d'aucune sémantique de chemin de l'OS) :
 | `./x`, `../x` | depuis le dossier du concept |
 | `x` (chemin nu) | depuis la racine — lecture locale du §6.2, consignée dans `docs/spec-conformance/` (S6.2-1) |
 | remonte au-dessus de la racine | `Unsafe` |
+| désigne la racine elle-même (`/`, `.` depuis un concept de premier niveau, `sub/..`) | `Missing`, sans clé (comme `File.Exists` sur un dossier avant la couture) |
+| finit par `/` (`references/a.sql/`) | un préfixe, jamais un objet : la clé passe la politique et les gardes du provider (`Unsafe` si refusée), puis `Missing` |
 | forme à lettre de lecteur (`C:\x`, `e:q.sql`) | `Unsafe` |
 | contient `\` | `Unsafe` (voir les points à valider) |
 | segments vides ou `.` | ignorés (`a//./b` → `a/b`), comme `GetFullPath` aujourd'hui |
@@ -820,6 +873,20 @@ peut écrire dans la source.
 
 Finies **pour tous les providers, filesystem compris**.
 
+> **Note du 2026-10-19 (arbitrage du mainteneur).** Défaut `Native`, parce que
+> l'OKF §11 n'impose aucune contrainte de nommage ni de taille ; `Strict` est un
+> profil sur option. Les bornes sont relevées à 256 Mio par objet, 10 000 000
+> entrées et une profondeur de 1 024 : finies, pour qu'un provider hostile ou
+> emballé ne puisse pas épuiser la mémoire, mais hors de portée d'un bundle réel.
+> La profondeur, fixée d'abord à 256, compte chaque nom listé (`node_modules`,
+> `.git` et fichiers non-`.md` compris) : un arbre valide de 257 niveaux, ou un
+> `node_modules` de 300 sans aucun `.md`, que `dev` chargeait, faisait échouer
+> le chargement ; 1 024 est hors de portée, une clé `.md` ne pouvant dépasser
+> 512 segments (1 024 octets).
+> La longueur de clé reste à 1 024 octets (règle de base de la couche 1). Un hôte
+> qui lit un stockage non fiable les abaisse. Le tableau ci-dessous garde les
+> valeurs validées à l'origine.
+
 | Borne | Défaut | Dépassement |
 |---|---|---|
 | Taille d'un concept | 16 Mio | entrée dans `Bundle.ParseErrors`, le chargement continue (**comportement nouveau** : aujourd'hui un concept illisible fait échouer tout le chargement en `BundleLoadException`, ce qui reste le cas pour un octet UTF-8 invalide) |
@@ -879,10 +946,13 @@ la source l'est. `catalog.json` est de la configuration d'opérateur.
   lecture et l'écriture), confinement sous la racine, revérification tardive
   avant écriture, registre de verrous.
 - Il déclare ses contraintes natives d'après l'OS (§2), et il garantit la
-  **correspondance exacte** (§2) : sur un volume qui ignore la casse ou la forme
-  Unicode, il compare le nom réel de chaque segment, comme
-  `ExistsWithExactCase` le fait aujourd'hui, avant de lire, d'écrire ou de
-  supprimer.
+  **correspondance exacte** (§2) sur tout OS : il compare le nom réel de chaque
+  segment, comme `ExistsWithExactCase` le fait aujourd'hui, avant de lire,
+  d'écrire ou de supprimer. Il le fait même là où l'OS ne replie pas la casse,
+  car c'est le volume qui en décide (un montage vfat sous Linux ignore la casse) ;
+  un dossier dont le listing est refusé ou échoue est donc « aucune entrée »
+  partout. Cette garantie ne dépend ni de la politique — `Strict` gouverne la
+  portabilité des collisions entre frères — ni des contraintes ajoutées.
 - Il crée lui-même les dossiers parents lors d'un `Write`, après la garde STRICT
   des ancêtres (§3). Une suppression laisse les dossiers vides en place : un
   dossier vide ne contient aucune clé, donc il n'existe pas pour la couture.
@@ -1078,6 +1148,17 @@ l'arbitrage du 2026-10-08).
     `ParseErrors`, et une ressource référencée écartée reçoit le statut
     `Unsafe`. Les autres fichiers n'ont jamais été examinés et ne le sont
     toujours pas ;
+
+    > **Note du 2026-10-19 (arbitrage du mainteneur) :** défaut `Native`, parce
+    > que l'OKF §11 n'impose aucune contrainte de nommage ni de taille ; `Strict`
+    > est un profil sur option ; bornes relevées à 256 Mio / 10 000 000 / 1 024.
+    > Seul ce que le stockage ne peut pas contenir ou confondrait est écarté (sous
+    > Windows : un point ou une espace final, un caractère interdit, un conflit
+    > fichier/dossier ; pas `con.md`, que Windows 11 crée et ouvre par les API
+    > ordinaires et que `dev` chargeait : `git` le refuse, d'où l'avertissement
+    > `KeyNotPortable` par défaut et le refus sous `Strict`) ;
+    > le reste se charge comme sur `dev`, avec un avertissement
+    > `KeyNotPortable` quand `Strict` l'aurait refusé ;
   - **dossiers vides** : un dossier sans aucun fichier n'est plus référencé par
     l'index de son parent (§2, D2) ;
   - correspondance exacte en casse et en forme Unicode (§2) : sous Windows ou

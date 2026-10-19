@@ -8,6 +8,178 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- **Bundle provider seam (#139, lot A).** `OKF4net.Providers`: `IBundleProvider`
+  and its value types, `BundleKey` with three-layer validation
+  (`BundleKeyConstraints`, `BundleKeyPolicy`, `BundleKeyValidator`),
+  `FileSystemBundleProvider` (read-only in this release),
+  `ResourceKeyResolver`, `BundleLoadOptions`, `Bundle.Load(IBundleProvider,
+  BundleLoadOptions?)`, and on `Bundle`: `Provider`, `Location`, `Version`,
+  `ParseProblems`, `IndexKeys`/`LogKeys`, `ObjectVersions`, `RejectedKeys`,
+  `TryResolveResourceKey`, `ReadResourceText(BundleKey)`,
+  `PortabilityIssues` (`BundlePortabilityIssue`); `Concept.Key`
+  (init-only; the three-parameter constructor is unchanged);
+  `ConceptId.ToKey`/`FromKey`. Display paths and concept ids are unchanged.
+- **`KeyNotPortable` warnings** (spec §2, layer 3): a `.md` name the load
+  accepts but the portable profile (`BundleKeyPolicy.Strict`) would refuse —
+  `con.md` (a Windows reserved device name) on any OS, `Orders.md` beside
+  `orders.md` on any volume that holds both, a decomposed `café.md` — is listed in `Bundle.PortabilityIssues` and reported by
+  `okf validate` (and `--json`) as one warning, `the name is not portable:
+  {reason}`, under the file's display path. A warning never changes the exit
+  code: OKF §11 imposes no naming constraint.
+
+### Changed
+
+- **Finite default bounds on loading** (spec §6), out of reach of real
+  bundles: a concept over 256 MiB is a `ParseErrors` entry instead of being
+  loaded; a listing over 10 000 000 entries or holding a name deeper than
+  1 024 segments (every entry counted, `.git`/`node_modules` and non-`.md`
+  files included) aborts the load with `BundleLoadException`. No `.md` key can
+  be deeper than 512 segments (the 1 024-byte key limit below), so the depth
+  bound stays out of reach of any real tree. The bounds exist so that a
+  hostile or runaway provider cannot exhaust memory; hosts reading untrusted
+  storage should lower them (`BundleLimits`). A `.md` whose key (its path
+  under the root) exceeds 1 024 UTF-8 bytes is a `ParseErrors` entry too;
+  that is the key's own limit (`BundleKey.MaxUtf8Bytes`), which a larger
+  `BundleLimits.MaxKeyBytes` does not lift.
+- **Key policy `Native` by default, `Strict` opt-in** (spec §2): the loader
+  refuses only a `.md` name the provider's storage itself cannot hold or would
+  alias, into `ParseErrors`; a referenced resource with such a name resolves
+  `Unsafe`. Other files were never examined and still are not. On Windows that
+  is a trailing dot or space (Win32 strips it, so the name opens another
+  name's object), a character Windows forbids (`:` also opens an NTFS stream),
+  and a file that is also a directory; on macOS and Linux, a file that is
+  also a directory. A Windows reserved device name (`con.md`, `COM1.md`,
+  `aux.txt.md`, a directory `con`) is not refused on any OS: Windows 11
+  creates and opens such names through ordinary APIs (no `\\?\` path is
+  needed), `dev` loaded them, and the default still does, with a
+  `KeyNotPortable` warning (`git` refuses them on Windows).
+  `BundleKeyPolicy.Strict` refuses them. No
+  `.md` file name ends with a dot or a space. A lone directory that does
+  (`dir.`, or `dir` and a space, created through `\\?\`) is skipped by the
+  walk, as it was before: Win32 cannot list it. Beside a twin without the dot
+  or space (`dir.` next to `dir`) it is an alias: Win32 strips the dot, so the
+  walk enters `dir.` and lists `dir`, and `dev` loaded `dir./y.md` as a concept,
+  a second copy of `dir/y.md`. That is a change: such a name is now a
+  `ParseErrors` entry (`segment "dir." ends with '.' or a space`), and
+  `okf validate` exits 1 for a bundle that holds one. Siblings differing only by
+  case or Unicode form are not a native rule on any OS: `FileSystemBundleProvider` matches stored names exactly, so
+  no key opens another key's object, and on a volume that holds both names
+  (Linux, case-sensitive APFS, a case-sensitive Windows directory) they are
+  two files. The macOS set does not require NFC either: HFS+ stores names
+  decomposed and APFS keeps the form written. Everything else loads as it
+  did, with a `KeyNotPortable` warning when the portable profile would refuse
+  it. `BundleKeyPolicy.Strict` is the opt-in profile for hosts that must
+  produce or consume bundles that survive any filesystem: the union of every
+  native set plus the Windows reserved device names, sibling collisions by case
+  and by Unicode form and an NFC requirement. Case collisions are detected with a per-code-point upper-case
+  fold, a **conservative over-approximation** of NTFS's table: siblings NTFS
+  keeps distinct but the fold merges (`σ.sql` and `ς.sql`) are flagged too —
+  refused under `Strict`, reported as not portable by default. Unicode-form
+  collisions (`café.sql` beside `cafe` + U+0301 `.sql`, one file on APFS) are
+  detected by comparing canonical decompositions from tables derived from
+  ICU, so the answer is the same under the AOT binaries, where
+  `string.Normalize` is a no-op; under `Strict`, NFC itself is checked the
+  same way, canonical ordering included. A host that wants colliding siblings
+  refused at load adds `CaseInsensitiveCollisions` or `UnicodeFormCollisions`
+  to `FileSystemBundleProvider`'s `additionalConstraints`. `ParseErrors` lists
+  every problem in component-wise path order, rejected names included, as
+  before the seam. On Windows, and under
+  `Strict`, a resource path containing `::$DATA` (an NTFS stream suffix, which
+  resolved on Windows) or `?` (which was `Missing` on Windows) resolves
+  `Unsafe`.
+  A name containing an unpaired surrogate (possible on NTFS, which stores
+  UTF-16) is rejected under `Strict` and under the native Linux and macOS
+  sets: a UTF-8 store would write it, and any other lone surrogate in its
+  place, as U+FFFD (`BundleKeyConstraints.WellFormedUnicode`).
+- **A file or a directory literally named with a backslash** (`a\b.md`, or
+  `c.md` in a directory `a\b`, possible where a name can hold one: Linux,
+  macOS) was mis-identified: `a\b.md` was loaded as concept `a/b`, and the
+  `c.md` as concept `a/b/c`. A backslash is never part of a key, so each such
+  `.md` is now a `ParseErrors` entry.
+- **`OkfVersion` is read from the root `index.md` under its exact name only**:
+  an `Index.md` or `INDEX.md` standing in for a missing `index.md` on a
+  case-folding volume, or a root `index.md` that is a symlink (which the walk
+  already skipped from `IndexFiles`), now gives `null`.
+- **Exact-case resource resolution** on case-folding volumes (Windows, macOS):
+  `references/a.sql` no longer resolves `References/A.sql`; it is `Missing`.
+  Nor does a Windows 8.3 short name (`/REFERE~1/a.sql`), which is `Missing`
+  too. `FileSystemBundleProvider` always matches the stored name, on every OS
+  and every volume (a case-insensitive mount under Linux included); a Linux host on
+  such a mount adds `additionalConstraints:
+  BundleKeyConstraints.CaseInsensitiveCollisions` so that the loader also
+  rejects siblings that collide there. Exact matching lists the directory of each path segment; within
+  one `Bundle.Load` or one `BundleValidator.Validate`, each directory is listed
+  once and its entry names are reused by every later lookup of that call (up to
+  the provider's `BundleLimits.MaxEntries` names in all, past which it lists
+  again), and nothing is kept after it returns. A case-only rename made by
+  another process while a load or a validation runs can therefore be read under
+  the former name until it returns, and a file created or renamed by another
+  process during that time may not be seen until it ends (a deletion is seen,
+  through the final existence check); the reparse-point and confinement checks
+  still run at every access.
+- **A directory whose listing is denied or fails is "no such entry" on every
+  OS**, as it already was on Windows and macOS: a key under it is `Missing`,
+  never read (a direct provider `Read`/`Exists` through it, or after a
+  permission change following a load; a load itself aborts on such a
+  directory). Under Linux, an execute-only directory (`--x`) is the one input
+  whose answer changes: a file in it was read by its joined path before.
+- **A directory the walk is about to list whose link status cannot be
+  determined now aborts the load** with `BundleLoadException`: the provider's
+  walk inspects every directory STRICTly (it and each directory between it and
+  the root) before listing it, instead of taking it for a plain directory and
+  listing it; an entry it cannot identify as a directory is not entered. Each
+  directory is inspected once per walk, when the walk enters it, so the
+  walk's cost is linear in the depth of the tree; reading a concept
+  re-inspects each directory on its key's path. A
+  symlink or junction seen as one is still skipped, never followed.
+- **A backslash in a §6.2 path-valued field is `Unsafe`** on every OS;
+  `references\a.sql` resolved on Windows before.
+- **A §6.2 path whose resolved key contains a control character** (U+0001 to
+  U+001F, U+007F to U+009F; U+0000 was already refused) **or is longer than
+  1 024 UTF-8 bytes is `Unsafe`** on every OS: these are base key rules
+  (layer 1). It resolved before when the file existed (a real file with a TAB
+  in its name, a deep path to an existing file), and was `Missing` otherwise.
+- **The `ParseErrors` text changed for `.md` names that were already
+  errors**: a name with a control character, one longer than 1 024 UTF-8
+  bytes were reported as an invalid concept id; the message now names the key
+  rule (`key contains the control character U+0001`, `key is longer than the
+  1024-byte bound`). Verdicts and exit codes are unchanged.
+- **A §6.2 path that climbs out of the bundle root and re-enters it**
+  (`../<bundle>/references/a.sql`) resolved through the OS path normalisation
+  before; it is now `Unsafe`, like any climb above the root.
+- **When the bundle root is itself a symlink or junction**, a path naming the
+  root (`/`, `.`, `./`, `/./`, `sub/..`, or `../` from `sub/`) was reported
+  `Unsafe` ("escapes the bundle") by the old check on the root's own link
+  status; it is now `Missing` ("not found"), as it is under a plain root.
+- **NFC is decided by a quick check, never by `string.Normalize`** (a silent
+  no-op in the Native AOT `okf`/`okf-render` binaries): under `Strict`, a name
+  containing a character that is never NFC (e.g. U+212B) or a combining mark
+  that could compose (a decomposed `é`) is rejected with the code point named;
+  precomposed names (`café.sql`) pass everywhere, library and binaries alike.
+  Marks out of canonical order are rejected too.
+- **Provider I/O failures are translated**: a `BundleLoadException` or an
+  `IOException` leaving `Bundle` for a read names the key and the exception
+  type (`I/O error reading 'a.md' (UnauthorizedAccessException)`); a listing
+  or version failure names the operation and the exception type, not a key
+  (`I/O error while listing the bundle (UnauthorizedAccessException)`). Never
+  the raw OS text, which is kept as `InnerException` for the host's log.
+- **`FileSystemBundleProvider.Exists` refuses instead of answering `false`**
+  when the key's path is refused — a reparse point, an uninspectable entry, the
+  confinement boundary — and throws `BundleAccessRefusedException`, as `Read`
+  does. A resource reached through a symlink or junction is therefore still
+  reported as escaping the bundle (`FrontmatterPathUnsafe`), as before.
+- **Known, temporary gap:** `Bundle.TryResolveResource` and
+  `Bundle.ReadResourceText(string)` are kept unchanged in this lot and apply
+  neither the key policy, nor the rejected-key guard, nor the exact-case and
+  backslash rules above (they still resolve through the OS filesystem, so
+  `references\a.sql` resolves on Windows and a case-folded name on Windows and
+  macOS). The readers that still use them (`AttestationOrchestrator`,
+  `OkfBundleTools`) follow in the next lots, so until then `okf validate` can
+  flag a resource `Unsafe` or `Missing` — for a key-policy, case or backslash
+  reason — that `okf_run_computation` still reads.
+
 ## [0.7.0] - 2026-10-14
 
 The headline is the interactive `okf-render` viewer, and `okf` is now also a

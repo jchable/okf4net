@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Text;
 using OKF4net.Internal;
+using OKF4net.Providers;
 using OKF4net.Yaml;
 
 namespace OKF4net;
@@ -233,6 +234,17 @@ public enum DiagnosticCode
     /// cause, reported next to the <see cref="MissingType"/> error it explains.
     /// </summary>
     FrontmatterFenceNotAtColumn0,
+
+    /// <summary>
+    /// A <c>.md</c> name the load accepted, which the portable profile
+    /// (<see cref="Providers.BundleKeyPolicy.Strict"/>) would have refused: a reserved Windows
+    /// device name, a trailing dot or space, a character Windows forbids, a decomposed
+    /// Unicode form, or a sibling that differs only by case or Unicode form
+    /// (<see cref="Bundle.PortabilityIssues"/>). A <see cref="Severity.Warning"/>: OKF §11
+    /// imposes no naming constraint, so the bundle stays conformant, but the name would not
+    /// survive every filesystem.
+    /// </summary>
+    KeyNotPortable,
 }
 
 /// <summary>
@@ -325,6 +337,10 @@ public static class BundleValidator
     /// <param name="clock">Supplies "now" for staleness checks (§5.5); defaults to <see cref="SystemClock"/>.</param>
     public static ValidationReport Validate(Bundle bundle, IOkfClock? clock = null)
     {
+        // One provider scope for the whole validation: the §6.2 path checks below ask the
+        // provider about many keys, and a provider that supports it lists each directory once
+        // for all of them, keeping nothing past this call.
+        using var scope = ProviderScopes.Begin(bundle.Provider);
         var now = (clock ?? new SystemClock()).Now;
         var diagnostics = new List<Diagnostic>();
 
@@ -337,6 +353,33 @@ public static class BundleValidator
                 null,
                 $"unparseable concept document: {error}",
                 DiagnosticCode.UnparseableDocument));
+        }
+
+        // (1b) Names the load accepted but the portable profile would refuse (spec §2,
+        // layer 3): a warning, since §11 imposes no naming constraint. A concept's is reported
+        // among its own warnings below; any other `.md` (index.md, log.md, a document that did
+        // not parse) here, under its display path.
+        var notPortable = new Dictionary<BundleKey, string>();
+        foreach (var issue in bundle.PortabilityIssues)
+        {
+            notPortable.TryAdd(issue.Key, issue.Reason);
+        }
+
+        if (notPortable.Count > 0)
+        {
+            var conceptKeys = bundle.Concepts.Select(c => c.Key).OfType<BundleKey>().ToHashSet();
+            foreach (var issue in bundle.PortabilityIssues)
+            {
+                if (!conceptKeys.Contains(issue.Key))
+                {
+                    diagnostics.Add(new Diagnostic(
+                        Severity.Warning,
+                        BundleDisplayPath.Compose(bundle.Location, issue.Key),
+                        null,
+                        $"the name is not portable: {issue.Reason}",
+                        DiagnosticCode.KeyNotPortable));
+                }
+            }
         }
 
         // (2) Every concept must carry a non-empty `type`; recommended fields are
@@ -366,6 +409,16 @@ public static class BundleValidator
                     concept.Id,
                     $"line 1 looks like a frontmatter fence but {fenceCause}, so the file has no frontmatter (§4)",
                     DiagnosticCode.FrontmatterFenceNotAtColumn0));
+            }
+
+            if (concept.Key is { } conceptKey && notPortable.TryGetValue(conceptKey, out var portabilityReason))
+            {
+                diagnostics.Add(new Diagnostic(
+                    Severity.Warning,
+                    concept.Path,
+                    concept.Id,
+                    $"the name is not portable: {portabilityReason}",
+                    DiagnosticCode.KeyNotPortable));
             }
 
             foreach (var field in Frontmatter.RecommendedFieldsFor(fm))
@@ -602,7 +655,7 @@ public static class BundleValidator
                     continue;
                 }
 
-                bundle.TryResolveResource(concept, resource.RawPath, out _, out var resolutionStatus);
+                bundle.TryResolveResourceKey(concept, resource.RawPath, out _, out var resolutionStatus);
                 if (resolutionStatus == ResourceResolutionStatus.Missing)
                 {
                     var message = $"frontmatter path '{resource.Field}' → '{resource.RawPath}' not found";
@@ -640,32 +693,32 @@ public static class BundleValidator
 
     /// <summary>
     /// For a bare §6.2 path that resolved to <see cref="ResourceResolutionStatus.Missing"/>,
-    /// looks for a file at the concept-relative location the path would have
-    /// named under a caller's likely mental model (beside the concept, the
-    /// pre-existing behaviour before bare paths were read as bundle-rooted),
-    /// and if one exists there, returns a suffix pointing at it. Returns
-    /// <see langword="null"/> when no hint applies: <paramref name="resource"/>
-    /// is not <see cref="FrontmatterResourceKind.BundleRelative"/>, its raw
-    /// path is already rooted (a leading <c>/</c> or <c>\</c> is an explicit
-    /// root-relative statement -- suggesting <c>./</c> would contradict it),
-    /// or no file exists at the concept-relative candidate.
+    /// asks whether the same path written concept-relative (<c>./</c> + the raw path) names
+    /// an object — the location a caller's likely mental model expects (beside the concept,
+    /// the pre-existing behaviour before bare paths were read as bundle-rooted). It asks
+    /// <see cref="Bundle.TryResolveResourceKey"/>, so the candidate is a key resolved
+    /// lexically from the concept's prefix, under the bundle's key policy, through the
+    /// bundle's provider; only a <see cref="ResourceResolutionStatus.Resolved"/> answer gives
+    /// a suffix, which names that key. Returns <see langword="null"/> when no hint applies:
+    /// <paramref name="resource"/> is not <see cref="FrontmatterResourceKind.BundleRelative"/>,
+    /// its raw path is already rooted (a leading <c>/</c> or <c>\</c> is an explicit
+    /// root-relative statement -- suggesting <c>./</c> would contradict it), or the
+    /// concept-relative path escapes the bundle, or its key is missing, not allowed, or
+    /// refused by the provider.
     ///
     /// The <see cref="FrontmatterResourceKind.BundleRelative"/> guard cannot be
     /// exercised end-to-end through <see cref="Validate"/>: for a
-    /// <see cref="FrontmatterResourceKind.ConceptRelative"/> resource, the
-    /// candidate this method would compute (<paramref name="bundle"/>'s root
-    /// combined with the concept's own directory and the raw path) is
-    /// byte-for-byte the same candidate <see cref="Bundle.TryResolveResource"/>
-    /// already tried to resolve *that very resource* -- both use the concept's
-    /// directory as the base. A sibling file placed there therefore flips the
+    /// <see cref="FrontmatterResourceKind.ConceptRelative"/> resource, <c>./</c> + its raw path
+    /// (<c>././x</c>, <c>./../x</c>) resolves to the very key
+    /// <see cref="Bundle.TryResolveResourceKey"/> already resolved for that resource, since
+    /// both start from the concept's prefix. An object under that key therefore flips the
     /// caller's resolution status to <see cref="ResourceResolutionStatus.Resolved"/>
     /// before this method is ever reached, for identical reasons with or
     /// without the guard, so no <see cref="Validate"/>-level test can turn red
     /// by only deleting the guard. <c>internal</c> so
     /// <c>OKF4net.Tests</c> can call it directly with a hand-built
-    /// <see cref="FrontmatterResourceKind.ConceptRelative"/> resource and an
-    /// existing candidate file, independent of what <see cref="Bundle.TryResolveResource"/>
-    /// would say about it.
+    /// <see cref="FrontmatterResourceKind.ConceptRelative"/> resource whose key names an
+    /// existing object, independent of how the validator reached it.
     /// </summary>
     internal static string? ConceptRelativeHint(Bundle bundle, Concept concept, FrontmatterResource resource)
     {
@@ -675,31 +728,20 @@ public static class BundleValidator
             return null;
         }
 
-        string candidate;
-        try
-        {
-            var conceptDir = concept.Id.Parent?.ToString() ?? string.Empty;
-            candidate = Path.GetFullPath(Path.Combine(bundle.Root, conceptDir, resource.RawPath));
-        }
-        catch (Exception e) when (e is ArgumentException or PathTooLongException or NotSupportedException)
-        {
-            // Same permissive stance as TryResolveResource: a malformed raw
-            // path must never throw out of validation (§11).
-            return null;
-        }
-
-        if (!File.Exists(candidate) || !ReparsePoints.IsWithinBundleRoot(bundle.Root, candidate))
+        // Would the same bare path exist next to the concept? Ask the resolver for its
+        // concept-relative form, under the same policy and through the same provider.
+        bundle.TryResolveResourceKey(concept, "./" + resource.RawPath, out var siblingKey, out var siblingStatus);
+        if (siblingStatus != ResourceResolutionStatus.Resolved || siblingKey is null)
         {
             return null;
         }
 
-        var relativeToRoot = Path.GetRelativePath(bundle.Root, candidate).Replace('\\', '/');
         // "this implementation's reading of §6.2", not a bare "(§6.2)": §6.2
         // lists the accepted SHAPES of a path-valued field ("a relative path")
         // and names no base for one. Resolving it from the bundle root is a
         // reading this repo chose (docs/spec-conformance/, S6.2-1), and the
         // hint says so rather than telling a producer the spec settled it.
-        return $" — a file exists at {relativeToRoot}; a bare path resolves from the bundle root (this implementation's reading of §6.2) — write ./{resource.RawPath} for the concept-relative form";
+        return $" — a file exists at {siblingKey}; a bare path resolves from the bundle root (this implementation's reading of §6.2) — write ./{resource.RawPath} for the concept-relative form";
     }
 
     /// <summary>Non-throwing check that the concept carries a conformant <c>type</c> (§11), without relying on exceptions for control flow.</summary>
@@ -831,14 +873,14 @@ public static class BundleValidator
     /// <summary>Checks that reserved files (index.md and log.md) follow their structural rules when present (§8/§9).</summary>
     private static void ValidateReserved(Bundle bundle, List<Diagnostic> diagnostics)
     {
-        var rootIndex = System.IO.Path.Combine(bundle.Root, IndexFilename);
-
-        foreach (var path in bundle.IndexFiles)
+        for (var i = 0; i < bundle.IndexKeys.Count; i++)
         {
+            var key = bundle.IndexKeys[i];
+            var path = bundle.IndexFiles[i];
             string text;
             try
             {
-                text = OkfEncodings.Strict.GetString(File.ReadAllBytes(path));
+                text = bundle.ReadResourceText(key);
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
             {
@@ -872,7 +914,7 @@ public static class BundleValidator
 
             // Frontmatter is only permitted in the bundle-root index.md, and only
             // to declare `okf_version` (§12).
-            var isRoot = string.Equals(path, rootIndex, StringComparison.Ordinal);
+            var isRoot = key.Segments.Count == 1;
             if (!isRoot)
             {
                 diagnostics.Add(new Diagnostic(
@@ -910,12 +952,14 @@ public static class BundleValidator
             }
         }
 
-        foreach (var path in bundle.LogFiles)
+        for (var i = 0; i < bundle.LogKeys.Count; i++)
         {
+            var key = bundle.LogKeys[i];
+            var path = bundle.LogFiles[i];
             string text;
             try
             {
-                text = OkfEncodings.Strict.GetString(File.ReadAllBytes(path));
+                text = bundle.ReadResourceText(key);
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
             {

@@ -216,6 +216,55 @@ else days.Insert(0, new LogDay(today, [added]));
 File.WriteAllText("./my_bundle/log.md", new ChangeLog(log.Title, days).ToMarkdown());
 ```
 
+### Loading through a provider
+
+`Bundle.Load(string root)` is now an overload over the default
+`FileSystemBundleProvider` (it still throws `BundleLoadException` for a root
+that is not a directory, before delegating). A host can load through any `IBundleProvider`
+(`OKF4net.Providers`) — a key space of objects, read-only unless the provider
+declares `Capabilities.CanWrite` — with `Bundle.Load(provider, new
+BundleLoadOptions { Limits = …, KeyPolicy = … })`. Keys are validated as a tree
+under the `Native` policy by default: the loader refuses only what the
+provider's storage itself cannot hold or would alias (OKF §11 imposes no naming
+constraint), so `Orders.md` beside `orders.md` (on any volume that holds
+both) or a decomposed `café.md` load as they always did, and so does `con.md`
+on every OS: Windows 11 creates and opens such reserved device names through
+ordinary APIs (`git` refuses them), so the default loads them with a
+`KeyNotPortable` warning and `Strict` refuses them. The Windows native set keeps
+only what aliases another name (a trailing dot or space, a character Windows
+forbids) and the file/directory conflict. Sibling collisions are not a native rule on any OS:
+the provider matches stored names exactly, so no key opens another key's
+object. A name the portable
+profile would refuse is listed in `Bundle.PortabilityIssues` and reported by
+`okf validate` as a `KeyNotPortable` warning (`the name is not portable: …`).
+`Strict` is the opt-in portable profile, for hosts that must produce or
+consume bundles that survive any filesystem: no Windows reserved names, no
+trailing dot, no case- or Unicode-form-colliding siblings, NFC names only (a
+quick check), no file that is also a directory. `FileSystemBundleProvider`
+always matches the stored name exactly, on every OS; a host that wants
+colliding siblings refused at load rather than reported adds
+`additionalConstraints: BundleKeyConstraints.CaseInsensitiveCollisions` (or
+`UnicodeFormCollisions`). Default bounds, finite but
+out of reach of real bundles: 256 MiB per object, 10 000 000 entries, depth
+1 024 (every listed name counted, `node_modules` included), keys of 1 024
+bytes; hosts reading untrusted storage should lower them. The filesystem
+walk is recursive and needs roughly 0.6 KB of stack per level, so the default
+depth takes about 0.6 MB: a host that runs `Bundle.Load` over untrusted storage
+on a thread of 512 KB or less should lower `MaxDepth`.
+Every rejected `.md` name is a `Bundle.ParseProblems` entry (and a
+`ParseErrors` line); other rejected names are skipped silently. In this
+release the filesystem provider is read-only and no other provider ships; the
+write side and the first remote providers are tracked in #139.
+
+The historical members `Bundle.TryResolveResource` and
+`Bundle.ReadResourceText(string)` are unchanged in this release: they apply
+neither the key policy, nor the rejected-key guard, nor the exact-case and
+backslash rules (they still resolve through the OS filesystem), and the readers
+that still use them (`AttestationOrchestrator`, `OkfBundleTools`) move to the
+key-based members in the next lots. Until then `okf_run_computation` can read a
+resource that `okf validate` reports `Unsafe` or `Missing` for a key-policy,
+case or backslash reason — a known, temporary gap.
+
 ### As a CLI
 
 On Windows, install via [winget](https://github.com/microsoft/winget-pkgs):

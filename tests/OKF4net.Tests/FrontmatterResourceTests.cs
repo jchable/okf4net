@@ -222,6 +222,37 @@ public class FrontmatterResourceTests
     }
 
     /// <summary>
+    /// The same junction, reached through the validator and the key-based resolver: the
+    /// filesystem provider refuses the access (it does not answer "absent"), so the field is
+    /// <see cref="ResourceResolutionStatus.Unsafe"/> and the diagnostic is
+    /// <see cref="DiagnosticCode.FrontmatterPathUnsafe"/> ("escapes the bundle"), never
+    /// <see cref="DiagnosticCode.FrontmatterPathMissing"/>. <c>validate --json</c> projects the code.
+    /// </summary>
+    [SkippableFact]
+    public void A_path_through_a_junction_is_reported_unsafe_not_missing_by_the_validator()
+    {
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+
+        tmp.Write("c/comp.md", "---\ntype: Attested Computation\ntitle: T\ndescription: D\nruntime: python\ncomputation: ../linked/secret.sql\n---\n");
+        external.Write("secret.sql", "SELECT 1\n");
+
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("linked", external.Path), "no junction/symlink privilege on this machine");
+
+        var bundle = Bundle.Load(tmp.Path);
+        var concept = bundle.Concepts.Single(c => c.Id.ToString() == "c/comp");
+
+        Assert.True(bundle.TryResolveResourceKey(concept, "../linked/secret.sql", out var key, out var status));
+        Assert.Equal(ResourceResolutionStatus.Unsafe, status);
+        Assert.Null(key);
+
+        var report = BundleValidator.Validate(bundle);
+        var d = Assert.Single(report.Diagnostics, x => x.Code == DiagnosticCode.FrontmatterPathUnsafe);
+        Assert.Contains("escapes the bundle", d.Message);
+        Assert.DoesNotContain(report.Diagnostics, x => x.Code == DiagnosticCode.FrontmatterPathMissing);
+    }
+
+    /// <summary>
     /// §6.2 lists three shapes for a path-valued field but never names the base
     /// a bare relative path resolves against. The spec's own worked example
     /// settles it: Appendix A lays out <c>computations/revenue.md</c> alongside
