@@ -17,36 +17,55 @@ and this project adheres to
   `ResourceKeyResolver`, `BundleLoadOptions`, `Bundle.Load(IBundleProvider,
   BundleLoadOptions?)`, and on `Bundle`: `Provider`, `Location`, `Version`,
   `ParseProblems`, `IndexKeys`/`LogKeys`, `ObjectVersions`, `RejectedKeys`,
-  `TryResolveResourceKey`, `ReadResourceText(BundleKey)`; `Concept.Key`
+  `TryResolveResourceKey`, `ReadResourceText(BundleKey)`,
+  `PortabilityIssues` (`BundlePortabilityIssue`); `Concept.Key`
   (init-only; the three-parameter constructor is unchanged);
   `ConceptId.ToKey`/`FromKey`. Display paths and concept ids are unchanged.
+- **`KeyNotPortable` warnings** (spec §2, layer 3): a `.md` name the load
+  accepts but the portable profile (`BundleKeyPolicy.Strict`) would refuse —
+  `con.md` or `Orders.md` beside `orders.md` on Linux, a decomposed `café.md`
+  on macOS or Linux — is listed in `Bundle.PortabilityIssues` and reported by
+  `okf validate` (and `--json`) as one warning, `the name is not portable:
+  {reason}`, under the file's display path. A warning never changes the exit
+  code: OKF §11 imposes no naming constraint.
 
 ### Changed
 
-- **Finite default bounds on loading** (spec §6): a concept over 16 MiB is a
-  `ParseErrors` entry instead of being loaded; a listing over 1 000 000 entries
-  (every entry counted, `.git`/`node_modules` included) or deeper than 64
-  segments aborts the load with `BundleLoadException`. A `.md` whose key (its
-  path under the root) exceeds 1 024 UTF-8 bytes is a `ParseErrors` entry too;
-  that is the key's own limit (`BundleKey.MaxUtf8Bytes`), which a larger
-  `BundleLimits.MaxKeyBytes` does not lift.
-- **Key policy `Strict` by default** (spec §2): a `.md` whose name a known
-  filesystem would alias — a Windows reserved name (`con.md`, `com¹.md`), a
-  trailing dot or space, a sibling differing only by case or Unicode form, a
-  file that is also a directory — is rejected into `ParseErrors`; a referenced
-  resource with such a name resolves as `Unsafe`. Other files were never
-  examined and still are not. Pass `BundleKeyPolicy.Native` to keep only the
-  host filesystem's own rules. Case collisions are detected with a
-  per-code-point upper-case fold, a **conservative over-approximation** of
-  NTFS's table: siblings NTFS keeps distinct but the fold merges (`σ.sql` and
-  `ς.sql`) are rejected under `Native` on Windows too. Unicode-form collisions
-  (`café.sql` beside `cafe` + U+0301 `.sql`, one file on APFS) are detected by
-  comparing canonical decompositions from tables derived from ICU, so the
-  answer is the same under the AOT binaries, where `string.Normalize` is a
-  no-op; NFC itself is checked the same way, canonical ordering included.
-  Under `Strict`, a resource path containing `::$DATA` (an NTFS stream
-  suffix, which resolved on Windows) or `?` (which was `Missing` on Windows)
-  resolves `Unsafe`.
+- **Finite default bounds on loading** (spec §6), out of reach of real
+  bundles: a concept over 256 MiB is a `ParseErrors` entry instead of being
+  loaded; a listing over 10 000 000 entries (every entry counted,
+  `.git`/`node_modules` included) or deeper than 256 segments aborts the load
+  with `BundleLoadException`. They exist so that a hostile or runaway provider
+  cannot exhaust memory; hosts reading untrusted storage should lower them
+  (`BundleLimits`). A `.md` whose key (its path under the root) exceeds 1 024
+  UTF-8 bytes is a `ParseErrors` entry too; that is the key's own limit
+  (`BundleKey.MaxUtf8Bytes`), which a larger `BundleLimits.MaxKeyBytes` does
+  not lift.
+- **Key policy `Native` by default, `Strict` opt-in** (spec §2): the loader
+  refuses only a `.md` name the provider's storage itself cannot hold or would
+  alias, into `ParseErrors`; a referenced resource with such a name resolves
+  `Unsafe`. Other files were never examined and still are not. On Windows that
+  is a reserved device name (`con.md`, `com¹.md`), a trailing dot or space, a
+  character Windows forbids — none can be created through Win32 — a sibling
+  differing only by case, and a file that is also a directory; on macOS, a
+  sibling differing only by case or Unicode form (`café.sql` beside `cafe` +
+  U+0301 `.sql`, one file on APFS) and a file that is also a directory; on
+  Linux, a file that is also a directory. The macOS set does not require NFC:
+  HFS+ stores names decomposed and APFS keeps the form written. Everything
+  else loads as it did, with a `KeyNotPortable` warning when the portable
+  profile would refuse it. `BundleKeyPolicy.Strict` is the opt-in profile for
+  hosts that must produce or consume bundles that survive any filesystem: the
+  union of every native set plus an NFC requirement. Case collisions are
+  detected with a per-code-point upper-case fold, a **conservative
+  over-approximation** of NTFS's table: siblings NTFS keeps distinct but the
+  fold merges (`σ.sql` and `ς.sql`) are rejected on Windows too.
+  Unicode-form collisions are detected by comparing canonical decompositions
+  from tables derived from ICU, so the answer is the same under the AOT
+  binaries, where `string.Normalize` is a no-op; under `Strict`, NFC itself is
+  checked the same way, canonical ordering included. On Windows, and under
+  `Strict`, a resource path containing `::$DATA` (an NTFS stream suffix, which
+  resolved on Windows) or `?` (which was `Missing` on Windows) resolves
+  `Unsafe`.
   A name containing an unpaired surrogate (possible on NTFS, which stores
   UTF-16) is rejected under `Strict` and under the native Linux and macOS
   sets: a UTF-8 store would write it, and any other lone surrogate in its

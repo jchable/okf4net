@@ -378,6 +378,16 @@ contenu).**
 - Des validateurs supplémentaires peuvent être ajoutés, mais **uniquement pour
   restreindre** ; aucune configuration ne descend sous `Native`.
 
+> **Note du 2026-10-19 (arbitrage du mainteneur).** Le défaut devient `Native`,
+> parce que l'OKF §11 n'impose aucune contrainte de nommage ni de taille : aucun
+> bundle chargé par `dev` ne doit casser par défaut. `Native` refuse seulement ce
+> que le stockage du provider ne peut pas contenir ou confondrait ; `Strict` est
+> un profil portable **sur option**. Ce que `Strict` refuserait en plus devient un
+> avertissement (`Bundle.PortabilityIssues`, `DiagnosticCode.KeyNotPortable`). Le
+> jeu natif macOS perd `RequireNfc` (HFS+ stocke les noms décomposés, APFS garde
+> la forme écrite), que `Strict` garde. Le texte ci-dessus est conservé tel qu'il
+> a été validé.
+
 **L'arborescence se valide comme un tout, pas clé par clé.** Comparer des clés
 complètes ne suffit pas. Exemples :
 
@@ -837,6 +847,15 @@ peut écrire dans la source.
 
 Finies **pour tous les providers, filesystem compris**.
 
+> **Note du 2026-10-19 (arbitrage du mainteneur).** Défaut `Native`, parce que
+> l'OKF §11 n'impose aucune contrainte de nommage ni de taille ; `Strict` est un
+> profil sur option. Les bornes sont relevées à 256 Mio par objet, 10 000 000
+> entrées et une profondeur de 256 : finies, pour qu'un provider hostile ou
+> emballé ne puisse pas épuiser la mémoire, mais hors de portée d'un bundle réel.
+> La longueur de clé reste à 1 024 octets (règle de base de la couche 1). Un hôte
+> qui lit un stockage non fiable les abaisse. Le tableau ci-dessous garde les
+> valeurs validées à l'origine.
+
 | Borne | Défaut | Dépassement |
 |---|---|---|
 | Taille d'un concept | 16 Mio | entrée dans `Bundle.ParseErrors`, le chargement continue (**comportement nouveau** : aujourd'hui un concept illisible fait échouer tout le chargement en `BundleLoadException`, ce qui reste le cas pour un octet UTF-8 invalide) |
@@ -1098,6 +1117,14 @@ l'arbitrage du 2026-10-08).
     `ParseErrors`, et une ressource référencée écartée reçoit le statut
     `Unsafe`. Les autres fichiers n'ont jamais été examinés et ne le sont
     toujours pas ;
+
+    > **Note du 2026-10-19 (arbitrage du mainteneur) :** défaut `Native`, parce
+    > que l'OKF §11 n'impose aucune contrainte de nommage ni de taille ; `Strict`
+    > est un profil sur option ; bornes relevées à 256 Mio / 10 000 000 / 256.
+    > Seul ce que le stockage ne peut pas contenir ou confondrait est écarté (sous
+    > Windows, `con.md` reste refusé : aucun nom de ce genre ne se crée par
+    > Win32) ; le reste se charge comme sur `dev`, avec un avertissement
+    > `KeyNotPortable` quand `Strict` l'aurait refusé ;
   - **dossiers vides** : un dossier sans aucun fichier n'est plus référencé par
     l'index de son parent (§2, D2) ;
   - correspondance exacte en casse et en forme Unicode (§2) : sous Windows ou
