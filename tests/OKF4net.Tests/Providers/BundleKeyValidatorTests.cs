@@ -11,16 +11,50 @@ public class BundleKeyValidatorTests
     private static BundleKeyValidator NativeMacOS() => new(BundleKeyConstraintSets.MacOS, BundleKeyPolicy.Native);
 
     [Fact]
-    public void Strict_is_the_union_of_every_known_native_set_plus_RequireNfc()
+    public void Strict_is_the_union_of_every_known_native_set_plus_the_portability_rules()
     {
         var v = Strict();
         Assert.Equal(BundleKeyConstraintSets.Strict, v.Effective);
         Assert.Equal(
-            BundleKeyConstraintSets.Windows | BundleKeyConstraintSets.MacOS | BundleKeyConstraintSets.Linux | BundleKeyConstraints.RequireNfc,
+            BundleKeyConstraintSets.Windows | BundleKeyConstraintSets.MacOS | BundleKeyConstraintSets.Linux
+            | BundleKeyConstraints.CaseInsensitiveCollisions | BundleKeyConstraints.UnicodeFormCollisions | BundleKeyConstraints.RequireNfc,
             BundleKeyConstraintSets.Strict);
-        Assert.True(v.Effective.HasFlag(BundleKeyConstraints.WindowsReservedNames));
-        Assert.True(v.Effective.HasFlag(BundleKeyConstraints.RequireNfc));
-        Assert.True(v.Effective.HasFlag(BundleKeyConstraints.FileDirectoryConflict));
+
+        // Nothing Strict enforced before the native sets lost their collision flags is lost.
+        foreach (var flag in Enum.GetValues<BundleKeyConstraints>().Where(f => f != BundleKeyConstraints.None))
+        {
+            Assert.True(v.Effective.HasFlag(flag), flag.ToString());
+        }
+    }
+
+    [Fact]
+    public void No_native_set_carries_a_sibling_collision_flag()
+    {
+        // The provider matches stored names exactly: collisions are a portability concern.
+        foreach (var set in new[] { BundleKeyConstraintSets.Windows, BundleKeyConstraintSets.MacOS, BundleKeyConstraintSets.Linux })
+        {
+            Assert.False(set.HasFlag(BundleKeyConstraints.CaseInsensitiveCollisions));
+            Assert.False(set.HasFlag(BundleKeyConstraints.UnicodeFormCollisions));
+        }
+
+        Assert.Equal(
+            BundleKeyConstraints.TrailingDotOrSpace | BundleKeyConstraints.WindowsIllegalCharacters | BundleKeyConstraints.WindowsReservedNames | BundleKeyConstraints.FileDirectoryConflict,
+            BundleKeyConstraintSets.Windows);
+        Assert.Equal(BundleKeyConstraints.FileDirectoryConflict | BundleKeyConstraints.WellFormedUnicode, BundleKeyConstraintSets.MacOS);
+
+        foreach (var v in new[] { NativeWindows(), NativeMacOS(), NativeLinux() })
+        {
+            var r = v.ValidateTree(["Orders.md", "orders.md"]);
+            Assert.Equal(2, r.Accepted.Count);
+            Assert.Empty(r.RejectedPrefixes);
+        }
+
+        // Detection still works whenever a host or a provider asks for it.
+        var declared = new BundleKeyValidator(BundleKeyConstraintSets.Linux | BundleKeyConstraints.CaseInsensitiveCollisions, BundleKeyPolicy.Native);
+        var d = declared.ValidateTree(["Orders.md", "orders.md"]);
+        Assert.Empty(d.Accepted);
+        Assert.All(d.Rejected, rej => Assert.Contains("collides with a sibling", rej.Reason));
+        Assert.Empty(Strict().ValidateTree(["Orders.md", "orders.md"]).Accepted);
     }
 
     [Fact]
@@ -35,9 +69,12 @@ public class BundleKeyValidatorTests
         Assert.Null(NativeMacOS().CheckKey(nfd));
         Assert.NotNull(Strict().CheckKey(nfd));
 
-        // macOS still refuses the two forms side by side: one entry on a default volume.
+        // The two forms side by side: two keys natively, one name for the portable profile.
         var nfc = "caf" + (char)0x00E9 + ".md";
-        Assert.Empty(NativeMacOS().ValidateTree([nfc, nfd.ToString()]).Accepted);
+        Assert.Equal(2, NativeMacOS().ValidateTree([nfc, nfd.ToString()]).Accepted.Count);
+        Assert.Empty(Strict().ValidateTree([nfc, nfd.ToString()]).Accepted);
+        var declared = new BundleKeyValidator(BundleKeyConstraintSets.MacOS | BundleKeyConstraints.UnicodeFormCollisions, BundleKeyPolicy.Native);
+        Assert.Empty(declared.ValidateTree([nfc, nfd.ToString()]).Accepted);
     }
 
     [Fact]
@@ -228,12 +265,21 @@ public class BundleKeyValidatorTests
     }
 
     [Fact]
-    public void A_native_windows_set_keeps_both_unicode_forms_but_folds_case()
+    public void A_native_windows_set_keeps_both_unicode_forms_and_both_cases()
     {
-        // NTFS compares code points, not canonical forms: é and e + acute are two files.
-        var r = NativeWindows().ValidateTree(["caf\u00e9/x.md", "cafe\u0301/y.md", "CAF\u00c9/z.md"]);
-        Assert.Equal([BundleKey.Parse("cafe\u0301/y.md")], r.Accepted);
-        Assert.Equal([BundleKey.Parse("CAF\u00c9"), BundleKey.Parse("caf\u00e9")], r.RejectedPrefixes);
+        // No native set folds siblings: the provider matches stored names exactly, so the
+        // three names are three keys whatever the directory folds.
+        string[] listing = ["caf\u00e9/x.md", "cafe\u0301/y.md", "CAF\u00c9/z.md"];
+        var r = NativeWindows().ValidateTree(listing);
+        Assert.Equal(listing.Select(BundleKey.Parse), r.Accepted);
+        Assert.Empty(r.RejectedPrefixes);
+
+        // A provider that declares case folding still gets NTFS's behaviour: code points, not
+        // canonical forms, so the two Unicode forms stay two names but case is folded.
+        var declared = new BundleKeyValidator(BundleKeyConstraintSets.Windows | BundleKeyConstraints.CaseInsensitiveCollisions, BundleKeyPolicy.Native);
+        var d = declared.ValidateTree(listing);
+        Assert.Equal([BundleKey.Parse("cafe\u0301/y.md")], d.Accepted);
+        Assert.Equal([BundleKey.Parse("CAF\u00c9"), BundleKey.Parse("caf\u00e9")], d.RejectedPrefixes);
     }
 
     [Fact]
@@ -427,15 +473,21 @@ public class BundleKeyValidatorTests
 
     [Theory]
     [InlineData("Ab/x.md", "AB/X.MD", "AB/X.MD", "Ab/x.md")]
-    [InlineData("caf\u00e9/x.md", "CAFE\u0301/X.MD", "CAF\u00c9/X.MD", "caf\u00e9/x.md")]   // Strict decomposes then upcases; Windows upcases only; Linux: identity
+    [InlineData("caf\u00e9/x.md", "CAFE\u0301/X.MD", "CAF\u00c9/X.MD", "caf\u00e9/x.md")]   // Strict decomposes then upcases; case folding alone upcases only; native sets: identity
     [InlineData("\u212b/x.md", "A\u030a/X.MD", "\u212b/X.MD", "\u212b/x.md")]               // ANGSTROM SIGN has no case mapping
-    public void FoldKeyText_folds_the_way_the_effective_constraints_compare_siblings(string raw, string strict, string windows, string linux)
+    public void FoldKeyText_folds_the_way_the_effective_constraints_compare_siblings(string raw, string strict, string caseOnly, string native)
     {
         var key = BundleKey.Parse(raw);
         Assert.Equal(strict, Strict().FoldKeyText(key));
-        Assert.Equal(windows, NativeWindows().FoldKeyText(key));
-        Assert.Equal(linux, NativeLinux().FoldKeyText(key));
-        Assert.Equal(strict, NativeMacOS().FoldKeyText(key)); // macOS folds both
+
+        // No native set carries a collision flag: each compares sibling names as stored.
+        Assert.Equal(native, NativeWindows().FoldKeyText(key));
+        Assert.Equal(native, NativeLinux().FoldKeyText(key));
+        Assert.Equal(native, NativeMacOS().FoldKeyText(key));
+
+        // A provider that declares the flags folds by them.
+        Assert.Equal(caseOnly, new BundleKeyValidator(BundleKeyConstraintSets.Windows | BundleKeyConstraints.CaseInsensitiveCollisions, BundleKeyPolicy.Native).FoldKeyText(key));
+        Assert.Equal(strict, new BundleKeyValidator(BundleKeyConstraintSets.MacOS | BundleKeyConstraints.CaseInsensitiveCollisions | BundleKeyConstraints.UnicodeFormCollisions, BundleKeyPolicy.Native).FoldKeyText(key));
     }
 
     [Fact]

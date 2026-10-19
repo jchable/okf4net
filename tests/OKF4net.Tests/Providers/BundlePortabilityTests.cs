@@ -189,12 +189,54 @@ public class BundlePortabilityTests
     }
 
     [Fact]
-    public void On_macos_constraints_a_decomposed_name_beside_its_precomposed_twin_is_still_refused_natively()
+    public void On_macos_constraints_a_decomposed_name_beside_its_precomposed_twin_both_load_with_a_warning_each()
     {
-        // The two forms are one entry on a default macOS volume: an alias, not a portability issue.
+        // Both forms can coexist only on a volume that does not compare normalized names, and
+        // there they are two files: no native refusal, two portability issues.
         var nfc = "caf" + (char)0x00E9 + ".md";
         var p = new InMemoryBundleProvider(BundleKeyConstraintSets.MacOS).Add(nfc, Doc).Add(Nfd, Doc);
         var bundle = Bundle.Load(p);
+        Assert.Empty(bundle.RejectedKeys);
+        Assert.Empty(bundle.RejectedPrefixes);
+        Assert.DoesNotContain(bundle.ParseProblems, e => e.Error.Contains("collides"));
+        Assert.Equal(2, bundle.PortabilityIssues.Count);
+        Assert.Contains(bundle.PortabilityIssues, i => i.Key.Equals(BundleKey.Parse(nfc)) && i.Reason.Contains("collides with a sibling"));
+        Assert.Contains(bundle.PortabilityIssues, i => i.Key.Equals(BundleKey.Parse(Nfd)) && i.Reason.Contains("U+0301"));
+
+        var strict = Bundle.Load(p, StrictOptions);
+        Assert.Equal(2, strict.ParseProblems.Count);
+        Assert.Contains(strict.ParseProblems, e => e.RawName == nfc && e.Error.Contains("collides with a sibling"));
+    }
+
+    [Theory]
+    [MemberData(nameof(NativeSets))]
+    public void On_every_native_set_two_names_that_differ_only_by_case_both_load_with_a_warning_each(string set, BundleKeyConstraints native)
+    {
+        // A case-sensitive APFS volume or Windows directory holds both, as Linux does: the
+        // default loads both, as `dev` did, and the portable profile reports them.
+        var p = new InMemoryBundleProvider(native).Add("Orders.md", Doc).Add("orders.md", Doc);
+        var bundle = Bundle.Load(p);
+        Assert.Equal(2, bundle.Concepts.Count);
+        Assert.Empty(bundle.ParseProblems);
+        Assert.Equal([BundleKey.Parse("Orders.md"), BundleKey.Parse("orders.md")], bundle.PortabilityIssues.Select(i => i.Key));
+        Assert.Equal(2, BundleValidator.Validate(bundle).Diagnostics.Count(d => d.Code == DiagnosticCode.KeyNotPortable));
+        Assert.Empty(Bundle.Load(p, StrictOptions).Concepts);
+        Assert.NotNull(set);
+    }
+
+    public static TheoryData<string, BundleKeyConstraints> NativeSets => new()
+    {
+        { "Windows", BundleKeyConstraintSets.Windows },
+        { "MacOS", BundleKeyConstraintSets.MacOS },
+        { "Linux", BundleKeyConstraintSets.Linux },
+    };
+
+    [Fact]
+    public void A_provider_that_declares_case_folding_still_refuses_both_spellings_natively()
+    {
+        var p = new InMemoryBundleProvider(BundleKeyConstraintSets.MacOS | BundleKeyConstraints.CaseInsensitiveCollisions).Add("Orders.md", Doc).Add("orders.md", Doc);
+        var bundle = Bundle.Load(p);
+        Assert.Empty(bundle.Concepts);
         Assert.Equal(2, bundle.ParseProblems.Count(e => e.Error.Contains("collides with a sibling")));
         Assert.Empty(bundle.PortabilityIssues);
     }
@@ -246,14 +288,14 @@ public class BundlePortabilityTests
     }
 
     /// <summary>
-    /// End to end on a real filesystem that holds both spellings (Linux): <c>okf validate</c>
-    /// prints what <c>dev</c> printed plus one warning line per name, and still exits 0 —
-    /// warnings never change the exit code.
+    /// End to end on a real filesystem that holds both spellings (Linux, a case-sensitive
+    /// APFS volume or Windows directory): <c>okf validate</c> prints what <c>dev</c> printed
+    /// plus one warning line per name, and still exits 0 — warnings never change the exit
+    /// code. Skipped where the volume folds case, since it cannot hold both names.
     /// </summary>
     [SkippableFact]
     public void Validate_on_a_case_sensitive_filesystem_prints_one_warning_per_colliding_name_and_exits_zero()
     {
-        Skip.If(OperatingSystem.IsWindows() || OperatingSystem.IsMacOS(), "the native set of this OS refuses case collisions whatever the volume");
         using var tmp = new TempDir();
         tmp.Write("Orders.md", Doc);
         tmp.Write("orders.md", Doc);

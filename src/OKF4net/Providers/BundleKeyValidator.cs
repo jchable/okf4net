@@ -52,10 +52,12 @@ public sealed class BundleKeyValidator
     /// <see cref="Rune.ToUpperInvariant(Rune)"/>, no context. This is a <b>conservative
     /// over-approximation</b> of a filesystem upcase table, not an equivalence: it merges
     /// <c>Σ</c>, <c>σ</c> and <c>ς</c>, whereas NTFS keeps <c>σ</c> and <c>ς</c> distinct — so
-    /// under <see cref="BundleKeyPolicy.Native"/> on Windows two such siblings are rejected
-    /// although the volume would hold both (maintainer ruling, plan decision 13: a guard
-    /// fails closed, and the exact table cannot be shipped). Works under invariant
-    /// globalization (full simple case mapping since .NET 8).
+    /// wherever <see cref="BundleKeyConstraints.CaseInsensitiveCollisions"/> applies
+    /// (<see cref="BundleKeyPolicy.Strict"/>, or a provider that declares it) two such
+    /// siblings are flagged although an NTFS volume would hold both (plan decision 13: the
+    /// exact table cannot be shipped). No native set carries the flag, so under the default
+    /// policy they load, with a portability warning. Works under invariant globalization
+    /// (full simple case mapping since .NET 8).
     /// </summary>
     public static string FoldForCollision(string segment)
     {

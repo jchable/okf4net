@@ -20,7 +20,14 @@ public enum BundleKeyConstraints
     /// <summary>A segment's base (before the first <c>.</c>) must not be a reserved Windows device name.</summary>
     WindowsReservedNames = 1 << 2,
 
-    /// <summary>Two siblings must not be equal once folded the way a filesystem upcase table folds.</summary>
+    /// <summary>
+    /// Two siblings must not be equal once folded the way a filesystem upcase table folds.
+    /// A portability rule, in no native set: a provider that matches stored names exactly
+    /// (<see cref="FileSystemBundleProvider"/> does, on every OS) never opens one name's object
+    /// for the other, and on a case-insensitive volume two such names cannot coexist anyway.
+    /// It is part of <see cref="BundleKeyConstraintSets.Strict"/>, and a provider whose storage
+    /// would alias such names declares it.
+    /// </summary>
     CaseInsensitiveCollisions = 1 << 3,
 
     /// <summary>Every segment must pass the NFC quick check (no <c>NFC_QC=No</c> character, no composing mark).</summary>
@@ -30,7 +37,10 @@ public enum BundleKeyConstraints
     /// Two siblings must not be canonically equivalent (APFS compares normalized names):
     /// sibling names are compared in canonical decomposition (<c>CanonicalForm.Decompose</c>),
     /// independently of <see cref="RequireNfc"/> — a decomposed name that the quick check
-    /// refuses is still a file beside its precomposed twin.
+    /// refuses is still a file beside its precomposed twin. A portability rule, in no native
+    /// set, for the same reason as <see cref="CaseInsensitiveCollisions"/>: part of
+    /// <see cref="BundleKeyConstraintSets.Strict"/>, and declared by a provider whose storage
+    /// would alias such names.
     /// </summary>
     UnicodeFormCollisions = 1 << 5,
 
@@ -52,57 +62,69 @@ public enum BundleKeyConstraints
 /// alias: names that cannot be created there, or two names that would designate the same
 /// object. Anything stricter is portability, which belongs to <see cref="Strict"/> and is
 /// reported as a warning under the default <see cref="BundleKeyPolicy.Native"/>.
+/// <para>
+/// Sibling-collision detection (<see cref="BundleKeyConstraints.CaseInsensitiveCollisions"/>,
+/// <see cref="BundleKeyConstraints.UnicodeFormCollisions"/>) is a portability concern, not a
+/// native rule of these sets: <see cref="FileSystemBundleProvider"/> matches the stored name
+/// exactly on every OS, so no key opens another key's object; on a volume that folds case or
+/// Unicode form two such names cannot coexist, and on one that does not (case-sensitive APFS,
+/// a case-sensitive Windows directory, Linux) they are two legitimate files. A host whose
+/// storage would alias them adds the flags through <c>additionalConstraints</c>.
+/// </para>
 /// </summary>
 public static class BundleKeyConstraintSets
 {
     /// <summary>
-    /// NTFS/FAT as Windows exposes them through Win32, on a default (case-insensitive)
-    /// directory. A name ending in <c>.</c> or a space, carrying <c>&lt; &gt; : " | ? *</c>, or
-    /// whose base is a reserved device name (<c>con.md</c>) cannot be created through Win32;
-    /// two siblings that differ only by case are one entry. A case-sensitive directory
-    /// (per-directory flag, WSL) holds such siblings, and this set still refuses them: it fails
-    /// closed there. Names are stored in UTF-16, so an unpaired surrogate is no alias: no
-    /// <see cref="BundleKeyConstraints.WellFormedUnicode"/>.
+    /// NTFS/FAT as Windows exposes them through Win32. A name ending in <c>.</c> or a space,
+    /// carrying <c>&lt; &gt; : " | ? *</c>, or whose base is a reserved device name
+    /// (<c>con.md</c>) cannot be created through Win32. Names are stored in UTF-16, so an
+    /// unpaired surrogate is no alias: no <see cref="BundleKeyConstraints.WellFormedUnicode"/>.
+    /// No collision flag, whether the directory folds case or not (see the class remarks).
     /// </summary>
     public static BundleKeyConstraints Windows =>
         BundleKeyConstraints.TrailingDotOrSpace
         | BundleKeyConstraints.WindowsIllegalCharacters
         | BundleKeyConstraints.WindowsReservedNames
-        | BundleKeyConstraints.CaseInsensitiveCollisions
         | BundleKeyConstraints.FileDirectoryConflict;
 
     /// <summary>
-    /// APFS/HFS+ as macOS formats them by default: case-insensitive and
-    /// normalization-insensitive, so two siblings that differ only by case or Unicode form
-    /// are one entry. No <see cref="BundleKeyConstraints.RequireNfc"/>: HFS+ stores names
-    /// decomposed and APFS keeps whatever form was written, so a decomposed name is an
-    /// ordinary file there. A case-sensitive APFS volume holds siblings that differ only by
-    /// case, and this set still refuses them: it fails closed there. Names are stored in
-    /// UTF-8, hence <see cref="BundleKeyConstraints.WellFormedUnicode"/>.
+    /// APFS/HFS+ as macOS exposes them: names are stored in UTF-8, hence
+    /// <see cref="BundleKeyConstraints.WellFormedUnicode"/>. No
+    /// <see cref="BundleKeyConstraints.RequireNfc"/>: HFS+ stores names decomposed and APFS
+    /// keeps whatever form was written, so a decomposed name is an ordinary file there. No
+    /// collision flag, on a case- and normalization-insensitive volume as on a case-sensitive
+    /// one (see the class remarks).
     /// </summary>
     public static BundleKeyConstraints MacOS =>
-        BundleKeyConstraints.CaseInsensitiveCollisions
-        | BundleKeyConstraints.UnicodeFormCollisions
-        | BundleKeyConstraints.FileDirectoryConflict
+        BundleKeyConstraints.FileDirectoryConflict
         | BundleKeyConstraints.WellFormedUnicode;
 
     /// <summary>
-    /// A POSIX filesystem on a case-sensitive volume: the file/directory conflict and, since
-    /// names are bytes written in UTF-8, <see cref="BundleKeyConstraints.WellFormedUnicode"/>
-    /// beyond the base rules. A host reading a case-insensitive mount (a FAT or NTFS volume, an
-    /// ext4 casefold directory) adds <see cref="BundleKeyConstraints.CaseInsensitiveCollisions"/>
-    /// through <see cref="FileSystemBundleProvider"/>'s <c>additionalConstraints</c>.
+    /// A POSIX filesystem: the file/directory conflict and, since names are bytes written in
+    /// UTF-8, <see cref="BundleKeyConstraints.WellFormedUnicode"/> beyond the base rules. A host
+    /// reading a mount that folds case (a FAT or NTFS volume, an ext4 casefold directory) and
+    /// wants such siblings refused at load adds
+    /// <see cref="BundleKeyConstraints.CaseInsensitiveCollisions"/> through
+    /// <see cref="FileSystemBundleProvider"/>'s <c>additionalConstraints</c>.
     /// </summary>
     public static BundleKeyConstraints Linux => BundleKeyConstraints.FileDirectoryConflict | BundleKeyConstraints.WellFormedUnicode;
 
     /// <summary>
-    /// The union of every known set, plus <see cref="BundleKeyConstraints.RequireNfc"/> (no
-    /// storage requires it, but a name in NFC is spelled the same way on every one): a key
-    /// valid here is valid on every provider. The set of <see cref="BundleKeyPolicy.Strict"/>.
+    /// The union of every known set, plus the portability rules no native set carries:
+    /// <see cref="BundleKeyConstraints.CaseInsensitiveCollisions"/>,
+    /// <see cref="BundleKeyConstraints.UnicodeFormCollisions"/> (siblings that would be one
+    /// entry on a volume that folds case or Unicode form) and
+    /// <see cref="BundleKeyConstraints.RequireNfc"/> (no storage requires it, but a name in NFC
+    /// is spelled the same way on every one). A key valid here is valid on every provider. The
+    /// set of <see cref="BundleKeyPolicy.Strict"/>.
     /// </summary>
-    public static BundleKeyConstraints Strict => Windows | MacOS | Linux | BundleKeyConstraints.RequireNfc;
+    public static BundleKeyConstraints Strict =>
+        Windows | MacOS | Linux
+        | BundleKeyConstraints.CaseInsensitiveCollisions
+        | BundleKeyConstraints.UnicodeFormCollisions
+        | BundleKeyConstraints.RequireNfc;
 
-    /// <summary>The set for the operating system this process runs on, on its default volumes. The real boundary is the volume, not the OS (spec §2): see each set for what it assumes.</summary>
+    /// <summary>The set for the operating system this process runs on. The real boundary is the volume, not the OS (spec §2): see each set for what it assumes.</summary>
     public static BundleKeyConstraints ForCurrentOperatingSystem() =>
         OperatingSystem.IsWindows() ? Windows
         : OperatingSystem.IsMacOS() ? MacOS
