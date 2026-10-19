@@ -7,15 +7,15 @@ namespace OKF4net.Tests.Providers;
 /// <summary>
 /// The listing scope of <see cref="FileSystemBundleProvider"/> (issue #205): inside one load or
 /// one validation each directory is listed once; nothing learned there is used after it.
-/// Every provider here carries the folding flag, so the exact-case path — the one that lists
-/// directories per key — runs on every OS, Linux included.
+/// The exact-name path — the one that lists directories per key — runs on every OS, Linux
+/// included, so the default provider is the one under test.
 /// </summary>
 public class FileSystemBundleProviderScopeTests
 {
     private static BundleKey K(string s) => BundleKey.Parse(s);
 
     private static FileSystemBundleProvider Exact(string root, BundleLimits? limits = null) =>
-        new(root, additionalConstraints: BundleKeyConstraints.CaseInsensitiveCollisions, limits: limits);
+        new(root, limits: limits);
 
     private static string Concept(string title, string? resource = null) =>
         "---\ntype: guide\ntitle: " + title + "\ndescription: d\n"
@@ -123,17 +123,13 @@ public class FileSystemBundleProviderScopeTests
         Assert.DoesNotContain("c004", Ids(next));
     }
 
-    [SkippableTheory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void A_case_only_rename_between_two_loads_is_seen_by_the_second(bool foldingFlag)
+    [Fact]
+    public void A_case_only_rename_between_two_loads_is_seen_by_the_second()
     {
-        Skip.IfNot(foldingFlag || OperatingSystem.IsWindows() || OperatingSystem.IsMacOS(), "the default provider matches case exactly only on Windows and macOS");
         using var tmp = new TempDir();
         tmp.Write("Topic.md", Concept("Topic"));
         tmp.Write("other.md", Concept("Other"));
-        var p = foldingFlag ? Exact(tmp.Path) : new FileSystemBundleProvider(tmp.Path);
-        Assert.True(p.MatchesCaseExactly);
+        var p = Exact(tmp.Path);
 
         var first = Bundle.Load(p);
         Assert.Equal(["Topic", "other"], Ids(first).Order(StringComparer.Ordinal));

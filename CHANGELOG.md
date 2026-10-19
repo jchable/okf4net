@@ -60,10 +60,11 @@ and this project adheres to
   already skipped from `IndexFiles`), now gives `null`.
 - **Exact-case resource resolution** on case-folding volumes (Windows, macOS):
   `references/a.sql` no longer resolves `References/A.sql`; it is `Missing`.
-  A Linux host on a case-insensitive mount must pass
-  `additionalConstraints: BundleKeyConstraints.CaseInsensitiveCollisions` to
-  `FileSystemBundleProvider` for exact-case matching: `Strict` alone does not
-  turn it on. Exact matching lists the directory of each path segment; within
+  `FileSystemBundleProvider` always matches the stored name, on every OS and
+  every volume (a case-insensitive mount under Linux included); a Linux host on
+  such a mount adds `additionalConstraints:
+  BundleKeyConstraints.CaseInsensitiveCollisions` so that the loader also
+  rejects siblings that collide there. Exact matching lists the directory of each path segment; within
   one `Bundle.Load` or one `BundleValidator.Validate`, each directory is listed
   once and its entry names are reused by every later lookup of that call (up to
   the provider's `BundleLimits.MaxEntries` names in all, past which it lists
@@ -73,6 +74,10 @@ and this project adheres to
   process during that time may not be seen until it ends (a deletion is seen,
   through the final existence check); the reparse-point and confinement checks
   still run at every access.
+- **A directory whose listing is denied or fails is "no such entry" on every
+  OS**, as it already was on Windows and macOS: a key under it is `Missing`,
+  never read. Under Linux, an execute-only directory (`--x`) is the one input
+  whose answer changes: a file in it was read by its joined path before.
 - **A directory the walk is about to list whose link status cannot be
   determined now aborts the load** with `BundleLoadException`: the provider's
   walk inspects every directory STRICTly (it and each directory between it and

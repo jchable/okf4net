@@ -14,7 +14,9 @@ namespace OKF4net.Providers;
 /// is counted before the skip and before sorting, and with a confinement boundary the
 /// chain boundary→root is re-checked before every storage access. Versions are SHA-256
 /// of content; the bundle token is a digest of the listing (name, length, mtime),
-/// deliberately weak and never used for pinning. Within one load or one validation, each
+/// deliberately weak and never used for pinning. A key is matched against the stored names
+/// exactly (ordinal, segment by segment) on every OS and every volume, case-insensitive or
+/// not (spec §8). Within one load or one validation, each
 /// directory's entry names are listed once for sequential lookups and reused (<c>IProviderScope.BeginScope</c>);
 /// nothing is kept past it.
 /// </summary>
@@ -40,9 +42,12 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// (a catalog root) makes the root itself subject to the STRICT guards on every access;
     /// without it the root is trusted host configuration, as today.
     /// <paramref name="additionalConstraints"/> is OR-ed into the OS's native set and can only
-    /// add rules (a folding flag also turns exact-case matching on, for a case-insensitive
-    /// mount on Linux); <paramref name="limits"/> bounds <see cref="Read"/>, which the
-    /// interface gives no per-call limits.
+    /// add rules: a host on a case-insensitive mount under Linux adds
+    /// <see cref="BundleKeyConstraints.CaseInsensitiveCollisions"/> so that the loader also
+    /// rejects siblings that collide there. The folding flags matter only for those collision
+    /// checks; exact matching of the stored name does not depend on them, it is always on.
+    /// <paramref name="limits"/> bounds <see cref="Read"/>, which the interface gives no
+    /// per-call limits.
     /// </summary>
     public FileSystemBundleProvider(string root, string? confinementBoundary = null, BundleKeyConstraints additionalConstraints = BundleKeyConstraints.None, BundleLimits? limits = null)
     {
@@ -52,9 +57,6 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
         ConfinementBoundary = confinementBoundary is null ? null : ReparsePoints.CanonicalizeRoot(confinementBoundary);
         NativeConstraints = BundleKeyConstraintSets.ForCurrentOperatingSystem() | additionalConstraints;
         _limits = limits ?? BundleLimits.Default;
-        MatchesCaseExactly = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
-            || NativeConstraints.HasFlag(BundleKeyConstraints.CaseInsensitiveCollisions)
-            || NativeConstraints.HasFlag(BundleKeyConstraints.UnicodeFormCollisions);
     }
 
     /// <summary>The root as given (also <see cref="Location"/>).</summary>
@@ -62,9 +64,6 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
 
     /// <summary>The canonical boundary every access is re-checked against, or <see langword="null"/>.</summary>
     public string? ConfinementBoundary { get; }
-
-    /// <summary>Whether keys are matched segment by segment against the real entry names (spec §2's correspondence rule). On by the OS or by a folding flag; never off by a caller.</summary>
-    public bool MatchesCaseExactly { get; }
 
     /// <inheritdoc/>
     public string Id => _fullRoot;
@@ -107,7 +106,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// provider's <see cref="BundleLimits.MaxEntries"/>; a listing that would pass it is not
     /// kept, and from then on the scope stops memoising and every later lookup lists, as without
     /// a scope. Never an exception for that reason.</para>
-    /// <para><b>Accepted window.</b> With exact matching, the name-to-entry correspondence is
+    /// <para><b>Accepted window.</b> The name-to-entry correspondence is
     /// established when a directory is first listed in the scope, not at each access: a
     /// case-only rename made by another process during a load or a validation can make a later
     /// access of the same scope open the renamed entry under its former name on a case-folding
@@ -176,13 +175,13 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
         var start = _fullRoot;
         if (prefix is not null)
         {
-            var resolved = ResolveExact(prefix, out var ancestorsGuarded);
+            var resolved = ResolveExact(prefix);
             if (resolved is null)
             {
                 return Array.Empty<BundleListing>();
             }
 
-            GuardResolved(prefix, resolved, ancestorsGuarded); // a junction prefix is refused, not walked
+            GuardResolved(prefix, resolved); // a junction prefix is refused, not walked
             if (!Directory.Exists(resolved))
             {
                 return Array.Empty<BundleListing>();
@@ -221,8 +220,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     {
         ArgumentNullException.ThrowIfNull(key);
         CheckBoundary();
-        var path = ResolveExact(key, out var ancestorsGuarded) ?? throw new BundleObjectNotFoundException(key);
-        GuardResolved(key, path, ancestorsGuarded);
+        var path = ResolveExact(key) ?? throw new BundleObjectNotFoundException(key);
+        GuardResolved(key, path);
         if (!File.Exists(path))
         {
             throw new BundleObjectNotFoundException(key);
@@ -261,11 +260,11 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// <remarks>
     /// Refuses, like <see cref="Read"/>, rather than answering <see langword="false"/>, when the
     /// key or its path is refused: outside the confinement boundary, through a reparse point, or
-    /// through an entry that cannot be inspected. With exact matching
-    /// (<see cref="MatchesCaseExactly"/>), a directory on the path that cannot be listed — the
-    /// listing is denied, or fails with any other I/O error — answers <see langword="false"/>,
-    /// as an absent entry does: no object is read and nothing outside the root is reached.
-    /// Without exact matching nothing is listed, so that carve-out does not arise.
+    /// through an entry that cannot be inspected. A directory on the path that cannot be
+    /// listed — the listing is denied (an execute-only directory on Unix), or fails with any
+    /// other I/O error — answers <see langword="false"/> on every OS, as an absent entry does,
+    /// since exact matching must list it: no object is read and nothing outside the root is
+    /// reached.
     /// </remarks>
     /// <exception cref="BundleAccessRefusedException">The key or its path is refused.</exception>
     public bool Exists(BundleKey key)
@@ -276,16 +275,15 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
         // entry): a link is not "absent", and the caller (Bundle.TryResolveResourceKey) reports
         // the refusal as Unsafe. No present/absent leak: every traversed directory is STRICT
         // guarded before it is listed, so under a junction both a present and an absent name
-        // are refused. A genuinely absent entry, a name that cannot be a literal name and, with
-        // exact matching, a parent listing that is denied or fails are "no such entry", not
-        // refusals.
-        var path = ResolveExact(key, out var ancestorsGuarded);
+        // are refused. A genuinely absent entry, a name that cannot be a literal name and a
+        // parent listing that is denied or fails are "no such entry", not refusals.
+        var path = ResolveExact(key);
         if (path is null)
         {
             return false;
         }
 
-        GuardResolved(key, path, ancestorsGuarded);
+        GuardResolved(key, path);
         return File.Exists(path);
     }
 
@@ -330,23 +328,15 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     }
 
     /// <summary>
-    /// The read gate for a path <see cref="ResolveExact"/> returned. When
-    /// <paramref name="ancestorsGuarded"/> is <see langword="true"/> (the exact-case branch),
-    /// every directory between the root and <paramref name="path"/> was already STRICT-inspected
-    /// by that same call, before it was listed, so only the leaf is left: it must be under the
-    /// root and must itself be neither a reparse point nor uninspectable (one inspection).
-    /// Otherwise (the joined-path branch, which inspects nothing) <see cref="GuardStrict"/>
-    /// inspects the leaf and every ancestor up to the root. The root itself is never inspected
-    /// here, in either case.
+    /// The read gate for a path <see cref="ResolveExact"/> returned. Every directory between
+    /// the root and <paramref name="path"/> was already STRICT-inspected by that same call,
+    /// before it was listed, so only the leaf is left: it must be under the root and must itself
+    /// be neither a reparse point nor uninspectable (one inspection). Together they cover what
+    /// <see cref="GuardStrict"/> inspects — the leaf and every ancestor up to the root — and,
+    /// like it, never inspect the root itself.
     /// </summary>
-    private void GuardResolved(BundleKey key, string path, bool ancestorsGuarded)
+    private void GuardResolved(BundleKey key, string path)
     {
-        if (!ancestorsGuarded)
-        {
-            GuardStrict(key, path);
-            return;
-        }
-
         if (!ReparsePoints.IsWithin(_fullRoot, path, PathComparison)
             || (!string.Equals(path, _fullRoot, PathComparison) && ReparsePoints.IsReparsePointOrUninspectable(path)))
         {
@@ -367,11 +357,13 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     }
 
     /// <summary>
-    /// Maps a key to its on-disk path. With <see cref="MatchesCaseExactly"/>, each segment must
-    /// match an existing entry's name <b>exactly</b> (ordinal) — spec §2's correspondence rule —
-    /// else <see langword="null"/>. Otherwise the OS compares bytes already and the joined path
-    /// is returned as is.
-    /// <para><b>Cost (exact matching).</b> Each segment is passed to
+    /// Maps a key to its on-disk path: each segment must match an existing entry's name
+    /// <b>exactly</b> (ordinal) — spec §2's correspondence rule — else <see langword="null"/>.
+    /// This runs on every OS: whether a volume folds case or Unicode form is a property of the
+    /// volume, not of the OS (a vfat, NTFS, exFAT or CIFS mount, or a case-insensitive ext4
+    /// directory, under Linux), so the provider never leaves the comparison to the OS. A
+    /// directory whose listing is denied or fails is therefore "no such entry" everywhere.
+    /// <para><b>Cost.</b> Each segment is passed to
     /// <see cref="DirectoryInfo.EnumerateFileSystemInfos(string, SearchOption)"/> as a search
     /// pattern, but .NET does not hand the pattern to the OS: on Windows the enumerator asks
     /// <c>NtQueryDirectoryFile</c> for every entry (no file-name filter), on Unix it reads every
@@ -394,18 +386,15 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// up with the pattern <c>*</c> and compared ordinally (<see cref="NeedsFullListing"/>).
     /// Each traversed directory is still STRICT-guarded before it is listed, ahead of this
     /// rule.</para>
-    /// <para><b>Guarding (exact matching).</b> Each traversed directory below the root is
+    /// <para><b>Guarding.</b> Each traversed directory below the root is
     /// STRICT-inspected once, on its own (<see cref="ReparsePoints.IsReparsePointOrUninspectable"/>),
     /// before it is listed: every one of its ancestors below the root was inspected at an
     /// earlier level of the same call, so re-walking them would inspect nothing new. The root is
     /// skipped, as everywhere in the per-key guards (<see cref="CheckBoundary"/> covers it when a
-    /// boundary is set). <paramref name="ancestorsGuarded"/> is then <see langword="true"/> and
-    /// the caller's <see cref="GuardResolved"/> inspects the leaf alone, so for a key
-    /// <c>a/b/c.md</c> the entries <c>a</c>, <c>a/b</c> and <c>a/b/c.md</c> are each inspected
-    /// exactly once before the object is opened. Without exact matching nothing is inspected
-    /// here, <paramref name="ancestorsGuarded"/> is <see langword="false"/>, and the caller runs
-    /// the full <see cref="GuardStrict"/> walk.</para>
-    /// <para><b>Accepted window.</b> With exact matching, a directory on the path is inspected
+    /// boundary is set). The caller's <see cref="GuardResolved"/> then inspects the leaf alone,
+    /// so for a key <c>a/b/c.md</c> the entries <c>a</c>, <c>a/b</c> and <c>a/b/c.md</c> are
+    /// each inspected exactly once before the object is opened.</para>
+    /// <para><b>Accepted window.</b> A directory on the path is inspected
     /// once, when this call reaches it, and is not re-inspected by a second walk at read time: a
     /// directory replaced by a junction after its own inspection is not seen by the remaining
     /// listings of this call, by the leaf check, nor by the final open or <c>File.Exists</c>, so
@@ -424,22 +413,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// call, before the names are used, and the leaf check and the open still follow, so nothing
     /// outside the root and no reparse point is reached that an unmemoised lookup would refuse.</para>
     /// </summary>
-    private string? ResolveExact(BundleKey key, out bool ancestorsGuarded)
+    private string? ResolveExact(BundleKey key)
     {
-        if (!MatchesCaseExactly)
-        {
-            ancestorsGuarded = false;
-            var parts = new string[key.Segments.Count + 1];
-            parts[0] = _fullRoot;
-            for (var i = 0; i < key.Segments.Count; i++)
-            {
-                parts[i + 1] = key.Segments[i];
-            }
-
-            return Path.Combine(parts);
-        }
-
-        ancestorsGuarded = true;
         var memo = ActiveMemo;
         var current = _fullRoot;
         foreach (var segment in key.Segments)

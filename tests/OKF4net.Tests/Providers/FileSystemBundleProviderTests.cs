@@ -125,13 +125,6 @@ public class FileSystemBundleProviderTests
         Assert.Empty(p.Enumerate(null, BundleLimits.Default)); // the walk skips the junction entry and lists nothing under it
     }
 
-    /// <summary>The OS's own provider and one with exact-case matching forced on, so the exact branch of the resolver runs on Linux too.</summary>
-    private static FileSystemBundleProvider[] BothResolvers(string root) =>
-        [
-            new FileSystemBundleProvider(root),
-            new FileSystemBundleProvider(root, additionalConstraints: BundleKeyConstraints.CaseInsensitiveCollisions),
-        ];
-
     [SkippableFact]
     public void A_junction_two_levels_down_is_refused_at_its_own_level_and_its_sibling_still_reads()
     {
@@ -145,20 +138,18 @@ public class FileSystemBundleProviderTests
         using var tmp = new TempDir();
         tmp.Write("a/ok.md", "ok");
         Skip.IfNot(tmp.TryCreateJunctionToExternalDir(Path.Combine("a", "j"), external.Path), "junctions unavailable");
-        foreach (var p in BothResolvers(tmp.Path))
-        {
-            Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("a/j/x.md")));
-            Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("a/j/x.md")));
-            Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("a/j/absent.md")));
-            Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("a/j/absent.md")));
-            Assert.Throws<BundleAccessRefusedException>(() => p.Enumerate(K("a/j"), BundleLimits.Default));
-            Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("a/j")));
-            Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("a/j")));
-            Assert.True(p.Exists(K("a/ok.md")));
-            using var ok = p.Read(K("a/ok.md"));
-            Assert.Equal(2, ok.Length);
-            Assert.Equal(["a/ok.md"], p.Enumerate(K("a"), BundleLimits.Default).Select(l => l.RawName)); // the walk skips the junction
-        }
+        var p = new FileSystemBundleProvider(tmp.Path);
+        Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("a/j/x.md")));
+        Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("a/j/x.md")));
+        Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("a/j/absent.md")));
+        Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("a/j/absent.md")));
+        Assert.Throws<BundleAccessRefusedException>(() => p.Enumerate(K("a/j"), BundleLimits.Default));
+        Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("a/j")));
+        Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("a/j")));
+        Assert.True(p.Exists(K("a/ok.md")));
+        using var ok = p.Read(K("a/ok.md"));
+        Assert.Equal(2, ok.Length);
+        Assert.Equal(["a/ok.md"], p.Enumerate(K("a"), BundleLimits.Default).Select(l => l.RawName)); // the walk skips the junction
     }
 
     [SkippableFact]
@@ -171,14 +162,12 @@ public class FileSystemBundleProviderTests
         using var tmp = new TempDir();
         tmp.Write("d/real.md", "real");
         Skip.IfNot(tmp.TryCreateFileSymlink(Path.Combine("d", "link.md"), Path.Combine("d", "real.md")), "symlinks unavailable");
-        foreach (var p in BothResolvers(tmp.Path))
-        {
-            Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("d/link.md")));
-            Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("d/link.md")));
-            Assert.True(p.Exists(K("d/real.md")));
-            using var real = p.Read(K("d/real.md"));
-            Assert.Equal(4, real.Length);
-        }
+        var p = new FileSystemBundleProvider(tmp.Path);
+        Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("d/link.md")));
+        Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("d/link.md")));
+        Assert.True(p.Exists(K("d/real.md")));
+        using var real = p.Read(K("d/real.md"));
+        Assert.Equal(4, real.Length);
     }
 
     [SkippableFact]
@@ -243,7 +232,6 @@ public class FileSystemBundleProviderTests
         using var tmp = new TempDir();
         tmp.Write("References/A.sql", "select 1");
         var p = new FileSystemBundleProvider(tmp.Path);
-        Assert.True(p.MatchesCaseExactly);
         Assert.True(p.Exists(K("References/A.sql")));
         Assert.False(p.Exists(K("references/a.sql")));
         Assert.Throws<BundleObjectNotFoundException>(() => p.Read(K("references/a.sql")));
@@ -254,14 +242,48 @@ public class FileSystemBundleProviderTests
     }
 
     [Fact]
-    public void Constraints_can_be_added_never_removed_and_a_folding_flag_turns_exact_case_on_anywhere()
+    public void The_default_provider_matches_the_stored_name_exactly_on_every_OS()
+    {
+        // No folding flag: the exact branch must run by itself, on Linux too, where a vfat,
+        // NTFS, exFAT or CIFS mount (or a case-insensitive ext4 directory) folds case although
+        // the OS does not. Such a mount cannot be created here; the listing count shows the
+        // exact branch ran, and Windows and macOS (case-insensitive by default) show its answer.
+        using var tmp = new TempDir();
+        tmp.Write("a/stored.sql", "x");
+        var p = new FileSystemBundleProvider(tmp.Path);
+        Assert.Equal(BundleKeyConstraintSets.ForCurrentOperatingSystem(), p.NativeConstraints);
+        var before = p.DirectoryListings;
+        Assert.True(p.Exists(K("a/stored.sql")));
+        Assert.Equal(2, p.DirectoryListings - before); // the root, then "a": one listing per segment
+        Assert.False(p.Exists(K("a/STORED.sql")));
+        Assert.False(p.Exists(K("A/stored.sql")));
+        Assert.Throws<BundleObjectNotFoundException>(() => p.Read(K("a/Stored.sql")));
+        Assert.Empty(p.Enumerate(K("A"), BundleLimits.Default));
+    }
+
+    [SkippableFact]
+    public void On_a_case_sensitive_volume_names_differing_only_by_case_each_resolve_to_themselves()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.sql", "lower");
+        tmp.Write("A.sql", "UPPER!");
+        Skip.If(Directory.GetFiles(tmp.Path).Length != 2, "needs a case-sensitive volume (Linux)");
+        var p = new FileSystemBundleProvider(tmp.Path);
+        using var lower = p.Read(K("a.sql"));
+        using var upper = p.Read(K("A.sql"));
+        Assert.Equal(5, lower.Length);
+        Assert.Equal(6, upper.Length);
+        Assert.False(p.Exists(K("a.SQL")));
+    }
+
+    [Fact]
+    public void Constraints_can_be_added_never_removed()
     {
         using var tmp = new TempDir();
         tmp.Write("a/UP.sql", "x");
         var p = new FileSystemBundleProvider(tmp.Path, additionalConstraints: BundleKeyConstraints.None);
         Assert.Equal(BundleKeyConstraintSets.ForCurrentOperatingSystem(), p.NativeConstraints);
         var folding = new FileSystemBundleProvider(tmp.Path, additionalConstraints: BundleKeyConstraints.CaseInsensitiveCollisions);
-        Assert.True(folding.MatchesCaseExactly); // on Linux too (a case-insensitive mount, decision 15)
         Assert.True(folding.NativeConstraints.HasFlag(BundleKeyConstraints.CaseInsensitiveCollisions));
         Assert.True(folding.NativeConstraints.HasFlag(BundleKeyConstraintSets.ForCurrentOperatingSystem()));
         Assert.True(folding.Exists(K("a/UP.sql")));
@@ -396,8 +418,7 @@ public class FileSystemBundleProviderTests
         using var tmp = new TempDir();
         tmp.Write("*.sql", "star");
         tmp.Write("a.sql", "a");
-        var p = new FileSystemBundleProvider(tmp.Path, additionalConstraints: BundleKeyConstraints.CaseInsensitiveCollisions); // exact-case matching on: ResolveExact runs
-        Assert.True(p.MatchesCaseExactly);
+        var p = new FileSystemBundleProvider(tmp.Path);
         Assert.True(p.Exists(K("*.sql")));
         using var star = p.Read(K("*.sql"));
         Assert.Equal(4, star.Length);
@@ -421,8 +442,7 @@ public class FileSystemBundleProviderTests
         using var tmp = new TempDir();
         tmp.Write(name, "exact");
         tmp.Write("decoy.sql", "decoy");
-        var p = new FileSystemBundleProvider(tmp.Path, additionalConstraints: BundleKeyConstraints.CaseInsensitiveCollisions); // exact-case matching on: ResolveExact runs
-        Assert.True(p.MatchesCaseExactly);
+        var p = new FileSystemBundleProvider(tmp.Path);
         var key = K(name);
         Assert.True(p.Exists(key));
         using var obj = p.Read(key);

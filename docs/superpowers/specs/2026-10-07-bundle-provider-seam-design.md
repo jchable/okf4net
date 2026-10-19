@@ -359,8 +359,15 @@ Windows.
 
 Le filesystem déduit ses contraintes de l'OS par défaut. **La vraie frontière est
 le volume, pas l'OS** (dossier rendu sensible à la casse sous Windows, APFS
-sensible à la casse, montage vfat/NTFS sous Linux) ; la documentation dit qu'un
-tel hôte doit rester en `Strict`.
+sensible à la casse, montage vfat/NTFS/exFAT/CIFS ou dossier ext4 insensible à
+la casse sous Linux). Deux garanties distinctes en découlent. La **correspondance
+exacte** (ci-dessous) est celle du provider lui-même : il la tient sur tout OS et
+tout volume, sans dépendre de la politique ni des contraintes déclarées. La
+**portabilité des collisions entre frères** relève de `Strict` : un hôte sous
+Linux dont le bundle est sur un volume qui ignore la casse reste en `Strict`, ou
+ajoute `CaseInsensitiveCollisions` aux contraintes natives du provider
+(`additionalConstraints`), pour que le chargement écarte aussi les frères qui y
+entrent en collision.
 
 **Couche 3 — politique de portabilité (choisie par l'hôte, jamais par le
 contenu).**
@@ -889,10 +896,13 @@ la source l'est. `catalog.json` est de la configuration d'opérateur.
   lecture et l'écriture), confinement sous la racine, revérification tardive
   avant écriture, registre de verrous.
 - Il déclare ses contraintes natives d'après l'OS (§2), et il garantit la
-  **correspondance exacte** (§2) : sur un volume qui ignore la casse ou la forme
-  Unicode, il compare le nom réel de chaque segment, comme
-  `ExistsWithExactCase` le fait aujourd'hui, avant de lire, d'écrire ou de
-  supprimer.
+  **correspondance exacte** (§2) sur tout OS : il compare le nom réel de chaque
+  segment, comme `ExistsWithExactCase` le fait aujourd'hui, avant de lire,
+  d'écrire ou de supprimer. Il le fait même là où l'OS ne replie pas la casse,
+  car c'est le volume qui en décide (un montage vfat sous Linux ignore la casse) ;
+  un dossier dont le listing est refusé ou échoue est donc « aucune entrée »
+  partout. Cette garantie ne dépend ni de la politique — `Strict` gouverne la
+  portabilité des collisions entre frères — ni des contraintes ajoutées.
 - Il crée lui-même les dossiers parents lors d'un `Write`, après la garde STRICT
   des ancêtres (§3). Une suppression laisse les dossiers vides en place : un
   dossier vide ne contient aucune clé, donc il n'existe pas pour la couture.
