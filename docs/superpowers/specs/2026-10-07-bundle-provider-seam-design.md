@@ -864,8 +864,13 @@ Finies **pour tous les providers, filesystem compris**.
 > **Note du 2026-10-19 (arbitrage du mainteneur).** Défaut `Native`, parce que
 > l'OKF §11 n'impose aucune contrainte de nommage ni de taille ; `Strict` est un
 > profil sur option. Les bornes sont relevées à 256 Mio par objet, 10 000 000
-> entrées et une profondeur de 256 : finies, pour qu'un provider hostile ou
+> entrées et une profondeur de 1 024 : finies, pour qu'un provider hostile ou
 > emballé ne puisse pas épuiser la mémoire, mais hors de portée d'un bundle réel.
+> La profondeur, fixée d'abord à 256, compte chaque nom listé (`node_modules`,
+> `.git` et fichiers non-`.md` compris) : un arbre valide de 257 niveaux, ou un
+> `node_modules` de 300 sans aucun `.md`, que `dev` chargeait, faisait échouer
+> le chargement ; 1 024 est hors de portée, une clé `.md` ne pouvant dépasser
+> 512 segments (1 024 octets).
 > La longueur de clé reste à 1 024 octets (règle de base de la couche 1). Un hôte
 > qui lit un stockage non fiable les abaisse. Le tableau ci-dessous garde les
 > valeurs validées à l'origine.
@@ -1134,7 +1139,7 @@ l'arbitrage du 2026-10-08).
 
     > **Note du 2026-10-19 (arbitrage du mainteneur) :** défaut `Native`, parce
     > que l'OKF §11 n'impose aucune contrainte de nommage ni de taille ; `Strict`
-    > est un profil sur option ; bornes relevées à 256 Mio / 10 000 000 / 256.
+    > est un profil sur option ; bornes relevées à 256 Mio / 10 000 000 / 1 024.
     > Seul ce que le stockage ne peut pas contenir ou confondrait est écarté (sous
     > Windows, `con.md` reste refusé : aucun nom de ce genre ne se crée par
     > Win32) ; le reste se charge comme sur `dev`, avec un avertissement

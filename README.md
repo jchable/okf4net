@@ -243,7 +243,8 @@ colliding siblings refused at load rather than reported adds
 `additionalConstraints: BundleKeyConstraints.CaseInsensitiveCollisions` (or
 `UnicodeFormCollisions`). Default bounds, finite but
 out of reach of real bundles: 256 MiB per object, 10 000 000 entries, depth
-256, keys of 1 024 bytes; hosts reading untrusted storage should lower them.
+1 024 (every listed name counted, `node_modules` included), keys of 1 024
+bytes; hosts reading untrusted storage should lower them.
 Every rejected `.md` name is a `Bundle.ParseProblems` entry (and a
 `ParseErrors` line); other rejected names are skipped silently. In this
 release the filesystem provider is read-only and no other provider ships; the

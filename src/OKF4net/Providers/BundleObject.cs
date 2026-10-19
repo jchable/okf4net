@@ -79,8 +79,13 @@ public sealed record BundleLimits
     /// <summary>Largest listing, every entry counted whatever its name (10 000 000).</summary>
     public int MaxEntries { get; init; } = 10_000_000;
 
-    /// <summary>Deepest key, in segments (256).</summary>
-    public int MaxDepth { get; init; } = 256;
+    /// <summary>
+    /// Deepest name a listing may hold, in segments (1 024). Every listed name counts,
+    /// <c>.git</c>, <c>node_modules</c> and non-<c>.md</c> files included, so the default sits
+    /// well above the deepest key the 1 024-byte <see cref="BundleKey.MaxUtf8Bytes"/> admits
+    /// (at most 512 segments).
+    /// </summary>
+    public int MaxDepth { get; init; } = 1024;
 
     /// <summary>Longest key, in UTF-8 bytes (1 024; also <see cref="BundleKey.MaxUtf8Bytes"/>).</summary>
     public int MaxKeyBytes { get; init; } = BundleKey.MaxUtf8Bytes;

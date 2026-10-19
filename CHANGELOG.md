@@ -33,11 +33,13 @@ and this project adheres to
 
 - **Finite default bounds on loading** (spec §6), out of reach of real
   bundles: a concept over 256 MiB is a `ParseErrors` entry instead of being
-  loaded; a listing over 10 000 000 entries (every entry counted,
-  `.git`/`node_modules` included) or deeper than 256 segments aborts the load
-  with `BundleLoadException`. They exist so that a hostile or runaway provider
-  cannot exhaust memory; hosts reading untrusted storage should lower them
-  (`BundleLimits`). A `.md` whose key (its path under the root) exceeds 1 024
+  loaded; a listing over 10 000 000 entries or holding a name deeper than
+  1 024 segments (every entry counted, `.git`/`node_modules` and non-`.md`
+  files included) aborts the load with `BundleLoadException`. No `.md` key can
+  be deeper than 512 segments (the 1 024-byte key limit below), so the depth
+  bound stays out of reach of any real tree. The bounds exist so that a
+  hostile or runaway provider cannot exhaust memory; hosts reading untrusted
+  storage should lower them (`BundleLimits`). A `.md` whose key (its path under the root) exceeds 1 024
   UTF-8 bytes is a `ParseErrors` entry too; that is the key's own limit
   (`BundleKey.MaxUtf8Bytes`), which a larger `BundleLimits.MaxKeyBytes` does
   not lift.

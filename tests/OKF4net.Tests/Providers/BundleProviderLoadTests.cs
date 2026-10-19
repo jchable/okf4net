@@ -342,6 +342,44 @@ public class BundleProviderLoadTests
         Assert.NotNull(bundle.Get(ConceptId.Parse(deep[..^3])));
     }
 
+    /// <summary>
+    /// The depth bound counts every listed name, <c>.md</c> or not, <c>node_modules</c>
+    /// included, so its default (1 024) sits far above any real tree: a 300-deep concept and a
+    /// 300-deep <c>node_modules</c> chain holding no <c>.md</c> both loaded on <c>dev</c>, and
+    /// both load here. A host that sets a smaller bound still gets the abort.
+    /// </summary>
+    [Fact]
+    public void A_300_deep_tree_loads_under_the_default_bounds_and_an_explicit_smaller_bound_aborts()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("ok.md", Customers);
+        var deep = string.Join('/', Enumerable.Repeat("d", 299)) + "/deep.md"; // 300 segments, 603 bytes
+        tmp.Write(deep, Customers);
+        tmp.Write("node_modules/" + string.Join('/', Enumerable.Repeat("n", 299)) + "/f.js", "x"); // 301 segments
+
+        var bundle = Bundle.Load(tmp.Path);
+        Assert.Empty(bundle.ParseProblems);
+        Assert.Equal([ConceptId.Parse(deep[..^3]), ConceptId.Parse("ok")], bundle.Concepts.Select(c => c.Id));
+
+        var ex = Assert.Throws<BundleLoadException>(() => Bundle.Load(new FileSystemBundleProvider(tmp.Path), new BundleLoadOptions { Limits = new BundleLimits { MaxDepth = 64 } }));
+        Assert.Contains("depth bound (64)", ex.Message);
+    }
+
+    [Fact]
+    public void The_default_depth_bound_admits_1024_segments_and_refuses_1025()
+    {
+        // Measured on the raw name, whatever it is: a non-.md file deeper than any key could be.
+        var atBound = new InMemoryBundleProvider { ObeyLimits = false }
+            .Add("ok.md", Customers)
+            .Add(string.Join('/', Enumerable.Repeat("n", 1023)) + "/f.js", "x");
+        Assert.Equal([ConceptId.Parse("ok")], Bundle.Load(atBound).Concepts.Select(c => c.Id));
+
+        var past = new InMemoryBundleProvider { ObeyLimits = false }
+            .Add("ok.md", Customers)
+            .Add(string.Join('/', Enumerable.Repeat("n", 1024)) + "/f.js", "x");
+        Assert.Contains("depth bound (1024)", Assert.Throws<BundleLoadException>(() => Bundle.Load(past)).Message);
+    }
+
     [Fact]
     public void The_core_enforces_entries_depth_and_key_bytes_even_when_the_provider_does_not()
     {
