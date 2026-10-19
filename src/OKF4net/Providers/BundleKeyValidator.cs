@@ -231,12 +231,17 @@ public sealed class BundleKeyValidator
             var groups = new Dictionary<(string Parent, string Folded), HashSet<string>>();
             // Prefix-only entries too: `docs` implied by an over-long `docs/…` still collides
             // with a listed `Docs/a.md`.
+            // Every prefix of every key is grouped once (its parent, its last segment). The walk
+            // up from a key stops at the first prefix already grouped: its own ancestors were
+            // grouped with it. Grouping every depth of every key instead was cubic in the depth
+            // for a deep chain of prefix-only entries (0.5 s for one 600-deep name).
+            var grouped = new HashSet<BundleKey>();
             foreach (var key in structural.Concat(prefixOnly))
             {
-                for (var depth = 1; depth <= key.Segments.Count; depth++)
+                for (var prefix = key; prefix is not null && grouped.Add(prefix); prefix = prefix.Parent)
                 {
-                    var parent = string.Join('/', key.Segments.Take(depth - 1));
-                    var name = key.Segments[depth - 1];
+                    var parent = prefix.Parent?.ToString() ?? string.Empty;
+                    var name = prefix.Segments[^1];
                     // Grouped by the SAME fold Bundle later matches rejected prefixes with
                     // (FoldKeyText): canonical decomposition and/or case, per the effective
                     // constraints. r7 grouped by case alone and let `café` stand beside the
@@ -279,11 +284,13 @@ public sealed class BundleKeyValidator
             // that is also a prefix (fifth review: `x.md`, `x.md/A.sql`, `x.md/a.sql`).
             var keys = structural;
             var prefixes = new HashSet<BundleKey>();
+            // Each walk up stops at the first prefix already recorded: every insertion records a
+            // whole chain up to the root, so that prefix's ancestors are there already. Without
+            // the stop, a deep chain of prefix-only entries cost time cubic in its depth.
             foreach (var key in keys)
             {
-                for (var parent = key.Parent; parent is not null; parent = parent.Parent)
+                for (var parent = key.Parent; parent is not null && prefixes.Add(parent); parent = parent.Parent)
                 {
-                    prefixes.Add(parent);
                 }
             }
 
@@ -291,9 +298,8 @@ public sealed class BundleKeyValidator
             // an object, so it only lands in `conflicts` when an object of the same key is listed.
             foreach (var key in prefixOnly)
             {
-                for (var prefix = key; prefix is not null; prefix = prefix.Parent)
+                for (var prefix = key; prefix is not null && prefixes.Add(prefix); prefix = prefix.Parent)
                 {
-                    prefixes.Add(prefix);
                 }
             }
 
