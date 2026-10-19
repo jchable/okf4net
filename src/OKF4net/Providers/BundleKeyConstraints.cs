@@ -75,9 +75,10 @@ public enum BundleKeyConstraints
 public static class BundleKeyConstraintSets
 {
     /// <summary>
-    /// NTFS/FAT as Windows exposes them through Win32. A name ending in <c>.</c> or a space,
-    /// carrying <c>&lt; &gt; : " | ? *</c>, or whose base is a reserved device name
-    /// (<c>con.md</c>) cannot be created through Win32. Names are stored in UTF-16, so an
+    /// NTFS/FAT as Windows exposes them through Win32. A name carrying
+    /// <c>&lt; &gt; : " | ? *</c> cannot be created at all; one ending in <c>.</c> or a space, or
+    /// whose base is a reserved device name (<c>con.md</c>), only through an extended-length
+    /// (<c>\\?\</c>) path, which <c>git</c> and Explorer refuse. Names are stored in UTF-16, so an
     /// unpaired surrogate is no alias: no <see cref="BundleKeyConstraints.WellFormedUnicode"/>.
     /// No collision flag, whether the directory folds case or not (see the class remarks).
     /// </summary>

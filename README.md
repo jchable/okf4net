@@ -228,8 +228,9 @@ under the `Native` policy by default: the loader refuses only what the
 provider's storage itself cannot hold or would alias (OKF §11 imposes no naming
 constraint), so `Orders.md` beside `orders.md` (on any volume that holds
 both) or a decomposed `café.md` load as they always did, and so does `con.md`
-on Linux and macOS. On Windows `con.md` stays refused, since no such name can
-be created through Win32. Sibling collisions are not a native rule on any OS:
+on Linux and macOS. On Windows `con.md` is refused into `ParseErrors`: such a
+name can be created only through an extended-length (`\\?\`) path, which `git`
+and Explorer refuse. Sibling collisions are not a native rule on any OS:
 the provider matches stored names exactly, so no key opens another key's
 object. A name the portable
 profile would refuse is listed in `Bundle.PortabilityIssues` and reported by

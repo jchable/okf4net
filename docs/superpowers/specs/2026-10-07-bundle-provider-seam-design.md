@@ -1141,8 +1141,9 @@ l'arbitrage du 2026-10-08).
     > que l'OKF §11 n'impose aucune contrainte de nommage ni de taille ; `Strict`
     > est un profil sur option ; bornes relevées à 256 Mio / 10 000 000 / 1 024.
     > Seul ce que le stockage ne peut pas contenir ou confondrait est écarté (sous
-    > Windows, `con.md` reste refusé : aucun nom de ce genre ne se crée par
-    > Win32) ; le reste se charge comme sur `dev`, avec un avertissement
+    > Windows, `con.md` reste refusé : un tel nom ne se crée que par un chemin
+    > étendu `\\?\`, que `git` et l'Explorateur refusent, et `dev` le chargeait) ;
+    > le reste se charge comme sur `dev`, avec un avertissement
     > `KeyNotPortable` quand `Strict` l'aurait refusé ;
   - **dossiers vides** : un dossier sans aucun fichier n'est plus référencé par
     l'index de son parent (§2, D2) ;

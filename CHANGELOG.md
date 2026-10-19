@@ -39,19 +39,27 @@ and this project adheres to
   be deeper than 512 segments (the 1 024-byte key limit below), so the depth
   bound stays out of reach of any real tree. The bounds exist so that a
   hostile or runaway provider cannot exhaust memory; hosts reading untrusted
-  storage should lower them (`BundleLimits`). A `.md` whose key (its path under the root) exceeds 1 024
-  UTF-8 bytes is a `ParseErrors` entry too; that is the key's own limit
-  (`BundleKey.MaxUtf8Bytes`), which a larger `BundleLimits.MaxKeyBytes` does
-  not lift.
+  storage should lower them (`BundleLimits`). A `.md` whose key (its path
+  under the root) exceeds 1 024 UTF-8 bytes is a `ParseErrors` entry too;
+  that is the key's own limit (`BundleKey.MaxUtf8Bytes`), which a larger
+  `BundleLimits.MaxKeyBytes` does not lift.
 - **Key policy `Native` by default, `Strict` opt-in** (spec §2): the loader
   refuses only a `.md` name the provider's storage itself cannot hold or would
   alias, into `ParseErrors`; a referenced resource with such a name resolves
   `Unsafe`. Other files were never examined and still are not. On Windows that
-  is a reserved device name (`con.md`, `com¹.md`), a trailing dot or space or
-  a character Windows forbids — none can be created through Win32 — and a
-  file that is also a directory; on macOS and Linux, a file that is also a
-  directory. Siblings differing only by case or Unicode form are not a native
-  rule on any OS: `FileSystemBundleProvider` matches stored names exactly, so
+  is a reserved device name, a trailing dot or space, a character Windows
+  forbids, and a file that is also a directory; on macOS and Linux, a file
+  that is also a directory. Of the Windows rules, only the reserved names
+  change what a load on Windows does: such a name (`con.md`, `COM1.md`,
+  `aux.txt.md`, a directory `con\`) can be created only through an
+  extended-length (`\\?\`) path — `git` and Explorer refuse it — and was
+  loaded as a concept before; it is now a `ParseErrors` entry, the one family
+  of names that loaded before and that the default refuses on Windows. Under
+  `Native` on Linux and macOS it loads, with a `KeyNotPortable` warning. No
+  `.md` file name ends with a dot or a space, and a directory that does
+  (`dir.`, or `dir` and a space, created through `\\?\`) is skipped by the
+  walk, as it was before: Win32 cannot list it. Siblings differing only by
+  case or Unicode form are not a native rule on any OS: `FileSystemBundleProvider` matches stored names exactly, so
   no key opens another key's object, and on a volume that holds both names
   (Linux, case-sensitive APFS, a case-sensitive Windows directory) they are
   two files. The macOS set does not require NFC either: HFS+ stores names
@@ -80,17 +88,20 @@ and this project adheres to
   UTF-16) is rejected under `Strict` and under the native Linux and macOS
   sets: a UTF-8 store would write it, and any other lone surrogate in its
   place, as U+FFFD (`BundleKeyConstraints.WellFormedUnicode`).
-- **A file literally named with a backslash** (`a\b.md`, possible where a file
-  name can hold one: Linux, macOS) was loaded as concept `a/b`; a backslash is
-  never part of a key, so it is now a `ParseErrors` entry.
+- **A file or a directory literally named with a backslash** (`a\b.md`, or
+  `c.md` in a directory `a\b`, possible where a name can hold one: Linux,
+  macOS) was mis-identified: `a\b.md` was loaded as concept `a/b`, and the
+  `c.md` as concept `a/b/c`. A backslash is never part of a key, so each such
+  `.md` is now a `ParseErrors` entry.
 - **`OkfVersion` is read from the root `index.md` under its exact name only**:
   an `Index.md` or `INDEX.md` standing in for a missing `index.md` on a
   case-folding volume, or a root `index.md` that is a symlink (which the walk
   already skipped from `IndexFiles`), now gives `null`.
 - **Exact-case resource resolution** on case-folding volumes (Windows, macOS):
   `references/a.sql` no longer resolves `References/A.sql`; it is `Missing`.
-  `FileSystemBundleProvider` always matches the stored name, on every OS and
-  every volume (a case-insensitive mount under Linux included); a Linux host on
+  Nor does a Windows 8.3 short name (`/REFERE~1/a.sql`), which is `Missing`
+  too. `FileSystemBundleProvider` always matches the stored name, on every OS
+  and every volume (a case-insensitive mount under Linux included); a Linux host on
   such a mount adds `additionalConstraints:
   BundleKeyConstraints.CaseInsensitiveCollisions` so that the loader also
   rejects siblings that collide there. Exact matching lists the directory of each path segment; within
@@ -117,6 +128,19 @@ and this project adheres to
   symlink or junction seen as one is still skipped, never followed.
 - **A backslash in a §6.2 path-valued field is `Unsafe`** on every OS;
   `references\a.sql` resolved on Windows before.
+- **A §6.2 path whose resolved key contains a control character** (U+0001 to
+  U+001F, U+007F to U+009F; U+0000 was already refused) **or is longer than
+  1 024 UTF-8 bytes is `Unsafe`** on every OS: these are base key rules
+  (layer 1). It resolved before when the file existed (a real file with a TAB
+  in its name, a deep path to an existing file), and was `Missing` otherwise.
+- **The `ParseErrors` text changed for `.md` names that were already
+  errors**: a name with a control character, one longer than 1 024 UTF-8
+  bytes, and, on Windows, `COM¹.md` (a reserved device name with a
+  superscript digit) were reported as an invalid concept id; the message now
+  names the key rule (`key contains the control character U+0001`, `key is
+  longer than the 1024-byte bound`, `segment "COM¹.md" has the reserved
+  Windows device name 'COM¹' as its base`). Verdicts and exit codes are
+  unchanged.
 - **A §6.2 path that climbs out of the bundle root and re-enters it**
   (`../<bundle>/references/a.sql`) resolved through the OS path normalisation
   before; it is now `Unsafe`, like any climb above the root.
