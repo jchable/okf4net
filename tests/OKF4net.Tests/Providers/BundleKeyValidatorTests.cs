@@ -305,6 +305,27 @@ public class BundleKeyValidatorTests
     }
 
     [Fact]
+    public void An_unadmitted_name_that_parses_is_an_object_that_collides_but_is_never_a_candidate()
+    {
+        // The caller refused `A.sql` (over its MaxKeyBytes); it is still THERE beside `a.sql`.
+        var r = Strict().ValidateTree(["a.sql", "ok.md"], ["A.sql"]);
+        Assert.Equal([BundleKey.Parse("ok.md")], r.Accepted);
+        var rej = Assert.Single(r.Rejected); // `a.sql` only: the unadmitted name is never diagnosed here
+        Assert.Equal("a.sql", rej.RawName);
+        Assert.Contains("collides with a sibling", rej.Reason);
+        Assert.Equal([BundleKey.Parse("A.sql"), BundleKey.Parse("a.sql")], r.RejectedPrefixes);
+
+        // As an object, it also conflicts with what is under it, and is never accepted itself.
+        var conflict = NativeLinux().ValidateTree(["x.md/a.sql"], ["x.md"]);
+        Assert.Empty(conflict.Accepted);
+        Assert.Equal("x.md/a.sql", Assert.Single(conflict.Rejected).RawName);
+        Assert.Equal([BundleKey.Parse("x.md")], conflict.RejectedPrefixes);
+
+        // Under a case-sensitive native set the two names are distinct.
+        Assert.Contains(BundleKey.Parse("a.sql"), NativeLinux().ValidateTree(["a.sql"], ["A.sql"]).Accepted);
+    }
+
+    [Fact]
     public void A_sibling_implied_only_by_a_name_over_the_key_bound_still_collides()
     {
         var tooLong = "docs/" + new string('x', BundleKey.MaxUtf8Bytes) + ".md"; // fails TryParse: never a key

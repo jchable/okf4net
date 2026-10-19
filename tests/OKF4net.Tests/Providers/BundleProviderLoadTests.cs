@@ -354,6 +354,23 @@ public class BundleProviderLoadTests
         Assert.Contains("under 'x.md'", reason);
     }
 
+    [Fact]
+    public void A_name_refused_for_its_length_still_collides_with_its_sibling_as_an_object()
+    {
+        // NFC `café.md` is 8 UTF-8 bytes, its NFD twin 9: under an 8-byte bound only the NFD
+        // name is refused for its length, yet it is still THERE beside the NFC one.
+        var nfc = "caf" + (char)0x00E9 + ".md";
+        var nfd = "cafe" + (char)0x0301 + ".md";
+        var p = new InMemoryBundleProvider().Add(nfc, Customers).Add(nfd, Customers).Add("ok.md", Customers);
+        var bundle = Bundle.Load(p, new BundleLoadOptions { KeyPolicy = BundleKeyPolicy.Strict, Limits = new BundleLimits { MaxKeyBytes = 8 } });
+        Assert.Equal([ConceptId.Parse("ok")], bundle.Concepts.Select(c => c.Id));
+        Assert.Contains(bundle.ParseProblems, e => e.RawName == nfc && e.Error.Contains("collides with a sibling"));
+        Assert.Contains(bundle.ParseProblems, e => e.RawName == nfd && e.Error.Contains("8-byte bound"));
+        Assert.Equal(2, bundle.RejectedPrefixes.Count);
+        Assert.Contains(BundleKey.Parse(nfc), bundle.RejectedPrefixes);
+        Assert.Contains(BundleKey.Parse(nfd), bundle.RejectedPrefixes);
+    }
+
     [Theory]
     [InlineData(BundleKey.MaxUtf8Bytes)] // refused by the core bound: an unadmitted name
     [InlineData(4096)]                   // past the bound, refused by BundleKey.TryParse: no key at all

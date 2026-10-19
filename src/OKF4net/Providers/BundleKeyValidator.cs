@@ -135,16 +135,20 @@ public sealed class BundleKeyValidator
     /// other keys is rejected with everything under it. A raw name listed twice is rejected.
     /// The colliding and conflicting keys are returned as <see cref="BundleKeyTreeResult.RejectedPrefixes"/>.
     /// <para>
-    /// Physical presence never depends on admission: the proper ancestors (<c>a</c>,
-    /// <c>a/b</c>, …) of a raw name that is no key at all, and of every name in
-    /// <paramref name="unadmittedNames"/>, are directories that are there. Each one that parses
-    /// as a key takes part, as a prefix only, in the sibling collisions and the file/directory
-    /// conflict — an object <c>x.md</c> listed beside an unparseable or unadmitted
-    /// <c>x.md/…</c> is condemned — but is never accepted and never rejected on its own.
+    /// Physical presence never depends on admission. A name in
+    /// <paramref name="unadmittedNames"/> that parses as a key is an object that is there: it
+    /// takes part in the sibling collisions and the file/directory conflict like any listed
+    /// object — <c>A.sql</c> refused for a bound still condemns <c>a.sql</c> beside it under
+    /// <see cref="BundleKeyConstraints.CaseInsensitiveCollisions"/> — but it is never a
+    /// candidate: never accepted, never rejected on its own. The proper ancestors (<c>a</c>,
+    /// <c>a/b</c>, …) of a name that does not parse, listed or unadmitted, are directories
+    /// that are there: each one that parses takes part, as a prefix only, in the same checks —
+    /// an object <c>x.md</c> listed beside an unparseable <c>x.md/…</c> is condemned — and is
+    /// likewise never accepted and never rejected on its own.
     /// </para>
     /// </summary>
     /// <param name="rawNames">The listing to validate.</param>
-    /// <param name="unadmittedNames">Names the caller refused for a reason of its own (a bound) before the validation, but that physically exist: they are not validated themselves, only their proper ancestors are counted as prefixes.</param>
+    /// <param name="unadmittedNames">Names the caller refused for a reason of its own (a bound) before the validation, but that physically exist. They are not validated themselves: one that parses counts as an object, one that does not counts through its proper ancestors, as prefixes.</param>
     public BundleKeyTreeResult ValidateTree(IEnumerable<string> rawNames, IEnumerable<string>? unadmittedNames = null)
     {
         ArgumentNullException.ThrowIfNull(rawNames);
@@ -158,10 +162,10 @@ public sealed class BundleKeyValidator
         // what the collision and conflict checks reason about (sixth review: a host validator
         // refusing `x.md` must not rehabilitate `x.md/ok.sql`).
         var structural = new HashSet<BundleKey>();
-        // Directories implied by a name that never became a structural key — it is no key at
-        // all, or the caller refused it for a bound — yet is physically there: prefixes only,
-        // never objects. Without them, `x.md` beside an over-long or unparseable `x.md/…` read
-        // as an ordinary file and the conflict went unnoticed (external review).
+        // Directories implied by a name that is no key at all, listed or unadmitted, yet is
+        // physically there: prefixes only, never objects. Without them, `x.md` beside an
+        // unparseable `x.md/…` read as an ordinary file and the conflict went unnoticed
+        // (external review).
         var prefixOnly = new HashSet<BundleKey>();
 
         foreach (var raw in rawNames)
@@ -198,7 +202,18 @@ public sealed class BundleKeyValidator
         {
             foreach (var raw in unadmittedNames)
             {
-                AddProperAncestors(raw, prefixOnly);
+                // A name the caller refused for a bound but that parses is an OBJECT that is
+                // there (external review, residual): `A.sql` over the bound still collides with
+                // `a.sql`. It joins `structural` only, never `candidates`: it is neither
+                // accepted nor diagnosed here.
+                if (BundleKey.TryParse(raw, out var unadmitted, out _))
+                {
+                    structural.Add(unadmitted);
+                }
+                else
+                {
+                    AddProperAncestors(raw, prefixOnly);
+                }
             }
         }
 
