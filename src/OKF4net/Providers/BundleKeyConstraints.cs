@@ -135,18 +135,18 @@ public static class BundleKeyConstraintSets
 public enum BundleKeyPolicy
 {
     /// <summary>
-    /// Opt-in portable profile, for hosts that must produce or consume bundles that survive
-    /// any filesystem: every known native set plus <see cref="BundleKeyConstraints.RequireNfc"/>
-    /// (<see cref="BundleKeyConstraintSets.Strict"/>), on top of the provider's own. A key valid
-    /// on one provider is then valid on all.
-    /// </summary>
-    Strict,
-
-    /// <summary>
     /// The default (<see cref="BundleLoadOptions.KeyPolicy"/>): the provider's own constraint
     /// set, never below it. Refuses only what this provider's storage itself cannot hold or
     /// would alias; what <see cref="Strict"/> would refuse beyond that is reported in
     /// <see cref="Bundle.PortabilityIssues"/>, not refused.
     /// </summary>
-    Native,
+    Native = 0,
+
+    /// <summary>
+    /// Opt-in portable profile, for hosts that must produce or consume bundles that survive
+    /// any filesystem: every known native set plus <see cref="BundleKeyConstraints.RequireNfc"/>
+    /// (<see cref="BundleKeyConstraintSets.Strict"/>), on top of the provider's own. A key valid
+    /// on one provider is then valid on all.
+    /// </summary>
+    Strict = 1,
 }

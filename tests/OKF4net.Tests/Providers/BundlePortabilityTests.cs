@@ -27,6 +27,7 @@ public class BundlePortabilityTests
     {
         Assert.Equal(BundleKeyPolicy.Native, BundleLoadOptions.Default.KeyPolicy);
         Assert.Equal(BundleKeyPolicy.Native, new BundleLoadOptions().KeyPolicy);
+        Assert.Equal(BundleKeyPolicy.Native, default(BundleKeyPolicy));
     }
 
     [Theory]
