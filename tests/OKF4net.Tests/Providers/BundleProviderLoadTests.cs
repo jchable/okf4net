@@ -173,6 +173,29 @@ public class BundleProviderLoadTests
         Assert.Equal(ResourceResolutionStatus.Resolved, status);
     }
 
+    [Theory]
+    [InlineData(BundleKeyPolicy.Native)]
+    [InlineData(BundleKeyPolicy.Strict)]
+    public void A_double_slash_path_names_an_in_root_key_even_under_the_windows_constraints(BundleKeyPolicy policy)
+    {
+        var p = new InMemoryBundleProvider(BundleKeyConstraintSets.Windows)
+            .Add("c/rev.md", "---\ntype: Attested Computation\n---\n");
+        var bundle = Bundle.Load(p, new BundleLoadOptions { KeyPolicy = policy });
+        var concept = bundle.Get(ConceptId.Parse("c/rev"))!;
+
+        // Missing, not Unsafe: the path is looked up as an object of the bundle (no key is handed out).
+        Assert.True(bundle.TryResolveResourceKey(concept, "//server/share/x.sql", out var key, out var status));
+        Assert.Equal(ResourceResolutionStatus.Missing, status);
+        Assert.Null(key);
+
+        // It is a plain object of the bundle: once present, it resolves.
+        p.Add("server/share/x.sql", "inside");
+        Assert.True(bundle.TryResolveResourceKey(concept, "//server/share/x.sql", out key, out status));
+        Assert.Equal(ResourceResolutionStatus.Resolved, status);
+        Assert.Equal(BundleKey.Parse("server/share/x.sql"), key);
+        Assert.Equal("inside", bundle.ReadResourceText(key!));
+    }
+
     [Fact]
     public void A_third_spelling_of_a_condemned_prefix_is_still_condemned()
     {

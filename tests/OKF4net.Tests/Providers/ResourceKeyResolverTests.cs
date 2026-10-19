@@ -76,6 +76,19 @@ public class ResourceKeyResolverTests
         Assert.Equal(BundleKey.Parse(expected), key);
     }
 
+    /// <summary>
+    /// A leading double slash is no network path: the extra slashes are dropped and the rest is a
+    /// key inside the root, as it was for `dev`'s root-relative rule.
+    /// </summary>
+    [Theory]
+    [InlineData("//server/share/x.sql", "server/share/x.sql")]
+    [InlineData("///server/x.sql", "server/x.sql")]
+    public void A_leading_double_slash_is_an_in_root_key_not_a_network_path(string raw, string expected)
+    {
+        Assert.Equal(ResourceKeyOutcome.Candidate, ResourceKeyResolver.Resolve(Concept, raw, out var key));
+        Assert.Equal(BundleKey.Parse(expected), key);
+    }
+
     [Theory]
     [InlineData(".", ResourceKeyOutcome.Candidate)]
     [InlineData("./", ResourceKeyOutcome.Prefix)]

@@ -436,6 +436,16 @@ public class FileSystemBundleProviderTests
             Assert.Throws<BundleObjectNotFoundException>(() => provider.Read(key));
             Assert.Throws<UnauthorizedAccessException>(() => bundle.ReadResourceText(key));
         }
+
+        // Listing a drive-absolute prefix, even that of a directory which exists outside the
+        // root, is "no such entry": it neither throws nor leaves the root.
+        var outsideDirectory = tmp.Path.Replace('\\', '/');
+        foreach (var prefix in new[] { drive, outsideDirectory, outsideDirectory + "/b", driveAbsolute })
+        {
+            Assert.Empty(provider.Enumerate(K(prefix), BundleLimits.Default));
+        }
+
+        Assert.Equal(["computations/rev.md", "x.sql"], provider.Enumerate(null, BundleLimits.Default).Select(l => l.RawName).Order(StringComparer.Ordinal));
     }
 
     [SkippableFact]
