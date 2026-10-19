@@ -47,6 +47,10 @@ and this project adheres to
   Under `Strict`, a resource path containing `::$DATA` (an NTFS stream
   suffix, which resolved on Windows) or `?` (which was `Missing` on Windows)
   resolves `Unsafe`.
+  A name containing an unpaired surrogate (possible on NTFS, which stores
+  UTF-16) is rejected under `Strict` and under the native Linux and macOS
+  sets: a UTF-8 store would write it, and any other lone surrogate in its
+  place, as U+FFFD (`BundleKeyConstraints.WellFormedUnicode`).
 - **A file literally named with a backslash** (`a\b.md`, possible where a file
   name can hold one: Linux, macOS) was loaded as concept `a/b`; a backslash is
   never part of a key, so it is now a `ParseErrors` entry.

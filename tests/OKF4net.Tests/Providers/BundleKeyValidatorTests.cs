@@ -89,6 +89,66 @@ public class BundleKeyValidatorTests
         Assert.Null(NativeLinux().CheckKey(key));
     }
 
+    // Not an [InlineData] theory: attribute arguments are stored in UTF-8 metadata, which
+    // turns a lone surrogate into U+FFFD before the test ever sees it (the very aliasing
+    // this constraint is about).
+    private static readonly (string Raw, string CodeUnit)[] UnpairedSurrogates =
+    [
+        ("\uD800.sql", "U+D800"),       // isolated high surrogate
+        ("a\uDC00.sql", "U+DC00"),      // isolated low surrogate
+        ("\uDC00\uD800.sql", "U+DC00"), // a low then a high: no pair
+        ("dir\uD83D/x.sql", "U+D83D"),  // in a directory segment, high surrogate before '/'
+    ];
+
+    [Fact]
+    public void An_unpaired_surrogate_is_refused_wherever_names_are_stored_in_UTF8()
+    {
+        foreach (var (raw, codeUnit) in UnpairedSurrogates)
+        {
+            var key = BundleKey.Parse(raw);
+            foreach (var v in new[] { Strict(), NativeLinux(), NativeMacOS() })
+            {
+                var reason = v.CheckKey(key);
+                Assert.NotNull(reason);
+                Assert.Contains($"unpaired surrogate {codeUnit}", reason);
+                Assert.Contains("U+FFFD", reason);
+            }
+
+            Assert.Null(NativeWindows().CheckKey(key)); // NTFS stores UTF-16: both names are distinct there
+        }
+    }
+
+    [Theory]
+    [InlineData("\uD83D\uDE00.sql")]     // U+1F600 as a well-formed pair
+    [InlineData("a/\uD83D\uDE00/b.sql")]
+    public void A_surrogate_pair_is_accepted_everywhere(string raw)
+    {
+        var key = BundleKey.Parse(raw);
+        Assert.Null(Strict().CheckKey(key));
+        Assert.Null(NativeLinux().CheckKey(key));
+        Assert.Null(NativeMacOS().CheckKey(key));
+        Assert.Null(NativeWindows().CheckKey(key));
+    }
+
+    [Fact]
+    public void Two_names_a_UTF8_encoder_would_merge_both_fail_the_tree_under_native_linux()
+    {
+        // Both would be written as U+FFFD.sql by a UTF-8 store.
+        var r = NativeLinux().ValidateTree(["\uD800.sql", "\uD801.sql", "ok.sql"]);
+        Assert.Equal([BundleKey.Parse("ok.sql")], r.Accepted);
+        Assert.Equal(2, r.Rejected.Count);
+        Assert.All(r.Rejected, rej => Assert.Contains("unpaired surrogate", rej.Reason));
+    }
+
+    [Fact]
+    public void WellFormedUnicode_is_a_storage_constraint_of_the_UTF8_sets_only()
+    {
+        Assert.True(BundleKeyConstraintSets.Linux.HasFlag(BundleKeyConstraints.WellFormedUnicode));
+        Assert.True(BundleKeyConstraintSets.MacOS.HasFlag(BundleKeyConstraints.WellFormedUnicode));
+        Assert.True(BundleKeyConstraintSets.Strict.HasFlag(BundleKeyConstraints.WellFormedUnicode));
+        Assert.False(BundleKeyConstraintSets.Windows.HasFlag(BundleKeyConstraints.WellFormedUnicode));
+    }
+
     [Fact]
     public void Tree_rejects_per_level_case_collisions_with_their_subtrees_and_reports_the_prefixes()
     {

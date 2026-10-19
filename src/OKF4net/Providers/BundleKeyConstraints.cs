@@ -36,12 +36,20 @@ public enum BundleKeyConstraints
 
     /// <summary>An object key must not also be a prefix of other keys (a file cannot be a directory).</summary>
     FileDirectoryConflict = 1 << 6,
+
+    /// <summary>
+    /// A segment must not contain an unpaired surrogate: no UTF-8 storage can represent it
+    /// injectively (an encoder turns every lone surrogate into U+FFFD, so <c>"\uD800.sql"</c>
+    /// and <c>"\uD801.sql"</c> would be written to the same name). A storage constraint, not a
+    /// base rule: NTFS stores UTF-16 and holds both names.
+    /// </summary>
+    WellFormedUnicode = 1 << 7,
 }
 
 /// <summary>The constraint sets of the storages this library knows (spec §2, table of native constraints).</summary>
 public static class BundleKeyConstraintSets
 {
-    /// <summary>NTFS/FAT as Windows exposes them.</summary>
+    /// <summary>NTFS/FAT as Windows exposes them. Names are stored in UTF-16, so an unpaired surrogate is no alias there: no <see cref="BundleKeyConstraints.WellFormedUnicode"/>.</summary>
     public static BundleKeyConstraints Windows =>
         BundleKeyConstraints.TrailingDotOrSpace
         | BundleKeyConstraints.WindowsIllegalCharacters
@@ -49,15 +57,16 @@ public static class BundleKeyConstraintSets
         | BundleKeyConstraints.CaseInsensitiveCollisions
         | BundleKeyConstraints.FileDirectoryConflict;
 
-    /// <summary>APFS/HFS+ as macOS exposes them by default.</summary>
+    /// <summary>APFS/HFS+ as macOS exposes them by default; names are stored in UTF-8, hence <see cref="BundleKeyConstraints.WellFormedUnicode"/>.</summary>
     public static BundleKeyConstraints MacOS =>
         BundleKeyConstraints.CaseInsensitiveCollisions
         | BundleKeyConstraints.RequireNfc
         | BundleKeyConstraints.UnicodeFormCollisions
-        | BundleKeyConstraints.FileDirectoryConflict;
+        | BundleKeyConstraints.FileDirectoryConflict
+        | BundleKeyConstraints.WellFormedUnicode;
 
-    /// <summary>A POSIX filesystem: only the file/directory conflict beyond the base rules.</summary>
-    public static BundleKeyConstraints Linux => BundleKeyConstraints.FileDirectoryConflict;
+    /// <summary>A POSIX filesystem: the file/directory conflict and, since names are bytes written in UTF-8, <see cref="BundleKeyConstraints.WellFormedUnicode"/> beyond the base rules.</summary>
+    public static BundleKeyConstraints Linux => BundleKeyConstraints.FileDirectoryConflict | BundleKeyConstraints.WellFormedUnicode;
 
     /// <summary>The union of every known set: a key valid here is valid on every provider (<see cref="BundleKeyPolicy.Strict"/>).</summary>
     public static BundleKeyConstraints Strict => Windows | MacOS | Linux;

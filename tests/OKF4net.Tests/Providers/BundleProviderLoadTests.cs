@@ -259,6 +259,20 @@ public class BundleProviderLoadTests
     }
 
     [Fact]
+    public void Two_names_a_UTF8_store_would_merge_neither_load_under_a_native_linux_set()
+    {
+        // `\uD800.md` and `\uD801.md` are two keys, but a UTF-8 store writes both as U+FFFD.md.
+        var p = new InMemoryBundleProvider(BundleKeyConstraintSets.Linux)
+            .Add("\uD800.md", Customers)
+            .Add("\uD801.md", Customers)
+            .Add("ok.md", Customers);
+        var bundle = Bundle.Load(p, new BundleLoadOptions { KeyPolicy = BundleKeyPolicy.Native });
+        Assert.Equal([ConceptId.Parse("ok")], bundle.Concepts.Select(c => c.Id));
+        Assert.Equal(2, bundle.ParseProblems.Count);
+        Assert.All(bundle.ParseProblems, e => Assert.Contains("unpaired surrogate", e.Error));
+    }
+
+    [Fact]
     public void A_concept_over_the_object_bound_becomes_a_parse_problem_and_the_load_goes_on()
     {
         var big = "---\ntype: T\n---\n" + new string('x', 100); // 115 bytes

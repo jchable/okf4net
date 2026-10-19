@@ -345,9 +345,17 @@ objet.
 | Provider | Contraintes natives |
 |---|---|
 | Filesystem sous Windows | pas de `.` ni d'espace final dans un segment ; pas de `<>:"\|?*` ; pas de nom réservé (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `COM¹`, `COM²`, `COM³`, `LPT1`–`LPT9`, `LPT¹`, `LPT²`, `LPT³`, avec ou sans extension, quelle que soit la casse) ; collisions de casse **à chaque niveau** de l'arborescence ; conflit fichier/dossier |
-| Filesystem sous macOS | collisions de casse et de forme Unicode à chaque niveau ; NFC exigé ; conflit fichier/dossier |
-| Filesystem sous Linux | conflit fichier/dossier |
-| S3 | aucune au-delà du socle |
+| Filesystem sous macOS | collisions de casse et de forme Unicode à chaque niveau ; NFC exigé ; conflit fichier/dossier ; Unicode bien formé |
+| Filesystem sous Linux | conflit fichier/dossier ; Unicode bien formé |
+| S3 | Unicode bien formé |
+
+**Unicode bien formé** (`WellFormedUnicode`) : un segment ne contient aucun
+surrogate isolé. Un stockage qui écrit ses noms en UTF-8 ne peut pas le
+représenter : l'encodeur remplace chaque surrogate isolé par U+FFFD, si bien que
+`\uD800.sql` et `\uD801.sql`, deux clés distinctes, désigneraient le même
+`\uFFFD.sql`. C'est une contrainte de stockage, pas une règle du socle : NTFS
+stocke ses noms en UTF-16 et tient les deux, d'où son absence de la ligne
+Windows.
 
 Le filesystem déduit ses contraintes de l'OS par défaut. **La vraie frontière est
 le volume, pas l'OS** (dossier rendu sensible à la casse sous Windows, APFS

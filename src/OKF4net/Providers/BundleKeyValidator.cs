@@ -343,8 +343,35 @@ public sealed class BundleKeyValidator
         }
     }
 
+    /// <summary>The first surrogate code unit of <paramref name="segment"/> that is not half of a pair, or <see langword="null"/>.</summary>
+    private static char? UnpairedSurrogate(string segment)
+    {
+        for (var i = 0; i < segment.Length; i++)
+        {
+            var c = segment[i];
+            if (char.IsHighSurrogate(c) && i + 1 < segment.Length && char.IsLowSurrogate(segment[i + 1]))
+            {
+                i++; // a well-formed pair
+                continue;
+            }
+
+            if (char.IsSurrogate(c))
+            {
+                return c;
+            }
+        }
+
+        return null;
+    }
+
     private string? CheckSegment(string segment)
     {
+        // First: the later checks enumerate runes, which would read a lone surrogate as U+FFFD.
+        if (Effective.HasFlag(BundleKeyConstraints.WellFormedUnicode) && UnpairedSurrogate(segment) is { } lone)
+        {
+            return $"contains the unpaired surrogate U+{(int)lone:X4}, which a UTF-8 store would turn into U+FFFD";
+        }
+
         if (Effective.HasFlag(BundleKeyConstraints.TrailingDotOrSpace) && (segment[^1] == '.' || segment[^1] == ' '))
         {
             return "ends with '.' or a space";
