@@ -367,28 +367,32 @@ public class BundleProviderLoadTests
 
     /// <summary>
     /// The depth bound counts every listed name, <c>.md</c> or not, <c>node_modules</c>
-    /// included, so its default (1 024) sits far above any real tree: a 500-deep concept (a
-    /// 1 002-byte key, near the deepest a key can be) and a 600-deep <c>node_modules</c> chain
-    /// holding no <c>.md</c> both loaded on <c>dev</c>, and both load here. The walk inspects
+    /// included, so its default (1 024) sits far above any real tree: a 250-deep concept (a
+    /// 500-byte key) and a 300-deep <c>node_modules</c> chain
+    /// holding no <c>.md</c> both load. The walk inspects
     /// each directory once, so this is linear in the depth: the 10-second bound is only a
     /// guard against a return of the quadratic walk (66 s for 1 000 levels on Windows), not a
     /// measure of the walk's speed. A host that sets a smaller bound still gets the abort.
+    /// The trees stay near 700 bytes of path, temp root included, because the real filesystem
+    /// is the limit here, not the bound: macOS refuses a path past 1 024 bytes (PATH_MAX) and
+    /// a temp root there is already about 60. The default bound's own edge (1 023 and 1 024
+    /// segments) is covered in memory by the test below.
     /// </summary>
     [Fact]
-    public void A_600_deep_tree_loads_under_the_default_bounds_and_an_explicit_smaller_bound_aborts()
+    public void A_300_deep_tree_loads_under_the_default_bounds_and_an_explicit_smaller_bound_aborts()
     {
         using var tmp = new TempDir();
         tmp.Write("ok.md", Customers);
-        var deep = string.Join('/', Enumerable.Repeat("d", 499)) + "/deep.md"; // 500 segments, 1 002 bytes
+        var deep = string.Join('/', Enumerable.Repeat("d", 249)) + "/deep.md"; // 250 segments, 500 bytes
         tmp.Write(deep, Customers);
-        tmp.Write("node_modules/" + string.Join('/', Enumerable.Repeat("n", 599)) + "/f.js", "x"); // 601 segments
+        tmp.Write("node_modules/" + string.Join('/', Enumerable.Repeat("n", 299)) + "/f.js", "x"); // 301 segments, 604 bytes
 
         var clock = System.Diagnostics.Stopwatch.StartNew();
         var bundle = Bundle.Load(tmp.Path);
         clock.Stop();
         Assert.Empty(bundle.ParseProblems);
         Assert.Equal([ConceptId.Parse(deep[..^3]), ConceptId.Parse("ok")], bundle.Concepts.Select(c => c.Id));
-        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(10), $"loading a 600-deep tree took {clock.Elapsed}: the walk is no longer linear in the depth");
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(10), $"loading a 300-deep tree took {clock.Elapsed}: the walk is no longer linear in the depth");
 
         var ex = Assert.Throws<BundleLoadException>(() => Bundle.Load(new FileSystemBundleProvider(tmp.Path), new BundleLoadOptions { Limits = new BundleLimits { MaxDepth = 64 } }));
         Assert.Contains("depth bound (64)", ex.Message);
