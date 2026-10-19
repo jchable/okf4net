@@ -260,25 +260,31 @@ public class BundlePortabilityTests
         Skip.If(Directory.GetFiles(tmp.Path).Length != 2, "this volume is case-insensitive: it cannot hold both names");
 
         var bundle = Bundle.Load(tmp.Path);
-        var expected = new System.Text.StringBuilder();
-        foreach (var concept in bundle.Concepts)
-        {
-            expected.Append($"[warning] {concept.Path}: the name is not portable: '{concept.Key}' collides with a sibling that differs only by case or Unicode form\n");
-        }
+        Assert.Equal(2, bundle.Count);
 
-        expected.Append("\n2 concept(s); 0 error(s), 2 warning(s), 0 info.\n");
-        expected.Append($"✓ conformant with OKF v{OkfSpec.Version}\n");
+        // What `dev` printed: every other finding (the recommended-field warnings of this
+        // document), unchanged and in the same order.
+        var others = BundleValidator.Validate(bundle).Diagnostics.Where(d => d.Code != DiagnosticCode.KeyNotPortable).ToList();
+        Assert.All(others, d => Assert.Equal(Severity.Warning, d.Severity));
+        string[] newLines = [.. bundle.Concepts.Select(c =>
+            $"[warning] {c.Path}: the name is not portable: '{c.Key}' collides with a sibling that differs only by case or Unicode form")];
 
         var stdout = new StringWriter { NewLine = "\n" };
         var stderr = new StringWriter { NewLine = "\n" };
         Assert.Equal(0, OkfCli.Run(["validate", tmp.Path], TextReader.Null, stdout, stderr));
-        Assert.Equal(expected.ToString(), stdout.ToString());
         Assert.Equal(string.Empty, stderr.ToString());
+        var lines = stdout.ToString().Split('\n');
+        var findings = lines.Where(l => l.StartsWith('[')).ToList();
+        Assert.Equal(newLines, findings.Where(l => l.Contains(": the name is not portable: ", StringComparison.Ordinal)));
+        Assert.Equal(others.Select(d => d.ToString()), findings.Where(l => !l.Contains(": the name is not portable: ", StringComparison.Ordinal)));
+        Assert.Contains($"2 concept(s); 0 error(s), {others.Count + 2} warning(s), 0 info.", lines);
+        Assert.Contains($"✓ conformant with OKF v{OkfSpec.Version}", lines);
 
         var jsonOut = new StringWriter { NewLine = "\n" };
         Assert.Equal(0, OkfCli.Run(["validate", tmp.Path, "--json"], TextReader.Null, jsonOut, new StringWriter()));
         using var json = System.Text.Json.JsonDocument.Parse(jsonOut.ToString());
         var codes = json.RootElement.GetProperty("diagnostics").EnumerateArray().Select(d => d.GetProperty("code").GetString()).ToList();
-        Assert.Equal(["KeyNotPortable", "KeyNotPortable"], codes);
+        Assert.Equal(2, codes.Count(c => c == "KeyNotPortable"));
+        Assert.Equal(others.Count + 2, codes.Count);
     }
 }
