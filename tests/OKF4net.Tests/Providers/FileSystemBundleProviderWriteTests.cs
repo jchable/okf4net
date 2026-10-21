@@ -229,8 +229,9 @@ public class FileSystemBundleProviderWriteTests
     /// <summary>
     /// A directory on the key's path that the process may not search is refused as an access
     /// refusal before anything is listed (the whole path is STRICT-checked up front, as for a
-    /// write), not as the raw access-denied error of listing it. Unix only: Windows lets the
-    /// process through a directory whose listing is denied, so no listing refusal arises there.
+    /// write), not as the raw access-denied error of listing it. Unix only: a directory the
+    /// process may not search cannot be made on Windows (a deny-ReadData ACE there denies only
+    /// the listing, which still raises the raw access-denied error).
     /// </summary>
     [SkippableFact]
     [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]

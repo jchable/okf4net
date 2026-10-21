@@ -308,7 +308,8 @@ A write whose outcome cannot be established (`BundleWriteOutcomeUnknownException
 for instance Windows `ReplaceFile` error 1176, which can leave no object
 under the key) keeps its temporary: it may be the only copy of the new
 content. So does a process crash between the temporary's creation and the
-commit. `okf validate` ignores such a file (it is not `.md`), but it counts
+commit, and so can a failed write whose temporary could not be removed safely.
+`okf validate` ignores such a file (it is not `.md`), but it counts
 toward the entry bound and an empty-directory check sees it; look for
 `.okf-write-*.tmp` files and remove them by hand once you have checked them.
 

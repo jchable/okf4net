@@ -76,8 +76,9 @@ public sealed class BundleWriteOutcomeUnknownException(BundleKey key, Exception 
 /// A write was not committed because the storage kept refusing the commit with a failure that
 /// changes nothing (spec §4) — on Windows, <c>ReplaceFile</c>'s
 /// <c>ERROR_UNABLE_TO_REMOVE_REPLACED</c> (1175) or a sharing violation — on every one of a
-/// bounded number of attempts. The object holds its previous content and nothing of the write
-/// remains. The message names the key and the raw failure's type only; the raw failure is the
+/// bounded number of attempts. The object holds its previous content; a provider documents what
+/// it may leave behind (the filesystem provider: its temporary, when a link has entered its
+/// path or its removal fails). The message names the key and the raw failure's type only; the raw failure is the
 /// <see cref="Exception.InnerException"/>, for the host's log.
 /// </summary>
 public sealed class BundleWriteNotCommittedException(BundleKey key, Exception inner)

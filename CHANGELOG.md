@@ -243,13 +243,14 @@ and this project adheres to
   the BCL has no `fchown`); this is inherent to the atomic write of #157. On
   Windows, `File.Replace` keeps the replaced object's own DACL (measured).
 - **A failed commit says what happened.** A failure before the commit leaves
-  the target untouched and, unless a link has entered its path meanwhile, no
-  temporary. A replacement that Windows
+  the target untouched and no temporary, unless a link has entered its path
+  meanwhile or its removal fails (it is then left as an orphan). A replacement that Windows
   `ReplaceFile` refuses without any effect — error 1175, seen twice in 1 500
   commits while readers held the object open, or a sharing violation — is made
   again, at most three times in all, each time from the re-check of its condition;
   after that it is `BundleWriteNotCommittedException` (new), the object
-  unchanged and no temporary left. Any other failure of the commit call is
+  unchanged and, unless a link has entered its path or its removal fails, no
+  temporary left. Any other failure of the commit call is
   classified from the disk once the boundary and the path guards have been
   checked again: nothing happened (the raw error), another writer landed
   (`BundleWriteConflictException`), or it took effect (success); otherwise, and

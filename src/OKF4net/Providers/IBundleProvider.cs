@@ -53,8 +53,9 @@ public interface IBundleProvider
     /// <para><b>Conditions</b>, checked atomically with the replacement:
     /// <see cref="BundleWriteCondition.None"/> holds whatever the object's state (the storage may
     /// still report a creation that loses a race to another writer as
-    /// <see cref="BundleWriteConflictException"/>: on the filesystem, a <c>None</c> creation that
-    /// loses a creation race to another process is reported as a conflict, see the failures in
+    /// <see cref="BundleWriteConflictException"/>: on the filesystem, a <c>None</c> creation can be
+    /// reported as a conflict when another process creates the name between the provider's last
+    /// check and its commit, see the conflicts under <c>None</c> in
     /// <see cref="FileSystemBundleProvider.Write"/>);
     /// <see cref="BundleWriteCondition.MustNotExist"/> holds while no object exists under the key;
     /// <see cref="BundleWriteCondition.IfMatch"/> holds while an object exists under the key and
@@ -80,7 +81,7 @@ public interface IBundleProvider
     /// <exception cref="BundleWriteOutcomeUnknownException">The commit itself failed and what the storage now holds could not be established.</exception>
     /// <exception cref="BundleWriteNotCommittedException">The storage refused the commit, without any effect, on every one of a bounded number of attempts (the filesystem provider: Windows, a replacement kept refused); the object is unchanged.</exception>
     /// <exception cref="BundleObjectTooLargeException">An <see cref="BundleWriteCondition.IfMatch"/> write found the existing object longer than <see cref="BundleLimits.MaxObjectBytes"/>, whose version cannot be established; nothing was changed.</exception>
-    /// <exception cref="IOException">The storage failed before the commit (the filesystem provider passes a raw <see cref="IOException"/> or <see cref="UnauthorizedAccessException"/> up as it is: its message may name a host path, decision B15, issue #211); the object is unchanged.</exception>
+    /// <exception cref="IOException">The storage failed before the commit, or at a commit that changed nothing (the filesystem provider passes a raw <see cref="IOException"/> or <see cref="UnauthorizedAccessException"/> up as it is: its message may name a host path, decision B15, issue #211); the object is unchanged.</exception>
     /// <exception cref="UnauthorizedAccessException">The storage denied an access before the commit, as above; the object is unchanged.</exception>
     BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition);
 

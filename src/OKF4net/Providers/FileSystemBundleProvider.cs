@@ -360,7 +360,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// <c>File.WriteAllText</c> did, while an <see cref="BundleWriteConditionKind.IfMatch"/> write
     /// of such a file is refused with <see cref="UnauthorizedAccessException"/>: its version
     /// cannot be established.</para>
-    /// <para><b>Failures.</b> A failure before the commit removes the temporary and leaves the
+    /// <para><b>Failures.</b> A failure before the commit removes the temporary (except as said
+    /// below: a link on its path, a removal that fails) and leaves the
     /// target untouched; it is the raw <see cref="IOException"/> or
     /// <see cref="UnauthorizedAccessException"/>, whose message may name a host path.
     /// <c>BundleConceptWriter</c> passes the raw message on unchanged, as it did for
@@ -381,14 +382,22 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// object under the key and the new bytes under the temporary's name — raises
     /// <see cref="BundleWriteOutcomeUnknownException"/> and keeps the temporary, the only copy of
     /// the new content. The temporary is never removed through a path that a link has entered
-    /// since it was created; it is then left in place.</para>
+    /// since it was created, and a removal that fails is not retried: in both cases it is left in
+    /// place.</para>
     /// <para><b>Conflicts under <see cref="BundleWriteConditionKind.None"/>.</b> An unconditional
-    /// write can still raise <see cref="BundleWriteConflictException"/> when it is a creation that
-    /// loses a creation race to another writer: on Windows, <see cref="File.Move(string, string, bool)"/>
-    /// without overwrite fails because the name appeared, and the classification above finds the
-    /// target changed; on Unix, the object appearing since a creation was prepared makes the
-    /// write prepare again, and after the third preparation (two raw-provider writers in one
-    /// process, each creating the name first) the conflict is raised. Nothing was changed.</para>
+    /// write can still raise <see cref="BundleWriteConflictException"/> when it is a creation and
+    /// another writer creates the name between the provider's last check and its commit, in two
+    /// ways. <see cref="File.Move(string, string, bool)"/> without overwrite fails because the name
+    /// appeared (on Windows, and on Unix when the name appeared before its <c>lstat</c>), and the
+    /// classification above finds the target changed. Or the in-lock check finds the name taken,
+    /// which makes the write prepare again, this time as a replacement, and the conflict is
+    /// raised only when the object is removed and created again between each of three
+    /// preparations and that check. A race lost before the in-lock check ends in a replacement,
+    /// as <c>File.WriteAllText</c> did. Nothing was changed.</para>
+    /// <para><b>A root that does not exist yet</b> is created by the first write, with any
+    /// missing ancestor, as the bundle writer always did. The confinement boundary is checked
+    /// before and after, and every guard is applied to the path as before; a root that exists
+    /// as a file is an <see cref="IOException"/>.</para>
     /// <para><b>What a concurrent reader sees.</b> Never a part of the new content. On Unix the
     /// commit is a <c>rename</c>, so a reader finds the old object or the new one. On Windows
     /// <c>ReplaceFile</c> is atomic for the stored state but not for readers: while it runs, a
@@ -405,7 +414,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// flushed (no .NET API flushes a directory).</para>
     /// <para><b>Orphaned temporaries.</b> A temporary left behind — a process crash between its
     /// creation and the commit, an unknown outcome, or a
-    /// failure whose temporary could no longer be reached safely — is not a <c>.md</c>, so the
+    /// failure whose temporary could no longer be reached safely or could not be removed — is not a <c>.md</c>, so the
     /// core ignores it as a concept; it still counts toward <see cref="BundleLimits.MaxEntries"/>
     /// and a producer that requires an empty output directory sees it. Nothing removes it
     /// automatically: it may be the only copy of the new content.</para>
