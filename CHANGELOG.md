@@ -350,6 +350,16 @@ and this project adheres to
   named `index.md` with files under it now ends the run with
   `BundleWriteConflictException` where the write threw
   `UnauthorizedAccessException`.
+- **`okf index` is slower on a large bundle.** Regenerating the indexes now
+  lists, validates and reads the bundle through the provider, as a load does,
+  and commits every `index.md` atomically. On 3 000 flat concepts (medians of
+  7 runs, the two builds alternating), three series measured on one machine
+  for this change put it at +13.6 % to +26.1 % longer than before (0.84 to
+  0.92 s before, 1.03 to 1.05 s after, a median of +19.9 % over the three);
+  `okf validate` varied between -1.1 % and +3.0 % over the same series, with
+  overlapping ranges, so no stable change is established. Measurements on one
+  machine are not a general guarantee. Bringing `okf index` back down is
+  tracked in #208.
 
 ## [0.7.0] - 2026-10-14
 

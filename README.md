@@ -334,6 +334,19 @@ directory's lock with a writer built from the root string: two such writers
 are then serialised only by the provider's own commit lock and the write
 conditions.
 
+`IndexGenerator.RegenerateIndexes(provider, options)` regenerates every
+`index.md` through a provider: it lists and validates the bundle as a load
+does, writes each `index.md` conditioned on the version it read (or on its
+absence), retries a conflict like the writer, and returns a
+`BundleWriteReport` — the `index.md` keys written, in order, and those it could
+not write, with why. A directory is referenced by its parent's index only when
+a file lies under it: an empty directory is not, a directory holding only
+non-`.md` files is. `IndexGenerator.RegenerateIndexes(path)` and `okf index`
+go through a `FileSystemBundleProvider` and keep their return values and
+output, except for the directories the rule above no longer references and the
+cases the CHANGELOG lists; what the `string` overloads throw is described in
+the "Failures" remarks of `RegenerateIndexesWith`.
+
 ### As a CLI
 
 On Windows, install via [winget](https://github.com/microsoft/winget-pkgs):

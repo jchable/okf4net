@@ -567,6 +567,40 @@ comme n'importe quelle autre.
   - `MustNotExist`, ou création : `File.Move(temp, dest, overwrite: false)`,
     qui échoue de façon atomique si la destination est apparue entre-temps.
     Cet échec est rendu comme un conflit.
+
+  > **Note du 2026-10-19 (lot B, plan d'implémentation, B17 à B22) :** chaque
+  > primitive a été mesurée avant d'être employée (sondes du plan). Sous Unix,
+  > `File.Move` sans écrasement est un `lstat` puis un `rename` : un autre
+  > **processus** qui crée le nom entre les deux est remplacé ; dans un processus,
+  > le verrou de commit ferme la fenêtre (B20, #178). Sous Windows,
+  > `File.Replace` est atomique pour l'état stocké, pas pour les lecteurs :
+  > pendant le remplacement, un lecteur concurrent peut ne trouver aucun objet
+  > sous le nom ou rencontrer une violation de partage, jamais un objet tronqué
+  > (B17). Le temporaire d'un remplacement est créé en 0600 et prend le mode de
+  > la cible par son handle ; celui d'une création garde le mode par défaut,
+  > faute d'API pour lire l'umask (B18). Un nom que le volume confondrait avec
+  > une entrée stockée est refusé d'après le volume lui-même, pas d'après un
+  > repli de casse (B19) ; une cible que le processus ne peut pas écrire est
+  > refusée comme avant (B22) ; un échec du commit est classé d'après le disque,
+  > et une issue inconnue garde le temporaire (B21).
+
+  > **Note du 2026-10-20 (lot B, revues externes exécutées, B42 à B48) :**
+  > `ReplaceFile` peut aussi échouer **sans effet** (erreur 1175, mesurée deux
+  > fois en 1 500 commits, lecteurs ouverts) : le commit est refait, au plus
+  > trois fois, depuis la re-vérification de la condition sur les octets stockés,
+  > puis échoue avec `BundleWriteNotCommittedException`, la cible intacte (B43).
+  > Une lecture réessaie la fenêtre de `ReplaceFile` (violation de partage, ou
+  > entrée listée un instant plus tôt puis introuvable), sous Windows seulement,
+  > ce qui la rétrécit sans la fermer (B45). Le classement d'un commit échoué
+  > renouvelle la frontière et les gardes STRICT avant toute lecture (B44). Une
+  > écriture inconditionnelle n'exige que le droit d'écrire la cible, comme
+  > `File.WriteAllText` ; seul `IfMatch` la lit (B42). Une notification
+  > `onWriteCommitted` qui échoue après le commit ne fait pas passer l'écriture
+  > pour un échec (B46) : elle s'exécute une seule fois, l'écriture devenue
+  > définitive, hors de toute nouvelle tentative, et rien de ce qu'elle lève
+  > n'est pris pour un refus de l'écriture (B48). La politique de clés couvre
+  > aussi les clés `index.md` que produit `IndexGenerator` (B47).
+
 - **Version d'objet sur le filesystem : SHA-256 du contenu**, pas la date de
   modification, dont la résolution est d'1 à 2 s sur certains systèmes de
   fichiers.
@@ -588,6 +622,13 @@ problème des observations, ci-dessous, que ce design règle.
 
 - API : `WriteConcept` accepte une version attendue **optionnelle** ; sans elle,
   l'écriture est inconditionnelle, comme aujourd'hui.
+
+  > **Note du 2026-10-19 (lot B, B29) :** la version attendue est une
+  > `BundleWriteCondition` (`IfMatch(v)`, `MustNotExist` ou `None`), pas une
+  > `BundleObjectVersion?` : l'observation « absent » (`MustNotExist`) doit
+  > pouvoir atteindre le writer. Les surcharges à trois arguments restent
+  > inconditionnelles.
+
 - Outils agents (D1) : l'écriture est conditionnée à ce que **cette session** a
   observé, d'après son registre (§5.4), et non à l'image courante du handle
   partagé, qu'un autre appel a pu rafraîchir entre-temps. Seule une observation
@@ -1019,6 +1060,18 @@ la source l'est. `catalog.json` est de la configuration d'opérateur.
 | `okf-mcp` | reste filesystem (`OKF_BUNDLE_ROOT`). Sa découverte de bundle (`OkfBundleDiscovery.ReadRootIndexOrNull`) lit l'`index.md` racine **avec la borne de 16 Mio** : au-delà, l'index est traité comme illisible, donc « aucune version déclarée », comme aujourd'hui pour une erreur de lecture |
 | `producers/` | une recherche n'y trouve aucun usage des membres qui changent, mais une recherche ne prouve rien : la vérification est la compilation et les tests de `producers/OkfProducer.sln` en local |
 
+> **Note du 2026-10-19 (lot B, plan d'implémentation) :** `BundleConceptWriter`
+> rend tout refus d'un chemin par le provider avec le message de son ancienne
+> garde de point de reparse : ses deux messages (le chemin, l'entrée cible)
+> n'en font plus qu'un, puisque le provider ne les distingue pas (B32), et ses
+> essais lire-modifier-écrire tournent sous son verrou (B30). `IndexGenerator`
+> référence un sous-dossier dès qu'un objet, de n'importe quelle extension, se
+> trouve sous lui (§11) ; la création d'un `index.md` passe le contrôle
+> d'arborescence comme toute création du cœur ; la surcharge `string` saute en
+> silence un `index.md` que le provider refuse et un `index.md` racine
+> illisible, et lève toute autre erreur (voir les remarques « Failures » de
+> `RegenerateIndexesWith`).
+
 **`BundleRoot` d'`OkfBundleTools` et de `BundleConceptWriter`.** Ces propriétés
 publiques renvoient une chaîne de chemin, ce qui n'a pas de sens pour un provider
 distant.
@@ -1195,6 +1248,16 @@ l'arbitrage du 2026-10-08).
 - **Inchangé** :
   - les octets de sortie de `okf` et `okf-render`, hors dossiers vides dans un
     index régénéré ;
+
+    > **Note du 2026-10-19 (lot B) :** et hors les cas voisins consignés au
+    > CHANGELOG, dont : un dossier dont les seules entrées sont des liens
+    > symboliques ou des jonctions n'est plus référencé non plus (aucun listing ne
+    > suit un lien), et un dossier nommé `index.md` qui contient des fichiers fait
+    > échouer `okf index` avec `BundleWriteConflictException` au lieu de
+    > `UnauthorizedAccessException` (message d'erreur différent, même code de
+    > sortie). Ce que lèvent d'autres cas, pour la surcharge `string`, est décrit
+    > dans les remarques « Failures » de `RegenerateIndexesWith`.
+
   - aucun nom de fichier de `tests/fixtures/` ni de `bundles/` n'est écarté par
     `Strict` (vérifié le 2026-10-06 sur 146 entrées, soit 99 fichiers et 47
     répertoires : ni `:`, ni `.` ou espace final, ni nom réservé, ni caractère
