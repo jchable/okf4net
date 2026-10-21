@@ -1561,10 +1561,10 @@ public class CliTests
     /// refactor — <c>bundle.Get</c> compares <c>ConceptId</c>s ordinally, and
     /// <c>Bundle.Load</c> builds them from the real directory-listing casing,
     /// so <c>METRICS/DAU</c> was never an alias for an on-disk
-    /// <c>metrics/dau.md</c>. Without <c>ExistsWithExactCase</c>,
-    /// <c>File.Exists</c> alone answers case-insensitively on Windows/macOS
-    /// and would accept it. Passes identically on a case-sensitive
-    /// filesystem too (there, <c>File.Exists</c> itself already says no).
+    /// <c>metrics/dau.md</c>. The provider matches every segment of the key
+    /// exactly, where <c>File.Exists</c> alone answers case-insensitively on
+    /// Windows/macOS and would accept it. Passes identically on a
+    /// case-sensitive filesystem too.
     /// </summary>
     [Fact]
     public void Verify_dry_run_rejects_a_case_variant_of_an_existing_concept_id()

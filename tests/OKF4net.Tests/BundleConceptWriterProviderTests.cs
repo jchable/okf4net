@@ -40,8 +40,61 @@ public class BundleConceptWriterProviderTests
         ["RecordVerifications"] = w => w.RecordVerifications(["metrics/dau"], "human:ada"),
     };
 
+    /// <summary>
+    /// The same entry points called with an argument the writer would refuse first (an empty id,
+    /// an empty batch), by name: on a read-only provider the capability guard must still win.
+    /// </summary>
+    private static readonly Dictionary<string, Action<BundleConceptWriter>> InvalidWriteCalls = new()
+    {
+        ["WriteConcept(yaml)"] = w => w.WriteConcept("", Fm, "body\n"),
+        ["WriteConcept(frontmatter)"] = w => w.WriteConcept("", Frontmatter.FromMapping((YamlMapping)YamlValue.Parse(Fm)), "body\n"),
+        ["AppendToConceptAtomic"] = w => w.AppendToConceptAtomic("", Fm, b => (b ?? string.Empty) + "more\n"),
+        ["RecordVerifications"] = w => w.RecordVerifications([], "human:ada"),
+    };
+
     /// <summary>The names of <see cref="WriteCalls"/>, for the matrix theories.</summary>
     public static TheoryData<string> WriteEntryPoints => new(WriteCalls.Keys);
+
+    /// <summary>
+    /// The matrix covers every write entry point: the public instance methods of the writer that
+    /// return <c>string</c> or <see cref="VerificationOutcome"/> (read-only
+    /// <c>CheckVerificationTargets</c> returns neither) are exactly the matrix's, overloads
+    /// included, so a new write entry point cannot be added without the matrix noticing (B3).
+    /// </summary>
+    [Fact]
+    public void The_write_matrix_lists_every_public_write_method_of_the_writer()
+    {
+        var reflected = typeof(BundleConceptWriter)
+            .GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly)
+            .Where(m => !m.IsSpecialName && (m.ReturnType == typeof(string) || m.ReturnType == typeof(VerificationOutcome)))
+            .GroupBy(m => m.Name)
+            .ToDictionary(g => g.Key, g => g.Count());
+        var matrix = WriteCalls.Keys
+            .GroupBy(k => k.Split('(')[0])
+            .ToDictionary(g => g.Key, g => g.Count());
+
+        Assert.Equal(matrix.OrderBy(p => p.Key), reflected.OrderBy(p => p.Key));
+        Assert.Equal(WriteCalls.Keys.Order(), InvalidWriteCalls.Keys.Order());
+    }
+
+    /// <summary>B3: the capability guard runs before the arguments are looked at — an invalid argument on a read-only provider is still a <see cref="BundleReadOnlyException"/>, never an <c>Error:</c> text.</summary>
+    [Theory]
+    [MemberData(nameof(WriteEntryPoints))]
+    public void The_capability_guard_runs_before_the_arguments_are_checked(string entryPoint)
+    {
+        var storage = new InMemoryBundleProvider().Add("metrics/dau.md", Doc);
+        Assert.Throws<BundleReadOnlyException>(() => InvalidWriteCalls[entryPoint](new BundleConceptWriter(storage)));
+        Assert.Empty(storage.Calls);
+
+        using var tmp = new TempDir();
+        Assert.Throws<BundleReadOnlyException>(() => InvalidWriteCalls[entryPoint](new BundleConceptWriter(new FileSystemBundleProvider(tmp.Path).AsReadOnly())));
+
+        // And on a writable provider the same call is an Error: text, so the guard is what the rows above pin.
+        var writable = new InMemoryBundleProvider(canWrite: true);
+        var writer = new BundleConceptWriter(writable);
+        InvalidWriteCalls[entryPoint](writer);
+        Assert.DoesNotContain(writable.Calls, c => c.StartsWith("write ", StringComparison.Ordinal));
+    }
 
     /// <summary>
     /// B3, spec §11 "Lecture seule": on a read-only view of a filesystem bundle, every write
@@ -360,5 +413,90 @@ public class BundleConceptWriterProviderTests
         Assert.Equal(3, notifications);
         Assert.Single(OkfDocument.Parse(File.ReadAllText(Path.Combine(tmp.Path, "a.md"))).Frontmatter.Verified);
         Assert.Equal(Doc, File.ReadAllText(Path.Combine(tmp.Path, "b.md")));
+    }
+
+    /// <summary>
+    /// B46: a notification that throws a provider exception the write path would translate
+    /// (a refused path, a name the storage cannot hold) is reported as <c>Error: {its message}</c>,
+    /// byte for byte — the write committed, so the "resolves through a reparse point" or "cannot be
+    /// stored" texts would describe a failure that did not happen. The write is on disk, made once.
+    /// </summary>
+    [Theory]
+    [InlineData("refused")]
+    [InlineData("unavailable")]
+    public void A_notification_failing_with_a_provider_refusal_reports_its_own_message_and_the_write_stays(string kind)
+    {
+        using var tmp = new TempDir();
+        var file = Path.Combine(tmp.Path, "metrics", "dau.md");
+        Exception failure = kind == "refused"
+            ? new BundleAccessRefusedException(K("metrics/dau.md"), "a link")
+            : new BundleWriteConflictException(K("metrics/dau.md"), BundleWriteConflictReason.NameUnavailable);
+        var notifications = 0;
+        var writer = new BundleConceptWriter(tmp.Path, onWriteCommitted: () =>
+        {
+            notifications++;
+            throw failure;
+        });
+
+        Assert.Equal("Error: " + failure.Message, writer.WriteConcept("metrics/dau", Fm, "body\n"));
+        Assert.EndsWith("\nbody\n", File.ReadAllText(file), StringComparison.Ordinal);
+        Assert.Equal("Error: " + failure.Message, writer.AppendToConceptAtomic("metrics/dau", Fm, b => b + " more"));
+        Assert.EndsWith("\nbody more\n", File.ReadAllText(file), StringComparison.Ordinal);
+        Assert.Equal(2, notifications);
+
+        var outcome = writer.RecordVerifications(["metrics/dau"], "human:ada", "2026-10-19T00:00:00Z");
+        Assert.True(outcome.Recorded);
+        Assert.Equal($"Recorded 1 verification(s) by human:ada at 2026-10-19T00:00:00Z; the write notification failed: {failure.Message}", outcome.Message);
+        Assert.Single(OkfDocument.Parse(File.ReadAllText(file)).Frontmatter.Verified);
+    }
+
+    /// <summary>
+    /// A provider that cannot hold the exact name (a case twin on a case-folding volume, a
+    /// directory of that name) raises <see cref="BundleWriteConflictReason.NameUnavailable"/>: the
+    /// writer says so in its own words, naming the concept and no storage detail.
+    /// </summary>
+    [Fact]
+    public void A_name_the_storage_cannot_hold_is_reported_in_the_writers_own_words()
+    {
+        var storage = new InMemoryBundleProvider(canWrite: true).FailWrite(1, new BundleWriteConflictException(K("a/x.md"), BundleWriteConflictReason.NameUnavailable));
+        var fired = 0;
+        var writer = new BundleConceptWriter(storage, onWriteCommitted: () => fired++);
+
+        var result = writer.WriteConcept("a/x", Fm, "body\n");
+
+        Assert.Equal("Error: 'a/x' cannot be stored under that name: the bundle holds an entry it would confuse with it (a directory, or a name differing only in case or Unicode form), or cannot hold the name.", result);
+        Assert.Equal(0, fired);
+        Assert.False(storage.Exists(K("a/x.md")));
+    }
+
+    /// <summary>The same for a path the provider refuses (a link, an entry that cannot be inspected): the writer's reparse-point text, whatever the host OS.</summary>
+    [Fact]
+    public void A_path_the_provider_refuses_at_the_write_is_reported_in_the_writers_own_words()
+    {
+        var storage = new InMemoryBundleProvider(canWrite: true).FailWrite(1, new BundleAccessRefusedException(K("a/x.md"), "a link"));
+
+        var result = new BundleConceptWriter(storage).WriteConcept("a/x", Fm, "body\n");
+
+        Assert.Equal("Error: 'a/x' resolves through a reparse point (symlink/junction), or an entry that could not be inspected, inside the bundle, which is not allowed.", result);
+        Assert.False(storage.Exists(K("a/x.md")));
+    }
+
+    /// <summary>
+    /// The verification pre-check reads within the writer's own bounds, not the defaults: a
+    /// concept over <c>MaxObjectBytes</c> is refused with the bound's message, nothing is written.
+    /// </summary>
+    [Fact]
+    public void Verification_targets_are_read_within_the_writers_bounds()
+    {
+        var storage = new InMemoryBundleProvider(canWrite: true).Add("metrics/dau.md", Doc);
+        var writer = new BundleConceptWriter(storage, options: new BundleLoadOptions { Limits = new BundleLimits { MaxObjectBytes = 10 } });
+
+        var outcome = writer.RecordVerifications(["metrics/dau"], "human:ada", "2026-10-19T00:00:00Z");
+
+        Assert.False(outcome.Recorded);
+        Assert.Contains("is larger than the 10-byte bound", outcome.Message, StringComparison.Ordinal);
+        Assert.Empty(outcome.Records);
+        Assert.DoesNotContain(storage.Calls, c => c.StartsWith("write ", StringComparison.Ordinal));
+        Assert.NotNull(writer.CheckVerificationTargets(["metrics/dau"]));
     }
 }

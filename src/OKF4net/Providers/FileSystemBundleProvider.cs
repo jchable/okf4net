@@ -362,8 +362,11 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// cannot be established.</para>
     /// <para><b>Failures.</b> A failure before the commit removes the temporary and leaves the
     /// target untouched; it is the raw <see cref="IOException"/> or
-    /// <see cref="UnauthorizedAccessException"/>, whose message may name a host path (the core
-    /// translates it). A replacement that the storage refuses without any effect — Windows'
+    /// <see cref="UnauthorizedAccessException"/>, whose message may name a host path.
+    /// <c>Bundle.Load</c> and <c>IndexGenerator</c> translate it into their own
+    /// messages; <c>BundleConceptWriter</c> passes the raw message on unchanged, as it did
+    /// for <c>File.WriteAllText</c> (decision B15; path-free texts are tracked by issue #211).
+    /// A replacement that the storage refuses without any effect — Windows'
     /// <c>ERROR_UNABLE_TO_REMOVE_REPLACED</c> (1175), measured while readers held the object
     /// open, or a sharing violation — is made again, at most three times in all, 5 to 25 ms
     /// apart, each time from the re-check of the condition against the bytes stored then; after

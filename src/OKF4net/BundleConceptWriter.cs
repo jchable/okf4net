@@ -263,7 +263,7 @@ public sealed class BundleConceptWriter
     }
 
     /// <summary>Creates a writer over <paramref name="provider"/> (spec §9).</summary>
-    /// <param name="provider">Where the bundle is read and written. A provider whose <see cref="BundleProviderCapabilities.CanWrite"/> is <see langword="false"/> makes every write method throw <see cref="BundleReadOnlyException"/>.</param>
+    /// <param name="provider">Where the bundle is read and written. A provider whose <see cref="BundleProviderCapabilities.CanWrite"/> is <see langword="false"/> makes every write method throw <see cref="BundleReadOnlyException"/>. The in-process write lock is keyed by the provider's <see cref="IBundleProvider.Id"/> unless it is a <see cref="FileSystemBundleProvider"/> itself (keyed by its root): a decorator around a <see cref="FileSystemBundleProvider"/> therefore does not share the directory's lock with a writer built from the root string, and two such writers are serialised only by the provider's own commit lock and the write conditions (decision B11).</param>
     /// <param name="onWriteCommitted">As for <see cref="BundleConceptWriter(string, Action?)"/>.</param>
     /// <param name="options">The key policy, extra key validators and bounds the writer applies — the same as a load of this bundle should use, so that the writer never creates a key the load would discard. <see langword="null"/>: <see cref="BundleLoadOptions.Default"/>.</param>
     public BundleConceptWriter(IBundleProvider provider, Action? onWriteCommitted = null, BundleLoadOptions? options = null)
@@ -673,7 +673,7 @@ public sealed class BundleConceptWriter
                 // committed callback below is atomic with the write it follows.
                 using (EnterWriteLock())
                 {
-                    return WriteThenNotify(subject, committed => WriteValidatedContentLocked(target, content!, BundleWriteCondition.None, committed));
+                    return WriteThenNotify(committed => WriteValidatedContentLocked(target, content!, BundleWriteCondition.None, committed));
                 }
             },
             () => subject);
@@ -744,7 +744,7 @@ public sealed class BundleConceptWriter
 
                 using (EnterWriteLock())
                 {
-                    return WriteThenNotify(subject, committed => WriteValidatedContentLocked(target, content!, BundleWriteCondition.None, committed));
+                    return WriteThenNotify(committed => WriteValidatedContentLocked(target, content!, BundleWriteCondition.None, committed));
                 }
             },
             () => subject);
@@ -873,7 +873,7 @@ public sealed class BundleConceptWriter
                 // outside this lock (another process) cannot be overwritten.
                 using (EnterWriteLock())
                 {
-                    return WriteThenNotify(subject, committed =>
+                    return WriteThenNotify(committed =>
                     {
                         string frontmatterYaml;
                         string? currentBody;
@@ -948,7 +948,7 @@ public sealed class BundleConceptWriter
     /// from the value it comments on.
     ///
     /// Fully validated before the first write: inside one hold of the bundle
-    /// lock, every concept id is checked and resolved to a target path, then
+    /// lock, every concept id is checked and resolved to its bundle key, then
     /// each target is read, edited and validated, all before a single byte is
     /// written. The pre-checks read the files too, so they cannot run before
     /// the lock is taken: a concurrent writer of the same concept would make
@@ -1181,7 +1181,7 @@ public sealed class BundleConceptWriter
                         // nothing it throws is taken for a failure of the write; a failed
                         // one is said once the batch ends.
                         records.Add(new VerificationRecord(stamp.ConceptId, stampedAt, stamp.ReplacedAt));
-                        if (NotifyCommitted(subject) is { } notificationError)
+                        if (NotifyCommitted() is { } notificationError)
                         {
                             notificationFailure ??= notificationError["Error: ".Length..];
                         }
@@ -1865,14 +1865,13 @@ public sealed class BundleConceptWriter
     /// operation has returned (<see cref="NotifyCommitted"/>). CALLER MUST hold the write lock:
     /// the notification runs under it, atomically with the write it follows (#131).
     /// </summary>
-    /// <param name="subject">How a converted notification failure names the object (<c>'tables/x'</c>, <c>log.md</c>).</param>
     /// <param name="write">The operation; it calls the action it is given once the provider has committed.</param>
     /// <returns>What <paramref name="write"/> returned, or the <c>Error: …</c> text of a notification that failed.</returns>
-    private string WriteThenNotify(string subject, Func<Action, string> write)
+    private string WriteThenNotify(Func<Action, string> write)
     {
         var committed = false;
         var result = write(() => committed = true);
-        return committed && NotifyCommitted(subject) is { } failure ? failure : result;
+        return committed && NotifyCommitted() is { } failure ? failure : result;
     }
 
     /// <summary>
@@ -1885,9 +1884,8 @@ public sealed class BundleConceptWriter
     /// <see cref="OperationCanceledException"/>, a host's bug — propagates to the caller unchanged,
     /// the write committed. CALLER MUST hold the write lock.
     /// </summary>
-    /// <param name="subject">How the message names the object written.</param>
     /// <returns><see langword="null"/>, or the <c>Error: …</c> text of the notification's failure.</returns>
-    private string? NotifyCommitted(string subject)
+    private string? NotifyCommitted()
     {
         try
         {
@@ -1896,7 +1894,9 @@ public sealed class BundleConceptWriter
         }
         catch (Exception ex) when (IsExpectedFailure(ex))
         {
-            return Translate(ex, subject);
+            // The exception's own message, byte for byte (B46): the write committed, so
+            // Translate's provider-refusal texts would describe a failure that did not happen.
+            return $"Error: {ex.Message}";
         }
     }
 
@@ -1971,11 +1971,15 @@ public sealed class BundleConceptWriter
         && ex is OkfException or ArgumentException or IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException;
 
     /// <summary>
-    /// The writer's message for a failure while writing <paramref name="subject"/> (spec §7: built
-    /// from the exception's type and fields, never from a provider's own text where the writer has
-    /// one of its own). A path the provider refuses keeps the message the writer gave its own
+    /// The writer's message for a failure while writing <paramref name="subject"/> (spec §7: for the
+    /// typed provider exceptions, built from the exception's type and fields, never from the
+    /// provider's own text). A path the provider refuses keeps the message the writer gave its own
     /// reparse-point guard before the write moved behind the provider (decision B15); a name the
-    /// storage cannot hold gets a library-authored one; anything else is the exception's message.
+    /// storage cannot hold gets a library-authored one. Anything else is the exception's message
+    /// unchanged — including a raw <see cref="IOException"/> or
+    /// <see cref="UnauthorizedAccessException"/>, whose .NET message may name a host path, exactly
+    /// as the writer reported a <see cref="File.WriteAllText(string, string)"/> failure before
+    /// (issue #211 tracks path-free I/O texts).
     /// </summary>
     private static string Translate(Exception ex, string subject) => ex switch
     {

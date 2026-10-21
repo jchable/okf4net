@@ -262,7 +262,14 @@ and this project adheres to
   with the same message as a path through one (`… resolves through a reparse
   point (symlink/junction), or an entry that could not be inspected, inside
   the bundle, which is not allowed.`), and any write failure in the middle of
-  a `RecordVerifications` batch now ends with `— already written: …`.
+  a `RecordVerifications` batch now ends with `— already written: …`. A
+  name the storage cannot hold under that exact spelling is refused too: on
+  Windows and macOS, `WriteConcept("A/x")` beside an existing `a/x.md` used to
+  overwrite it and report "updated"; it is now a creation that the provider
+  refuses, with a message saying the name cannot be stored under that name.
+  An I/O failure's .NET message, host path included, is reported unchanged, as
+  before (and some failures name a `.okf-write-*.tmp` path in the target's
+  directory); path-free texts are tracked by #211.
 - **A write notification that fails no longer hides the write.** When
   `onWriteCommitted` throws once the provider has committed, `WriteConcept`
   and `AppendToConceptAtomic` still return `Error: {message}`, as before, but
