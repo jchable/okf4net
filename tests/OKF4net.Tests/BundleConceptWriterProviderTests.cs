@@ -94,6 +94,28 @@ public class BundleConceptWriterProviderTests
         Assert.Equal(WriteCalls.Keys.Order(), InvalidWriteCalls.Keys.Order());
     }
 
+    /// <summary>
+    /// The matrix covers every provider overload of the index generator too: the public static
+    /// methods of <see cref="IndexGenerator"/> that take an <see cref="IBundleProvider"/> (the
+    /// <c>string</c> overloads take none) are exactly the <c>IndexGenerator.</c> rows of both
+    /// tables, so a deleted or an extra row fails here (the writer's reflection check above
+    /// leaves those rows out).
+    /// </summary>
+    [Fact]
+    public void The_write_matrix_lists_every_provider_overload_of_the_index_generator()
+    {
+        var reflected = typeof(IndexGenerator)
+            .GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.DeclaredOnly)
+            .Where(m => !m.IsSpecialName && m.GetParameters().Any(p => p.ParameterType == typeof(IBundleProvider)))
+            .Select(m => $"IndexGenerator.{m.Name}(provider)")
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.NotEmpty(reflected);
+        Assert.Equal(reflected, WriteCalls.Keys.Where(k => k.StartsWith("IndexGenerator.", StringComparison.Ordinal)).Order(StringComparer.Ordinal));
+        Assert.Equal(reflected, InvalidWriteCalls.Keys.Where(k => k.StartsWith("IndexGenerator.", StringComparison.Ordinal)).Order(StringComparer.Ordinal));
+    }
+
     /// <summary>B3: the capability guard runs before the arguments are looked at — an invalid argument on a read-only provider is still a <see cref="BundleReadOnlyException"/>, never an <c>Error:</c> text.</summary>
     [Theory]
     [MemberData(nameof(WriteEntryPoints))]

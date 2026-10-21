@@ -435,7 +435,7 @@ public sealed class Bundle
     /// names refused for their length — still physically there: the tree validation counts their
     /// ancestors as prefixes, so <c>x.md</c> beside an over-long <c>x.md/…</c> is a conflict.
     /// Provider exceptions and the bounds' <see cref="BundleLimitExceededException"/> propagate.
-    /// The one listing consumer of the core: <see cref="Load(IBundleProvider, BundleLoadOptions?)"/>
+    /// The one bounded listing of the whole bundle for a load or a regeneration: <see cref="Load(IBundleProvider, BundleLoadOptions?)"/>
     /// and <see cref="IndexGenerator"/> both list through it.
     /// </summary>
     internal static (List<string> TreeInput, List<string> OverLength) ListNames(IBundleProvider provider, BundleLimits limits)

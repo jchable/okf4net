@@ -143,7 +143,7 @@ public class IndexGeneratorProviderTests
         var storage = Storage(("a/x.md", Doc("Note", "X", "x.")));
         storage.FailWrite(1, new IOException("disk full at C:/secret/path"));
         var report = IndexGenerator.RegenerateIndexes(storage);
-        Assert.Equal("I/O error while writing the index (IOException)", Assert.Single(report.Failed).Reason);
+        Assert.Equal("I/O error while regenerating the index (IOException)", Assert.Single(report.Failed).Reason);
         Assert.Equal([K("index.md")], report.Written);
 
         var io = Storage(("a/x.md", Doc("Note", "X", "x.")));

@@ -427,7 +427,7 @@ public static class IndexGenerator
             }
             catch (Exception e) when (!legacy && e is not BundleReadOnlyException && (e is BundleProviderException or IOException or UnauthorizedAccessException))
             {
-                return e is BundleProviderException ? e.Message : $"I/O error while writing the index ({e.GetType().Name})";
+                return e is BundleProviderException ? e.Message : $"I/O error while regenerating the index ({e.GetType().Name})";
             }
         }
     }

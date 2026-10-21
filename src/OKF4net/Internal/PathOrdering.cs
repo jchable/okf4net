@@ -6,15 +6,15 @@ namespace OKF4net.Internal;
 /// <c>\</c> and <c>/</c>), ordinal per segment, with a shorter segment list
 /// sorting first when one path is a prefix of the other — comparing by path
 /// component rather than raw bytes. Used for every deterministic file-tree
-/// ordering here (<c>Bundle.Load</c>'s <c>md_files.sort()</c> and
+/// ordering here (<c>Bundle.Load</c>'s sort of the <c>.md</c> keys and
 /// <c>IndexGenerator</c>'s directory/child orderings).
 ///
 /// A flat ordinal string comparison of full paths is NOT equivalent: on
 /// Windows, <c>'.'</c> (0x2E) sorts before <c>'\'</c> (0x5C), so a raw string
 /// sort would place <c>orders.md</c> before <c>orders\extra.md</c> even
 /// though the directory <c>orders</c> should sort before the sibling file
-/// <c>orders.md</c> — inverting the DFS walk order the collectors already
-/// produce.
+/// <c>orders.md</c> — inverting the depth-first order the provider's walk (<c>FileSystemBundleProvider</c>) already
+/// produces.
 ///
 /// Consolidated from the two previously byte-identical private copies in
 /// <c>Bundle</c> and <c>IndexGenerator</c>.
