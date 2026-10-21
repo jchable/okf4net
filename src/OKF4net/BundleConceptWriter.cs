@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Collections.Concurrent;
+using System.Globalization;
 using OKF4net.Internal;
 using OKF4net.Providers;
 using OKF4net.Yaml;
@@ -1419,6 +1420,306 @@ public sealed class BundleConceptWriter
         prepared = new PreparedStamp(target, conceptId, content, current.Version, replacedAt);
         return null;
     }
+
+    /// <summary>The key of the bundle root's change log (spec §9).</summary>
+    internal const string LogKey = "log.md";
+
+    /// <summary>
+    /// Appends one entry to the bundle root's <c>log.md</c> (spec §9) under
+    /// <paramref name="date"/> (today, UTC, by default), creating the file if it
+    /// does not yet exist. If a heading for that date already exists, the entry
+    /// is appended to the end of that day's entries (days are newest-first by
+    /// convention, but entries within a day stay chronological). The single
+    /// write path of <c>log.md</c> (spec §3): the read-modify-write runs under
+    /// this writer's lock, is written through the provider conditioned on the
+    /// version read (<see cref="BundleWriteCondition.IfMatch"/>, or
+    /// <see cref="BundleWriteCondition.MustNotExist"/> for a new log), and is
+    /// retried on a conflict like <see cref="AppendToConceptAtomic"/>. The
+    /// existing file, if any, is read as strict UTF-8, then re-rendered through
+    /// <see cref="ChangeLog.ToMarkdown"/> — the strict §9 model — so any
+    /// non-conforming prose or comments in a hand-authored <c>log.md</c> are not
+    /// preserved. Never throws for expected errors (a <paramref name="kind"/> or
+    /// <paramref name="text"/> that <see cref="GuardLogField"/> refuses — empty,
+    /// or carrying a line break, a control character or a bidirectional control
+    /// character — a <c>log.md</c> that fails strict UTF-8 decoding, a path the
+    /// provider refuses): those are reported as a plain-text message instead.
+    /// A write notification (<c>onWriteCommitted</c>) runs once the entry is committed,
+    /// after the attempt that committed it; an exception it throws that the writer
+    /// converts (a conflict raised by another operation included) is reported the same
+    /// way, <c>Error: {message}</c>, although the entry is in <c>log.md</c>, appended
+    /// once: it is never retried (decision B48).
+    /// </summary>
+    /// <param name="kind">Entry kind, e.g. <c>Update</c> or <c>Creation</c>.</param>
+    /// <param name="text">The entry text.</param>
+    /// <param name="date">The day the entry goes under; <see langword="null"/>: the UTC date of <see cref="UtcNow"/>.</param>
+    /// <returns><c>Appended a '{kind}' entry under {date} in log.md.</c>, with the folded kind, or an <c>Error: ...</c> message.</returns>
+    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
+    public string AppendLog(string kind, string text, DateOnly? date = null)
+    {
+        GuardWritable();
+        if (GuardLogField(kind, "kind") is { } kindError)
+        {
+            return kindError;
+        }
+
+        if (GuardLogField(text, "text") is { } textError)
+        {
+            return textError;
+        }
+
+        var day = (date ?? DateOnly.FromDateTime(UtcNow())).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var foldedKind = FoldLogField(kind);
+        var entry = new LogEntry(foldedKind, FoldLogField(text));
+        var key = BundleKey.Parse(LogKey);
+        return RunTool(
+            () =>
+            {
+                if (_validator.CheckKey(key) is { } refused)
+                {
+                    return $"Error: log.md cannot be written under the bundle's key policy: {refused}.";
+                }
+
+                // Serialized under the bundle write lock (shared with every
+                // other write of this writer): without it, two concurrent
+                // AppendLog calls could both read the same "before" text, each
+                // append their own entry to it, and the second write would
+                // silently clobber the first (a lost update). A writer outside
+                // the lock is met by the version condition instead.
+                using (EnterWriteLock())
+                {
+                    return WriteThenNotify(committed => WithRetries(LogKey, () =>
+                    {
+                        // Strict UTF-8, matching ChangesSince: a non-UTF-8
+                        // log.md throws DecoderFallbackException (caught by
+                        // RunTool) instead of being silently re-decoded with
+                        // U+FFFD replacement characters and rewritten that way.
+                        var current = ReadCurrent(key);
+
+                        // ChangeLog.Parse is permissive (never throws); used here
+                        // only to locate the day (if any) among the existing entries.
+                        var changeLog = ChangeLog.Parse(current?.Text ?? string.Empty);
+                        var days = changeLog.Days.ToList();
+                        var dayIndex = days.FindIndex(d => string.Equals(d.Date, day, StringComparison.Ordinal));
+                        if (dayIndex >= 0)
+                        {
+                            var existing = days[dayIndex];
+                            days[dayIndex] = existing with { Entries = [.. existing.Entries, entry] };
+                        }
+                        else
+                        {
+                            // New LogDay at the head: days are newest-first (§9).
+                            days.Insert(0, new LogDay(day, [entry]));
+                        }
+
+                        if (current is null && BundleTreeCheck.CheckCreation(_provider, _validator, key, _limits) is { } conflict)
+                        {
+                            return $"Error: {conflict}.";
+                        }
+
+                        // Not WriteValidatedContentLocked, the primitive of concept
+                        // writes and verification stamps: log.md is written by this
+                        // conditioned Write of its own. Its commit is reported to
+                        // WriteThenNotify, as AppendToConceptAtomic's is, so the
+                        // notification runs once, after the retries (decision B48).
+                        _provider.Write(key, OkfEncodings.NoBom.GetBytes(new ChangeLog(changeLog.Title, days).ToMarkdown()), ConditionFor(current));
+                        committed();
+
+                        // The FOLDED kind, not the raw argument: this message is
+                        // itself a line-structured result, and echoing the
+                        // argument verbatim would put back the separator the
+                        // write just removed.
+                        return $"Appended a '{foldedKind}' entry under {day} in log.md.";
+                    }));
+                }
+            },
+            () => LogKey);
+    }
+
+    /// <summary>
+    /// Validates one <see cref="AppendLog"/> argument, returning the rejection
+    /// message or <see langword="null"/> when it is acceptable.
+    ///
+    /// Both of that method's arguments get the identical checks, so they share
+    /// one validator rather than two copies that could drift.
+    ///
+    /// <para><b>Three treatments, one boundary.</b> A caller-supplied field is
+    /// written into the user's repository AND echoed into a tool result, so
+    /// every character that survives does so for a stated reason:</para>
+    ///
+    /// <list type="bullet">
+    /// <item><c>\n</c> and <c>\r</c> — <b>REJECTED</b>. They split
+    /// <c>log.md</c> on re-read: a newline lets an entry forge a fabricated
+    /// <c>## &lt;date&gt;</c> heading or <c>* entry</c> bullet that a later
+    /// <c>ChangeLog.Parse</c> reads back as genuine audit-trail history (§9).
+    /// Rejected rather than stripped, so the caller learns the write did not
+    /// happen.</item>
+    /// <item>U+000C, U+0085, U+2028 and U+2029 — <b>FOLDED</b> to a space at
+    /// the write (<see cref="FoldLogField"/>), not rejected. They cannot forge
+    /// a §9 line, they only split a downstream renderer, and most callers
+    /// cannot see them, so failing a call over one would cost more than it
+    /// buys.</item>
+    /// <item>Every other control character — <b>REJECTED</b>: ESC, backspace,
+    /// BEL, VT, DEL and the rest of C0/C1. None has a legitimate use in a log
+    /// entry, and each forges what a HUMAN reading the audit trail sees rather
+    /// than what it says: <c>ESC[2K ESC[1A</c> rewrites the terminal line
+    /// <c>cat log.md</c> just printed, backspace erases it. Folding them would
+    /// silently rewrite the caller's words, and persisting them writes a
+    /// rendering attack into the repository.</item>
+    /// <item>Every bidirectional CONTROL character — <b>REJECTED</b>: U+061C,
+    /// U+200E, U+200F, U+202A–U+202E and U+2066–U+2069
+    /// (<see cref="IsBidiControl"/>). Each reorders the text a reader is shown
+    /// without changing the bytes stored, so the <c>log.md</c> a human reads
+    /// and the <c>log.md</c> a tool reads disagree. Ordinary right-to-left
+    /// TEXT is NOT affected: Arabic and Hebrew letters carry their own strong
+    /// direction and need none of these.</item>
+    /// <item><c>\t</c> — <b>ACCEPTED, verbatim in the interior of the field.</b>
+    /// The one control character a log message may legitimately carry. Not
+    /// folded to a space the way the four soft separators are: this guard
+    /// rewrites a caller's words only when the character would otherwise
+    /// break structure, and an interior tab cannot — <c>ChangeLog.Parse</c>
+    /// splits on LF, a tab is not a terminator, and it can never reach the
+    /// START of a line (the renderer always emits <c>* </c> first), the only
+    /// position where markdown would read it as an indented code block. A
+    /// LEADING or TRAILING tab does not survive, though: <see cref="FoldLogField"/>
+    /// trims the field before this guard or the writer ever sees it, exactly
+    /// as it has always trimmed a leading/trailing space — so <c>"\tUpdate\t"</c>
+    /// is written (and echoed) as <c>Update</c>, not <c>&lt;TAB&gt;Update&lt;TAB&gt;</c>.</item>
+    /// </list>
+    ///
+    /// <para>The control-character half reuses
+    /// <see cref="LineSafeText.ContainsControlCharacter"/> — the repo's shared
+    /// predicate, already used at <c>okf_verify</c>'s <c>by</c> — rather than a
+    /// second character list here, which is exactly the drift that predicate's
+    /// own doc comment exists to prevent. Two adjustments are made to the value
+    /// it sees, not to the predicate: it runs over the FOLDED text (by then the
+    /// four soft separators are spaces, and the predicate would otherwise
+    /// refuse U+2028/U+2029 and undo the fold), and over a probe in which tabs
+    /// are spaces (the exemption above). The value WRITTEN keeps its tabs.</para>
+    /// </summary>
+    /// <param name="value">The argument's value.</param>
+    /// <param name="fieldName">The argument's name, as it appears in the message.</param>
+    internal static string? GuardLogField(string value, string fieldName)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return $"Error: invalid {fieldName} — it must not be empty.";
+        }
+
+        if (value.Contains('\0'))
+        {
+            return $"Error: invalid {fieldName} — it must not contain a null character.";
+        }
+
+        if (value.Contains('\n') || value.Contains('\r'))
+        {
+            return $"Error: invalid {fieldName} — it must not contain a line break (this would let it "
+                + "forge fake '## date' or '* entry' lines in log.md).";
+        }
+
+        var folded = FoldLogField(value);
+        var probe = folded.Replace('\t', ' ');
+
+        if (LineSafeText.ContainsControlCharacter(probe))
+        {
+            return $"Error: invalid {fieldName} — it must not contain a control character other than a "
+                + "tab (ESC, backspace and BEL forge what a human reading log.md sees).";
+        }
+
+        if (ContainsBidiControl(folded))
+        {
+            return $"Error: invalid {fieldName} — it must not contain a bidirectional control character "
+                + "(U+061C, U+200E, U+200F, U+202A-U+202E, U+2066-U+2069 reorder the stored text on "
+                + "display; ordinary right-to-left text needs none of them).";
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// True when the value carries any Unicode bidirectional CONTROL
+    /// character — see <see cref="IsBidiControl"/> for the list and for why
+    /// the whole class is refused rather than the two overrides alone.
+    ///
+    /// Local to the log.md write path rather than added to
+    /// <see cref="LineSafeText.ContainsControlCharacter"/>: none of these code
+    /// points is a <see cref="char.IsControl(char)"/> character, so putting
+    /// them there would widen the shared cross-assembly predicate that also
+    /// gates §7 actors and <c>at</c> timestamps — a decision for those call
+    /// sites, not one this write path may take on their behalf.
+    /// </summary>
+    /// <param name="value">The guarded argument's value.</param>
+    private static bool ContainsBidiControl(string value)
+    {
+        foreach (var c in value)
+        {
+            if (IsBidiControl(c))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The twelve Unicode bidirectional control characters: the marks U+061C
+    /// (ALM), U+200E (LRM) and U+200F (RLM); the embeddings and overrides
+    /// U+202A (LRE), U+202B (RLE), U+202C (PDF), U+202D (LRO) and U+202E
+    /// (RLO); and the isolates U+2066 (LRI), U+2067 (RLI), U+2068 (FSI) and
+    /// U+2069 (PDI).
+    ///
+    /// <para>The WHOLE class, not just the two overrides: an embedding or an
+    /// isolate reorders a rendered line as effectively as U+202E, a
+    /// terminator can unbalance one an author opened, and a mark reorders a
+    /// neutral run. A rule that stopped at "override" would refuse
+    /// <c>RLO</c> and pass <c>RLE</c>, which is not a distinction any reader
+    /// of a rendered <c>log.md</c> can see.</para>
+    ///
+    /// <para><b>One list, two call sites</b> — <see cref="ContainsBidiControl"/>
+    /// (the write guard) and <c>OkfBundleTools.NeedsVisibleEscape</c> (the read
+    /// rendering). They must agree: a character the write refuses is exactly a
+    /// character the read has to make visible when an older build, another
+    /// producer or a human already put it in the file.</para>
+    /// </summary>
+    /// <param name="c">The character to classify.</param>
+    internal static bool IsBidiControl(char c) =>
+        // Numeric constants on purpose: every one of these is invisible in
+        // source, in a diff and in a review (the convention
+        // Internal/LineSafeText.cs sets).
+        c is (char)0x061C or (char)0x200E or (char)0x200F
+            or (char)0x202A or (char)0x202B or (char)0x202C or (char)0x202D or (char)0x202E
+            or (char)0x2066 or (char)0x2067 or (char)0x2068 or (char)0x2069;
+
+    /// <summary>
+    /// The four separators <see cref="GuardLogField"/> deliberately does NOT
+    /// reject, folded to a single space before the value is written. Leading
+    /// and trailing whitespace, tabs included, is removed first by the
+    /// <see cref="string.Trim()"/> this method also does — the same trimming
+    /// an ordinary leading/trailing space has always had, and the reason a
+    /// tab is "verbatim" only in the interior of a field (see the <c>\t</c>
+    /// item on <see cref="GuardLogField"/>).
+    ///
+    /// <para><b>Why the asymmetry.</b> <c>\n</c> and <c>\r</c> are REFUSED
+    /// (<see cref="GuardLogField"/>): <c>ChangeLog.Parse</c> is LF-line-based,
+    /// so those two are the characters that would make a later read back a
+    /// forged <c>## date</c> heading or <c>* entry</c> bullet as genuine
+    /// audit-trail history (§9), and a caller who sent one needs to learn the
+    /// write did not happen. U+000C, U+0085, U+2028 and U+2029 cannot do that —
+    /// the §9 parser does not split on them — but they DO split a downstream
+    /// markdown or JavaScript renderer of the same file, and they were
+    /// persisted verbatim into the user's repository, where every other
+    /// consumer inherits them. Refusing them too would fail a call over a
+    /// character most callers cannot see, so they are folded and the call
+    /// succeeds. Same rule as the read side (<c>OkfBundleTools.OneLine</c>): nothing
+    /// downstream can start a new line.</para>
+    ///
+    /// <para><see cref="string.ReplaceLineEndings(string)"/> rather than a
+    /// hand-rolled set: it is the same helper the rendering side uses, and by
+    /// the time this runs <see cref="GuardLogField"/> has already refused the
+    /// only two terminators it folds that we do not want folded silently.</para>
+    /// </summary>
+    /// <param name="value">The guarded argument's value.</param>
+    internal static string FoldLogField(string value) => value.Trim().ReplaceLineEndings(" ");
 
     /// <summary>
     /// Returns the <c>verified</c> sequence with <paramref name="by"/>'s stamp

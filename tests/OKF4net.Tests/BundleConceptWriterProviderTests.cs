@@ -40,6 +40,7 @@ public class BundleConceptWriterProviderTests
         ["RecordVerifications"] = w => w.RecordVerifications(["metrics/dau"], "human:ada"),
         ["WriteConcept(yaml, condition)"] = w => w.WriteConcept("metrics/dau", Fm, "body\n", BundleWriteCondition.MustNotExist),
         ["WriteConcept(frontmatter, condition)"] = w => w.WriteConcept("metrics/dau", Frontmatter.FromMapping((YamlMapping)YamlValue.Parse(Fm)), "body\n", BundleWriteCondition.None),
+        ["AppendLog"] = w => w.AppendLog("Update", "entry"),
     };
 
     /// <summary>
@@ -54,6 +55,7 @@ public class BundleConceptWriterProviderTests
         ["RecordVerifications"] = w => w.RecordVerifications([], "human:ada"),
         ["WriteConcept(yaml, condition)"] = w => w.WriteConcept("", Fm, "body\n", BundleWriteCondition.MustNotExist),
         ["WriteConcept(frontmatter, condition)"] = w => w.WriteConcept("", Frontmatter.FromMapping((YamlMapping)YamlValue.Parse(Fm)), "body\n", BundleWriteCondition.None),
+        ["AppendLog"] = w => w.AppendLog("", "entry"),
     };
 
     /// <summary>The names of <see cref="WriteCalls"/>, for the matrix theories.</summary>

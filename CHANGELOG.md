@@ -57,6 +57,9 @@ and this project adheres to
   message, which can name a host path (path-free texts are tracked by #211).
   `Recorded`, `Message` and `Records` are unchanged, and a partial failure's
   message still ends with `— already written: …`.
+- **`BundleConceptWriter.AppendLog(kind, text, date?)`**: appends one entry
+  to the bundle root's `log.md` (spec §9), with the field guards and result
+  strings of `OkfBundleTools.AppendLog`, which now delegates to it.
 - **`BundleWriteNotCommittedException`**: a write the storage kept refusing
   without any effect, on every attempt; the object is unchanged (see Changed,
   "A failed commit says what happened").
@@ -310,6 +313,15 @@ and this project adheres to
   most 3), always on the freshly re-read body, and must be a pure function of
   the body it receives. The repository's own caller (memory capture in
   `OkfContextProvider`, `FileMemoryStore`) already is.
+- **`log.md` is written by `BundleConceptWriter`** (spec §3): `okf_append_log`
+  (`OkfBundleTools.AppendLog`) delegates to `BundleConceptWriter.AppendLog`,
+  so the log is written through the provider, atomically, conditioned on the
+  version read and retried on a conflict like every other read-modify-write.
+  Its messages are unchanged, except that a `log.md` which is itself a link
+  or cannot be inspected is refused with the message for a path through one
+  (`Error: log.md resolves through a reparse point (symlink/junction), or an
+  entry that could not be inspected, inside the bundle, which is not
+  allowed.`).
 
 ## [0.7.0] - 2026-10-14
 

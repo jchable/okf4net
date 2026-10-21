@@ -326,6 +326,7 @@ version they read and retry a conflict at most three times, re-reading each
 time (so `buildBody` must be a pure function of the body it receives);
 `WriteConcept(…, BundleWriteCondition)` lets a caller condition a rewrite on
 the version it read itself, and is never retried.
+`AppendLog(kind, text)` appends an entry to the root `log.md` the same way.
 The writer's in-process lock is keyed by the directory for a
 `FileSystemBundleProvider` and by the provider's `Id` for any other provider,
 so a decorator around a `FileSystemBundleProvider` does not share the
