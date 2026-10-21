@@ -388,11 +388,14 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// replacement the sharing it needs, and retries that window a bounded number of times.</para>
     /// <para><b>Durability.</b> When this method returns, the new bytes reached stable
     /// storage (<see cref="FileStream.Flush(bool)"/>) before the rename. A process crash or an I/O
-    /// error during the write leaves the object holding its whole old content or its whole new
-    /// content. A power loss can also leave the old content after a replacement returned, or no
+    /// error during the write never leaves a part of either content: the object holds its whole
+    /// old content or its whole new content, or (Windows, <c>ReplaceFile</c> errors 1176 and
+    /// 1177, see the failures above) no object under the key while the new content is kept in the
+    /// temporary. A power loss can also leave the old content after a replacement returned, or no
     /// object after a creation returned, and a temporary behind: the directory entry is not
     /// flushed (no .NET API flushes a directory).</para>
-    /// <para><b>Orphaned temporaries.</b> A temporary left behind — an unknown outcome, or a
+    /// <para><b>Orphaned temporaries.</b> A temporary left behind — a process crash between its
+    /// creation and the commit, an unknown outcome, or a
     /// failure whose temporary could no longer be reached safely — is not a <c>.md</c>, so the
     /// core ignores it as a concept; it still counts toward <see cref="BundleLimits.MaxEntries"/>
     /// and a producer that requires an empty output directory sees it. Nothing removes it

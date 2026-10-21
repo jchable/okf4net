@@ -44,17 +44,61 @@ public class FileSystemBundleProviderWriteScopeTests
     }
 
     /// <summary>
-    /// A load's scope is open on one flow while another flow writes. A write on a flow that did
-    /// not inherit the scope never touches its memo: the scope's reads still get each object's
-    /// current bytes with the version of those bytes — never one paired with the other — while a
-    /// name created meanwhile stays unseen until the scope ends (the window documented on
-    /// <c>BeginScope</c>). A write on a flow that inherited the scope drops the scope's listings
-    /// on its path, so the new name is seen at once.
+    /// The scope's listings dropped by a write are those of the root and of every directory on
+    /// the key's path, not only the key's parent: the root, memoised without <c>e</c>, must not
+    /// keep hiding the directory the write just created.
+    /// </summary>
+    [Fact]
+    public void A_write_inside_a_scope_drops_the_listing_of_the_root_and_of_every_directory_on_the_path()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "a");
+        var p = new FileSystemBundleProvider(tmp.Path);
+        using (((IProviderScope)p).BeginScope())
+        {
+            Assert.True(p.Exists(K("a.md")));   // memoises the root, which holds no e
+            p.Write(K("e/z.md"), B("z"), BundleWriteCondition.MustNotExist);
+
+            Assert.True(p.Exists(K("e/z.md")));
+        }
+    }
+
+    /// <summary>
+    /// A successful delete inside a scope drops the scope's listings on the key's path: the
+    /// next lookup of the deleted key lists the root and the directory again (two listings, none
+    /// without the drop) and finds it absent.
+    /// </summary>
+    [Fact]
+    public void A_delete_inside_a_scope_drops_the_listings_on_its_path()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("d/x.md", "x");
+        var p = new FileSystemBundleProvider(tmp.Path);
+        using (((IProviderScope)p).BeginScope())
+        {
+            Assert.True(p.Exists(K("d/x.md")));   // memoises the root and d
+
+            p.Delete(K("d/x.md"), BundleWriteCondition.None);
+
+            var listings = p.DirectoryListings;
+            Assert.False(p.Exists(K("d/x.md")));
+            Assert.Equal(2, p.DirectoryListings - listings);
+        }
+    }
+
+    /// <summary>
+    /// Per-flow isolation of the scope. A load's scope is open on one flow while another flow
+    /// writes. A write on a flow that did not inherit the scope never touches its memo: a name
+    /// created meanwhile stays unseen until the scope ends (the window documented on
+    /// <c>BeginScope</c>), whereas a write on a flow that inherited the scope drops the scope's
+    /// listings on its path, so the new name is seen at once. In both rows the scope's read of
+    /// the replaced object returns the bytes now stored with the version of those bytes: that
+    /// holds because <c>Read</c> hashes the very bytes it returns, not because of the memo.
     /// </summary>
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void A_write_on_another_flow_never_makes_a_scope_serve_bytes_and_version_that_disagree(bool writerInheritsTheScope)
+    public void A_write_on_a_flow_without_the_scope_leaves_its_listings_alone_and_a_read_pairs_its_bytes_with_their_version(bool writerInheritsTheScope)
     {
         using var tmp = new TempDir();
         tmp.Write("x.md", "v1");

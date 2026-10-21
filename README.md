@@ -287,8 +287,10 @@ owner-only until it takes the target's mode, and a read-only target is
 refused as before; an unconditional write needs only the right to write its
 target, as before (only `IfMatch` reads it). What this promises:
 
-- **Crash or I/O error mid-write:** the object holds its whole old content or
-  its whole new content, never a part.
+- **Crash or I/O error mid-write:** never a part of either content: the object
+  holds its whole old content or its whole new content, or (Windows,
+  `ReplaceFile` error 1176 or 1177) no object under the key while the new
+  content is kept in the temporary.
 - **Power loss:** the old content, the new content, or for a new object no
   object at all — the directory entry is not flushed (.NET has no API for
   it).
@@ -305,7 +307,8 @@ target, as before (only `IfMatch` reads it). What this promises:
 A write whose outcome cannot be established (`BundleWriteOutcomeUnknownException`,
 for instance Windows `ReplaceFile` error 1176, which can leave no object
 under the key) keeps its temporary: it may be the only copy of the new
-content. `okf validate` ignores such a file (it is not `.md`), but it counts
+content. So does a process crash between the temporary's creation and the
+commit. `okf validate` ignores such a file (it is not `.md`), but it counts
 toward the entry bound and an empty-directory check sees it; look for
 `.okf-write-*.tmp` files and remove them by hand once you have checked them.
 
