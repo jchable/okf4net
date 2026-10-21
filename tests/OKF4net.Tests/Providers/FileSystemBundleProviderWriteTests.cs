@@ -194,6 +194,13 @@ public class FileSystemBundleProviderWriteTests
         try
         {
             var p = new FileSystemBundleProvider(tmp.Path);
+
+            // IfMatch opens the target for reading and writing to hash it: that open is what refuses
+            // a replacement of a file the process may not write (a rename needs only the directory's
+            // permission on Unix).
+            Assert.Throws<UnauthorizedAccessException>(() => p.Write(K("ro.md"), B("conditional"), BundleWriteCondition.IfMatch(new BundleObjectVersion(Sha("old")))));
+            Assert.Equal("old", File.ReadAllText(file));
+            Assert.Equal(["ro.md"], Tree(tmp.Path));
             Assert.Throws<UnauthorizedAccessException>(() => p.Write(K("ro.md"), B("new"), BundleWriteCondition.None));
             Assert.Equal("old", File.ReadAllText(file));
             Assert.Equal(["ro.md"], Tree(tmp.Path));
@@ -321,6 +328,36 @@ public class FileSystemBundleProviderWriteTests
         Assert.Matches(@"^\.okf-write-[0-9a-f]{32}\.tmp$", Path.GetFileName(temporary));
         Assert.True(FileSystemBundleProvider.IsTemporaryName(Path.GetFileName(temporary!)));
         Assert.False(File.Exists(temporary));
+    }
+
+    /// <summary>
+    /// A failure while the temporary's bytes are made durable (a full disk, a quota, an I/O error)
+    /// removes the temporary and leaves the target byte-identical, whether the write creates or
+    /// replaces. The hook stands for the error; a real full disk is exercised by hand (the
+    /// unbuffered stream is what lets the cleanup run: see <c>WriteTemporary</c>).
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_failure_making_the_temporary_durable_propagates_and_leaves_no_temporary(bool replace)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("keep.md", "kept");
+        var file = tmp.Write("d/x.md", "old");
+        var p = new FileSystemBundleProvider(tmp.Path);
+        var before = Tree(tmp.Path);
+        var created = 0;
+        p.TemporaryCreatedForTest = _ => created++;
+        p.TemporaryFlushForTest = _ => throw new IOException("no space left on device");
+        var key = replace ? "d/x.md" : "d/new.md";
+
+        Assert.Throws<IOException>(() => p.Write(K(key), B("new small content"), BundleWriteCondition.None));
+
+        Assert.Equal(1, created);
+        Assert.Equal(before, Tree(tmp.Path));
+        Assert.Equal("old", File.ReadAllText(file));
+        Assert.Equal("kept", File.ReadAllText(Path.Combine(tmp.Path, "keep.md")));
+        Assert.Empty(p.ListOrphanedTemporaries(BundleLimits.Default));
     }
 
     [Fact]

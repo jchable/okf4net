@@ -199,7 +199,11 @@ and this project adheres to
   confuse with a stored entry (a case or Unicode-form twin on a folding
   volume, a Windows trailing dot or space, a directory) is refused before
   anything is created; a read-only target is refused as before. `Delete`
-  removes one object and leaves its directories in place.
+  removes one object and leaves its directories in place. Replacing an object
+  by rename gives it a new inode: its mode is preserved, but its owner and
+  group become the writer's (outside a setgid directory), and its extended ACLs
+  and hard links are not kept (the old in-place `File.WriteAllText` kept them;
+  the BCL has no `fchown`); this is inherent to the atomic write of #157.
 
 ## [0.7.0] - 2026-10-14
 

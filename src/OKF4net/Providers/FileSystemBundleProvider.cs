@@ -428,6 +428,9 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// <summary>Test hook: called with the temporary's full path as soon as it is created, before any byte is written. <see langword="null"/> outside tests.</summary>
     internal Action<string>? TemporaryCreatedForTest { get; set; }
 
+    /// <summary>Test hook: called with the temporary's full path after its bytes are written and just before they are flushed to stable storage — the point where a full disk, a quota or an I/O error surfaces; an exception it throws stands for that error. <see langword="null"/> outside tests.</summary>
+    internal Action<string>? TemporaryFlushForTest { get; set; }
+
     /// <summary>Whether <paramref name="name"/> (one segment) is a temporary this provider creates.</summary>
     internal static bool IsTemporaryName(string name) =>
         name.Length == TemporaryPrefix.Length + 32 + TemporarySuffix.Length
@@ -625,7 +628,12 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     private string WriteTemporary(string parent, string? existing, ReadOnlyMemory<byte> content)
     {
         var temporary = Path.Join(parent, TemporaryPrefix + Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(16)) + TemporarySuffix);
-        var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None };
+        // BufferSize 0: no managed buffer sits between Write and the file. With the default 4 KiB
+        // buffer a small content is only buffered by Write, a disk-full / quota / I/O error then
+        // surfaces at Flush, the buffer stays dirty, and the Dispose of the cleanup flushes again
+        // and throws again before DeleteTemporary runs — the temporary leaks. Unbuffered, a write
+        // error is raised by Write itself and Dispose has nothing left to flush.
+        var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None, BufferSize = 0 };
         UnixFileMode? targetMode = null;
         if (existing is not null && !OperatingSystem.IsWindows())
         {
@@ -643,16 +651,26 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
                 File.SetUnixFileMode(stream.SafeFileHandle, mode);
             }
 
+            TemporaryFlushForTest?.Invoke(temporary);
             stream.Flush(flushToDisk: true);
+            stream.Dispose();
         }
         catch
         {
-            stream.Dispose();
+            // Unconditional: a Dispose that fails (the success path's included) must not stop
+            // the temporary's removal, nor replace the exception being reported.
+            try
+            {
+                stream.Dispose();
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+            }
+
             DeleteTemporary(temporary);
             throw;
         }
 
-        stream.Dispose();
         return temporary;
     }
 
