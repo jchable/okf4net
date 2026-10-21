@@ -253,8 +253,8 @@ depth takes about 0.6 MB: a host that runs `Bundle.Load` over untrusted storage
 on a thread of 512 KB or less should lower `MaxDepth`.
 Every rejected `.md` name is a `Bundle.ParseProblems` entry (and a
 `ParseErrors` line); other rejected names are skipped silently. The
-filesystem provider is writable (`Capabilities.CanWrite`); no other provider
-ships yet, and the first remote providers are tracked in #139.
+filesystem provider is writable (see "Writing through a provider" below); no
+other provider ships yet, and the first remote providers are tracked in #139.
 
 The historical members `Bundle.TryResolveResource` and
 `Bundle.ReadResourceText(string)` are unchanged in this release: they apply
@@ -264,6 +264,50 @@ that still use them (`AttestationOrchestrator`, `OkfBundleTools`) move to the
 key-based members in the next lots. Until then `okf_run_computation` can read a
 resource that `okf validate` reports `Unsafe` or `Missing` for a key-policy,
 case or backslash reason — a known, temporary gap.
+
+### Writing through a provider
+
+`provider.Write(key, bytes, condition)` stores one object atomically if its
+condition holds — `BundleWriteCondition.None`, `MustNotExist`, or
+`IfMatch(version)` with the version a `Read` returned — and returns the new
+version; `provider.Delete(key, condition)` removes one. A key space has no
+directories: a write creates the missing prefixes, and a delete leaves empty
+directories behind, which hold no key. A provider whose `Capabilities.CanWrite`
+is `false`, or the view `provider.AsReadOnly()` returns, throws
+`BundleReadOnlyException` before attempting anything. A condition that does
+not hold throws `BundleWriteConflictException` and changes nothing.
+
+`FileSystemBundleProvider` writes the bytes to a temporary
+`.okf-write-<32 hex>.tmp` beside the target, flushes it to stable storage,
+then checks the confinement boundary, the path (no symlink or junction, the
+exact stored names) and the condition (on the SHA-256 of the stored bytes)
+again under a per-object lock, and commits with `File.Replace` or, for a new
+object, `File.Move` without overwrite. On Unix a replacement's temporary is
+owner-only until it takes the target's mode, and a read-only target is
+refused as before; an unconditional write needs only the right to write its
+target, as before (only `IfMatch` reads it). What this promises:
+
+- **Crash or I/O error mid-write:** the object holds its whole old content or
+  its whole new content, never a part.
+- **Power loss:** the old content, the new content, or for a new object no
+  object at all — the directory entry is not flushed (.NET has no API for
+  it).
+- **Concurrent readers:** never a part of the new content. On Unix the commit
+  is a `rename`. On Windows `ReplaceFile` can, for a moment, make a reader
+  find no object under the name or meet a sharing violation; `Read` retries
+  both a few times, which narrows that moment without removing it.
+- **A replacement Windows refuses without effect** (`ReplaceFile` error 1175,
+  or a sharing violation) is made again, at most three times in all, then
+  fails with `BundleWriteNotCommittedException`, the object unchanged.
+- **Other processes:** the lock is per process; between the last check and
+  the commit another process can still write the same object (#178).
+
+A write whose outcome cannot be established (`BundleWriteOutcomeUnknownException`,
+for instance Windows `ReplaceFile` error 1176, which can leave no object
+under the key) keeps its temporary: it may be the only copy of the new
+content. `okf validate` ignores such a file (it is not `.md`), but it counts
+toward the entry bound and an empty-directory check sees it; look for
+`.okf-write-*.tmp` files and remove them by hand once you have checked them.
 
 ### As a CLI
 

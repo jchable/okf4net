@@ -386,6 +386,27 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// reader can for a moment find no entry under the name or meet a sharing violation (measured
     /// on Windows 11); <see cref="Read"/> shares writing and deletion, so it never denies a
     /// replacement the sharing it needs, and retries that window a bounded number of times.</para>
+    /// <para><b>Durability.</b> When this method returns, the new bytes reached stable
+    /// storage (<see cref="FileStream.Flush(bool)"/>) before the rename. A process crash or an I/O
+    /// error during the write leaves the object holding its whole old content or its whole new
+    /// content. A power loss can also leave the old content after a replacement returned, or no
+    /// object after a creation returned, and a temporary behind: the directory entry is not
+    /// flushed (no .NET API flushes a directory).</para>
+    /// <para><b>Orphaned temporaries.</b> A temporary left behind — an unknown outcome, or a
+    /// failure whose temporary could no longer be reached safely — is not a <c>.md</c>, so the
+    /// core ignores it as a concept; it still counts toward <see cref="BundleLimits.MaxEntries"/>
+    /// and a producer that requires an empty output directory sees it. Nothing removes it
+    /// automatically: it may be the only copy of the new content.</para>
+    /// <para><b>Windows ACL.</b> The temporary inherits its directory's ACL while it is written;
+    /// <see cref="File.Replace(string, string, string?)"/> keeps the replaced object's own DACL on
+    /// the committed object (measured). An object whose explicit ACL is narrower than its
+    /// directory's is therefore readable under the directory's ACL, through the temporary, while
+    /// its next content is being written.</para>
+    /// <para><b>Inter-process window.</b> The commit lock is in-process: between the re-check and
+    /// the commit another process can act (issue #178). On Unix
+    /// <see cref="File.Move(string, string, bool)"/> without overwrite is an <c>lstat</c> then a
+    /// <c>rename</c> (measured), so a name another process creates in that window is
+    /// replaced.</para>
     /// </remarks>
     public BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition)
     {
@@ -404,6 +425,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
             var temporary = WriteTemporary(parent, existing, content);
             if (CommitTemporary(key, parent, temporary, preparedAsReplacement: existing is not null, written, condition))
             {
+                ForgetListings(key);
                 return written;
             }
 
@@ -464,6 +486,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
             BeforeCommitForTest?.Invoke(null, current);
             File.Delete(current);
         }
+
+        ForgetListings(key);
     }
 
     /// <summary>The temporaries' name prefix (<see cref="Write"/>); the rest is 32 random lowercase hex digits and <see cref="TemporarySuffix"/>.</summary>
@@ -1017,6 +1041,23 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
         return new BundleObjectVersion(Convert.ToHexStringLower(SHA256.HashData(stream)));
     }
 
+    /// <summary>After a write or a delete, drops the calling flow's memoised listings of every directory on the key's path, so that a later lookup in the same scope lists them again.</summary>
+    private void ForgetListings(BundleKey key)
+    {
+        if (ActiveMemo is not { } memo)
+        {
+            return;
+        }
+
+        var current = _fullRoot;
+        memo.Forget(current);
+        for (var i = 0; i < key.Segments.Count - 1; i++)
+        {
+            current = Path.Join(current, key.Segments[i]);
+            memo.Forget(current);
+        }
+    }
+
     /// <summary>
     /// With a boundary: the root must be under it, and neither the root nor any entry
     /// between the boundary and the root may be a reparse point or uninspectable — STRICT,
@@ -1319,6 +1360,18 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
 
                 _listings.Add(directory, names);
                 _held += cost;
+            }
+        }
+
+        /// <summary>Drops one directory's names (a write changed them); the next lookup lists it again.</summary>
+        public void Forget(string directory)
+        {
+            lock (_gate)
+            {
+                if (_listings.Remove(directory, out var names))
+                {
+                    _held -= 1L + names.Length;
+                }
             }
         }
 

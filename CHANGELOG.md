@@ -229,6 +229,13 @@ and this project adheres to
   `Read` retries both — only when the name had just been listed — at most
   three times, 5 to 20 ms apart, which narrows that window without closing it.
   A key that does not exist is answered at once.
+- **Durability of a filesystem write, stated** (README, "Writing through a
+  provider"): after `Write` returns, the bytes were flushed to stable storage
+  before the rename; a crash or an I/O error leaves the whole old or the whole
+  new content; a power loss can also lose a just-created object, since the
+  directory entry is not flushed. A write or a delete made while a provider
+  scope is open resolves against the directory as it is, and drops that
+  scope's listings on its path.
 
 ## [0.7.0] - 2026-10-14
 
