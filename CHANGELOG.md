@@ -42,6 +42,13 @@ and this project adheres to
   (the defaults of a load otherwise); the string constructor is unchanged and
   builds a `FileSystemBundleProvider`. `BundleRoot` throws
   `NotSupportedException` for a writer over any other provider.
+- **Conditional concept writes.** `BundleConceptWriter.WriteConcept(…,
+  BundleWriteCondition)` (both the YAML and the `Frontmatter` forms):
+  `IfMatch(version)` replaces a concept only if it has not changed since that
+  version was read, `MustNotExist` creates it only if it does not exist yet.
+  A condition that does not hold writes nothing and returns an `Error:` that
+  tells the caller to read the concept (again); it is never retried. The
+  three-argument overloads are unchanged and unconditional.
 - **`BundleWriteNotCommittedException`**: a write the storage kept refusing
   without any effect, on every attempt; the object is unchanged (see Changed,
   "A failed commit says what happened").
@@ -280,6 +287,21 @@ and this project adheres to
   and never makes it retried or refused, whatever it throws (a conflict
   included); an exception the writer does not convert, such as
   `OperationCanceledException`, propagates unchanged, the write committed.
+- **Read-modify-writes retry a conflict, and `buildBody` runs once per
+  attempt** (spec §4). When another writer — another process, or a writer
+  over another provider instance — commits between the read and the write,
+  `AppendToConceptAtomic` and `RecordVerifications` read again and retry, at
+  most 3 attempts, waiting 10–40 ms then 30–120 ms (`Thread.Sleep` on the
+  caller's thread); after the third the conflict is an `Error: … kept
+  changing while it was being written; the write was refused after 3
+  attempts.` Only a refused write is retried: the write notification
+  (`onWriteCommitted`) runs once, after the attempt that committed, and
+  nothing it throws is retried. **Contract change:**
+  `AppendToConceptAtomic`'s `buildBody`,
+  documented as invoked exactly once, is now invoked once per attempt (at
+  most 3), always on the freshly re-read body, and must be a pure function of
+  the body it receives. The repository's own caller (memory capture in
+  `OkfContextProvider`, `FileMemoryStore`) already is.
 
 ## [0.7.0] - 2026-10-14
 

@@ -818,9 +818,11 @@ public sealed class OkfBundleTools
     /// </param>
     /// <param name="buildBody">
     /// Given the concept's current body (<see langword="null"/> if it does
-    /// not yet exist), returns the full new body to write. Invoked exactly
-    /// once, inside the lock, against the freshly re-read current body —
-    /// never a caller's own stale, pre-lock snapshot.
+    /// not yet exist), returns the full new body to write. Invoked once per
+    /// attempt (at most <see cref="BundleConceptWriter.MaxAttempts"/>), inside
+    /// the lock, each time against the freshly re-read current body — never a
+    /// caller's own stale, pre-lock snapshot — so it must be a pure function
+    /// of the body it receives.
     /// </param>
     /// <returns>
     /// The same style of result text as <see cref="WriteConcept"/> (a

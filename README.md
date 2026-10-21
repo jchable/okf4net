@@ -321,6 +321,11 @@ invalid under it — a concept file on the new key's path, objects under it,
 or, under a policy that folds names, a sibling differing only in case or
 Unicode form — so it never writes what the next load would discard. A
 read-only provider makes every write method throw `BundleReadOnlyException`.
+`AppendToConceptAtomic` and `RecordVerifications` write conditioned on the
+version they read and retry a conflict at most three times, re-reading each
+time (so `buildBody` must be a pure function of the body it receives);
+`WriteConcept(…, BundleWriteCondition)` lets a caller condition a rewrite on
+the version it read itself, and is never retried.
 The writer's in-process lock is keyed by the directory for a
 `FileSystemBundleProvider` and by the provider's `Id` for any other provider,
 so a decorator around a `FileSystemBundleProvider` does not share the

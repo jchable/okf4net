@@ -613,7 +613,24 @@ public sealed class BundleConceptWriter
     /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines (the same YAML subset used inside a document's frontmatter block, without the <c>---</c> delimiters).</param>
     /// <param name="body">The markdown body.</param>
     /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
-    public string WriteConcept(string conceptId, string frontmatterYaml, string body)
+    public string WriteConcept(string conceptId, string frontmatterYaml, string body) =>
+        WriteConcept(conceptId, frontmatterYaml, body, BundleWriteCondition.None);
+
+    /// <summary>
+    /// Like <see cref="WriteConcept(string, string, string)"/>, under a condition the provider checks
+    /// atomically with the write (spec §4): <see cref="BundleWriteCondition.IfMatch"/> with the version a
+    /// read returned replaces the concept only if it has not changed since;
+    /// <see cref="BundleWriteCondition.MustNotExist"/> creates it only if it does not exist yet;
+    /// <see cref="BundleWriteCondition.None"/> is the unconditional write of the three-argument overload.
+    /// A condition that does not hold writes nothing and returns an <c>Error: …</c> that tells the caller
+    /// to read the concept (again). Never retried: a retry would overwrite what the caller has not seen.
+    /// </summary>
+    /// <param name="conceptId">The concept id (path without <c>.md</c>), e.g. <c>tables/refunds</c>.</param>
+    /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines (the same YAML subset used inside a document's frontmatter block, without the <c>---</c> delimiters).</param>
+    /// <param name="body">The markdown body.</param>
+    /// <param name="condition">The condition on the concept's current version.</param>
+    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
+    public string WriteConcept(string conceptId, string frontmatterYaml, string body, BundleWriteCondition condition)
     {
         GuardWritable();
         if (string.IsNullOrWhiteSpace(conceptId))
@@ -673,7 +690,7 @@ public sealed class BundleConceptWriter
                 // committed callback below is atomic with the write it follows.
                 using (EnterWriteLock())
                 {
-                    return WriteThenNotify(committed => WriteValidatedContentLocked(target, content!, BundleWriteCondition.None, committed));
+                    return WriteThenNotify(committed => WriteConditionedLocked(target, content!, condition, committed));
                 }
             },
             () => subject);
@@ -697,7 +714,19 @@ public sealed class BundleConceptWriter
     /// <param name="frontmatter">The frontmatter to write. Not mutated by this call.</param>
     /// <param name="body">The markdown body.</param>
     /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
-    public string WriteConcept(string conceptId, Frontmatter frontmatter, string body)
+    public string WriteConcept(string conceptId, Frontmatter frontmatter, string body) =>
+        WriteConcept(conceptId, frontmatter, body, BundleWriteCondition.None);
+
+    /// <summary>
+    /// Like <see cref="WriteConcept(string, Frontmatter, string)"/>, under a condition the provider checks
+    /// atomically with the write — see <see cref="WriteConcept(string, string, string, BundleWriteCondition)"/>.
+    /// </summary>
+    /// <param name="conceptId">The concept id (path without <c>.md</c>), e.g. <c>tables/refunds</c>.</param>
+    /// <param name="frontmatter">The frontmatter to write. Not mutated by this call.</param>
+    /// <param name="body">The markdown body.</param>
+    /// <param name="condition">The condition on the concept's current version.</param>
+    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
+    public string WriteConcept(string conceptId, Frontmatter frontmatter, string body, BundleWriteCondition condition)
     {
         GuardWritable();
         if (string.IsNullOrWhiteSpace(conceptId))
@@ -744,7 +773,7 @@ public sealed class BundleConceptWriter
 
                 using (EnterWriteLock())
                 {
-                    return WriteThenNotify(committed => WriteValidatedContentLocked(target, content!, BundleWriteCondition.None, committed));
+                    return WriteThenNotify(committed => WriteConditionedLocked(target, content!, condition, committed));
                 }
             },
             () => subject);
@@ -794,14 +823,17 @@ public sealed class BundleConceptWriter
     /// instance AND for two concurrent calls on two SEPARATE instances
     /// whose roots resolve to the same directory, a junction or symlink to it
     /// included -- but only within one process:
-    /// it does not serialize a second process writing the same bundle path,
-    /// and a C# lock cannot stop a concurrent external actor from mutating
-    /// the target file/its ancestor directories on disk out from under this
-    /// method (see <see cref="ValidateConceptTarget"/>'s remarks for that
-    /// separate, residual check-then-write limitation, which this lock does
-    /// not close). Reuses the exact same target validation (<see cref="ValidateConceptTarget"/>),
+    /// it does not serialize a second process writing the same bundle path.
+    /// The write is therefore conditioned on the version read
+    /// (<see cref="BundleWriteCondition.IfMatch"/>, or
+    /// <see cref="BundleWriteCondition.MustNotExist"/> for a creation): a
+    /// change another writer committed in between is never overwritten. The
+    /// whole read-transform-write is then tried again on what is there now —
+    /// at most <see cref="MaxAttempts"/> attempts, with a short random delay
+    /// between them (spec §4) — and after the last one the conflict is
+    /// returned as an <c>Error: ...</c> message. Reuses the exact same target validation (<see cref="ValidateConceptTarget"/>),
     /// producer-grade validation and serialization (<see cref="BuildValidatedContent(string, string)"/>),
-    /// and write/callback (<see cref="WriteValidatedContentLocked"/>)
+    /// and write (<see cref="WriteValidatedContentLocked"/>) and notification (<see cref="WriteThenNotify"/>)
     /// steps <see cref="WriteConcept(string, string, string)"/> itself uses — this is a locked
     /// read-modify-write wrapped AROUND that same core, not a divergent
     /// second write path.
@@ -816,14 +848,16 @@ public sealed class BundleConceptWriter
     /// </param>
     /// <param name="buildBody">
     /// Given the concept's current body (<see langword="null"/> if it does
-    /// not yet exist), returns the full new body to write. Invoked exactly
-    /// once, inside the lock, against the freshly re-read current body —
-    /// never a caller's own stale, pre-lock snapshot.
+    /// not yet exist), returns the full new body to write. Invoked once per
+    /// attempt — at most <see cref="MaxAttempts"/> times — inside the lock,
+    /// each time against the freshly re-read current body, never a caller's
+    /// own stale, pre-lock snapshot. It must therefore be a pure function of
+    /// the body it receives: no side effect, nothing counted per call.
     /// </param>
     /// <returns>
     /// The same style of result text as <see cref="WriteConcept(string, string, string)"/> (a
     /// <c>Written ...</c> confirmation) or an <c>Error: ...</c> message;
-    /// never throws.
+    /// never throws (except as below, or what <paramref name="buildBody"/> itself throws).
     /// </returns>
     /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
     public string AppendToConceptAtomic(
@@ -870,10 +904,11 @@ public sealed class BundleConceptWriter
                 // the whole read-modify-write atomic against a concurrent
                 // WriteConcept/AppendToConceptAtomic call for the same concept.
                 // The write is conditioned on the version read, so a writer
-                // outside this lock (another process) cannot be overwritten.
+                // outside this lock (another process) cannot be overwritten;
+                // its conflict re-reads and runs buildBody again (WithRetries).
                 using (EnterWriteLock())
                 {
-                    return WriteThenNotify(committed =>
+                    return WriteThenNotify(committed => WithRetries(subject, () =>
                     {
                         string frontmatterYaml;
                         string? currentBody;
@@ -920,7 +955,7 @@ public sealed class BundleConceptWriter
                         }
 
                         return WriteValidatedContentLocked(target, content!, ConditionFor(current), committed, existedBefore: current is not null);
-                    });
+                    }));
                 }
             },
             () => subject);
@@ -1162,12 +1197,32 @@ public sealed class BundleConceptWriter
                 for (var i = 0; i < prepared.Count; i++)
                 {
                     var stamp = prepared[i];
-                    subject = $"'{stamp.Target.Id}'";
+                    var name = $"'{stamp.Target.Id}'";
+                    subject = name;
                     var committed = false;
                     string writeResult;
                     try
                     {
-                        writeResult = WriteValidatedContentLocked(stamp.Target, stamp.Content, BundleWriteCondition.IfMatch(stamp.Version), () => committed = true, existedBefore: true);
+                        // Conditioned on the version the stamp was prepared
+                        // from. A conflict (a writer outside this lock) prepares
+                        // THIS concept again from what is there now and retries;
+                        // the concepts already written stay written.
+                        var attempt = 0;
+                        writeResult = WithRetries(name, () =>
+                        {
+                            if (++attempt > 1)
+                            {
+                                var prepareError = PrepareStamp(stamp.Target, stamp.ConceptId, by, stampedAt, out var fresh);
+                                if (prepareError is not null)
+                                {
+                                    return prepareError;
+                                }
+
+                                stamp = fresh;
+                            }
+
+                            return WriteValidatedContentLocked(stamp.Target, stamp.Content, BundleWriteCondition.IfMatch(stamp.Version), () => committed = true, existedBefore: true);
+                        });
                     }
                     catch (Exception ex) when (IsExpectedFailure(ex))
                     {
@@ -1846,7 +1901,9 @@ public sealed class BundleConceptWriter
     private string WriteValidatedContentLocked(ConceptTarget target, string content, BundleWriteCondition condition, Action committed, bool? existedBefore = null)
     {
         var existed = existedBefore ?? _provider.Exists(target.Key);
-        if (!existed && BundleTreeCheck.CheckCreation(_provider, _validator, target.Key, _limits) is { } conflict)
+        if (!existed
+            && condition.Kind != BundleWriteConditionKind.IfMatch // never a creation
+            && BundleTreeCheck.CheckCreation(_provider, _validator, target.Key, _limits) is { } conflict)
         {
             return $"Error: {conflict}.";
         }
@@ -1923,6 +1980,76 @@ public sealed class BundleConceptWriter
     /// <summary>The condition of a read-modify-write: the version read, or no object at all.</summary>
     private static BundleWriteCondition ConditionFor((string Text, BundleObjectVersion Version)? current) =>
         current is { } c ? BundleWriteCondition.IfMatch(c.Version) : BundleWriteCondition.MustNotExist;
+
+    /// <summary>
+    /// A write under a caller's condition (<see cref="WriteConcept(string, string, string, BundleWriteCondition)"/>):
+    /// never retried, and a condition that does not hold becomes the writer's own message. CALLER
+    /// MUST hold the write lock. The conflict caught here can only be the provider's refusal of the
+    /// write: the notification runs after this method has returned (<see cref="WriteThenNotify"/>,
+    /// decision B48).
+    /// </summary>
+    private string WriteConditionedLocked(ConceptTarget target, string content, BundleWriteCondition condition, Action committed)
+    {
+        try
+        {
+            return WriteValidatedContentLocked(target, content, condition, committed);
+        }
+        catch (BundleWriteConflictException e) when (e.Reason == BundleWriteConflictReason.ConditionFailed && condition.Kind != BundleWriteConditionKind.None)
+        {
+            return condition.Kind == BundleWriteConditionKind.MustNotExist
+                ? $"Error: '{target.Id}' already exists; the write was refused. Read it before writing it."
+                : $"Error: '{target.Id}' changed since it was read, or no longer exists; the write was refused. Read it again before writing it.";
+        }
+    }
+
+    /// <summary>How many times a read-modify-write is attempted before a conflict is returned (spec §4, decision B5).</summary>
+    internal const int MaxAttempts = 3;
+
+    /// <summary>
+    /// How a read-modify-write waits before its next attempt; <see cref="Thread.Sleep(TimeSpan)"/>,
+    /// on the caller's thread, while the contract is synchronous (issue #152). A test replaces it
+    /// to record the delays instead of sleeping.
+    /// </summary>
+    internal Action<TimeSpan> Sleep { get; set; } = Thread.Sleep;
+
+    /// <summary>The random, growing delay after failed attempt <paramref name="attempt"/>: 10–40 ms after the first, 30–120 ms after the second (decision B5).</summary>
+    internal static TimeSpan RetryDelay(int attempt) =>
+        TimeSpan.FromMilliseconds(attempt == 1 ? Random.Shared.Next(10, 41) : Random.Shared.Next(30, 121));
+
+    /// <summary>
+    /// Runs one read-modify-write <paramref name="attempt"/> (called with 1, 2, 3) until it does not
+    /// meet a <see cref="BundleWriteConflictReason.ConditionFailed"/> conflict, waiting
+    /// <see cref="RetryDelay"/> between attempts. Each attempt must re-read the current state. After
+    /// <see cref="MaxAttempts"/> conflicting attempts, returns the writer's message for
+    /// <paramref name="subject"/>. CALLER MUST hold the write lock: the conflicts come from writers
+    /// outside it (another process, a writer over another provider instance with another lock).
+    /// An attempt holds the storage operation only — never the write notification, which its
+    /// caller invokes once this method has returned (decision B48) — so a conflict caught here is
+    /// always a refused write, never something that happened after a commit.
+    /// </summary>
+    private string WithRetries(string subject, Func<string> attempt)
+    {
+        for (var n = 1; ; n++)
+        {
+            try
+            {
+                return attempt();
+            }
+            catch (BundleWriteConflictException e) when (e.Reason == BundleWriteConflictReason.ConditionFailed)
+            {
+                if (n == MaxAttempts)
+                {
+                    return KeptChanging(subject);
+                }
+
+                Sleep(RetryDelay(n));
+            }
+        }
+    }
+
+    /// <summary>The writer's message once every attempt of a read-modify-write met a conflict.</summary>
+    private static string KeptChanging(string subject) =>
+        $"Error: {subject} kept changing while it was being written; the write was refused after {MaxAttempts} attempts.";
 
     /// <summary>
     /// The capability guard of every write method (spec §3, decision B3): checked first,
