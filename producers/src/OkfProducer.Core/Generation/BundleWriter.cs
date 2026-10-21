@@ -290,17 +290,17 @@ public sealed class BundleWriter : IBundleWriter
         // Not gated HERE, and it does not need to be: IndexGenerator gates itself. A previous round of
         // this review recorded the opposite as established fact -- that this call "follows a junction
         // inside the bundle and writes outside it" -- and that claim was false in every clause. Read
-        // src/OKF4net/IndexGenerator.cs before restoring any version of it:
+        // src/OKF4net/IndexGenerator.cs before restoring any version of it. It lists, reads and writes
+        // through a FileSystemBundleProvider over this same outPath:
         //
-        //   * the traversal is CollectMarkdown over Directory.GetFileSystemEntries (:437), not
-        //     Directory.EnumerateDirectories, and it tests ReparsePoints.IsReparsePoint BEFORE it
-        //     recurses (:447), so nothing under a linked directory is ever collected;
-        //   * the per-directory child listing applies the same skip (:226), so a linked subdirectory
-        //     contributes no index entry either;
-        //   * immediately before each write there is an ancestor re-check (:266) AND a check on the
-        //     index.md file node itself (:290), the latter added -- per its own comment -- to close
-        //     exactly this class; both late checks use the strict IsReparsePointOrUninspectable, so
-        //     an entry whose link status cannot be read is skipped too;
+        //   * the listing is the provider's walk (FileSystemBundleProvider.Walk), which tests
+        //     ReparsePoints.IsReparsePoint on every entry and never descends into or lists a link, and
+        //     refuses to enter a directory it cannot inspect, so nothing under a linked directory is
+        //     ever indexed, and a linked subdirectory contributes no index entry either;
+        //   * every index.md is read and written by the provider, whose STRICT guards
+        //     (IsReparsePointOrUninspectable) check the whole path AND the index.md entry itself
+        //     before the temporary is created, and again under the commit lock right before the
+        //     commit; an index.md they refuse is skipped, never written through;
         //   * ReparsePoints.IsReparsePoint answers for Windows junctions and Unix symlinks alike.
         //
         // So this is the most heavily gated of the writes reachable from here, not the ungated one.
@@ -1382,11 +1382,11 @@ public sealed class BundleWriter : IBundleWriter
     /// <para><b>What runs after this, and gates itself.</b>
     /// <c>IndexGenerator.RegenerateIndexes</c> runs after the commit. An earlier round of this review
     /// recorded here that it walks the bundle with <c>Directory.EnumerateDirectories</c> and so writes
-    /// an <c>index.md</c> through a junction; that was wrong. It collects with
-    /// <c>Directory.GetFileSystemEntries</c> and skips reparse points before recursing, skips them
-    /// again when listing a directory's children, and re-checks both the ancestor chain and the
-    /// <c>index.md</c> node itself immediately before writing. The line references are in
-    /// <see cref="Write"/>, beside the call.</para>
+    /// an <c>index.md</c> through a junction; that was wrong. It lists through the filesystem
+    /// provider's walk, which skips reparse points and never follows one, and writes each
+    /// <c>index.md</c> through that provider, whose STRICT guards check the path and the
+    /// <c>index.md</c> entry itself before the write and again right before the commit. The details
+    /// are in <see cref="Write"/>, beside the call.</para>
     /// </summary>
     /// <returns>
     /// One entry per staged file that never reached the bundle, each carrying the reason, sorted
