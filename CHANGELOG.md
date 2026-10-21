@@ -317,8 +317,11 @@ and this project adheres to
   (`OkfBundleTools.AppendLog`) delegates to `BundleConceptWriter.AppendLog`,
   so the log is written through the provider, atomically, conditioned on the
   version read and retried on a conflict like every other read-modify-write.
-  Its messages are unchanged, except that a `log.md` which is itself a link
-  or cannot be inspected is refused with the message for a path through one
+  The guard and success messages are unchanged; an I/O failure's text now
+  comes from the provider's atomic steps (temporary, replace/move) rather
+  than from a plain write, and the tool still folds it onto one line. A
+  `log.md` which is itself a link or cannot be inspected is refused with the
+  message for a path through one
   (`Error: log.md resolves through a reparse point (symlink/junction), or an
   entry that could not be inspected, inside the bundle, which is not
   allowed.`).

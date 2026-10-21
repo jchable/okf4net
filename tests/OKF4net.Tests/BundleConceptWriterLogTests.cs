@@ -97,6 +97,25 @@ public class BundleConceptWriterLogTests
         Assert.DoesNotContain(storage.Calls, c => c.StartsWith("write ", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// The log's key goes through the same validator as a concept's: a host validator that
+    /// refuses the name <c>log.md</c> makes the append an <c>Error:</c> text before the provider
+    /// is asked anything.
+    /// </summary>
+    [Fact]
+    public void A_log_key_the_hosts_key_policy_refuses_is_reported_and_nothing_is_asked_of_the_storage()
+    {
+        var storage = new InMemoryBundleProvider(canWrite: true);
+        var options = new BundleLoadOptions
+        {
+            ExtraKeyValidators = [k => k.ToString() == "log.md" ? "the host reserves that name" : null],
+        };
+        var writer = new BundleConceptWriter(storage, options: options) { UtcNow = () => Noon };
+
+        Assert.Equal("Error: log.md cannot be written under the bundle's key policy: the host reserves that name.", writer.AppendLog("Update", "Mine."));
+        Assert.Empty(storage.Calls);
+    }
+
     [Fact]
     public void A_log_that_is_not_UTF8_is_refused_and_left_as_it_was()
     {

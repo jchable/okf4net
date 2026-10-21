@@ -15,7 +15,6 @@ namespace OKF4net.Agents;
 public sealed class OkfBundleTools
 {
     private const string IndexFilename = "index.md";
-    private const string LogFilename = "log.md";
     private const string NoneLine = "(none)";
 
     private const string SearchUsageMessage =
@@ -875,7 +874,8 @@ public sealed class OkfBundleTools
     /// that <see cref="BundleConceptWriter.GuardLogField"/> refuses — empty, or carrying a line
     /// break, a control character or a bidirectional control character — or a
     /// <c>log.md</c> that fails strict UTF-8 decoding) — those are reported as
-    /// a plain-text message instead.
+    /// a plain-text message instead, folded onto one line (<see cref="OneLine"/>):
+    /// an I/O failure's own text can name a path carrying a line terminator.
     /// </summary>
     /// <param name="kind">Entry kind, e.g. <c>Update</c> or <c>Creation</c>.</param>
     /// <param name="text">The entry text.</param>
@@ -883,7 +883,7 @@ public sealed class OkfBundleTools
     public string AppendLog(
         [Description("Entry kind, e.g. 'Update' or 'Creation'.")] string kind,
         [Description("The entry text.")] string text) =>
-        _writer.AppendLog(kind, text);
+        OneLine(_writer.AppendLog(kind, text));
 
     /// <summary>
     /// Regenerates every <c>index.md</c> in the bundle (progressive
