@@ -85,6 +85,29 @@ public class BundleConceptWriterRetryTests
         Assert.False(storage.Exists(K("metrics/new.md")));
     }
 
+    /// <summary>
+    /// An <c>IfMatch</c> write is never a creation, so it skips the tree check that a creation
+    /// makes (<see cref="BundleTreeCheck"/>): under a policy that folds case, with a case twin
+    /// stored, the write over the absent key still reaches the provider and is refused as the
+    /// condition that did not hold — the conflict text, no listing of the bundle — where the tree
+    /// check would have answered with the twin's name after a full enumeration.
+    /// </summary>
+    [Fact]
+    public void An_IfMatch_write_over_an_absent_key_beside_a_case_twin_is_a_conflict_without_listing_the_bundle()
+    {
+        var storage = new InMemoryBundleProvider(canWrite: true).Add("Metrics/DAU.md", Doc);
+        var writer = new BundleConceptWriter(storage, options: new BundleLoadOptions { KeyPolicy = BundleKeyPolicy.Strict });
+        var twinVersion = VersionOf(storage, "Metrics/DAU.md");
+        storage.ClearCalls();
+
+        var result = writer.WriteConcept("metrics/dau", Fm, "x\n", BundleWriteCondition.IfMatch(twinVersion));
+
+        Assert.Equal("Error: 'metrics/dau' changed since it was read, or no longer exists; the write was refused. Read it again before writing it.", result);
+        Assert.DoesNotContain(storage.Calls, c => c.StartsWith("enumerate", StringComparison.Ordinal));
+        Assert.Contains(storage.Calls, c => c.StartsWith("write ", StringComparison.Ordinal));
+        Assert.False(storage.Exists(K("metrics/dau.md")));
+    }
+
     [Fact]
     public void A_creation_conditioned_on_absence_refuses_an_existing_concept()
     {

@@ -44,6 +44,34 @@ public class BundleConceptWriterTests
         Assert.False(File.Exists(Path.Combine(tmp.Path, "tables", "refunds.md")));
     }
 
+    /// <summary>
+    /// A first write into a bundle whose root does not exist yet creates the root, as the
+    /// writer's <c>Directory.CreateDirectory</c> of the target's parent did before the provider
+    /// seam (nested and top-level concept alike), and the bytes are those of a write over a
+    /// root that was created beforehand.
+    /// </summary>
+    [Theory]
+    [InlineData("tables/refunds")]
+    [InlineData("refunds")]
+    public void WriteConcept_over_an_absent_bundle_root_creates_the_root_and_writes_the_same_bytes(string id)
+    {
+        using var tmp = new TempDir();
+        var absentRoot = Path.Combine(tmp.Path, "new", "bundle");
+        var existingRoot = Path.Combine(tmp.Path, "old");
+        Directory.CreateDirectory(existingRoot);
+        Assert.False(Directory.Exists(absentRoot));
+
+        var result = new BundleConceptWriter(absentRoot).WriteConcept(id, ValidFrontmatter, "# Refunds\n\nBody.\n");
+        var reference = new BundleConceptWriter(existingRoot).WriteConcept(id, ValidFrontmatter, "# Refunds\n\nBody.\n");
+
+        Assert.StartsWith("Written", result);
+        Assert.Equal(reference, result);
+        Assert.True(Directory.Exists(absentRoot));
+        var relative = id.Replace('/', Path.DirectorySeparatorChar) + ".md";
+        Assert.Equal(File.ReadAllBytes(Path.Combine(existingRoot, relative)), File.ReadAllBytes(Path.Combine(absentRoot, relative)));
+        Assert.Equal(Directory.GetFiles(existingRoot, "*", SearchOption.AllDirectories).Length, Directory.GetFiles(absentRoot, "*", SearchOption.AllDirectories).Length);
+    }
+
     [Fact]
     public void AppendToConceptAtomic_creates_then_appends()
     {

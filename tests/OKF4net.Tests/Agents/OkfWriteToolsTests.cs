@@ -838,8 +838,9 @@ public class OkfWriteToolsTests
     /// the exception's own text, and a .NET I/O message names the path: a bundle root whose
     /// directory name carries a soft line terminator (NTFS and POSIX both accept them in a
     /// name) would split the result in two lines, so the tool folds the writer's text, as
-    /// its own <c>RunTool</c> did before the delegation. Here <c>log.md</c> is a directory,
-    /// so the write fails with an I/O error that names the root. The terminators are numeric
+    /// its own <c>RunTool</c> did before the delegation. Here <c>log.md</c> is held open
+    /// with <see cref="FileShare.None"/>, so the write fails with an I/O error that names
+    /// the root. The terminators are numeric
     /// constants on purpose, like <see cref="LineSeparator"/>.
     /// </summary>
     [SkippableTheory]

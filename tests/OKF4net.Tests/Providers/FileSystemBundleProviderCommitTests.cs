@@ -16,6 +16,8 @@ public class FileSystemBundleProviderCommitTests
 {
     private const int ErrorUnableToMoveReplacement = unchecked((int)0x80070498); // HRESULT of Win32 1176
 
+    private const int ErrorUnableToMoveReplacement2 = unchecked((int)0x80070499); // HRESULT of Win32 1177
+
     private const int ErrorUnableToRemoveReplaced = unchecked((int)0x80070497); // HRESULT of Win32 1175
 
     private const int ErrorSharingViolation = unchecked((int)0x80070020); // HRESULT of Win32 32
@@ -209,14 +211,17 @@ public class FileSystemBundleProviderCommitTests
     /// target and before moving the replacement in: no object under the key, the new bytes under
     /// the temporary's name. The outcome is unknown to the caller; the temporary — the only copy
     /// of the new content — is kept, and is what <see cref="FileSystemBundleProvider.ListOrphanedTemporaries"/> reports.
+    /// Error 1177 (<c>ERROR_UNABLE_TO_MOVE_REPLACEMENT_2</c>) is classified the same way.
     /// </summary>
-    [Fact]
-    public void A_commit_failing_like_ReplaceFile_1176_is_an_unknown_outcome_that_keeps_the_temporary()
+    [Theory]
+    [InlineData(ErrorUnableToMoveReplacement)]
+    [InlineData(ErrorUnableToMoveReplacement2)]
+    public void A_commit_failing_like_ReplaceFile_1176_or_1177_is_an_unknown_outcome_that_keeps_the_temporary(int hresult)
     {
         using var tmp = new TempDir();
         var file = tmp.Write("d/x.md", "old");
         var p = new FileSystemBundleProvider(tmp.Path);
-        var failure = new IOException("Unable to move the replacement file to the file to be replaced (simulated)", ErrorUnableToMoveReplacement);
+        var failure = new IOException("Unable to move the replacement file to the file to be replaced (simulated)", hresult);
         p.CommitForTest = (_, target, _) =>
         {
             File.Delete(target);

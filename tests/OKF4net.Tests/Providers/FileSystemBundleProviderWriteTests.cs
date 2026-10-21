@@ -160,6 +160,163 @@ public class FileSystemBundleProviderWriteTests
     }
 
     /// <summary>
+    /// The writer's <c>Directory.CreateDirectory</c> of the target's parent created a bundle root
+    /// that did not exist yet; the provider keeps that: a write over an absent root creates it,
+    /// for a nested key and a top-level one, with or without a confinement boundary (here the
+    /// nearest existing parent), and leaves nothing but the object.
+    /// </summary>
+    [Theory]
+    [InlineData("a/b/c.md", false)]
+    [InlineData("top.md", false)]
+    [InlineData("a/b/c.md", true)]
+    [InlineData("top.md", true)]
+    public void A_write_over_an_absent_root_creates_the_root(string key, bool confined)
+    {
+        using var tmp = new TempDir();
+        var root = Path.Combine(tmp.Path, "new", "bundle");
+        var p = new FileSystemBundleProvider(root, confined ? tmp.Path : null);
+        Assert.False(Directory.Exists(root));
+
+        var v = p.Write(K(key), B("first"), BundleWriteCondition.MustNotExist);
+
+        Assert.Equal(Sha("first"), v.Token);
+        Assert.Equal("first", File.ReadAllText(Path.Combine(root, key.Replace('/', Path.DirectorySeparatorChar))));
+        Assert.Equal(key.Contains('/') ? new[] { "a", "a/b", "a/b/c.md" } : new[] { "top.md" }, Tree(root));
+        using var read = p.Read(K(key));
+        Assert.Equal(v, read.Version);
+    }
+
+    /// <summary>The root is created only inside its confinement boundary: a boundary that does not contain it refuses the write as before and creates nothing.</summary>
+    [Fact]
+    public void A_write_over_an_absent_root_outside_its_confinement_boundary_is_refused_and_creates_nothing()
+    {
+        using var tmp = new TempDir();
+        using var boundary = new TempDir();
+        var root = Path.Combine(tmp.Path, "new", "bundle");
+        var p = new FileSystemBundleProvider(root, confinementBoundary: boundary.Path);
+
+        Assert.Throws<BundleAccessRefusedException>(() => p.Write(K("a/b.md"), B("x"), BundleWriteCondition.None));
+        Assert.Throws<BundleAccessRefusedException>(() => p.Write(K("b.md"), B("x"), BundleWriteCondition.None));
+
+        Assert.False(Directory.Exists(root));
+        Assert.False(Directory.Exists(Path.Combine(tmp.Path, "new")));
+        Assert.Empty(Tree(boundary.Path));
+    }
+
+    /// <summary>
+    /// A delete through a link in the path is refused and nothing outside the root is touched,
+    /// whether the object lies directly under the link or deeper, and even when the link's
+    /// target holds an object under the same relative name.
+    /// </summary>
+    [SkippableFact]
+    public void A_delete_through_a_junction_is_refused_and_leaves_the_outside_alone()
+    {
+        using var external = new TempDir();
+        external.Write("x.md", "outside");
+        external.Write("sub/x.md", "outside deep");
+        using var tmp = new TempDir();
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("j", external.Path), "junctions unavailable");
+        var p = new FileSystemBundleProvider(tmp.Path);
+
+        Assert.Throws<BundleAccessRefusedException>(() => p.Delete(K("j/x.md"), BundleWriteCondition.None));
+        Assert.Throws<BundleAccessRefusedException>(() => p.Delete(K("j/sub/x.md"), BundleWriteCondition.None));
+        Assert.Throws<BundleAccessRefusedException>(() => p.Delete(K("j/sub/x.md"), BundleWriteCondition.IfMatch(new BundleObjectVersion(Sha("outside deep")))));
+
+        Assert.Equal("outside", File.ReadAllText(Path.Combine(external.Path, "x.md")));
+        Assert.Equal("outside deep", File.ReadAllText(Path.Combine(external.Path, "sub", "x.md")));
+    }
+
+    /// <summary>
+    /// A directory on the key's path that the process may not search is refused as an access
+    /// refusal before anything is listed (the whole path is STRICT-checked up front, as for a
+    /// write), not as the raw access-denied error of listing it. Unix only: Windows lets the
+    /// process through a directory whose listing is denied, so no listing refusal arises there.
+    /// </summary>
+    [SkippableFact]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public void A_delete_under_a_directory_the_process_may_not_search_is_an_access_refusal_not_a_raw_error()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "the mode of a directory is a Unix notion");
+        using var tmp = new TempDir();
+        tmp.Write("d/x.md", "kept");
+        var dir = Path.Combine(tmp.Path, "d");
+        File.SetUnixFileMode(dir, UnixFileMode.None);
+        try
+        {
+            var searchable = true;
+            try
+            {
+                _ = File.GetAttributes(Path.Combine(dir, "x.md"));
+            }
+            catch (UnauthorizedAccessException)
+            {
+                searchable = false;
+            }
+
+            Skip.If(searchable, "the process searches every directory anyway (root)");
+            var p = new FileSystemBundleProvider(tmp.Path);
+            Assert.Throws<BundleAccessRefusedException>(() => p.Delete(K("d/x.md"), BundleWriteCondition.None));
+        }
+        finally
+        {
+            File.SetUnixFileMode(dir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        Assert.Equal("kept", File.ReadAllText(Path.Combine(dir, "x.md")));
+    }
+
+    /// <summary>
+    /// An <c>IfMatch</c> condition over an object longer than the provider's
+    /// <see cref="BundleLimits.MaxObjectBytes"/> is refused before any byte is hashed (a read never
+    /// returns a version for such an object, so the condition could only fail, and the hash would
+    /// run under the commit lock): <see cref="BundleObjectTooLargeException"/>, for a write and for
+    /// a delete, nothing written, nothing left behind. A write or delete under an in-bound
+    /// object still works.
+    /// </summary>
+    [Fact]
+    public void An_IfMatch_over_an_object_past_the_bound_is_refused_before_hashing_and_leaves_nothing()
+    {
+        using var tmp = new TempDir();
+        var big = tmp.Write("big.md", "0123456789 and more");
+        tmp.Write("small.md", "old");
+        var p = new FileSystemBundleProvider(tmp.Path, limits: new BundleLimits { MaxObjectBytes = 10 });
+        var before = Tree(tmp.Path);
+        var matching = BundleWriteCondition.IfMatch(new BundleObjectVersion(Sha("0123456789 and more")));
+
+        Assert.Throws<BundleObjectTooLargeException>(() => p.Write(K("big.md"), B("new"), matching));
+        Assert.Throws<BundleObjectTooLargeException>(() => p.Delete(K("big.md"), matching));
+
+        Assert.Equal("0123456789 and more", File.ReadAllText(big));
+        Assert.Equal(before, Tree(tmp.Path));
+        Assert.Empty(p.ListOrphanedTemporaries(BundleLimits.Default));
+
+        Assert.Equal(Sha("new"), p.Write(K("small.md"), B("new"), BundleWriteCondition.IfMatch(new BundleObjectVersion(Sha("old")))).Token);
+        p.Delete(K("small.md"), BundleWriteCondition.IfMatch(new BundleObjectVersion(Sha("new"))));
+        Assert.Equal(["big.md"], Tree(tmp.Path));
+    }
+
+    /// <summary>
+    /// The temporary is written without a managed buffer (<c>BufferSize = 0</c>): when the flush
+    /// hook runs, every byte is already on the file, where a 4 KiB buffer would hold a small
+    /// content back and a disk error would surface only at the flush. Unix only: Windows reports
+    /// the size of an open file from its directory entry, which lags.
+    /// </summary>
+    [SkippableFact]
+    public void The_temporary_is_unbuffered_every_byte_is_on_the_file_before_the_flush()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Windows reports the size of an open file from its directory entry, which lags the writes");
+        using var tmp = new TempDir();
+        var p = new FileSystemBundleProvider(tmp.Path);
+        var content = B("a small content, far below any buffer size");
+        long lengthAtFlush = -1;
+        p.TemporaryFlushForTest = path => lengthAtFlush = new FileInfo(path).Length;
+
+        p.Write(K("x.md"), content, BundleWriteCondition.None);
+
+        Assert.Equal(content.Length, lengthAtFlush);
+    }
+
+    /// <summary>
     /// File.WriteAllText refused to overwrite a file the process may not write. A rename needs
     /// only the directory's permission on Unix, so the provider opens the target for writing
     /// first and refuses as before: a read-only object stays read-only.
