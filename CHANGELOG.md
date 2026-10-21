@@ -36,6 +36,9 @@ and this project adheres to
   commit itself failed and what the storage holds could not be established).
   `IBundleProvider.Write` and `Delete` now document their conditions,
   atomicity and implicit prefixes.
+- **`BundleWriteNotCommittedException`**: a write the storage kept refusing
+  without any effect, on every attempt; the object is unchanged (see Changed,
+  "A failed commit says what happened").
 
 ### Changed
 
@@ -204,6 +207,28 @@ and this project adheres to
   group become the writer's (outside a setgid directory), and its extended ACLs
   and hard links are not kept (the old in-place `File.WriteAllText` kept them;
   the BCL has no `fchown`); this is inherent to the atomic write of #157.
+- **A failed commit says what happened.** A failure before the commit leaves
+  the target untouched and no temporary. A replacement that Windows
+  `ReplaceFile` refuses without any effect — error 1175, seen twice in 1 500
+  commits while readers held the object open, or a sharing violation — is made
+  again, at most three times, each time from the re-check of its condition;
+  after that it is `BundleWriteNotCommittedException` (new), the object
+  unchanged and no temporary left. Any other failure of the commit call is
+  classified from the disk once the boundary and the path guards have been
+  checked again: nothing happened (the raw error), another writer landed
+  (`BundleWriteConflictException`), or it took effect (success); otherwise, and
+  always for Windows `ReplaceFile` error 1176/1177, it is
+  `BundleWriteOutcomeUnknownException` and the temporary — possibly the only
+  copy of the new content — is kept. `okf validate` ignores it (not `.md`).
+- **Reads no longer block writes (B8).** `FileSystemBundleProvider.Read`
+  opens with `FileShare.ReadWrite | FileShare.Delete`, so on Windows a read
+  never denies a replacement or a delete the sharing it needs. Readers never
+  see a torn object any more. On Windows, while `ReplaceFile` runs, a
+  concurrent reader can for a moment find no object under the name or meet a
+  sharing violation (measured on plain opens: 2.07 % and 1.78 % of 192 649);
+  `Read` retries both — only when the name had just been listed — at most
+  three times, 5 to 20 ms apart, which narrows that window without closing it.
+  A key that does not exist is answered at once.
 
 ## [0.7.0] - 2026-10-14
 

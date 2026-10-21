@@ -223,45 +223,81 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     }
 
     /// <inheritdoc/>
+    /// <remarks>
+    /// <para>Shares writing and deletion, so on Windows a read never denies a concurrent replacement
+    /// or delete the sharing it needs. While Windows' <c>ReplaceFile</c> replaces the object, a reader can for a
+    /// moment meet a sharing violation, or find that the entry its exact listing had just matched
+    /// is no longer there (measured, issue #157): on Windows only, a read retries those two —
+    /// and nothing else — at most <see cref="MaxReadAttempts"/> times in all, 5 to 20 ms apart,
+    /// redoing every check on each attempt (the confinement boundary, the exact-name match, the
+    /// STRICT guards) and checking <paramref name="expected"/> against the bytes it actually
+    /// read. A key the listing does not match is answered at once, never retried; nor is a
+    /// refusal or a version mismatch. An object really deleted is not found once its listing no
+    /// longer matches it, or after the last attempt. This narrows the window, it does not close
+    /// it: a listing made while <c>ReplaceFile</c> runs can still find no entry under the name,
+    /// and a read can still fail after its last attempt.</para>
+    /// </remarks>
     public BundleObject Read(BundleKey key, BundleObjectVersion? expected = null)
     {
         ArgumentNullException.ThrowIfNull(key);
-        CheckBoundary();
-        var path = ResolveExact(key) ?? throw new BundleObjectNotFoundException(key);
-        GuardResolved(key, path);
-        if (!File.Exists(path))
+        for (var attempt = 1; ; attempt++)
         {
-            throw new BundleObjectNotFoundException(key);
-        }
-
-        byte[] bytes;
-        try
-        {
-            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-            if (fs.Length > _limits.MaxObjectBytes)
+            CheckBoundary();
+            var path = ResolveExact(key) ?? throw new BundleObjectNotFoundException(key);
+            GuardResolved(key, path);
+            if (!File.Exists(path) && Directory.Exists(path))
             {
-                throw new BundleObjectTooLargeException(key, fs.Length, _limits.MaxObjectBytes);
+                throw new BundleObjectNotFoundException(key); // a directory is no object
             }
 
-            bytes = ReadBounded(fs, _limits.MaxObjectBytes, key);
-        }
-        catch (FileNotFoundException)
-        {
-            throw new BundleObjectNotFoundException(key);
-        }
-        catch (DirectoryNotFoundException)
-        {
-            throw new BundleObjectNotFoundException(key);
-        }
+            byte[] bytes;
+            try
+            {
+                ReadOpeningForTest?.Invoke(path);
 
-        var version = new BundleObjectVersion(Convert.ToHexStringLower(SHA256.HashData(bytes)));
-        if (expected is { } e && e != version)
-        {
-            throw new BundleVersionMismatchException(key);
-        }
+                // Shares writing and deletion: a read must never make a concurrent replacement
+                // (File.Replace) or delete fail on Windows with a sharing violation.
+                using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                if (fs.Length > _limits.MaxObjectBytes)
+                {
+                    throw new BundleObjectTooLargeException(key, fs.Length, _limits.MaxObjectBytes);
+                }
 
-        return new BundleObject(new MemoryStream(bytes, writable: false), version, bytes.Length);
+                bytes = ReadBounded(fs, _limits.MaxObjectBytes, key);
+            }
+            catch (Exception failure) when (failure is FileNotFoundException or DirectoryNotFoundException || IsSharingViolation(failure))
+            {
+                // The entry was matched a moment ago: on Windows, the ReplaceFile window.
+                if (attempt < MaxReadAttempts && OperatingSystem.IsWindows())
+                {
+                    Thread.Sleep(Random.Shared.Next(5, 21));
+                    continue;
+                }
+
+                if (failure is FileNotFoundException or DirectoryNotFoundException)
+                {
+                    throw new BundleObjectNotFoundException(key);
+                }
+
+                throw;
+            }
+
+            var version = new BundleObjectVersion(Convert.ToHexStringLower(SHA256.HashData(bytes)));
+            if (expected is { } e && e != version)
+            {
+                throw new BundleVersionMismatchException(key);
+            }
+
+            return new BundleObject(new MemoryStream(bytes, writable: false), version, bytes.Length);
+        }
     }
+
+    /// <summary>How many times in all <see cref="Read"/> opens an object on Windows when it meets the <c>ReplaceFile</c> window.</summary>
+    private const int MaxReadAttempts = 3;
+
+    /// <summary>A sharing or lock violation (<c>ERROR_SHARING_VIOLATION</c>, <c>ERROR_LOCK_VIOLATION</c>).</summary>
+    private static bool IsSharingViolation(Exception e) =>
+        e is IOException && e.HResult is unchecked((int)0x80070020) or unchecked((int)0x80070021);
 
     /// <inheritdoc/>
     /// <remarks>
@@ -327,8 +363,29 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// <para><b>Failures.</b> A failure before the commit removes the temporary and leaves the
     /// target untouched; it is the raw <see cref="IOException"/> or
     /// <see cref="UnauthorizedAccessException"/>, whose message may name a host path (the core
-    /// translates it). A failure of the commit call itself raises
-    /// <see cref="BundleWriteOutcomeUnknownException"/> and keeps the temporary.</para>
+    /// translates it). A replacement that the storage refuses without any effect — Windows'
+    /// <c>ERROR_UNABLE_TO_REMOVE_REPLACED</c> (1175), measured while readers held the object
+    /// open, or a sharing violation — is made again, at most three times in all, 5 to 25 ms
+    /// apart, each time from the re-check of the condition against the bytes stored then; after
+    /// the last attempt it raises <see cref="BundleWriteNotCommittedException"/>, the temporary
+    /// removed and the target untouched. Any other failure of the commit call is classified from
+    /// what the disk then holds, once the boundary and the STRICT guards have been renewed: the
+    /// temporary still there and the target as it was — nothing happened, the raw failure, the
+    /// temporary removed; the temporary still there and the target changed — another writer
+    /// landed, <see cref="BundleWriteConflictException"/>, the temporary removed (an unconditional
+    /// replacement does not read its target: the raw failure); the temporary gone and the target
+    /// holding the new bytes — committed, success. Anything else, a guard that now refuses, and
+    /// always Windows' <c>ERROR_UNABLE_TO_MOVE_REPLACEMENT</c> (1176, 1177) — which can leave no
+    /// object under the key and the new bytes under the temporary's name — raises
+    /// <see cref="BundleWriteOutcomeUnknownException"/> and keeps the temporary, the only copy of
+    /// the new content. The temporary is never removed through a path that a link has entered
+    /// since it was created; it is then left in place.</para>
+    /// <para><b>What a concurrent reader sees.</b> Never a part of the new content. On Unix the
+    /// commit is a <c>rename</c>, so a reader finds the old object or the new one. On Windows
+    /// <c>ReplaceFile</c> is atomic for the stored state but not for readers: while it runs, a
+    /// reader can for a moment find no entry under the name or meet a sharing violation (measured
+    /// on Windows 11); <see cref="Read"/> shares writing and deletion, so it never denies a
+    /// replacement the sharing it needs, and retries that window a bounded number of times.</para>
     /// </remarks>
     public BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition)
     {
@@ -404,6 +461,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
                 return;
             }
 
+            BeforeCommitForTest?.Invoke(null, current);
             File.Delete(current);
         }
     }
@@ -427,6 +485,36 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
 
     /// <summary>Test hook: called with the temporary's full path as soon as it is created, before any byte is written. <see langword="null"/> outside tests.</summary>
     internal Action<string>? TemporaryCreatedForTest { get; set; }
+
+    /// <summary>
+    /// Test hook: called by <see cref="Write"/> with the parent directory's full path once every
+    /// parent directory of the key exists (found, or created), before the STRICT re-check of the
+    /// whole path and before the temporary is created — another process acting in that window (a
+    /// directory just created swapped for a junction, a link planted under the object's name).
+    /// <c>BundleConceptWriter.BeforeLateReparseCheckForTest</c> forwards to it.
+    /// <see langword="null"/> outside tests.
+    /// </summary>
+    internal Action<string>? ParentsResolvedForTest { get; set; }
+
+    /// <summary>Test hook: the temporary's file name instead of a random one (to plant an entry under it beforehand). <see langword="null"/> outside tests.</summary>
+    internal Func<string>? TemporaryNameForTest { get; set; }
+
+    /// <summary>Test hook: called with the temporary's full path once it is written, flushed and closed, before the commit lock is taken — another process acting in that window. <see langword="null"/> outside tests.</summary>
+    internal Action<string>? AfterTemporaryWrittenForTest { get; set; }
+
+    /// <summary>Test hook: called under the commit lock once every re-check and the condition have passed, just before the commit call, with the temporary (<see langword="null"/> for a delete) and the target's full path. <see langword="null"/> outside tests.</summary>
+    internal Action<string?, string>? BeforeCommitForTest { get; set; }
+
+    /// <summary>
+    /// Test hook: replaces the commit call itself — <c>(temporary, target, replace)</c> — so a test
+    /// can leave the disk as a failing <c>ReplaceFile</c> or <c>rename</c> does and throw what it
+    /// throws; the provider then classifies the failure exactly as for the real call.
+    /// <see langword="null"/> outside tests.
+    /// </summary>
+    internal Action<string, string, bool>? CommitForTest { get; set; }
+
+    /// <summary>Test hook: called by <see cref="Read"/> with the object's full path on every attempt, once every check has passed and right before the object is opened — what it throws is what the open threw. <see langword="null"/> outside tests.</summary>
+    internal Action<string>? ReadOpeningForTest { get; set; }
 
     /// <summary>Test hook: called with the temporary's full path after its bytes are written and just before they are flushed to stable storage — the point where a full disk, a quota or an I/O error surfaces; an exception it throws stands for that error. <see langword="null"/> outside tests.</summary>
     internal Action<string>? TemporaryFlushForTest { get; set; }
@@ -508,6 +596,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
 
             current = next;
         }
+
+        ParentsResolvedForTest?.Invoke(current);
 
         // The chain again after any creation, and the object's own entry (the writer's late
         // guard before #140), immediately before the temporary is created.
@@ -627,7 +717,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// </summary>
     private string WriteTemporary(string parent, string? existing, ReadOnlyMemory<byte> content)
     {
-        var temporary = Path.Join(parent, TemporaryPrefix + Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(16)) + TemporarySuffix);
+        var name = TemporaryNameForTest?.Invoke() ?? TemporaryPrefix + Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(16)) + TemporarySuffix;
+        var temporary = Path.Join(parent, name);
         // BufferSize 0: no managed buffer sits between Write and the file. With the default 4 KiB
         // buffer a small content is only buffered by Write, a disk-full / quota / I/O error then
         // surfaces at Flush, the buffer stays dirty, and the Dispose of the cleanup flushes again
@@ -685,56 +776,95 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
         var settled = false;
         try
         {
+            AfterTemporaryWrittenForTest?.Invoke(temporary);
             var target = Path.Join(parent, key.Name);
-            lock (CommitLockFor(target))
+            for (var attempt = 1; ; attempt++)
             {
-                CheckBoundary();
-                GuardStrict(key, temporary); // the temporary and every directory up to the root
-                var current = FindExactForWrite(key, parent, key.Name);
-                BundleObjectVersion? before = null;
-                if (current is not null)
+                if (attempt > 1)
                 {
-                    GuardObject(key, current);
-                    if (condition.Kind == BundleWriteConditionKind.IfMatch)
-                    {
-                        before = HashForWrite(current);
-                    }
+                    // Outside the lock: the other writers of this stripe are not held up.
+                    Thread.Sleep(Random.Shared.Next(5, 26));
                 }
 
-                if (!Holds(condition, current is not null, before))
+                lock (CommitLockFor(target))
                 {
-                    throw new BundleWriteConflictException(key);
-                }
-
-                if (current is not null && condition.Kind == BundleWriteConditionKind.None)
-                {
-                    EnsureWritable(current);
-                }
-
-                if (current is not null && !preparedAsReplacement && !OperatingSystem.IsWindows())
-                {
-                    return false;
-                }
-
-                try
-                {
+                    CheckBoundary();
+                    GuardStrict(key, temporary); // the temporary and every directory up to the root
+                    var current = FindExactForWrite(key, parent, key.Name);
+                    BundleObjectVersion? before = null;
                     if (current is not null)
                     {
-                        File.Replace(temporary, current, destinationBackupFileName: null);
+                        GuardObject(key, current);
+                        if (condition.Kind == BundleWriteConditionKind.IfMatch)
+                        {
+                            before = HashForWrite(current);
+                        }
                     }
-                    else
-                    {
-                        File.Move(temporary, target, overwrite: false);
-                    }
-                }
-                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-                {
-                    settled = true; // keep the temporary: what the commit did is not established
-                    throw new BundleWriteOutcomeUnknownException(key, e);
-                }
 
-                settled = true;
-                return true;
+                    if (!Holds(condition, current is not null, before))
+                    {
+                        throw new BundleWriteConflictException(key);
+                    }
+
+                    if (current is not null && condition.Kind == BundleWriteConditionKind.None)
+                    {
+                        EnsureWritable(current);
+                    }
+
+                    if (current is not null && !preparedAsReplacement && !OperatingSystem.IsWindows())
+                    {
+                        return false;
+                    }
+
+                    BeforeCommitForTest?.Invoke(temporary, target);
+                    try
+                    {
+                        if (CommitForTest is { } commit)
+                        {
+                            commit(temporary, target, current is not null);
+                        }
+                        else if (current is not null)
+                        {
+                            File.Replace(temporary, current, destinationBackupFileName: null);
+                        }
+                        else
+                        {
+                            File.Move(temporary, target, overwrite: false);
+                        }
+                    }
+                    catch (IOException e) when (current is not null && RefusedBeforeAnyEffect(e))
+                    {
+                        // Nothing changed: the target and the temporary are as they were. Try
+                        // again from the re-check, so that a condition another writer broke
+                        // meanwhile is a conflict, never an overwrite; after the last attempt the
+                        // temporary is removed below and the target is left as it is.
+                        if (attempt == MaxCommitAttempts)
+                        {
+                            throw new BundleWriteNotCommittedException(key, e);
+                        }
+
+                        continue;
+                    }
+                    catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                    {
+                        switch (ClassifyCommitFailure(key, parent, temporary, current is not null, before, written, e))
+                        {
+                            case CommitFailure.NothingChanged:
+                                throw; // the raw failure; the temporary is removed below
+                            case CommitFailure.ChangedByAnother:
+                                throw new BundleWriteConflictException(key);
+                            case CommitFailure.Committed:
+                                settled = true;
+                                return true;
+                            default:
+                                settled = true; // keep the temporary: it may be the only copy of the new bytes
+                                throw new BundleWriteOutcomeUnknownException(key, e);
+                        }
+                    }
+
+                    settled = true;
+                    return true;
+                }
             }
         }
         finally
@@ -743,6 +873,86 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
             {
                 DeleteTemporary(temporary);
             }
+        }
+    }
+
+    /// <summary>How many times <see cref="CommitTemporary"/> makes a replacement that the storage refused without any effect (<see cref="RefusedBeforeAnyEffect"/>).</summary>
+    private const int MaxCommitAttempts = 3;
+
+    /// <summary>
+    /// Whether a replacement call failed before it changed anything, so that the target and the
+    /// temporary are untouched and the commit can be made again: Windows <c>ReplaceFile</c>'s
+    /// <c>ERROR_UNABLE_TO_REMOVE_REPLACED</c> (1175 — "the replaced and replacement files retain
+    /// their original file names"; measured while readers held the object open), or a sharing
+    /// violation.
+    /// </summary>
+    private static bool RefusedBeforeAnyEffect(IOException e) =>
+        e.HResult is unchecked((int)0x80070497) or unchecked((int)0x80070020);
+
+    /// <summary>What a failed commit call left, as <see cref="ClassifyCommitFailure"/> establishes it.</summary>
+    private enum CommitFailure
+    {
+        /// <summary>The temporary is still there and the target is as it was — for an unconditional replacement, whose target is not read, the temporary is still there: nothing of this write happened.</summary>
+        NothingChanged,
+
+        /// <summary>The temporary is still there and the target changed: another writer landed, ours did not.</summary>
+        ChangedByAnother,
+
+        /// <summary>The temporary is gone and the target holds the new bytes: the commit took effect.</summary>
+        Committed,
+
+        /// <summary>Anything else, a state that could not be read, or a path a renewed guard refuses.</summary>
+        Unknown,
+    }
+
+    /// <summary>
+    /// After the commit call threw, decides from what the storage now holds. Windows
+    /// <c>ReplaceFile</c>'s <c>ERROR_UNABLE_TO_MOVE_REPLACEMENT</c> (1176) and
+    /// <c>ERROR_UNABLE_TO_MOVE_REPLACEMENT_2</c> (1177) are unknown by definition — without a
+    /// backup name the first can leave no object under the key and the new bytes under the
+    /// temporary's name. Otherwise the confinement boundary and the STRICT guards the commit ran —
+    /// the temporary and every directory up to the root, and the target's own entry — are renewed
+    /// before anything is read: a guard that refuses, or a state that cannot be read, is
+    /// <see cref="CommitFailure.Unknown"/> (the temporary is kept), never a success read through a
+    /// path a link has entered since the commit's checks. That narrows the window between a check
+    /// and an access; it does not close it (issue #178). Then a temporary still present means the
+    /// rename did not happen: the target is as before (<see cref="CommitFailure.NothingChanged"/>)
+    /// or changed by another writer (<see cref="CommitFailure.ChangedByAnother"/>) — except for an
+    /// unconditional replacement (<paramref name="existed"/> without <paramref name="before"/>),
+    /// whose target is not read, since its version was never needed and it may not be readable:
+    /// nothing of that write happened. A temporary gone and a target holding the new bytes means
+    /// the commit took effect; anything else is unknown. Reads only; never throws.
+    /// </summary>
+    private CommitFailure ClassifyCommitFailure(BundleKey key, string parent, string temporary, bool existed, BundleObjectVersion? before, BundleObjectVersion written, Exception failure)
+    {
+        if (failure.HResult is unchecked((int)0x80070498) or unchecked((int)0x80070499))
+        {
+            return CommitFailure.Unknown;
+        }
+
+        try
+        {
+            CheckBoundary();
+            GuardStrict(key, temporary);
+            GuardStrict(key, Path.Join(parent, key.Name));
+            var temporaryLeft = File.Exists(temporary);
+            if (temporaryLeft && existed && before is null)
+            {
+                return CommitFailure.NothingChanged;
+            }
+
+            var now = ListExact(parent, key.Name);
+            BundleObjectVersion? after = now is null ? null : HashForRead(now);
+            if (temporaryLeft)
+            {
+                return after == before ? CommitFailure.NothingChanged : CommitFailure.ChangedByAnother;
+            }
+
+            return after == written ? CommitFailure.Committed : CommitFailure.Unknown;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or BundleAccessRefusedException)
+        {
+            return CommitFailure.Unknown;
         }
     }
 
