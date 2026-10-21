@@ -353,9 +353,10 @@ and this project adheres to
 - **`okf index` is slower on a large bundle.** Regenerating the indexes now
   lists, validates and reads the bundle through the provider, as a load does,
   and commits every `index.md` atomically. On 3 000 flat concepts (medians of
-  7 runs, the two builds alternating), eighteen series measured on one
-  machine for this change (fifteen during its drafting and its external
-  reviews, three at its final check) put it at +13.6 % to +37.5 % longer than
+  7 runs, the two builds alternating), eighteen series for this change
+  (fifteen recorded in its plan during its drafting and its external reviews,
+  quoted here and not reproduced; three measured at its final check) put it
+  at +13.6 % to +37.5 % longer than
   before, with a median of +23.4 %. Over the twelve of those series that also
   timed `okf validate`, it varied between -1.3 % and +9.5 % (median +2.4 %),
   with overlapping ranges, so no stable change is established. The series
