@@ -51,7 +51,11 @@ public interface IBundleProvider
     /// <paramref name="condition"/> holds, and returns the version a later <see cref="Read"/> of
     /// these bytes reports (spec §1, §4).
     /// <para><b>Conditions</b>, checked atomically with the replacement:
-    /// <see cref="BundleWriteCondition.None"/> always holds;
+    /// <see cref="BundleWriteCondition.None"/> holds whatever the object's state (the storage may
+    /// still report a creation that loses a race to another writer as
+    /// <see cref="BundleWriteConflictException"/>: on the filesystem, a <c>None</c> creation that
+    /// loses a creation race to another process is reported as a conflict, see the failures in
+    /// <see cref="FileSystemBundleProvider.Write"/>);
     /// <see cref="BundleWriteCondition.MustNotExist"/> holds while no object exists under the key;
     /// <see cref="BundleWriteCondition.IfMatch"/> holds while an object exists under the key and
     /// its current version is the expected one — never for an absent object.</para>
@@ -74,6 +78,10 @@ public interface IBundleProvider
     /// <exception cref="BundleWriteConflictException">The condition did not hold, or the storage cannot hold an object under that exact name (<see cref="BundleWriteConflictException.Reason"/>); nothing was changed.</exception>
     /// <exception cref="BundleAccessRefusedException">The key's path is refused (a reparse point, an entry that cannot be inspected, the confinement boundary); nothing was changed.</exception>
     /// <exception cref="BundleWriteOutcomeUnknownException">The commit itself failed and what the storage now holds could not be established.</exception>
+    /// <exception cref="BundleWriteNotCommittedException">The storage refused the commit, without any effect, on every one of a bounded number of attempts (the filesystem provider: Windows, a replacement kept refused); the object is unchanged.</exception>
+    /// <exception cref="BundleObjectTooLargeException">An <see cref="BundleWriteCondition.IfMatch"/> write found the existing object longer than <see cref="BundleLimits.MaxObjectBytes"/>, whose version cannot be established; nothing was changed.</exception>
+    /// <exception cref="IOException">The storage failed before the commit (the filesystem provider passes a raw <see cref="IOException"/> or <see cref="UnauthorizedAccessException"/> up as it is: its message may name a host path, decision B15, issue #211); the object is unchanged.</exception>
+    /// <exception cref="UnauthorizedAccessException">The storage denied an access before the commit, as above; the object is unchanged.</exception>
     BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition);
 
     /// <summary>
@@ -89,5 +97,8 @@ public interface IBundleProvider
     /// <exception cref="BundleReadOnlyException"><see cref="BundleProviderCapabilities.CanWrite"/> is <see langword="false"/>; nothing was attempted.</exception>
     /// <exception cref="BundleWriteConflictException">The condition did not hold; nothing was changed.</exception>
     /// <exception cref="BundleAccessRefusedException">The key's path is refused; nothing was changed.</exception>
+    /// <exception cref="BundleObjectTooLargeException">An <see cref="BundleWriteCondition.IfMatch"/> delete found the object longer than <see cref="BundleLimits.MaxObjectBytes"/>, whose version cannot be established; nothing was changed.</exception>
+    /// <exception cref="IOException">The storage failed (the filesystem provider passes a raw <see cref="IOException"/> or <see cref="UnauthorizedAccessException"/> up as it is: a denied listing of a directory on the key's path, a failed removal; its message may name a host path, decision B15, issue #211).</exception>
+    /// <exception cref="UnauthorizedAccessException">The storage denied an access, as above.</exception>
     void Delete(BundleKey key, BundleWriteCondition condition);
 }

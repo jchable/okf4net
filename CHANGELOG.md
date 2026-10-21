@@ -237,12 +237,14 @@ and this project adheres to
   volume, a Windows trailing dot or space, a directory) is refused before
   anything is created; a read-only target is refused as before. `Delete`
   removes one object and leaves its directories in place. Replacing an object
-  by rename gives it a new inode: its mode is preserved, but its owner and
+  by rename gives it, on Unix, a new inode: its mode is preserved, but its owner and
   group become the writer's (outside a setgid directory), and its extended ACLs
   and hard links are not kept (the old in-place `File.WriteAllText` kept them;
-  the BCL has no `fchown`); this is inherent to the atomic write of #157.
+  the BCL has no `fchown`); this is inherent to the atomic write of #157. On
+  Windows, `File.Replace` keeps the replaced object's own DACL (measured).
 - **A failed commit says what happened.** A failure before the commit leaves
-  the target untouched and no temporary. A replacement that Windows
+  the target untouched and, unless a link has entered its path meanwhile, no
+  temporary. A replacement that Windows
   `ReplaceFile` refuses without any effect — error 1175, seen twice in 1 500
   commits while readers held the object open, or a sharing violation — is made
   again, at most three times in all, each time from the re-check of its condition;
@@ -349,7 +351,11 @@ and this project adheres to
   (no listing follows a link), and the load's bounds apply. A directory
   named `index.md` with files under it now ends the run with
   `BundleWriteConflictException` where the write threw
-  `UnauthorizedAccessException`.
+  `UnauthorizedAccessException`. A non-root `index.md` that exists but cannot
+  be read (mode 0200, an ACL denying ReadData, or larger than `MaxObjectBytes`)
+  now ends the run too, with the raw `UnauthorizedAccessException` or
+  `BundleObjectTooLargeException` and the same exit code, since its version is
+  read before it is replaced; the old write replaced it without reading it.
 - **`okf index` is slower on a large bundle.** Regenerating the indexes now
   lists, validates and reads the bundle through the provider, as a load does,
   and commits every `index.md` atomically. On 3 000 flat concepts (medians of

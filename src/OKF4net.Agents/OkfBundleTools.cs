@@ -826,8 +826,9 @@ public sealed class OkfBundleTools
     /// <returns>
     /// The same style of result text as <see cref="WriteConcept"/> (a
     /// <c>Written ...</c> confirmation) or an <c>Error: ...</c> message;
-    /// never throws.
+    /// never throws (except as below, or what <paramref name="buildBody"/> itself throws).
     /// </returns>
+    /// <exception cref="OKF4net.Providers.BundleReadOnlyException">The bundle's provider cannot write; nothing was attempted.</exception>
     internal string AppendToConceptAtomic(
         string conceptId,
         string frontmatterYamlIfCreating,

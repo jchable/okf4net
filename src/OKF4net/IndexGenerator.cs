@@ -159,7 +159,12 @@ public static class IndexGenerator
     /// untouched and skipped. Any other failure — an I/O error, a name the storage
     /// cannot hold, a write that kept conflicting — propagates and ends the run, as
     /// an I/O error did before the provider: the <c>index.md</c> files written
-    /// until then stay written.
+    /// until then stay written. That includes a non-root <c>index.md</c> that exists but
+    /// cannot be read (mode 0200, an ACL denying ReadData, or larger than
+    /// <see cref="BundleLimits.MaxObjectBytes"/>): its version is read before it is
+    /// replaced, so the raw <see cref="UnauthorizedAccessException"/> or
+    /// <see cref="BundleObjectTooLargeException"/> ends the run, where the write that
+    /// preceded the provider replaced such a file without reading it.
     /// </para>
     /// </remarks>
     public static IReadOnlyList<string> RegenerateIndexesWith(string bundleRoot, Synthesize synthesize)

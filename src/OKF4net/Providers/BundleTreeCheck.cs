@@ -26,8 +26,12 @@ namespace OKF4net.Providers;
 /// of the new key are in it, and so are the objects on and under its path. Otherwise one
 /// <see cref="IBundleProvider.Exists"/> per proper prefix and one listing under the key itself.
 /// Every listed entry counts against <see cref="BundleLimits.MaxEntries"/>, enforced here even
-/// when the provider ignores it (spec §6). A provider exception propagates: a write refuses what
-/// it cannot see.</para>
+/// when the provider ignores it (spec §6). A provider exception propagates; but a provider may
+/// answer "absent" for a listing it is denied (<see cref="IBundleProvider.Exists"/>), so this
+/// check alone does not make a write refuse what it cannot see: the backstop is the provider's
+/// own listing inside <see cref="IBundleProvider.Write"/>, which a writable provider makes
+/// exactly (the filesystem provider throws when a directory on the key's path cannot be
+/// listed).</para>
 /// <para><b>Not atomic across processes</b> (issue #178): the check and the write that follows
 /// are two operations; the caller holds its in-process write lock across both, and a conflict
 /// another process creates in between is discarded, with a diagnostic, by the next load.</para>
