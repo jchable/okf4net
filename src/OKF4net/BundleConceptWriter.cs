@@ -62,7 +62,9 @@ public readonly record struct VerificationOutcome(bool Recorded, string Message,
     /// was committed, in order — the concepts of <see cref="Records"/>, a concept whose write
     /// notification then failed included — and, when a write failed,
     /// that concept's key with the reason (<see cref="Message"/> without its <c>Error: </c> prefix
-    /// and without the <c>— already written: …</c> suffix). Empty for a batch refused before its
+    /// and without the <c>— already written: …</c> suffix; for a typed provider refusal a library
+    /// sentence naming keys and types, for a raw I/O failure the runtime's own message, which can
+    /// name a host path, until issue #211). Empty for a batch refused before its
     /// first write; the concepts after a failed one were not attempted and are in neither list.
     /// Never <see langword="null"/>, <see langword="default"/> included.
     /// </summary>
@@ -1265,7 +1267,15 @@ public sealed class BundleConceptWriter
                         continue;
                     }
 
-                    failure = new BundleWriteFailure(stamp.Target.Key, writeResult["Error: ".Length..]);
+                    // The reason is the message without its prefix; an exception with an
+                    // empty message leaves nothing, and a failure needs a reason (the
+                    // constructor would throw, and RunTool would swallow the whole outcome).
+                    var reason = writeResult.StartsWith("Error: ", StringComparison.Ordinal)
+                        ? writeResult["Error: ".Length..]
+                        : writeResult;
+                    failure = new BundleWriteFailure(
+                        stamp.Target.Key,
+                        string.IsNullOrWhiteSpace(reason) ? "the write failed without giving a reason." : reason);
                     return records.Count == 0
                         ? writeResult
                         : $"{writeResult} — already written: {string.Join(", ", records.Select(r => r.ConceptId))}";
@@ -1287,7 +1297,7 @@ public sealed class BundleConceptWriter
             ? new VerificationOutcome(false, message, records) { Report = report }
             : new VerificationOutcome(true, message, records) { Report = report };
 
-        static VerificationOutcome Failed(string message) => new(false, message, []);
+        static VerificationOutcome Failed(string message) => new(false, message, []) { Report = BundleWriteReport.Empty };
     }
 
     /// <summary>A concept <see cref="PrepareStamp"/> read, stamped and checked, ready to be written: its new content and the version that content was built from.</summary>

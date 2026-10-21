@@ -52,9 +52,11 @@ and this project adheres to
 - **`VerificationOutcome.Report`** (a `BundleWriteReport`): the keys of the
   concepts a `RecordVerifications` batch wrote, in order — a concept whose
   write notification failed after its commit included — and the one whose
-  write failed, with the reason. `Recorded`, `Message` and `Records` are
-  unchanged, and a partial failure's message still ends with `— already
-  written: …`.
+  write failed, with the reason: for a typed provider refusal a library
+  sentence naming keys and types, for a raw I/O failure the runtime's own
+  message, which can name a host path (path-free texts are tracked by #211).
+  `Recorded`, `Message` and `Records` are unchanged, and a partial failure's
+  message still ends with `— already written: …`.
 - **`BundleWriteNotCommittedException`**: a write the storage kept refusing
   without any effect, on every attempt; the object is unchanged (see Changed,
   "A failed commit says what happened").

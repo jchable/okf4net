@@ -9,7 +9,7 @@ namespace OKF4net.Providers;
 /// </summary>
 /// <param name="Written">The keys written, in the order they were written.</param>
 /// <param name="Deleted">The keys deleted, in the order they were deleted.</param>
-/// <param name="Failed">The keys that were not written or deleted, each with a library-authored reason.</param>
+/// <param name="Failed">The keys that were not written or deleted, each with its reason (see <see cref="BundleWriteFailure.Reason"/> for what a reason may contain).</param>
 public sealed record BundleWriteReport(IReadOnlyList<BundleKey> Written, IReadOnlyList<BundleKey> Deleted, IReadOnlyList<BundleWriteFailure> Failed)
 {
     /// <summary>A report of an operation that touched nothing.</summary>
@@ -21,21 +21,26 @@ public sealed record BundleWriteReport(IReadOnlyList<BundleKey> Written, IReadOn
     /// <summary>The keys deleted, in the order they were deleted.</summary>
     public IReadOnlyList<BundleKey> Deleted { get; init; } = Deleted ?? throw new ArgumentNullException(nameof(Deleted));
 
-    /// <summary>The keys that were not written or deleted, each with a library-authored reason.</summary>
+    /// <summary>The keys that were not written or deleted, each with its reason (see <see cref="BundleWriteFailure.Reason"/> for what a reason may contain).</summary>
     public IReadOnlyList<BundleWriteFailure> Failed { get; init; } = Failed ?? throw new ArgumentNullException(nameof(Failed));
 
     /// <summary><see langword="true"/> when nothing failed.</summary>
     public bool Succeeded => Failed.Count == 0;
 }
 
-/// <summary>One object an operation could not write or delete, and why (a library-authored sentence that names keys, never host paths).</summary>
+/// <summary>One object an operation could not write or delete, and why.</summary>
 /// <param name="Key">The object's key.</param>
-/// <param name="Reason">Why it failed.</param>
+/// <param name="Reason">Why it failed: for a typed provider refusal, a library sentence that names keys and types; for a raw I/O failure, the runtime's own message, which can name a host path (issue #211 tracks path-free texts).</param>
 public sealed record BundleWriteFailure(BundleKey Key, string Reason)
 {
     /// <summary>The object's key.</summary>
     public BundleKey Key { get; init; } = Key ?? throw new ArgumentNullException(nameof(Key));
 
-    /// <summary>Why it failed.</summary>
+    /// <summary>
+    /// Why it failed. For a typed provider refusal this is a library sentence that names keys and
+    /// types. For a raw I/O failure (an <see cref="IOException"/> or
+    /// <see cref="UnauthorizedAccessException"/>) it is the runtime's own message, which can name a
+    /// host path, until issue #211 gives those failures path-free texts. Never empty.
+    /// </summary>
     public string Reason { get; init; } = string.IsNullOrEmpty(Reason) ? throw new ArgumentException("a failure needs a reason", nameof(Reason)) : Reason;
 }

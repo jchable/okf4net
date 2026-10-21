@@ -64,6 +64,59 @@ public class VerificationReportTests
     }
 
     [Fact]
+    public void A_write_failing_first_reports_no_key_written_and_that_key_failed_without_a_suffix()
+    {
+        var storage = new InMemoryBundleProvider(canWrite: true).Add("a.md", Doc).Add("b.md", Doc);
+        storage.FailWrite(1, new IOException("disk full"));
+
+        var outcome = WriterOver(storage).RecordVerifications(["a", "b"], "human:ada");
+
+        Assert.False(outcome.Recorded);
+        Assert.Equal("Error: disk full", outcome.Message);
+        Assert.DoesNotContain("already written", outcome.Message, StringComparison.Ordinal);
+        Assert.Empty(outcome.Records);
+        Assert.Empty(outcome.Report.Written);
+        var failed = Assert.Single(outcome.Report.Failed);
+        Assert.Equal(K("a.md"), failed.Key);
+        Assert.Equal("disk full", failed.Reason);
+    }
+
+    /// <summary>
+    /// A failure whose exception carries no message leaves the writer's text as exactly
+    /// <c>Error: </c>: the report still gets its entry, with a fixed reason, and the outcome keeps
+    /// its message and its <c>— already written: …</c> suffix instead of being replaced by the
+    /// refusal of an empty reason.
+    /// </summary>
+    [Fact]
+    public void A_write_failing_with_an_empty_message_still_reports_a_reason_and_keeps_the_outcome()
+    {
+        var storage = new InMemoryBundleProvider(canWrite: true).Add("a.md", Doc).Add("b.md", Doc);
+        storage.FailWrite(2, new IOException(""));
+
+        var outcome = WriterOver(storage).RecordVerifications(["a", "b"], "human:ada");
+
+        Assert.False(outcome.Recorded);
+        Assert.Equal("Error:  — already written: a", outcome.Message);
+        Assert.Equal(["a"], outcome.Records.Select(r => r.ConceptId));
+        Assert.Equal([K("a.md")], outcome.Report.Written);
+        var failed = Assert.Single(outcome.Report.Failed);
+        Assert.Equal(K("b.md"), failed.Key);
+        Assert.False(string.IsNullOrWhiteSpace(failed.Reason));
+    }
+
+    [Fact]
+    public void An_early_refusal_and_a_default_outcome_carry_the_same_report_state()
+    {
+        var storage = new InMemoryBundleProvider(canWrite: true).Add("a.md", Doc);
+
+        var refused = WriterOver(storage).RecordVerifications(["a"], "not an actor");
+
+        Assert.False(refused.Recorded);
+        Assert.Same(BundleWriteReport.Empty, refused.Report);
+        Assert.Equal(refused with { Report = BundleWriteReport.Empty }, refused);
+    }
+
+    [Fact]
     public void The_report_of_a_default_outcome_is_empty_never_null()
     {
         Assert.Same(BundleWriteReport.Empty, default(VerificationOutcome).Report);
