@@ -36,6 +36,12 @@ and this project adheres to
   commit itself failed and what the storage holds could not be established).
   `IBundleProvider.Write` and `Delete` now document their conditions,
   atomicity and implicit prefixes.
+- **`BundleConceptWriter` over a provider.** `new BundleConceptWriter(provider,
+  onWriteCommitted, options)` writes through any writable `IBundleProvider`,
+  under the key policy and bounds of the `BundleLoadOptions` it is given
+  (the defaults of a load otherwise); the string constructor is unchanged and
+  builds a `FileSystemBundleProvider`. `BundleRoot` throws
+  `NotSupportedException` for a writer over any other provider.
 - **`BundleWriteNotCommittedException`**: a write the storage kept refusing
   without any effect, on every attempt; the object is unchanged (see Changed,
   "A failed commit says what happened").
@@ -240,6 +246,33 @@ and this project adheres to
   it has succeeded on the flow of that open scope, it drops that scope's
   listings on its path (a write on another thread, which did not inherit the
   scope, does not).
+- **`BundleConceptWriter` writes through its provider** (spec §3, §4, §9).
+  Every concept write is one atomic `IBundleProvider.Write`: a crash or an
+  I/O error no longer leaves a truncated concept file. Every write method
+  first checks `Capabilities.CanWrite` and throws `BundleReadOnlyException`,
+  with no effect, on a read-only provider. Keys are checked by the core under
+  the load's policy before anything is written: on Windows a concept id
+  whose segment ends with `.` (`a./b`), which used to land in `a/b`, is
+  refused. A creation that would make the tree invalid under that policy — a
+  concept file on its path, objects under it, or a case or Unicode-form twin
+  under a folding policy — is refused with a message naming the conflicting
+  name. `AppendToConceptAtomic` and `RecordVerifications` write
+  conditioned on the version they read. The path guards are the provider's:
+  a concept file that is itself a link or cannot be inspected is now refused
+  with the same message as a path through one (`… resolves through a reparse
+  point (symlink/junction), or an entry that could not be inspected, inside
+  the bundle, which is not allowed.`), and any write failure in the middle of
+  a `RecordVerifications` batch now ends with `— already written: …`.
+- **A write notification that fails no longer hides the write.** When
+  `onWriteCommitted` throws once the provider has committed, `WriteConcept`
+  and `AppendToConceptAtomic` still return `Error: {message}`, as before, but
+  the write is on disk and was made once; a `RecordVerifications` batch
+  records that concept in `Records`, goes on, keeps `Recorded` true when every
+  stamp is on disk, and ends its message with `; the write notification
+  failed: …`. The notification runs once per write, once the write is final,
+  and never makes it retried or refused, whatever it throws (a conflict
+  included); an exception the writer does not convert, such as
+  `OperationCanceledException`, propagates unchanged, the write committed.
 
 ## [0.7.0] - 2026-10-14
 

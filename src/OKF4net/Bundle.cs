@@ -453,16 +453,17 @@ public sealed class Bundle
     };
 
     /// <summary>The size of the copy buffer <see cref="ReadText"/> reads through.</summary>
-    private const int ReadChunkBytes = 81920;
+    internal const int ReadChunkBytes = 81920;
 
     /// <summary>
     /// Reads one object as strict UTF-8, counting bytes against the bound (spec §6) whatever the
     /// provider says. <paramref name="chunk"/> is the caller's copy buffer, reused across the
     /// objects of one load. The destination is pre-sized from <see cref="BundleObject.Length"/>
     /// when the provider declares one within the bound — a hint only: the bytes are still
-    /// counted and an overrun still throws, whatever the declared length.
+    /// counted and an overrun still throws, whatever the declared length. The one bounded reader
+    /// of the core: <see cref="BundleConceptWriter"/> reads the objects it rewrites through it.
     /// </summary>
-    private static string ReadText(IBundleProvider provider, BundleKey key, BundleLimits limits, byte[] chunk, out BundleObjectVersion version)
+    internal static string ReadText(IBundleProvider provider, BundleKey key, BundleLimits limits, byte[] chunk, out BundleObjectVersion version)
     {
         using var obj = provider.Read(key);
         version = obj.Version;

@@ -300,9 +300,15 @@ public class BundleConceptWriterTests
         // H1 fix round (M1): "x/refunds.md" is a junction named like the
         // concept file, whose attributes cannot be read ("x" denies listing).
         // Only the early check on the target FILE node can refuse it -- "x"
-        // itself is readable -- so its message pins that check. (Not an escape:
-        // with it removed, the late strict guard, or the OS writing into a
-        // directory, still refuses.)
+        // itself is readable. (Not an escape: with it removed, the late strict
+        // guard, or the OS writing into a directory, still refuses.) Since the
+        // write moved behind the provider (lot B), that early check is the
+        // provider's STRICT check of the whole path before anything is listed;
+        // the provider reports every refused path, the object's own entry
+        // included, as one BundleAccessRefusedException, which the writer
+        // translates into its one reparse-point message (decision B15) -- the
+        // former "is a reparse point ... refusing to overwrite it" wording,
+        // which only the writer's own target-node check produced, is gone.
         using var tmp = new TempDir();
         using var external = new TempDir();
         Directory.CreateDirectory(Path.Combine(tmp.Path, "x"));
@@ -312,7 +318,7 @@ public class BundleConceptWriterTests
 
         var result = writer.WriteConcept("x/refunds", ValidFrontmatter, "# Refunds\n");
 
-        Assert.Equal("Error: 'x/refunds' is a reparse point (symlink/junction) or could not be inspected, not a regular file -- refusing to overwrite it.", result);
+        Assert.Equal("Error: 'x/refunds' resolves through a reparse point (symlink/junction), or an entry that could not be inspected, inside the bundle, which is not allowed.", result);
         Assert.Empty(Directory.EnumerateFileSystemEntries(external.Path));
     }
 

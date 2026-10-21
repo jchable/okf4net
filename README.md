@@ -312,6 +312,16 @@ commit. `okf validate` ignores such a file (it is not `.md`), but it counts
 toward the entry bound and an empty-directory check sees it; look for
 `.okf-write-*.tmp` files and remove them by hand once you have checked them.
 
+`BundleConceptWriter` writes concepts through a provider:
+`new BundleConceptWriter(provider, options: loadOptions)` (the string
+constructor builds a `FileSystemBundleProvider` over the directory). Give it
+the `BundleLoadOptions` the bundle is loaded with: it checks every key under
+that policy before writing, and refuses a creation that would make the tree
+invalid under it — a concept file on the new key's path, objects under it,
+or, under a policy that folds names, a sibling differing only in case or
+Unicode form — so it never writes what the next load would discard. A
+read-only provider makes every write method throw `BundleReadOnlyException`.
+
 ### As a CLI
 
 On Windows, install via [winget](https://github.com/microsoft/winget-pkgs):
