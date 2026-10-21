@@ -28,6 +28,14 @@ and this project adheres to
   `okf validate` (and `--json`) as one warning, `the name is not portable:
   {reason}`, under the file's display path. A warning never changes the exit
   code: OKF §11 imposes no naming constraint.
+- **Write side of the provider contract (#139, lot B).** `BundleWriteReport`
+  and `BundleWriteFailure` (what an operation over several objects wrote,
+  deleted and failed, with why); `BundleWriteConflictException.Reason`
+  (`BundleWriteConflictReason`: the condition did not hold, or the storage
+  cannot hold that exact name); `BundleWriteOutcomeUnknownException` (the
+  commit itself failed and what the storage holds could not be established).
+  `IBundleProvider.Write` and `Delete` now document their conditions,
+  atomicity and implicit prefixes.
 
 ### Changed
 

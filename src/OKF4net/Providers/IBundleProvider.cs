@@ -46,13 +46,48 @@ public interface IBundleProvider
     /// <exception cref="BundleAccessRefusedException">The key's path is refused.</exception>
     bool Exists(BundleKey key);
 
-    /// <summary>Writes an object atomically if <paramref name="condition"/> holds; returns the new version.</summary>
-    /// <exception cref="BundleReadOnlyException">The provider cannot write.</exception>
-    /// <exception cref="BundleWriteConflictException">The condition did not hold.</exception>
+    /// <summary>
+    /// Stores <paramref name="content"/> under <paramref name="key"/> if
+    /// <paramref name="condition"/> holds, and returns the version a later <see cref="Read"/> of
+    /// these bytes reports (spec §1, §4).
+    /// <para><b>Conditions</b>, checked atomically with the replacement:
+    /// <see cref="BundleWriteCondition.None"/> always holds;
+    /// <see cref="BundleWriteCondition.MustNotExist"/> holds while no object exists under the key;
+    /// <see cref="BundleWriteCondition.IfMatch"/> holds while an object exists under the key and
+    /// its current version is the expected one — never for an absent object.</para>
+    /// <para><b>Atomic</b>, per object: whatever fails, the key holds the previous content (no
+    /// object, for a creation) or the whole new content, never a part of it, and no reader, in
+    /// this process or another, ever reads a part of the new content. A provider documents
+    /// whether a concurrent reader can, while the commit runs, momentarily find no object under
+    /// the key (<see cref="FileSystemBundleProvider"/> can, on Windows). When the call throws
+    /// anything but <see cref="BundleWriteOutcomeUnknownException"/>, the stored object is
+    /// unchanged. There is no transaction across objects.</para>
+    /// <para><b>Prefixes are implicit</b>: there are no directories in a key space, so no parent
+    /// needs creating; a provider whose storage has directories creates the missing ones itself,
+    /// under its own path guards.</para>
+    /// <para>The core has validated the key under its policy before the call (spec §2); the
+    /// provider adds only its own aliasing guarantees — it matches stored names exactly, and
+    /// refuses a name its storage would confuse with another.</para>
+    /// </summary>
+    /// <returns>The new version.</returns>
+    /// <exception cref="BundleReadOnlyException"><see cref="BundleProviderCapabilities.CanWrite"/> is <see langword="false"/>; nothing was attempted.</exception>
+    /// <exception cref="BundleWriteConflictException">The condition did not hold, or the storage cannot hold an object under that exact name (<see cref="BundleWriteConflictException.Reason"/>); nothing was changed.</exception>
+    /// <exception cref="BundleAccessRefusedException">The key's path is refused (a reparse point, an entry that cannot be inspected, the confinement boundary); nothing was changed.</exception>
+    /// <exception cref="BundleWriteOutcomeUnknownException">The commit itself failed and what the storage now holds could not be established.</exception>
     BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition);
 
-    /// <summary>Deletes an object if <paramref name="condition"/> holds.</summary>
-    /// <exception cref="BundleReadOnlyException">The provider cannot write.</exception>
-    /// <exception cref="BundleWriteConflictException">The condition did not hold.</exception>
+    /// <summary>
+    /// Removes the object under <paramref name="key"/> if <paramref name="condition"/> holds
+    /// (spec §1, §4), atomically. The conditions read as for <see cref="Write"/>:
+    /// <see cref="BundleWriteCondition.None"/> always holds,
+    /// <see cref="BundleWriteCondition.MustNotExist"/> only when there is nothing to delete, and
+    /// <see cref="BundleWriteCondition.IfMatch"/> only while the object exists at that version.
+    /// Deleting an absent object under a condition that holds does nothing and is not an error. A
+    /// prefix stops existing with the last object under it; a storage with directories may leave
+    /// them in place, since an empty directory holds no key.
+    /// </summary>
+    /// <exception cref="BundleReadOnlyException"><see cref="BundleProviderCapabilities.CanWrite"/> is <see langword="false"/>; nothing was attempted.</exception>
+    /// <exception cref="BundleWriteConflictException">The condition did not hold; nothing was changed.</exception>
+    /// <exception cref="BundleAccessRefusedException">The key's path is refused; nothing was changed.</exception>
     void Delete(BundleKey key, BundleWriteCondition condition);
 }

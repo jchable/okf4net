@@ -2,8 +2,19 @@
 namespace OKF4net.Providers;
 
 /// <summary>Base of the provider contract's exceptions (spec §1). Messages are library-authored and name keys, never host paths or credentials.</summary>
-public abstract class BundleProviderException(string message) : OkfException(message)
+public abstract class BundleProviderException : OkfException
 {
+    /// <summary>Creates the exception with a library-authored message.</summary>
+    protected BundleProviderException(string message)
+        : base(message)
+    {
+    }
+
+    /// <summary>Creates the exception with a library-authored message and the raw cause as <see cref="Exception.InnerException"/> (the host-log channel, spec §7).</summary>
+    protected BundleProviderException(string message, Exception inner)
+        : base(message, inner)
+    {
+    }
 }
 
 /// <summary>A write or delete was attempted on a provider whose <see cref="BundleProviderCapabilities.CanWrite"/> is <see langword="false"/> (spec §3). Nothing was attempted. The message never carries the provider id (for the filesystem it is a host path, §7); it is on <see cref="ProviderId"/>.</summary>
@@ -14,11 +25,50 @@ public sealed class BundleReadOnlyException(string providerId)
     public string ProviderId { get; } = providerId;
 }
 
-/// <summary>A write or delete condition did not hold (spec §4).</summary>
-public sealed class BundleWriteConflictException(BundleKey key)
-    : BundleProviderException($"'{key}' changed since it was read; the write was refused")
+/// <summary>Why a write or delete was refused as a conflict — a closed set, so the message is built from it and never from text a provider wrote.</summary>
+public enum BundleWriteConflictReason
 {
-    /// <summary>The key whose condition failed.</summary>
+    /// <summary>The condition did not hold: the object exists, is absent, or has another version than the one expected (spec §4).</summary>
+    ConditionFailed,
+
+    /// <summary>The storage cannot hold an object under that exact name: it holds an entry it would confuse with it (a directory, or a name differing only in case or Unicode form on a volume that folds them), or the name is one it cannot store literally (spec §2, §8).</summary>
+    NameUnavailable,
+}
+
+/// <summary>A write or delete was refused because its condition did not hold, or because the storage cannot hold that exact name (spec §4); nothing was changed.</summary>
+public sealed class BundleWriteConflictException(BundleKey key, BundleWriteConflictReason reason)
+    : BundleProviderException(Describe(key, reason))
+{
+    /// <summary>A conflict on the condition (<see cref="BundleWriteConflictReason.ConditionFailed"/>).</summary>
+    public BundleWriteConflictException(BundleKey key)
+        : this(key, BundleWriteConflictReason.ConditionFailed)
+    {
+    }
+
+    /// <summary>The key whose write or delete was refused.</summary>
+    public BundleKey Key { get; } = key;
+
+    /// <summary>Why it was refused.</summary>
+    public BundleWriteConflictReason Reason { get; } = reason;
+
+    private static string Describe(BundleKey key, BundleWriteConflictReason reason) => reason switch
+    {
+        BundleWriteConflictReason.NameUnavailable => $"'{key}' cannot be stored under that name: the storage holds an entry it would confuse with it (a directory, or a name differing only in case or Unicode form), or cannot hold the name",
+        _ => $"'{key}' changed since it was read; the write was refused",
+    };
+}
+
+/// <summary>
+/// A write or delete failed in a way that leaves its outcome unknown (spec §4): the storage
+/// reported an error from the commit itself, and what it holds afterwards could not be
+/// established. The object may hold its previous content, the new content, or nothing; a
+/// provider keeps whatever it could not account for, and says where in its own documentation.
+/// The raw failure is the <see cref="Exception.InnerException"/>, for the host's log only.
+/// </summary>
+public sealed class BundleWriteOutcomeUnknownException(BundleKey key, Exception inner)
+    : BundleProviderException($"the write of '{key}' failed with an unknown outcome: the object may hold its previous content, the new content, or nothing", inner)
+{
+    /// <summary>The key whose write has an unknown outcome.</summary>
     public BundleKey Key { get; } = key;
 }
 
