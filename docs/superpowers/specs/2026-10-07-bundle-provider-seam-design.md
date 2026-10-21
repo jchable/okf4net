@@ -1068,9 +1068,15 @@ la source l'est. `catalog.json` est de la configuration d'opérateur.
 > référence un sous-dossier dès qu'un objet, de n'importe quelle extension, se
 > trouve sous lui (§11) ; la création d'un `index.md` passe le contrôle
 > d'arborescence comme toute création du cœur ; la surcharge `string` saute en
-> silence un `index.md` que le provider refuse et un `index.md` racine
-> illisible, et lève toute autre erreur (voir les remarques « Failures » de
-> `RegenerateIndexesWith`).
+> silence un `index.md` que le provider refuse (un lien sur son chemin) et un
+> `index.md` racine illisible, et lève toute autre erreur, dont
+> `BundleWriteConflictException` (`NameUnavailable`) pour un nom que le
+> stockage ne peut pas porter : un dossier nommé `index.md` qui contient des
+> fichiers et, sur un volume qui plie la casse, un fichier dont le nom ne
+> diffère de `index.md` que par la casse (décision du mainteneur, 2026-10-21 :
+> échec fermé, ce fichier n'est jamais écrit à travers ; une omission
+> silencieuse laisserait l'`index.md` du dossier non écrit sans signal). Les
+> remarques « Failures » de `RegenerateIndexesWith` donnent le reste.
 
 **`BundleRoot` d'`OkfBundleTools` et de `BundleConceptWriter`.** Ces propriétés
 publiques renvoient une chaîne de chemin, ce qui n'a pas de sens pour un provider
@@ -1249,14 +1255,21 @@ l'arbitrage du 2026-10-08).
   - les octets de sortie de `okf` et `okf-render`, hors dossiers vides dans un
     index régénéré ;
 
-    > **Note du 2026-10-19 (lot B) :** et hors les cas voisins consignés au
-    > CHANGELOG, dont : un dossier dont les seules entrées sont des liens
-    > symboliques ou des jonctions n'est plus référencé non plus (aucun listing ne
-    > suit un lien), et un dossier nommé `index.md` qui contient des fichiers fait
-    > échouer `okf index` avec `BundleWriteConflictException` au lieu de
-    > `UnauthorizedAccessException` (message d'erreur différent, même code de
-    > sortie). Ce que lèvent d'autres cas, pour la surcharge `string`, est décrit
-    > dans les remarques « Failures » de `RegenerateIndexesWith`.
+    > **Note du 2026-10-19 (lot B, complétée le 2026-10-21) :** et hors les
+    > autres cas consignés au CHANGELOG, dont : un dossier dont les seules
+    > entrées sont des liens symboliques ou des jonctions n'est plus référencé
+    > non plus (aucun listing ne suit un lien) ; un dossier nommé `index.md` qui
+    > contient des fichiers fait échouer `okf index` avec
+    > `BundleWriteConflictException` au lieu de `UnauthorizedAccessException`
+    > (message d'erreur différent, même code de sortie) ; et, sur un volume qui
+    > plie la casse (NTFS, le volume macOS par défaut), un fichier dont le nom ne
+    > diffère de `index.md` que par la casse (`Index.md` à la racine ou dans un
+    > sous-dossier) le fait échouer de la même façon, code de sortie 1, là où
+    > l'ancienne écriture réussissait en l'écrasant (après l'avoir listé comme
+    > document dans son propre index). C'est voulu : échec fermé, ce fichier
+    > n'est jamais écrit à travers. Les remarques « Failures » de
+    > `RegenerateIndexesWith` donnent le reste de ce que lève la surcharge
+    > `string`.
 
   - aucun nom de fichier de `tests/fixtures/` ni de `bundles/` n'est écarté par
     `Strict` (vérifié le 2026-10-06 sur 146 entrées, soit 99 fichiers et 47

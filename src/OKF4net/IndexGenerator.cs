@@ -159,7 +159,17 @@ public static class IndexGenerator
     /// untouched and skipped. Any other failure — an I/O error, a name the storage
     /// cannot hold, a write that kept conflicting — propagates and ends the run, as
     /// an I/O error did before the provider: the <c>index.md</c> files written
-    /// until then stay written. That includes a non-root <c>index.md</c> that exists but
+    /// until then stay written. A name the storage cannot hold ends the run with a
+    /// <see cref="BundleWriteConflictException"/> whose reason is
+    /// <see cref="BundleWriteConflictReason.NameUnavailable"/>, in two cases: a
+    /// directory named <c>index.md</c> with files under it, and, on a volume that
+    /// folds case (NTFS, the default macOS volume), a file whose name differs from
+    /// <c>index.md</c> only in case (a root <c>Index.md</c>, or <c>sub/Index.md</c>).
+    /// The second is deliberate, a failure that fails closed: the case variant is
+    /// never written through and keeps its bytes and its name, where the write that
+    /// preceded the provider overwrote it (after listing it as a document in its own
+    /// <c>index.md</c>); a silent skip would leave the directory's <c>index.md</c>
+    /// unwritten with no signal. The same goes for a non-root <c>index.md</c> that exists but
     /// cannot be read (mode 0200, an ACL denying ReadData, or larger than
     /// <see cref="BundleLimits.MaxObjectBytes"/>): its version is read before it is
     /// replaced, so the raw <see cref="UnauthorizedAccessException"/> or

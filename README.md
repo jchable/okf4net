@@ -345,8 +345,13 @@ a file lies under it: an empty directory is not, a directory holding only
 non-`.md` files is. `IndexGenerator.RegenerateIndexes(path)` and `okf index`
 go through a `FileSystemBundleProvider` and keep their return values and
 output, except for the directories the rule above no longer references and the
-cases the CHANGELOG lists; what the `string` overloads throw is described in
-the "Failures" remarks of `RegenerateIndexesWith`.
+other cases the CHANGELOG lists. They throw `BundleWriteConflictException`
+(reason `NameUnavailable`, `okf index` exits 1) for a directory named
+`index.md` with files under it, and, on a volume that folds case (NTFS, the
+default macOS volume), for a file whose name differs from `index.md` only in
+case (`Index.md` at the root or in a subdirectory): that file is never written
+through, where the write that preceded the provider overwrote it. The
+"Failures" remarks of `RegenerateIndexesWith` give the rest of what they throw.
 
 ### As a CLI
 

@@ -344,15 +344,31 @@ and this project adheres to
   the version read (or on its absence), a conflict retried, at most 3 attempts in all.
   An `index.md` the provider refuses (a symlink or junction on its path, an
   entry that cannot be inspected) is still skipped silently. The output does
-  not change, except that **a directory with no file under it, at any depth,
-  is no longer referenced by its parent's index** (spec §2, D2); a directory
-  holding only non-`.md` files still is. As in a load, a name that is no key
+  not change, except in the cases this bullet lists: **a directory with no
+  file under it, at any depth, is no longer referenced by its parent's
+  index** (spec §2, D2); a directory holding only non-`.md` files still is.
+  As in a load, a name that is no key
   (a backslash, a control character, over 1 024 bytes) is not listed, a
   directory whose only entries are symlinks or junctions is not referenced
   (no listing follows a link), and the load's bounds apply. A directory
   named `index.md` with files under it now ends the run with
   `BundleWriteConflictException` where the write threw
-  `UnauthorizedAccessException`. A non-root `index.md` that exists but cannot
+  `UnauthorizedAccessException`. **On a volume that folds case (NTFS, the
+  default macOS volume), a file whose name differs from `index.md` only in
+  case (a root `Index.md`, or `sub/Index.md`) now ends the run the same
+  way**: the storage refuses the name `index.md` there
+  (`BundleWriteConflictException`, reason `NameUnavailable`; `okf index`
+  exits 1 with `error: 'sub/index.md' cannot be stored under that name: the
+  storage holds an entry it would confuse with it (a directory, or a name
+  differing only in case or Unicode form), or cannot hold the name`), the
+  directories processed before it keep their new indexes, and the case
+  variant is never written through: it keeps its bytes and its name. Before,
+  the run succeeded on such a volume by overwriting that file, after listing
+  it as a document in its own `index.md`, which replaced its text (the file may
+  be a concept). The failure is deliberate: it fails closed, where
+  skipping the directory silently would leave its `index.md` unwritten and
+  the run reporting success. On a volume that does not fold case, `Index.md`
+  and `index.md` are two objects and that name is no obstacle. A non-root `index.md` that exists but cannot
   be read (mode 0200, an ACL denying ReadData, or larger than `MaxObjectBytes`)
   now ends the run too, with the raw `UnauthorizedAccessException` or
   `BundleObjectTooLargeException` and the same exit code, since its version is
