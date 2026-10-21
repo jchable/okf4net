@@ -13,7 +13,7 @@ and this project adheres to
 - **Bundle provider seam (#139, lot A).** `OKF4net.Providers`: `IBundleProvider`
   and its value types, `BundleKey` with three-layer validation
   (`BundleKeyConstraints`, `BundleKeyPolicy`, `BundleKeyValidator`),
-  `FileSystemBundleProvider` (read-only in this release),
+  `FileSystemBundleProvider` (writable, see Changed),
   `ResourceKeyResolver`, `BundleLoadOptions`, `Bundle.Load(IBundleProvider,
   BundleLoadOptions?)`, and on `Bundle`: `Provider`, `Location`, `Version`,
   `ParseProblems`, `IndexKeys`/`LogKeys`, `ObjectVersions`, `RejectedKeys`,
@@ -187,6 +187,19 @@ and this project adheres to
   `OkfBundleTools`) follow in the next lots, so until then `okf validate` can
   flag a resource `Unsafe` or `Missing` — for a key-policy, case or backslash
   reason — that `okf_run_computation` still reads.
+- **`FileSystemBundleProvider` is writable** (`Capabilities.CanWrite` is
+  `true`; `provider.AsReadOnly()` gives a read-only view). `Write` commits each
+  object atomically (issue #157): the bytes go to a temporary
+  `.okf-write-<32 hex>.tmp` beside the target, are flushed to stable storage,
+  and replace the target with `File.Replace` (or appear with `File.Move`
+  without overwrite) only after the boundary, the path and the condition
+  (`None`, `MustNotExist`, `IfMatch` on the SHA-256 of the stored bytes) are
+  checked again under a per-object lock. On Unix a replacement's temporary is
+  owner-only (0600) until it takes the target's mode. A name the volume would
+  confuse with a stored entry (a case or Unicode-form twin on a folding
+  volume, a Windows trailing dot or space, a directory) is refused before
+  anything is created; a read-only target is refused as before. `Delete`
+  removes one object and leaves its directories in place.
 
 ## [0.7.0] - 2026-10-14
 

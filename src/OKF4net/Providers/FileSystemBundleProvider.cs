@@ -6,8 +6,8 @@ using OKF4net.Internal;
 namespace OKF4net.Providers;
 
 /// <summary>
-/// The default provider (spec §8): a bundle as a directory tree. Read-only in this
-/// lot (<see cref="Capabilities"/> says so; lot B adds the atomic write).
+/// The default provider (spec §8): a bundle as a directory tree, writable
+/// (<see cref="Write"/> commits each object atomically, issue #157).
 /// <see cref="Enumerate"/> is eager — the walk completes inside the call — so no
 /// deferred storage access exists; every directory passes the STRICT guard before it
 /// is listed, a reparse-point entry is skipped (never followed), every inspected entry
@@ -72,7 +72,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     public string Location => Root;
 
     /// <inheritdoc/>
-    public BundleProviderCapabilities Capabilities => new(CanWrite: false);
+    public BundleProviderCapabilities Capabilities => new(CanWrite: true);
 
     /// <inheritdoc/>
     public BundleKeyConstraints NativeConstraints { get; }
@@ -295,12 +295,499 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     }
 
     /// <inheritdoc/>
-    public BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition) =>
-        throw new BundleReadOnlyException(Id);
+    /// <remarks>
+    /// <para><b>The commit protocol</b> (issue #157). (1) The parent directories are resolved
+    /// segment by segment, each existing name matched exactly and each traversed directory
+    /// STRICT-inspected before it is listed; a missing directory is created, then listed again to
+    /// prove the volume stored it under exactly that name; the whole chain from the root is
+    /// STRICT-checked once more after any creation. (2) The bytes go to a temporary in the target's
+    /// own directory, <c>.okf-write-</c> plus 32 random hex digits plus <c>.tmp</c>, created with
+    /// <see cref="FileMode.CreateNew"/> (an entry already there, a planted link included, is never
+    /// opened) and <see cref="FileShare.None"/>; on Unix a replacement's temporary is created
+    /// owner-only (0600) before any byte is written and gets the target's mode through its handle
+    /// before it is closed, while a new object's temporary gets the mode any new file gets in that
+    /// directory. The bytes are flushed to stable storage and the handle closed. (3) Under an
+    /// in-process lock per object, shared by every instance of this provider, the boundary, the
+    /// chain and the temporary are STRICT-checked again, the target's exact name and current
+    /// SHA-256 are read again, and the condition is checked against them. (4) The commit:
+    /// <see cref="File.Replace(string, string, string?)"/> over an existing object,
+    /// <see cref="File.Move(string, string, bool)"/> without overwrite for a new one.</para>
+    /// <para><b>Names.</b> A name the volume would confuse with a stored entry — a directory, a
+    /// sibling differing only in case or Unicode form on a volume that folds them, a Windows name
+    /// with a trailing dot or space, a character no Windows name carries — is refused with
+    /// <see cref="BundleWriteConflictReason.NameUnavailable"/> before anything is created.</para>
+    /// <para><b>Permissions.</b> A target the process may not write is refused as
+    /// <c>File.WriteAllText</c> refused it, although a rename would need only the directory's
+    /// permission on Unix: the target is opened for writing before the commit. Only
+    /// <see cref="BundleWriteConditionKind.IfMatch"/> reads the target (to compare its SHA-256),
+    /// so an unconditional write replaces a file the process may write but not read, as
+    /// <c>File.WriteAllText</c> did, while an <see cref="BundleWriteConditionKind.IfMatch"/> write
+    /// of such a file is refused with <see cref="UnauthorizedAccessException"/>: its version
+    /// cannot be established.</para>
+    /// <para><b>Failures.</b> A failure before the commit removes the temporary and leaves the
+    /// target untouched; it is the raw <see cref="IOException"/> or
+    /// <see cref="UnauthorizedAccessException"/>, whose message may name a host path (the core
+    /// translates it). A failure of the commit call itself raises
+    /// <see cref="BundleWriteOutcomeUnknownException"/> and keeps the temporary.</para>
+    /// </remarks>
+    public BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        var written = new BundleObjectVersion(Convert.ToHexStringLower(SHA256.HashData(content.Span)));
+        for (var attempt = 1; ; attempt++)
+        {
+            CheckBoundary();
+            var parent = ResolveParentForWrite(key);
+            var existing = FindExactForWrite(key, parent, key.Name);
+            if (existing is not null)
+            {
+                GuardObject(key, existing);
+            }
+
+            var temporary = WriteTemporary(parent, existing, content);
+            if (CommitTemporary(key, parent, temporary, preparedAsReplacement: existing is not null, written, condition))
+            {
+                return written;
+            }
+
+            if (attempt == MaxPreparations)
+            {
+                throw new BundleWriteConflictException(key);
+            }
+        }
+    }
 
     /// <inheritdoc/>
-    public void Delete(BundleKey key, BundleWriteCondition condition) =>
-        throw new BundleReadOnlyException(Id);
+    /// <remarks>
+    /// The object's directories are left in place, empty or not: an empty directory holds no key.
+    /// A key that names a directory names no object, so nothing is deleted. The same exact-name
+    /// resolution, STRICT guards, boundary re-check and per-object lock as <see cref="Write"/>.
+    /// </remarks>
+    public void Delete(BundleKey key, BundleWriteCondition condition)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        CheckBoundary();
+        var parent = ResolveParentForDelete(key);
+        if (parent is null)
+        {
+            if (!Holds(condition, exists: false, null))
+            {
+                throw new BundleWriteConflictException(key);
+            }
+
+            return;
+        }
+
+        lock (CommitLockFor(Path.Join(parent, key.Name)))
+        {
+            CheckBoundary();
+            GuardStrict(key, parent);
+            var current = ListExact(parent, key.Name);
+            if (current is not null)
+            {
+                GuardResolved(key, current);
+                if (Directory.Exists(current))
+                {
+                    current = null; // a directory is no object
+                }
+            }
+
+            // Only IfMatch reads the object: deleting it needs no right to read it.
+            BundleObjectVersion? version = current is not null && condition.Kind == BundleWriteConditionKind.IfMatch ? HashForRead(current) : null;
+            if (!Holds(condition, current is not null, version))
+            {
+                throw new BundleWriteConflictException(key);
+            }
+
+            if (current is null)
+            {
+                return;
+            }
+
+            File.Delete(current);
+        }
+    }
+
+    /// <summary>The temporaries' name prefix (<see cref="Write"/>); the rest is 32 random lowercase hex digits and <see cref="TemporarySuffix"/>.</summary>
+    internal const string TemporaryPrefix = ".okf-write-";
+
+    /// <summary>The temporaries' name suffix.</summary>
+    internal const string TemporarySuffix = ".tmp";
+
+    /// <summary>How many times <see cref="Write"/> prepares a temporary before giving up on an object that keeps appearing under an unconditional creation (Unix only, see <see cref="CommitTemporary"/>).</summary>
+    private const int MaxPreparations = 3;
+
+    /// <summary>
+    /// The in-process commit locks: the check-and-commit of one object runs under one of them,
+    /// picked by the target's full path (case-insensitively, so that two spellings of one root on
+    /// a folding volume share it), whatever provider instance runs it. Striped, so the set is
+    /// bounded; two objects that share a stripe only wait for each other.
+    /// </summary>
+    private static readonly Lock[] CommitLocks = [.. Enumerable.Range(0, 64).Select(_ => new Lock())];
+
+    /// <summary>Test hook: called with the temporary's full path as soon as it is created, before any byte is written. <see langword="null"/> outside tests.</summary>
+    internal Action<string>? TemporaryCreatedForTest { get; set; }
+
+    /// <summary>Whether <paramref name="name"/> (one segment) is a temporary this provider creates.</summary>
+    internal static bool IsTemporaryName(string name) =>
+        name.Length == TemporaryPrefix.Length + 32 + TemporarySuffix.Length
+        && name.StartsWith(TemporaryPrefix, StringComparison.Ordinal)
+        && name.EndsWith(TemporarySuffix, StringComparison.Ordinal)
+        && !name.AsSpan(TemporaryPrefix.Length, 32).ContainsAnyExcept("0123456789abcdef");
+
+    /// <summary>
+    /// Test seam (issue #157, orphaned temporaries): the raw names of the temporaries present in
+    /// the tree — left by a write whose outcome was unknown, or by a failure that could no longer
+    /// reach its temporary safely. Read through <see cref="Enumerate"/>, so it adds no walk.
+    /// </summary>
+    internal IReadOnlyList<string> ListOrphanedTemporaries(BundleLimits limits) =>
+        [.. Enumerate(null, limits).Select(l => l.RawName).Where(n => IsTemporaryName(n[(n.LastIndexOf('/') + 1)..]))];
+
+    private static Lock CommitLockFor(string path) =>
+        CommitLocks[(StringComparer.OrdinalIgnoreCase.GetHashCode(path) & int.MaxValue) % CommitLocks.Length];
+
+    /// <summary>Whether <paramref name="condition"/> holds for an object that <paramref name="exists"/> with version <paramref name="current"/> (read for <see cref="BundleWriteConditionKind.IfMatch"/> only).</summary>
+    private static bool Holds(BundleWriteCondition condition, bool exists, BundleObjectVersion? current) => condition.Kind switch
+    {
+        BundleWriteConditionKind.None => true,
+        BundleWriteConditionKind.MustNotExist => !exists,
+        BundleWriteConditionKind.IfMatch => exists && current is { } c && condition.Expected is { } e && c == e,
+        _ => throw new ArgumentOutOfRangeException(nameof(condition), condition.Kind, "unknown write condition"),
+    };
+
+    /// <summary>
+    /// Resolves the parent directory of <paramref name="key"/> for a write: each segment matched
+    /// exactly (<see cref="FindExactForWrite"/>, never from a scope's memo), each traversed
+    /// directory STRICT-inspected before it is listed, each missing one created and then listed
+    /// again to prove the volume stored it under exactly that name; finally the whole chain from
+    /// the root and the object's own entry are STRICT-checked (<see cref="GuardStrict"/>), after
+    /// any creation. Before anything is listed, every segment must be storable literally and the
+    /// path as the OS would follow it passes the same STRICT check.
+    /// </summary>
+    private string ResolveParentForWrite(BundleKey key)
+    {
+        foreach (var segment in key.Segments)
+        {
+            if (CannotBeStoredLiterally(segment))
+            {
+                throw new BundleWriteConflictException(key, BundleWriteConflictReason.NameUnavailable);
+            }
+        }
+
+        // Before any listing, the whole path as the OS would follow it: an entry on it that is a
+        // link or cannot be inspected is refused as such, rather than surfacing as the raw
+        // access-denied error of listing a directory that denies it (the early guard the writer
+        // ran before #140).
+        GuardStrict(key, Path.Join(_fullRoot, string.Join(Path.DirectorySeparatorChar, key.Segments)));
+        var current = _fullRoot;
+        for (var i = 0; i < key.Segments.Count - 1; i++)
+        {
+            GuardTraversed(key, current);
+            var segment = key.Segments[i];
+            var next = FindExactForWrite(key, current, segment);
+            if (next is null)
+            {
+                next = Path.Join(current, segment);
+                Directory.CreateDirectory(next);
+                if (FindExactForWrite(key, current, segment) is null)
+                {
+                    throw new BundleWriteConflictException(key, BundleWriteConflictReason.NameUnavailable);
+                }
+            }
+            else
+            {
+                GuardTraversed(key, next);
+                if (!Directory.Exists(next))
+                {
+                    throw new BundleWriteConflictException(key, BundleWriteConflictReason.NameUnavailable); // a file where a directory is needed
+                }
+            }
+
+            current = next;
+        }
+
+        // The chain again after any creation, and the object's own entry (the writer's late
+        // guard before #140), immediately before the temporary is created.
+        GuardStrict(key, Path.Join(current, key.Name));
+        return current;
+    }
+
+    /// <summary>
+    /// The parent directory of <paramref name="key"/> for a delete, matched exactly and guarded as
+    /// for a write, or <see langword="null"/> when a segment is absent or is not a directory —
+    /// then no object exists under the key. Creates nothing.
+    /// </summary>
+    private string? ResolveParentForDelete(BundleKey key)
+    {
+        var current = _fullRoot;
+        for (var i = 0; i < key.Segments.Count - 1; i++)
+        {
+            GuardTraversed(key, current);
+            var next = ListExact(current, key.Segments[i]);
+            if (next is null)
+            {
+                return null;
+            }
+
+            GuardTraversed(key, next);
+            if (!Directory.Exists(next))
+            {
+                return null;
+            }
+
+            current = next;
+        }
+
+        GuardStrict(key, current);
+        return current;
+    }
+
+    /// <summary>The STRICT inspection of one traversed directory (the root excepted, as everywhere in the per-key guards).</summary>
+    private void GuardTraversed(BundleKey key, string directory)
+    {
+        if (!string.Equals(directory, _fullRoot, PathComparison) && ReparsePoints.IsReparsePointOrUninspectable(directory))
+        {
+            throw new BundleAccessRefusedException(key, "it resolves through a reparse point or an entry that could not be inspected");
+        }
+    }
+
+    /// <summary>An existing entry under the key: guarded like a read's leaf (<see cref="GuardResolved"/>), and a directory there is no object to replace.</summary>
+    private void GuardObject(BundleKey key, string path)
+    {
+        GuardResolved(key, path);
+        if (Directory.Exists(path))
+        {
+            throw new BundleWriteConflictException(key, BundleWriteConflictReason.NameUnavailable);
+        }
+    }
+
+    /// <summary>
+    /// The entry of <paramref name="directory"/> named exactly <paramref name="segment"/>
+    /// (ordinal), or <see langword="null"/>; refuses with
+    /// <see cref="BundleWriteConflictReason.NameUnavailable"/> a segment no entry can carry
+    /// literally (<see cref="CannotBeStoredLiterally"/>) and a segment the OS resolves to an entry
+    /// stored under another name — the volume folds case or Unicode form, so writing it would
+    /// open or create that other entry. Never from a scope's memo, and a listing that fails
+    /// throws: a write refuses what it cannot see, where a read answers "no such entry".
+    /// </summary>
+    private string? FindExactForWrite(BundleKey key, string directory, string segment)
+    {
+        if (CannotBeStoredLiterally(segment))
+        {
+            throw new BundleWriteConflictException(key, BundleWriteConflictReason.NameUnavailable);
+        }
+
+        var match = ListExact(directory, segment);
+        if (match is null)
+        {
+            var path = Path.Join(directory, segment);
+            if (File.Exists(path) || Directory.Exists(path))
+            {
+                // Another writer may have created exactly this name between the listing and the
+                // lookup (two writers creating one directory or one object): list once more before
+                // concluding that the volume folds the name onto another entry.
+                match = ListExact(directory, segment);
+                if (match is null)
+                {
+                    throw new BundleWriteConflictException(key, BundleWriteConflictReason.NameUnavailable);
+                }
+            }
+        }
+
+        return match;
+    }
+
+    /// <summary>Lists <paramref name="directory"/> in full, ignoring any scope, for the entry named exactly <paramref name="segment"/>; a failing listing throws.</summary>
+    private string? ListExact(string directory, string segment)
+    {
+        Interlocked.Increment(ref _directoryListings);
+        foreach (var full in Directory.EnumerateFileSystemEntries(directory))
+        {
+            if (string.Equals(Path.GetFileName(full), segment, StringComparison.Ordinal))
+            {
+                return full;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>A segment no entry can be named literally: <see cref="CannotBeLiteralName"/>, and on Windows a trailing dot or space, which the OS strips (<c>x.</c> would be stored as <c>x</c>).</summary>
+    private static bool CannotBeStoredLiterally(string segment) =>
+        CannotBeLiteralName(segment)
+        || (OperatingSystem.IsWindows() && (segment.EndsWith('.') || segment.EndsWith(' ')));
+
+    /// <summary>
+    /// Creates the temporary beside the target, writes and flushes <paramref name="content"/>,
+    /// closes it and returns its path; on any failure removes it (<see cref="DeleteTemporary"/>)
+    /// and rethrows. See <see cref="Write"/> for the modes.
+    /// </summary>
+    private string WriteTemporary(string parent, string? existing, ReadOnlyMemory<byte> content)
+    {
+        var temporary = Path.Join(parent, TemporaryPrefix + Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(16)) + TemporarySuffix);
+        var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None };
+        UnixFileMode? targetMode = null;
+        if (existing is not null && !OperatingSystem.IsWindows())
+        {
+            targetMode = File.GetUnixFileMode(existing);
+            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        }
+
+        var stream = new FileStream(temporary, options);
+        try
+        {
+            TemporaryCreatedForTest?.Invoke(temporary);
+            stream.Write(content.Span);
+            if (targetMode is { } mode && !OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(stream.SafeFileHandle, mode);
+            }
+
+            stream.Flush(flushToDisk: true);
+        }
+        catch
+        {
+            stream.Dispose();
+            DeleteTemporary(temporary);
+            throw;
+        }
+
+        stream.Dispose();
+        return temporary;
+    }
+
+    /// <summary>
+    /// Re-checks and commits under the object's lock (see <see cref="Write"/>): <see langword="true"/>
+    /// once committed; <see langword="false"/>, with the temporary removed, when on Unix the object
+    /// appeared since an unconditional creation was prepared — its temporary has a new file's mode
+    /// where the object has its own, so <see cref="Write"/> prepares again as a replacement.
+    /// </summary>
+    private bool CommitTemporary(BundleKey key, string parent, string temporary, bool preparedAsReplacement, BundleObjectVersion written, BundleWriteCondition condition)
+    {
+        var settled = false;
+        try
+        {
+            var target = Path.Join(parent, key.Name);
+            lock (CommitLockFor(target))
+            {
+                CheckBoundary();
+                GuardStrict(key, temporary); // the temporary and every directory up to the root
+                var current = FindExactForWrite(key, parent, key.Name);
+                BundleObjectVersion? before = null;
+                if (current is not null)
+                {
+                    GuardObject(key, current);
+                    if (condition.Kind == BundleWriteConditionKind.IfMatch)
+                    {
+                        before = HashForWrite(current);
+                    }
+                }
+
+                if (!Holds(condition, current is not null, before))
+                {
+                    throw new BundleWriteConflictException(key);
+                }
+
+                if (current is not null && condition.Kind == BundleWriteConditionKind.None)
+                {
+                    EnsureWritable(current);
+                }
+
+                if (current is not null && !preparedAsReplacement && !OperatingSystem.IsWindows())
+                {
+                    return false;
+                }
+
+                try
+                {
+                    if (current is not null)
+                    {
+                        File.Replace(temporary, current, destinationBackupFileName: null);
+                    }
+                    else
+                    {
+                        File.Move(temporary, target, overwrite: false);
+                    }
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    settled = true; // keep the temporary: what the commit did is not established
+                    throw new BundleWriteOutcomeUnknownException(key, e);
+                }
+
+                settled = true;
+                return true;
+            }
+        }
+        finally
+        {
+            if (!settled)
+            {
+                DeleteTemporary(temporary);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Removes a temporary this provider created, only while nothing on its path has been replaced
+    /// by a link: the boundary holds and neither the temporary nor any directory up to the root
+    /// is a reparse point or uninspectable. Otherwise it is left where it is — removing it through
+    /// a substituted link could remove another entry — and is an orphan. Never throws: it runs on
+    /// a failure path whose own exception is the one to report.
+    /// </summary>
+    private void DeleteTemporary(string temporary)
+    {
+        try
+        {
+            CheckBoundary();
+            if (ReparsePoints.HasReparsePointOrUninspectableAncestor(_fullRoot, temporary, PathComparison))
+            {
+                return;
+            }
+
+            File.Delete(temporary);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or BundleAccessRefusedException)
+        {
+            // left in place: an orphan (ListOrphanedTemporaries)
+        }
+    }
+
+    /// <summary>
+    /// The current version of an object an <see cref="BundleWriteConditionKind.IfMatch"/> write is
+    /// about to replace, read through a handle opened for writing too: a target the process may
+    /// not write (a read-only file, a mode or an ACL that denies writing, another program's handle
+    /// that denies write sharing) is refused here, before the commit, exactly as
+    /// <c>File.WriteAllText</c> refused it — a rename would otherwise replace it, since on Unix it
+    /// needs only the directory's permission. A target the process may write but not read cannot
+    /// satisfy <see cref="BundleWriteConditionKind.IfMatch"/>: its version cannot be established,
+    /// and the write is refused with the same <see cref="UnauthorizedAccessException"/>. Nothing
+    /// is written through this handle.
+    /// </summary>
+    private static BundleObjectVersion HashForWrite(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete);
+        return new BundleObjectVersion(Convert.ToHexStringLower(SHA256.HashData(stream)));
+    }
+
+    /// <summary>
+    /// What an unconditional replacement checks of its target (<see cref="BundleWriteConditionKind.None"/>):
+    /// the right to write it, and only that — the handle is opened for writing alone and nothing
+    /// is read, so a file the process may write but not read (mode 0200, an ACL denying reading)
+    /// is replaced, as <c>File.WriteAllText</c> replaced it. A target the process may not write
+    /// is refused exactly as <see cref="HashForWrite"/> refuses it; any failure to open the handle
+    /// refuses the write, so an answer that cannot be established never lets it through.
+    /// Nothing is written through this handle.
+    /// </summary>
+    private static void EnsureWritable(string path) =>
+        File.OpenHandle(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete).Dispose();
+
+    /// <summary>The current version of an object, read without blocking any other reader, writer or replacement.</summary>
+    private static BundleObjectVersion HashForRead(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        return new BundleObjectVersion(Convert.ToHexStringLower(SHA256.HashData(stream)));
+    }
 
     /// <summary>
     /// With a boundary: the root must be under it, and neither the root nor any entry

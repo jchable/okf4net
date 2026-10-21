@@ -252,9 +252,9 @@ walk is recursive and needs roughly 0.6 KB of stack per level, so the default
 depth takes about 0.6 MB: a host that runs `Bundle.Load` over untrusted storage
 on a thread of 512 KB or less should lower `MaxDepth`.
 Every rejected `.md` name is a `Bundle.ParseProblems` entry (and a
-`ParseErrors` line); other rejected names are skipped silently. In this
-release the filesystem provider is read-only and no other provider ships; the
-write side and the first remote providers are tracked in #139.
+`ParseErrors` line); other rejected names are skipped silently. The
+filesystem provider is writable (`Capabilities.CanWrite`); no other provider
+ships yet, and the first remote providers are tracked in #139.
 
 The historical members `Bundle.TryResolveResource` and
 `Bundle.ReadResourceText(string)` are unchanged in this release: they apply

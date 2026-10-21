@@ -307,19 +307,6 @@ public class FileSystemBundleProviderTests
     }
 
     [Fact]
-    public void Writes_are_refused_in_this_lot_and_the_message_carries_no_host_path()
-    {
-        using var tmp = new TempDir();
-        var p = new FileSystemBundleProvider(tmp.Path);
-        Assert.False(p.Capabilities.CanWrite);
-        var ex = Assert.Throws<BundleReadOnlyException>(() => p.Write(K("a.md"), new byte[] { 1 }, BundleWriteCondition.None));
-        Assert.DoesNotContain(tmp.Path, ex.Message);
-        Assert.Equal(p.Id, ex.ProviderId);
-        Assert.Throws<BundleReadOnlyException>(() => p.Delete(K("a.md"), BundleWriteCondition.None));
-        Assert.False(File.Exists(Path.Combine(tmp.Path, "a.md")));
-    }
-
-    [Fact]
     public void Id_is_the_canonical_root_and_location_is_the_root_as_given()
     {
         using var tmp = new TempDir();
