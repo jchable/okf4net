@@ -53,7 +53,25 @@ public readonly record struct VerificationRecord(string ConceptId, string At, st
 /// <param name="Recorded">Whether every stamp of the batch is on disk.</param>
 /// <param name="Message">A confirmation (saying so when a write notification failed), or what went wrong and how far it got.</param>
 /// <param name="Records">One entry per concept actually stamped, in the order given.</param>
-public readonly record struct VerificationOutcome(bool Recorded, string Message, IReadOnlyList<VerificationRecord> Records);
+public readonly record struct VerificationOutcome(bool Recorded, string Message, IReadOnlyList<VerificationRecord> Records)
+{
+    private readonly BundleWriteReport? _report;
+
+    /// <summary>
+    /// What the batch wrote, object by object (spec §1, §4): the keys of the concepts whose write
+    /// was committed, in order — the concepts of <see cref="Records"/>, a concept whose write
+    /// notification then failed included — and, when a write failed,
+    /// that concept's key with the reason (<see cref="Message"/> without its <c>Error: </c> prefix
+    /// and without the <c>— already written: …</c> suffix). Empty for a batch refused before its
+    /// first write; the concepts after a failed one were not attempted and are in neither list.
+    /// Never <see langword="null"/>, <see langword="default"/> included.
+    /// </summary>
+    public BundleWriteReport Report
+    {
+        get => _report ?? BundleWriteReport.Empty;
+        init => _report = value;
+    }
+}
 
 /// <summary>
 /// What is wrong with one id passed to <see cref="BundleConceptWriter.CheckVerificationTargets"/>.
@@ -1093,6 +1111,8 @@ public sealed class BundleConceptWriter
         }
 
         var records = new List<VerificationRecord>(conceptIds.Count);
+        var written = new List<BundleKey>(conceptIds.Count);
+        BundleWriteFailure? failure = null;
         string? subject = null;
         var message = RunTool(() =>
         {
@@ -1236,6 +1256,7 @@ public sealed class BundleConceptWriter
                         // nothing it throws is taken for a failure of the write; a failed
                         // one is said once the batch ends.
                         records.Add(new VerificationRecord(stamp.ConceptId, stampedAt, stamp.ReplacedAt));
+                        written.Add(stamp.Target.Key);
                         if (NotifyCommitted() is { } notificationError)
                         {
                             notificationFailure ??= notificationError["Error: ".Length..];
@@ -1244,6 +1265,7 @@ public sealed class BundleConceptWriter
                         continue;
                     }
 
+                    failure = new BundleWriteFailure(stamp.Target.Key, writeResult["Error: ".Length..]);
                     return records.Count == 0
                         ? writeResult
                         : $"{writeResult} — already written: {string.Join(", ", records.Select(r => r.ConceptId))}";
@@ -1258,9 +1280,12 @@ public sealed class BundleConceptWriter
         // On failure, Records is NOT emptied: it carries whatever reached disk
         // before the failure, so a caller can tell "nothing happened" from
         // "three of five were stamped and then it broke".
+        var report = written.Count == 0 && failure is null
+            ? BundleWriteReport.Empty
+            : new BundleWriteReport(written, [], failure is null ? [] : [failure]);
         return message.StartsWith("Error:", StringComparison.Ordinal)
-            ? new VerificationOutcome(false, message, records)
-            : new VerificationOutcome(true, message, records);
+            ? new VerificationOutcome(false, message, records) { Report = report }
+            : new VerificationOutcome(true, message, records) { Report = report };
 
         static VerificationOutcome Failed(string message) => new(false, message, []);
     }

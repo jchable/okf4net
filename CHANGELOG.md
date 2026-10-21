@@ -49,6 +49,12 @@ and this project adheres to
   A condition that does not hold writes nothing and returns an `Error:` that
   tells the caller to read the concept (again); it is never retried. The
   three-argument overloads are unchanged and unconditional.
+- **`VerificationOutcome.Report`** (a `BundleWriteReport`): the keys of the
+  concepts a `RecordVerifications` batch wrote, in order — a concept whose
+  write notification failed after its commit included — and the one whose
+  write failed, with the reason. `Recorded`, `Message` and `Records` are
+  unchanged, and a partial failure's message still ends with `— already
+  written: …`.
 - **`BundleWriteNotCommittedException`**: a write the storage kept refusing
   without any effect, on every attempt; the object is unchanged (see Changed,
   "A failed commit says what happened").
