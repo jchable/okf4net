@@ -382,6 +382,13 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// <see cref="BundleWriteOutcomeUnknownException"/> and keeps the temporary, the only copy of
     /// the new content. The temporary is never removed through a path that a link has entered
     /// since it was created; it is then left in place.</para>
+    /// <para><b>Conflicts under <see cref="BundleWriteConditionKind.None"/>.</b> An unconditional
+    /// write can still raise <see cref="BundleWriteConflictException"/> when it is a creation that
+    /// loses a creation race to another writer: on Windows, <see cref="File.Move(string, string, bool)"/>
+    /// without overwrite fails because the name appeared, and the classification above finds the
+    /// target changed; on Unix, the object appearing since a creation was prepared makes the
+    /// write prepare again, and after the third preparation (two raw-provider writers in one
+    /// process, each creating the name first) the conflict is raised. Nothing was changed.</para>
     /// <para><b>What a concurrent reader sees.</b> Never a part of the new content. On Unix the
     /// commit is a <c>rename</c>, so a reader finds the old object or the new one. On Windows
     /// <c>ReplaceFile</c> is atomic for the stored state but not for readers: while it runs, a
@@ -477,7 +484,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
             }
 
             // Only IfMatch reads the object: deleting it needs no right to read it.
-            BundleObjectVersion? version = current is not null && condition.Kind == BundleWriteConditionKind.IfMatch ? HashForRead(current) : null;
+            BundleObjectVersion? version = current is not null && condition.Kind == BundleWriteConditionKind.IfMatch ? HashForRead(key, current) : null;
             if (!Holds(condition, current is not null, version))
             {
                 throw new BundleWriteConflictException(key);
@@ -579,7 +586,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// Resolves the parent directory of <paramref name="key"/> for a write: each segment matched
     /// exactly (<see cref="FindExactForWrite"/>, never from a scope's memo), each traversed
     /// directory STRICT-inspected before it is listed, each missing one created and then listed
-    /// again to prove the volume stored it under exactly that name; finally the whole chain from
+    /// again to prove the volume stored it under exactly that name (the root itself is created
+    /// first when it does not exist); finally the whole chain from
     /// the root and the object's own entry are STRICT-checked (<see cref="GuardStrict"/>), after
     /// any creation. Before anything is listed, every segment must be storable literally and the
     /// path as the OS would follow it passes the same STRICT check.
@@ -599,6 +607,18 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
         // access-denied error of listing a directory that denies it (the early guard the writer
         // ran before #140).
         GuardStrict(key, Path.Join(_fullRoot, string.Join(Path.DirectorySeparatorChar, key.Segments)));
+
+        // A root that does not exist yet is created, as the writer's Directory.CreateDirectory of
+        // the target's parent did before the provider seam (a first write into a new bundle). The
+        // chain from the boundary to the root has just been STRICT-checked and an absent entry is
+        // not an uninspectable one; the boundary is checked again after the creation, which can
+        // create several ancestors, and every guard below stays STRICT.
+        if (!Directory.Exists(_fullRoot))
+        {
+            Directory.CreateDirectory(_fullRoot);
+            CheckBoundary();
+        }
+
         var current = _fullRoot;
         for (var i = 0; i < key.Segments.Count - 1; i++)
         {
@@ -641,6 +661,16 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// </summary>
     private string? ResolveParentForDelete(BundleKey key)
     {
+        // Before any listing, the whole path as the OS would follow it, as for a write: an entry
+        // on it that is a link or cannot be inspected is refused as such, rather than surfacing
+        // as the raw access-denied error of listing a directory that denies it. A key with a
+        // segment no entry can carry literally names nothing and is skipped (the walk below
+        // answers "absent" for it, as before), since the OS would read that path as another one.
+        if (!key.Segments.Any(CannotBeStoredLiterally))
+        {
+            GuardStrict(key, Path.Join(_fullRoot, string.Join(Path.DirectorySeparatorChar, key.Segments)));
+        }
+
         var current = _fullRoot;
         for (var i = 0; i < key.Segments.Count - 1; i++)
         {
@@ -826,7 +856,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
                         GuardObject(key, current);
                         if (condition.Kind == BundleWriteConditionKind.IfMatch)
                         {
-                            before = HashForWrite(current);
+                            before = HashForWrite(key, current);
                         }
                     }
 
@@ -971,7 +1001,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
             }
 
             var now = ListExact(parent, key.Name);
-            BundleObjectVersion? after = now is null ? null : HashForRead(now);
+            BundleObjectVersion? after = now is null ? null : HashForRead(key, now);
             if (temporaryLeft)
             {
                 return after == before ? CommitFailure.NothingChanged : CommitFailure.ChangedByAnother;
@@ -979,9 +1009,9 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
 
             return after == written ? CommitFailure.Committed : CommitFailure.Unknown;
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or BundleAccessRefusedException)
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or BundleAccessRefusedException or BundleObjectTooLargeException)
         {
-            return CommitFailure.Unknown;
+            return CommitFailure.Unknown; // an object past MaxObjectBytes is not hashed (HashForRead): its state is not established
         }
     }
 
@@ -1019,11 +1049,19 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// needs only the directory's permission. A target the process may write but not read cannot
     /// satisfy <see cref="BundleWriteConditionKind.IfMatch"/>: its version cannot be established,
     /// and the write is refused with the same <see cref="UnauthorizedAccessException"/>. Nothing
-    /// is written through this handle.
+    /// is written through this handle. An object longer than <see cref="BundleLimits.MaxObjectBytes"/>
+    /// is refused with <see cref="BundleObjectTooLargeException"/> before any byte is hashed: a
+    /// <see cref="Read"/> never returns a version for it, so the condition could only fail, and the
+    /// commit lock is held while this runs.
     /// </summary>
-    private static BundleObjectVersion HashForWrite(string path)
+    private BundleObjectVersion HashForWrite(BundleKey key, string path)
     {
         using var stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete);
+        if (stream.Length > _limits.MaxObjectBytes)
+        {
+            throw new BundleObjectTooLargeException(key, stream.Length, _limits.MaxObjectBytes);
+        }
+
         return new BundleObjectVersion(Convert.ToHexStringLower(SHA256.HashData(stream)));
     }
 
@@ -1039,10 +1077,15 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     private static void EnsureWritable(string path) =>
         File.OpenHandle(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete).Dispose();
 
-    /// <summary>The current version of an object, read without blocking any other reader, writer or replacement.</summary>
-    private static BundleObjectVersion HashForRead(string path)
+    /// <summary>The current version of an object, read without blocking any other reader, writer or replacement; an object longer than <see cref="BundleLimits.MaxObjectBytes"/> is refused as <see cref="HashForWrite"/> refuses it.</summary>
+    private BundleObjectVersion HashForRead(BundleKey key, string path)
     {
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        if (stream.Length > _limits.MaxObjectBytes)
+        {
+            throw new BundleObjectTooLargeException(key, stream.Length, _limits.MaxObjectBytes);
+        }
+
         return new BundleObjectVersion(Convert.ToHexStringLower(SHA256.HashData(stream)));
     }
 
