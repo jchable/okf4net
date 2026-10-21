@@ -9,8 +9,9 @@ namespace OKF4net.Tests;
 /// <see cref="IndexGenerator"/> on a provider (spec §8, §9, §11; decisions B5, B13, B14): the
 /// provider overloads return a <see cref="BundleWriteReport"/>, every <c>index.md</c> is written
 /// conditioned on what was read and retried on a conflict, a directory with no file is no longer
-/// referenced (D2), and the <c>string</c> overloads keep their return values, their
-/// <c>relativeDir</c> and their exception behaviour.
+/// referenced (D2), and the <c>string</c> overloads keep their return values and their
+/// <c>relativeDir</c>, and let a name the storage cannot hold end the run (a directory named
+/// <c>index.md</c>, or on a volume that folds case a case variant of it).
 /// </summary>
 public class IndexGeneratorProviderTests
 {
@@ -210,10 +211,13 @@ public class IndexGeneratorProviderTests
     }
 
     /// <summary>
-    /// The one exception the string overloads throw for a cause they met before: a directory
-    /// named <c>index.md</c> with files under it, where the index of its parent must go. The write
-    /// over a directory threw <c>UnauthorizedAccessException</c>; the creation is now refused before
-    /// any write, as the name cannot hold an object. The indexes written before it stay written.
+    /// The first of the two cases where the string overloads throw <c>BundleWriteConflictException</c>
+    /// (<c>NameUnavailable</c>) for a name the storage cannot hold: a directory named <c>index.md</c>
+    /// with files under it, where the index of its parent must go. The write over a directory threw
+    /// <c>UnauthorizedAccessException</c>; the creation is now refused before any write, as the name
+    /// cannot hold an object. The indexes written before it stay written. The other case, a file whose
+    /// name differs from <c>index.md</c> only in case, is pinned by
+    /// <see cref="On_a_volume_that_folds_case_a_case_variant_of_index_md_ends_the_run_and_is_never_written_through"/>.
     /// </summary>
     [Fact]
     public void On_the_filesystem_a_directory_named_index_md_ends_the_run_with_a_conflict()
@@ -227,6 +231,108 @@ public class IndexGeneratorProviderTests
         Assert.Equal(BundleWriteConflictReason.NameUnavailable, thrown.Reason);
         Assert.True(File.Exists(Path.Combine(tmp.Path, "x", "index.md", "index.md")));
         Assert.False(File.Exists(Path.Combine(tmp.Path, "index.md")));
+    }
+
+    /// <summary>
+    /// Whether the volume of the temporary directory folds case: an <c>Index.md</c> created there
+    /// is also found under the name <c>index.md</c> (NTFS and the default macOS volume do, ext4 does
+    /// not). Decided at run time, never from the operating system's name.
+    /// </summary>
+    private static bool VolumeFoldsCase()
+    {
+        using var probe = new TempDir();
+        probe.Write("Index.md", "x");
+        return File.Exists(Path.Combine(probe.Path, "index.md"));
+    }
+
+    /// <summary>The names, as spelled on disk, of the entries of <paramref name="dir"/>.</summary>
+    private static string[] OnDiskNames(string dir) =>
+        [.. Directory.GetFileSystemEntries(dir).Select(e => Path.GetFileName(e)).Order(StringComparer.Ordinal)];
+
+    /// <summary>
+    /// The second case where the string overloads throw <c>BundleWriteConflictException</c>
+    /// (<c>NameUnavailable</c>), and a deliberate one (fail closed): on a volume that folds case, a
+    /// file whose name differs from <c>index.md</c> only in case (a root <c>Index.md</c>, or
+    /// <c>sub/Index.md</c>) is the entry the index to create would be confused with, so the run ends
+    /// there. The file is never written through (it used to be overwritten, after being listed as a
+    /// document in its own index), keeps its bytes and its spelling, and the indexes of the
+    /// directories processed before it stay written.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("Index.md", "notes/a.md")]
+    [InlineData("sub/Index.md", "sub/x.md")]
+    public void On_a_volume_that_folds_case_a_case_variant_of_index_md_ends_the_run_and_is_never_written_through(string variant, string concept)
+    {
+        Skip.IfNot(VolumeFoldsCase(), "this volume does not fold case, so a case variant of index.md is a different entry");
+        using var tmp = new TempDir();
+        var variantPath = tmp.Write(variant, "# Mine\n");
+        tmp.Write(concept, Doc("Note", "A", "a."));
+        var before = File.ReadAllBytes(variantPath);
+        var dir = Path.GetDirectoryName(variantPath)!;
+        var namesBefore = OnDiskNames(dir);
+
+        var thrown = Assert.Throws<BundleWriteConflictException>(() => IndexGenerator.RegenerateIndexes(tmp.Path));
+
+        Assert.Equal(BundleWriteConflictReason.NameUnavailable, thrown.Reason);
+        Assert.Equal(before, File.ReadAllBytes(variantPath));
+        Assert.Equal(namesBefore, OnDiskNames(dir));
+        Assert.Contains("Index.md", OnDiskNames(dir));
+        Assert.DoesNotContain("index.md", OnDiskNames(dir));
+        if (variant == "Index.md")
+        {
+            // notes is deeper than the root, so it was processed (and written) before the failure.
+            Assert.True(File.Exists(Path.Combine(tmp.Path, "notes", "index.md")));
+        }
+        else
+        {
+            // sub is the deepest directory, so the run ended before anything was written.
+            Assert.False(File.Exists(Path.Combine(tmp.Path, "index.md")));
+        }
+    }
+
+    /// <summary>
+    /// The exit-code surface of the same case: <c>okf index</c> ends with exit 1 and the single
+    /// line <c>error: '…index.md' cannot be stored under that name: …</c> on stderr, and the case
+    /// variant keeps its bytes.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("Index.md", "notes/a.md", "'index.md'")]
+    [InlineData("sub/Index.md", "sub/x.md", "'sub/index.md'")]
+    public void On_a_volume_that_folds_case_okf_index_fails_with_exit_1_on_a_case_variant_of_index_md(string variant, string concept, string quotedKey)
+    {
+        Skip.IfNot(VolumeFoldsCase(), "this volume does not fold case, so a case variant of index.md is a different entry");
+        using var tmp = new TempDir();
+        var variantPath = tmp.Write(variant, "# Mine\n");
+        tmp.Write(concept, Doc("Note", "A", "a."));
+        var before = File.ReadAllBytes(variantPath);
+
+        var r = TestPaths.Run(["index", tmp.Path]);
+
+        Assert.Equal(1, r.Code);
+        Assert.StartsWith($"error: {quotedKey} cannot be stored under that name: ", r.Err, StringComparison.Ordinal);
+        Assert.Single(r.Err.TrimEnd('\n').Split('\n'));
+        Assert.Equal(before, File.ReadAllBytes(variantPath));
+    }
+
+    /// <summary>
+    /// A <c>sub/Index.md</c> on a volume that does not fold case: <c>Index.md</c> and <c>index.md</c>
+    /// are two distinct objects, so the name is no obstacle, the string overload does not throw, the
+    /// <c>Index.md</c> keeps its bytes and the generated <c>index.md</c> is a new file next to it.
+    /// </summary>
+    [SkippableFact]
+    public void On_a_volume_that_does_not_fold_case_a_case_variant_of_index_md_is_a_distinct_object()
+    {
+        Skip.If(VolumeFoldsCase(), "this volume folds case: see the case-variant test above");
+        using var tmp = new TempDir();
+        var variantPath = tmp.Write("sub/Index.md", "# Mine\n");
+        tmp.Write("sub/x.md", Doc("Note", "X", "x."));
+        var before = File.ReadAllBytes(variantPath);
+
+        var written = IndexGenerator.RegenerateIndexes(tmp.Path);
+
+        Assert.Contains(Path.Combine(tmp.Path, "sub", "index.md"), written);
+        Assert.Equal(before, File.ReadAllBytes(variantPath));
+        Assert.Equal(["Index.md", "index.md", "x.md"], OnDiskNames(Path.Combine(tmp.Path, "sub")));
     }
 
     /// <summary>
