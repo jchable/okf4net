@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using OKF4net.Internal;
+using OKF4net.Providers;
 
 namespace OKF4net;
 
@@ -95,18 +96,18 @@ public static class IndexGenerator
         RegenerateIndexesWith(bundleRoot, DefaultSynthesize);
 
     /// <summary>
-    /// Test-only hook invoked immediately before the late reparse-point
-    /// re-check that runs right before each <c>index.md</c> write (see
-    /// <see cref="RegenerateIndexesWith"/>'s remarks), with the directory
-    /// about to be written as its argument. Used by <c>IndexTests</c> to
-    /// deterministically substitute a directory that already passed the
-    /// early traversal skip with a junction/symlink, in the exact narrow
-    /// window such a race would need to land in -- a substitution the
-    /// earlier, best-effort <see cref="CollectMarkdown"/> skip could never
-    /// have caught, since the directory was still real when it ran.
-    /// <c>internal</c> rather than test-conditional compilation, consistent
-    /// with this assembly's <c>InternalsVisibleTo</c> grant to
-    /// <c>OKF4net.Tests</c>. No-op (null) in production.
+    /// Test-only hook invoked once per directory about to get its
+    /// <c>index.md</c>, after its entries are known and before that
+    /// <c>index.md</c> is read and written through the provider -- where the
+    /// provider's late guards run (see <see cref="RegenerateIndexesWith(string, Synthesize)"/>'s
+    /// remarks). Its argument is the directory's display path: the bundle root, or
+    /// the root followed by the directory's segments joined with the OS separator.
+    /// Used by <c>IndexTests</c> to deterministically substitute a directory that
+    /// was listed as a real one with a junction/symlink, in the exact narrow window
+    /// such a race would need to land in. <c>internal</c> rather than
+    /// test-conditional compilation, consistent with this assembly's
+    /// <c>InternalsVisibleTo</c> grant to <c>OKF4net.Tests</c>. No-op (null) in
+    /// production.
     /// </summary>
     internal static Action<string>? BeforeLateReparseCheckForTest { get; set; }
 
@@ -120,149 +121,198 @@ public static class IndexGenerator
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>Reparse-point safety (defense-in-depth, not a full guarantee):</b>
-    /// <see cref="DirectoriesToIndex"/>'s traversal (via
-    /// <see cref="CollectMarkdown"/>) already performs an EARLY, best-effort
-    /// skip of reparse-point directories (symlinks, junctions, mount
-    /// points) using lstat-based semantics. That
-    /// skip only protects the directories it can see AT COLLECTION TIME,
-    /// though: a directory that was a genuine directory when collected could
-    /// still be replaced by a reparse point before this method gets around
-    /// to writing its <c>index.md</c> -- a classic check-then-write race
-    /// (TOCTOU). Since <see cref="File.WriteAllText(string, string, System.Text.Encoding)"/>
-    /// has no portable no-follow mode in .NET, such a write would silently
-    /// land wherever the reparse point resolves -- potentially outside
-    /// <paramref name="bundleRoot"/> entirely.
+    /// Runs through a <see cref="FileSystemBundleProvider"/> over
+    /// <paramref name="bundleRoot"/> (trailing separators trimmed), exactly as
+    /// <see cref="RegenerateIndexesWith(IBundleProvider, Synthesize, BundleLoadOptions?)"/>
+    /// does with the default <see cref="BundleLoadOptions"/>; each returned path is
+    /// that root followed by the <c>index.md</c>'s key segments joined with the OS
+    /// separator, in the order the files were written. <paramref name="synthesize"/>
+    /// receives the directory's path relative to the root with the OS separator
+    /// (<c>a\b</c> on Windows). A <paramref name="bundleRoot"/> that is not an
+    /// existing directory gives an empty list.
     /// </para>
     /// <para>
-    /// To narrow (not close) that window, this method re-checks, immediately
-    /// before each <c>index.md</c> write, that the target directory itself
-    /// and every ancestor directory strictly UP TO (but not including)
-    /// <paramref name="bundleRoot"/> is still free of reparse points (see
-    /// the private <c>HasReparsePointOrUninspectableAncestor</c> helper, which reuses
-    /// <see cref="ReparsePoints"/>' shared detection rather than duplicating
-    /// platform-specific reparse detection). The late checks are GUARDS and
-    /// use the strict predicate
-    /// (<see cref="ReparsePoints.IsReparsePointOrUninspectable"/>): an entry
-    /// whose link status cannot be read is skipped like a link. The early
-    /// skip is a WALK and keeps the lenient
-    /// <see cref="ReparsePoints.IsReparsePoint"/>, so which entries each index
-    /// lists does not change -- see those two predicates' remarks for the polarity
-    /// rule. <paramref name="bundleRoot"/> itself is deliberately
-    /// exempt from this check -- see <c>HasReparsePointOrUninspectableAncestor</c>'s own
-    /// doc comment for why: a symlinked/mounted bundle root is a legitimate
-    /// setup that the early traversal already indexes unconditionally, and
-    /// treating it as suspect here would silently suppress every index
-    /// write for such a bundle. The <c>index.md</c> FILE NODE itself is
-    /// ALSO re-checked via <see cref="ReparsePoints.IsReparsePointOrUninspectable"/> right
-    /// before the write -- the ancestor walk only covers directories
-    /// strictly between the target directory and <paramref name="bundleRoot"/>,
-    /// so it would never notice a pre-planted <c>index.md</c> symlink sitting
-    /// directly in an otherwise-genuine directory (a gap <c>OkfBundleTools</c>'s
-    /// <c>WriteConcept</c>/<c>AppendLog</c> (in the separate <c>OKF4net.Agents</c>
-    /// project) already close for their own target files). A reparse point
-    /// (or, at the two late checks, an entry that cannot be inspected)
-    /// detected at any of these three points
-    /// (early skip, late ancestor re-check, late target-node re-check) is
-    /// handled the same way: that <c>index.md</c> write is SKIPPED (not
-    /// included in the returned list) and regeneration continues with the
-    /// remaining directories -- it never aborts the whole run and never
-    /// throws.
+    /// <b>Reparse-point safety.</b> The bundle is listed by the provider's walk,
+    /// which skips every symlink and junction under the root (never follows one)
+    /// and refuses to enter a directory it cannot inspect; so a linked
+    /// directory is neither indexed nor referenced. Every <c>index.md</c> is then
+    /// read and written by the provider, whose guards are STRICT
+    /// (<see cref="ReparsePoints.IsReparsePointOrUninspectable"/>) and run at the
+    /// moment of the access: the whole path from the root, the <c>index.md</c>
+    /// entry itself, again under the commit lock right before the commit. A
+    /// directory replaced by a link, or an <c>index.md</c> planted as one, after
+    /// the listing is refused there, and that <c>index.md</c> is SKIPPED (not in
+    /// the returned list); regeneration continues with the remaining directories.
+    /// The bundle root itself is never inspected: a symlinked or mounted root is a
+    /// legitimate setup and is indexed like any other.
     /// </para>
     /// <para>
-    /// This still does not fully close the gap: a substitution landing in
-    /// the instant between the late check and the write itself would still
-    /// slip through. No portable, race-free "check and write without
-    /// following a symlink" primitive exists in .NET for this case. For the
-    /// bundle root specifically, that same narrow window also covers a read
-    /// of the existing <c>index.md</c> (to preserve its frontmatter, see
-    /// below) immediately before the write; a substitution landing there is
-    /// the identical residual risk, not a separate one.
+    /// <b>Atomic, conditional writes.</b> Each <c>index.md</c> is committed
+    /// atomically, conditioned on the version just read (or on its absence), and a
+    /// conflict with another writer is retried at most three times, reading again
+    /// each time. A regeneration takes no lock of its own (its callers lock, or
+    /// not): a concurrent write surfaces as a conflict and a retry, never as a lost
+    /// update.
+    /// </para>
+    /// <para>
+    /// <b>Failures.</b> A root <c>index.md</c> that cannot be read or parsed is left
+    /// untouched and skipped. Any other failure — an I/O error, a name the storage
+    /// cannot hold, a write that kept conflicting — propagates and ends the run, as
+    /// an I/O error did before the provider: the <c>index.md</c> files written
+    /// until then stay written.
     /// </para>
     /// </remarks>
     public static IReadOnlyList<string> RegenerateIndexesWith(string bundleRoot, Synthesize synthesize)
     {
-        var written = new List<string>();
         if (!Directory.Exists(bundleRoot))
         {
-            return written;
+            return [];
         }
-        // §8: a bare Path.GetFullPath preserves a trailing directory
-        // separator if bundleRoot has one (e.g. "dir\" survives distinct
-        // from "dir"). Path.GetDirectoryName treats a trailing separator as
-        // marking an empty final component, so DirectoriesToIndex's
-        // rootParent -- Path.GetDirectoryName(bundleRoot), meant to be the
-        // bundle root's PARENT -- came out equal to the bundle root's own
-        // (trimmed) path instead: e.g. GetDirectoryName(@"C:\b\") is
-        // "C:\b", not "C:\". The ancestor walk from an md file's directory
-        // upward stops the instant `cur` equals rootParent, BEFORE adding
-        // `cur` to the set -- so with rootParent misidentified as the root
-        // itself, the walk stopped one step too early and the bundle root
-        // was never added to the set of directories to index, let alone
-        // written. ReparsePoints.CanonicalizeRoot trims the trailing
-        // separator (both the platform separator and the alternate one) the
-        // same way every other root-taking guard in this codebase already
-        // does; every use of bundleRoot below (DirectoriesToIndex's
-        // rootParent, the deepest-first sort's Depth, the late
-        // reparse-ancestor re-check, the returned index.md paths) then sees
-        // the trimmed root.
-        bundleRoot = ReparsePoints.CanonicalizeRoot(bundleRoot);
-        var directories = DirectoriesToIndex(bundleRoot);
-        // Deepest-first; ties broken by path for determinism.
-        directories.Sort((a, b) =>
+
+        // §8: a trailing separator is trimmed (ReparsePoints.CanonicalizeRoot), so the
+        // display paths below are the same for "dir" and "dir\".
+        var root = ReparsePoints.CanonicalizeRoot(bundleRoot);
+        var report = Regenerate(new FileSystemBundleProvider(root), synthesize, BundleLoadOptions.Default, legacy: true);
+        return [.. report.Written.Select(key => BundleDisplayPath.Compose(root, key))];
+    }
+
+    /// <summary>
+    /// Regenerates every <c>index.md</c> of the bundle held by <paramref name="provider"/>
+    /// with <see cref="DefaultSynthesize"/>; see
+    /// <see cref="RegenerateIndexesWith(IBundleProvider, Synthesize, BundleLoadOptions?)"/>.
+    /// </summary>
+    /// <param name="provider">Where the bundle is read and written.</param>
+    /// <param name="options">The key policy and bounds the bundle is loaded with; <see langword="null"/>: <see cref="BundleLoadOptions.Default"/>.</param>
+    /// <returns>The keys written, in order, and the <c>index.md</c> keys that could not be written, with why.</returns>
+    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
+    public static BundleWriteReport RegenerateIndexes(IBundleProvider provider, BundleLoadOptions? options = null) =>
+        RegenerateIndexesWith(provider, DefaultSynthesize, options);
+
+    /// <summary>
+    /// Regenerates every <c>index.md</c> of the bundle held by <paramref name="provider"/>
+    /// (spec §8, §9): the bundle is listed and validated as a load under
+    /// <paramref name="options"/> does, each directory of a <c>.md</c> key gets the
+    /// index of its <c>.md</c> children and of its subdirectories — prefixes with at
+    /// least one object under them, so a directory with no file is not referenced —
+    /// deepest-first, and each <c>index.md</c> is written through the provider,
+    /// conditioned on the version read (<see cref="BundleWriteCondition.IfMatch"/>, or
+    /// <see cref="BundleWriteCondition.MustNotExist"/> for a new one), a creation first
+    /// passing the tree check every creation of the core passes. A conflict is retried
+    /// at most three times, reading again each time.
+    /// </summary>
+    /// <param name="provider">Where the bundle is read and written.</param>
+    /// <param name="synthesize">The subdirectory-description synthesizer; it receives the directory's key prefix with <c>/</c> as separator (<c>a/b</c>).</param>
+    /// <param name="options">The key policy and bounds the bundle is loaded with; <see langword="null"/>: <see cref="BundleLoadOptions.Default"/>.</param>
+    /// <returns>
+    /// The keys written, in order, and one failure per <c>index.md</c> that was not:
+    /// refused by the key policy of <paramref name="options"/> (a host's own validator
+    /// included; that <c>index.md</c> is neither read nor written), refused by the provider (a
+    /// link on its path), a name the storage cannot hold or a creation the tree check refuses, a
+    /// write that kept conflicting, an I/O error, or a root <c>index.md</c> that could not be
+    /// read or parsed (left untouched). The reasons are library-authored, but for the key
+    /// policy's own reason. A failure ends nothing: the other directories are written.
+    /// </returns>
+    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
+    /// <exception cref="BundleProviderException">Listing the bundle failed or exceeded a bound of <paramref name="options"/>.</exception>
+    /// <exception cref="IOException">Listing the bundle failed.</exception>
+    public static BundleWriteReport RegenerateIndexesWith(IBundleProvider provider, Synthesize synthesize, BundleLoadOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        if (!provider.Capabilities.CanWrite)
         {
-            var da = Depth(bundleRoot, a);
-            var db = Depth(bundleRoot, b);
-            var cmp = db.CompareTo(da);
+            throw new BundleReadOnlyException(provider.Id);
+        }
+
+        ArgumentNullException.ThrowIfNull(synthesize);
+        return Regenerate(provider, synthesize, options ?? BundleLoadOptions.Default, legacy: false);
+    }
+
+    /// <summary>
+    /// The regeneration behind both families of overloads. <paramref name="legacy"/> is the
+    /// <c>string</c> overloads' contract: an <c>index.md</c> key the policy refuses, a provider
+    /// refusal (<see cref="BundleAccessRefusedException"/>, a STRICT guard) and an unreadable root
+    /// <c>index.md</c> skip that directory silently,
+    /// and every other failure propagates, ending the run; <c>relativeDir</c> uses the OS
+    /// separator. Otherwise every per-directory failure becomes a <see cref="BundleWriteFailure"/>
+    /// and the run goes on; <c>relativeDir</c> uses <c>/</c>.
+    /// </summary>
+    internal static BundleWriteReport Regenerate(IBundleProvider provider, Synthesize synthesize, BundleLoadOptions options, bool legacy)
+    {
+        var limits = options.Limits;
+        var validator = new BundleKeyValidator(provider.NativeConstraints, options.KeyPolicy, options.ExtraKeyValidators);
+        var tree = new Dictionary<string, Dictionary<string, Child>>(StringComparer.Ordinal);
+        var directories = new HashSet<string>(StringComparer.Ordinal);
+        var documents = new Dictionary<string, IndexEntry>(StringComparer.Ordinal);
+
+        // Listing and reading, inside one provider scope (each directory listed once): the
+        // keys a load would accept, then every .md child's entry. Nothing is written yet.
+        using (ProviderScopes.Begin(provider))
+        {
+            var (treeInput, overLength) = Bundle.ListNames(provider, limits);
+            var chunk = new byte[Bundle.ReadChunkBytes];
+            foreach (var key in validator.ValidateTree(treeInput, overLength).Accepted)
+            {
+                var segments = key.Segments;
+                for (var depth = 0; depth < segments.Count; depth++)
+                {
+                    var parent = string.Join('/', segments.Take(depth));
+                    if (!tree.TryGetValue(parent, out var children))
+                    {
+                        children = new Dictionary<string, Child>(StringComparer.Ordinal);
+                        tree[parent] = children;
+                    }
+
+                    var leaf = depth == segments.Count - 1;
+                    children.TryGetValue(segments[depth], out var child);
+                    children[segments[depth]] = leaf ? child with { IsObject = true } : child with { IsPrefix = true };
+                    if (key.IsMarkdown)
+                    {
+                        directories.Add(parent);
+                    }
+                }
+
+                if (key.IsMarkdown && key.Name != IndexFile && ReadEntry(provider, key, limits, chunk) is { } entry)
+                {
+                    documents[key.ToString()] = entry;
+                }
+            }
+        }
+
+        // Deepest-first; ties broken by path for determinism.
+        var order = directories.ToList();
+        order.Sort((a, b) =>
+        {
+            var cmp = Depth(b).CompareTo(Depth(a));
             return cmp != 0 ? cmp : PathOrdering.CompareComponentWise(a, b);
         });
 
-        var dirDescriptions = new Dictionary<string, string>();
-
-        foreach (var directory in directories)
+        var written = new List<BundleKey>();
+        var failed = new List<BundleWriteFailure>();
+        var dirDescriptions = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var directory in order)
         {
             var entries = new List<IndexEntry>();
-
-            var children = Directory.GetFileSystemEntries(directory).ToList();
-            children.Sort(PathOrdering.CompareComponentWise);
-
-            foreach (var child in children)
+            var names = tree[directory].Keys.ToList();
+            names.Sort(PathOrdering.CompareComponentWise);
+            foreach (var name in names)
             {
-                var name = Path.GetFileName(child);
                 if (name == IndexFile)
                 {
                     continue;
                 }
 
-                // lstat-based semantics: a symlink or junction is neither a
-                // file nor a directory, so it contributes
-                // no index entry. The File.Exists / Directory.Exists checks
-                // below resolve THROUGH the link, so without this guard a
-                // symlinked subdirectory would be listed as a real
-                // subdirectory (and a symlink named *.md as a real document) --
-                // the same reparse skip CollectMarkdown already applies.
-                if (ReparsePoints.IsReparsePoint(child))
+                var child = tree[directory][name];
+                var path = directory.Length == 0 ? name : directory + "/" + name;
+                if (child.IsObject && MarkdownPaths.HasMarkdownExtension(name))
                 {
-                    continue;
-                }
-
-                if (File.Exists(child) && MarkdownPaths.HasMarkdownExtension(child))
-                {
-                    var doc = LoadDoc(child);
-                    if (doc is null)
+                    if (documents.TryGetValue(path, out var document))
                     {
-                        continue;
+                        entries.Add(document);
                     }
-
-                    var stem = Path.GetFileNameWithoutExtension(child);
-                    var title = doc.Frontmatter.Title ?? stem;
-                    var description = doc.Frontmatter.Description ?? string.Empty;
-                    var type_ = doc.Frontmatter.Type ?? string.Empty;
-                    entries.Add(new IndexEntry(type_, title, name, description));
                 }
-                else if (Directory.Exists(child))
+                else if (child.IsPrefix)
                 {
-                    var description = dirDescriptions.GetValueOrDefault(child, string.Empty);
+                    var description = dirDescriptions.GetValueOrDefault(path, string.Empty);
                     entries.Add(new IndexEntry("Subdirectories", name, $"{name}/{IndexFile}", description));
                 }
             }
@@ -272,92 +322,22 @@ public static class IndexGenerator
                 continue;
             }
 
-            BeforeLateReparseCheckForTest?.Invoke(directory);
+            BeforeLateReparseCheckForTest?.Invoke(directory.Length == 0 ? provider.Location : BundleDisplayPath.Compose(provider.Location, BundleKey.Parse(directory)));
 
-            // Late, best-effort re-check -- see RegenerateIndexesWith's
-            // <remarks>. `directory` passed the EARLY skip during
-            // DirectoriesToIndex's traversal, but that only proves it was a
-            // real directory (with no reparse-point ancestor) at collection
-            // time; it could have been replaced by a symlink/junction any
-            // time between then and now. Re-checking immediately before the
-            // write narrows (without closing) that window.
-            if (HasReparsePointOrUninspectableAncestor(bundleRoot, directory))
+            var indexKey = BundleKey.Parse(directory.Length == 0 ? IndexFile : directory + "/" + IndexFile);
+            var failure = WriteIndex(provider, validator, limits, indexKey, isRoot: directory.Length == 0, BuildIndexText(entries), legacy);
+            if (failure is not null)
             {
+                if (failure.Length > 0)
+                {
+                    failed.Add(new BundleWriteFailure(indexKey, failure));
+                }
+
                 continue;
             }
 
-            var indexPath = Path.Combine(directory, IndexFile);
-
-            // Also guard the index.md FILE NODE itself (F2): the ancestor
-            // check above only walks directories STRICTLY BETWEEN `directory`
-            // and `bundleRoot` -- it never inspects `indexPath` itself. A
-            // pre-planted "bundle/tables/index.md" symlink pointing at an
-            // external file would otherwise sail through that ancestor check
-            // (its only ancestor, `directory`, is a genuine directory) and
-            // get silently overwritten, since File.WriteAllText follows a
-            // file symlink. This mirrors WriteConcept/AppendLog, which both
-            // check their own target FILE
-            // node in addition to its ancestor chain -- IndexGenerator was
-            // asymmetric with those until this check was added. Same
-            // skip-not-abort handling as the ancestor check above: this
-            // directory's index.md write is skipped and regeneration
-            // continues with the rest of the bundle. Strict, like the
-            // ancestor check: an index.md whose link status cannot be read is
-            // skipped too (a guard fails closed -- see
-            // ReparsePoints.IsReparsePointOrUninspectable).
-            if (ReparsePoints.IsReparsePointOrUninspectable(indexPath))
-            {
-                continue;
-            }
-
-            var body = BuildIndexText(entries);
-            var content = body;
-
-            // The bundle-root index.md is the only place frontmatter is
-            // spec-sanctioned at all (§12: the okf_version marker, see
-            // Bundle.OkfVersion), and even there ONLY the okf_version key
-            // is sanctioned (§8) -- every other index.md must have none
-            // (§8, BundleValidator's "index.md should not contain
-            // frontmatter" error). So only the root's existing okf_version
-            // value (never the rest of its frontmatter) is carried forward
-            // here; a non-root index.md keeps the old body-only overwrite.
-            // Both paths self-heal every §8 violation regeneration can
-            // reach: a non-root index.md drops all frontmatter, and the
-            // root drops everything except okf_version, closing
-            // RootIndexExtraFrontmatter instead of making stray keys
-            // permanently sticky. Without carrying okf_version forward at
-            // all, regeneration used to overwrite index.md with ONLY the
-            // freshly built body, silently dropping the marker and
-            // breaking okf-mcp's bundle auto-discovery (OkfBundleDiscovery)
-            // on the next server start.
-            if (string.Equals(directory, bundleRoot, StringComparison.Ordinal) && File.Exists(indexPath))
-            {
-                // A pre-existing root index.md that fails to read or parse
-                // (locked by another process, malformed YAML, bad encoding)
-                // is left untouched rather than silently overwritten
-                // frontmatter-free -- same skip-not-abort handling this
-                // method already applies to its reparse-point checks above
-                // -- so a transient read failure can never reproduce the
-                // marker-loss bug this preserves against.
-                var existing = LoadDoc(indexPath);
-                if (existing is null)
-                {
-                    continue;
-                }
-
-                var okfVersion = existing.Frontmatter.Get("okf_version");
-                if (okfVersion is not null)
-                {
-                    var rootFrontmatter = new Frontmatter();
-                    rootFrontmatter.Set("okf_version", okfVersion);
-                    content = new OkfDocument(rootFrontmatter, body).Serialize();
-                }
-            }
-
-            File.WriteAllText(indexPath, content, OkfEncodings.NoBom);
-            written.Add(indexPath);
-
-            if (string.Equals(directory, bundleRoot, StringComparison.Ordinal))
+            written.Add(indexKey);
+            if (directory.Length == 0)
             {
                 continue;
             }
@@ -370,158 +350,143 @@ public static class IndexGenerator
             }
             else
             {
-                var rel = Path.GetRelativePath(bundleRoot, directory);
+                var rel = legacy ? directory.Replace('/', Path.DirectorySeparatorChar) : directory;
                 desc = synthesize(rel, pairs);
             }
 
             dirDescriptions[directory] = desc;
         }
 
-        return written;
-    }
-
-    /// <summary>Loads and parses a document, returning <c>null</c> on read or parse failure.</summary>
-    private static OkfDocument? LoadDoc(string path)
-    {
-        string text;
-        try
-        {
-            text = OkfEncodings.Strict.GetString(File.ReadAllBytes(path));
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
-        {
-            return null;
-        }
-
-        try
-        {
-            return OkfDocument.Parse(text);
-        }
-        catch (DocumentParseException)
-        {
-            return null;
-        }
-    }
-
-    /// <summary>Directory depth relative to the bundle root (0 for the root itself).</summary>
-    private static int Depth(string root, string dir)
-    {
-        var rel = Path.GetRelativePath(root, dir);
-        if (rel == ".")
-        {
-            return 0;
-        }
-
-        return rel.Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries).Length;
+        return new BundleWriteReport(written, [], failed);
     }
 
     /// <summary>
-    /// All directories that contain at least one <c>.md</c> file at any
-    /// depth, including the bundle root.
+    /// Reads and writes one <c>index.md</c>, retrying a conflict (spec §4, decision B5):
+    /// <see langword="null"/> once written; otherwise the reason it was not, or an empty
+    /// string for a silent skip (<paramref name="legacy"/>: a key the policy refuses, a provider
+    /// refusal, an unreadable root). In <paramref name="legacy"/> mode every other failure is thrown.
     /// </summary>
-    private static List<string> DirectoriesToIndex(string bundleRoot)
+    private static string? WriteIndex(IBundleProvider provider, BundleKeyValidator validator, BundleLimits limits, BundleKey key, bool isRoot, string body, bool legacy)
     {
-        var mdFiles = new List<string>();
-        CollectMarkdown(bundleRoot, mdFiles);
-
-        var dirs = new SortedSet<string>(Comparer<string>.Create(PathOrdering.CompareComponentWise));
-        var rootParent = Path.GetDirectoryName(bundleRoot);
-        foreach (var md in mdFiles)
+        // The run's key policy covers the index keys it produces, as it covers every concept the
+        // writer writes (spec §2, decision B2): an index.md the validator refuses — a host's own
+        // rule included — is neither read nor written, whether it exists or not.
+        if (validator.CheckKey(key) is { } refused)
         {
-            var cur = Path.GetDirectoryName(md);
-            while (cur is not null)
-            {
-                if (string.Equals(cur, rootParent, StringComparison.Ordinal))
-                {
-                    break;
-                }
-
-                dirs.Add(cur);
-                if (string.Equals(cur, bundleRoot, StringComparison.Ordinal))
-                {
-                    break;
-                }
-
-                cur = Path.GetDirectoryName(cur);
-            }
+            return legacy ? string.Empty : $"index.md cannot be written under the bundle's key policy: {refused}";
         }
 
-        return dirs.ToList();
-    }
-
-    /// <summary>Recursively collects every <c>.md</c> file path under a directory, skipping reparse-point directories.</summary>
-    private static void CollectMarkdown(string dir, List<string> output)
-    {
-        foreach (var path in Directory.GetFileSystemEntries(dir))
+        for (var attempt = 1; ; attempt++)
         {
-            // lstat-based semantics: a symlinked or junctioned directory is
-            // treated as neither a directory to descend into nor a document,
-            // so it never contributes a directory to directories_to_index.
-            // Directory.Exists on its own would follow the link, so the
-            // explicit reparse-point check excludes such points from the
-            // recursion arm here. The file branch below is a pure extension
-            // check -- no is-file guard -- so a symlink named `*.md` is still
-            // collected either way.
-            if (!ReparsePoints.IsReparsePoint(path) && Directory.Exists(path))
+            try
             {
-                CollectMarkdown(path, output);
+                var (current, unreadable) = ReadCurrentIndex(provider, key, isRoot, limits);
+                if (unreadable)
+                {
+                    // A pre-existing root index.md that fails to read or parse (locked by
+                    // another process, malformed YAML, bad encoding) is left untouched rather
+                    // than silently overwritten frontmatter-free, so a transient read failure
+                    // can never drop the okf_version marker okf-mcp's discovery relies on.
+                    return legacy ? string.Empty : "the existing index.md could not be read or parsed, so it was left as it is";
+                }
+
+                var content = body;
+
+                // The bundle-root index.md is the only place frontmatter is spec-sanctioned
+                // at all (§12: the okf_version marker, see Bundle.OkfVersion), and even there
+                // ONLY the okf_version key is sanctioned (§8) -- every other index.md must
+                // have none. So only the root's existing okf_version value (never the rest
+                // of its frontmatter) is carried forward; a non-root index.md is body only.
+                // Both self-heal every §8 violation regeneration can reach.
+                if (current?.Document?.Frontmatter.Get("okf_version") is { } okfVersion)
+                {
+                    var rootFrontmatter = new Frontmatter();
+                    rootFrontmatter.Set("okf_version", okfVersion);
+                    content = new OkfDocument(rootFrontmatter, body).Serialize();
+                }
+
+                if (current is null && BundleTreeCheck.CheckCreation(provider, validator, key, limits) is { } conflict)
+                {
+                    return legacy ? throw new BundleWriteConflictException(key, BundleWriteConflictReason.NameUnavailable) : conflict;
+                }
+
+                provider.Write(key, OkfEncodings.NoBom.GetBytes(content), current is { } c ? BundleWriteCondition.IfMatch(c.Version) : BundleWriteCondition.MustNotExist);
+                return null;
             }
-            else if (MarkdownPaths.HasMarkdownExtension(path))
+            catch (BundleWriteConflictException e) when (e.Reason == BundleWriteConflictReason.ConditionFailed && attempt < BundleConceptWriter.MaxAttempts)
             {
-                output.Add(path);
+                Thread.Sleep(BundleConceptWriter.RetryDelay(attempt));
+            }
+            catch (BundleWriteConflictException e) when (e.Reason == BundleWriteConflictReason.ConditionFailed && !legacy)
+            {
+                return $"index.md kept changing while it was being written; the write was refused after {BundleConceptWriter.MaxAttempts} attempts";
+            }
+            catch (BundleAccessRefusedException e)
+            {
+                return legacy ? string.Empty : e.Message;
+            }
+            catch (Exception e) when (!legacy && e is not BundleReadOnlyException && (e is BundleProviderException or IOException or UnauthorizedAccessException))
+            {
+                return e is BundleProviderException ? e.Message : $"I/O error while writing the index ({e.GetType().Name})";
             }
         }
     }
 
     /// <summary>
-    /// <c>true</c> if <paramref name="directory"/> itself, or any directory
-    /// strictly BETWEEN it and <paramref name="bundleRoot"/> (exclusive of
-    /// <paramref name="bundleRoot"/> itself), is a filesystem reparse point
-    /// (symlink, junction, mount point) OR cannot be inspected -- checked via
-    /// <see cref="ReparsePoints.IsReparsePointOrUninspectable"/>. This is a
-    /// GUARD (it decides whether an <c>index.md</c> is written), so it fails
-    /// closed on an entry whose link status cannot be read, while
-    /// <see cref="CollectMarkdown"/>'s early skip -- a WALK -- keeps the
-    /// lenient <see cref="ReparsePoints.IsReparsePoint"/>. Both share one
-    /// classification underneath, so the early and late checks can never
-    /// diverge on what counts as a reparse point; they differ only on an
-    /// entry that cannot be inspected, deliberately.
-    ///
-    /// <paramref name="bundleRoot"/> is deliberately never inspected, even
-    /// when <paramref name="directory"/> equals it: pointing <c>okf index</c>
-    /// at a symlinked/mounted bundle root is a legitimate, common setup
-    /// (symlinked project directories, container/WSL bind mounts, macOS's
-    /// <c>/var</c>), and <see cref="DirectoriesToIndex"/>'s own early
-    /// traversal already includes and indexes <paramref name="bundleRoot"/>
-    /// unconditionally -- it never checks the walk's own starting root for
-    /// being a reparse point either. Treating the root as inclusive would
-    /// silently suppress every single index write for such a bundle. This
-    /// mirrors the shared <see cref="ReparsePoints.HasReparsePointOrUninspectableAncestor(string, string)"/>
-    /// convenience overload's own walk, which stops via
-    /// <c>while (!Equals(current, fullRoot))</c> -- the equality-to-root
-    /// check gates entry to the loop body, so the root itself is never
-    /// inspected. Kept as its own
-    /// wrapper rather than folded into that overload: this walk already
-    /// hardcoded <see cref="StringComparison.Ordinal"/> -- path components
-    /// must compare case-sensitively to match filesystem semantics on
-    /// case-sensitive platforms (Linux) -- before the shared 2-arg overload
-    /// was itself hardened to use the same comparison unconditionally; this
-    /// wrapper simply predates that change, with no remaining behavioral
-    /// reason to fold it in.
-    ///
-    /// Used only by <see cref="RegenerateIndexesWith"/>'s late, best-effort
-    /// re-check immediately before each <c>index.md</c> write -- see that
-    /// method's <c>&lt;remarks&gt;</c> for why a directory that already
-    /// passed <see cref="DirectoriesToIndex"/>'s early skip still needs this
-    /// second look.
+    /// The <c>index.md</c> under <paramref name="key"/> as it is now: <see langword="null"/>
+    /// when there is none; otherwise its version and, for the root, its parsed document
+    /// (strict UTF-8, the core's one bounded reader). <c>Unreadable</c> is set for a root
+    /// <c>index.md</c> that exists but cannot be read, decoded or parsed.
     /// </summary>
-    private static bool HasReparsePointOrUninspectableAncestor(string bundleRoot, string directory)
+    private static ((BundleObjectVersion Version, OkfDocument? Document)? Current, bool Unreadable) ReadCurrentIndex(IBundleProvider provider, BundleKey key, bool isRoot, BundleLimits limits)
     {
-        var fullRoot = ReparsePoints.CanonicalizeRoot(bundleRoot);
-        var current = Path.GetFullPath(directory);
-        return ReparsePoints.HasReparsePointOrUninspectableAncestor(fullRoot, current, StringComparison.Ordinal);
+        try
+        {
+            if (!isRoot)
+            {
+                using var obj = provider.Read(key);
+                return ((obj.Version, null), false);
+            }
+
+            var text = Bundle.ReadText(provider, key, limits, new byte[Bundle.ReadChunkBytes], out var version);
+            return ((version, OkfDocument.Parse(text)), false);
+        }
+        catch (BundleObjectNotFoundException)
+        {
+            return (null, false);
+        }
+        catch (Exception e) when (isRoot && e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException or DocumentParseException)
+        {
+            return (null, true);
+        }
     }
 
+    /// <summary>
+    /// The index entry of one <c>.md</c> child, or <see langword="null"/> when it cannot be read,
+    /// decoded or parsed — such a document is left out of its directory's index, as before. The
+    /// title is the frontmatter's, or the file stem; the link is the file name.
+    /// </summary>
+    private static IndexEntry? ReadEntry(IBundleProvider provider, BundleKey key, BundleLimits limits, byte[] chunk)
+    {
+        OkfDocument doc;
+        try
+        {
+            doc = OkfDocument.Parse(Bundle.ReadText(provider, key, limits, chunk, out _));
+        }
+        catch (Exception e) when (e is BundleProviderException or IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException or DocumentParseException)
+        {
+            return null;
+        }
+
+        var stem = Path.GetFileNameWithoutExtension(key.Name);
+        return new IndexEntry(doc.Frontmatter.Type ?? string.Empty, doc.Frontmatter.Title ?? stem, key.Name, doc.Frontmatter.Description ?? string.Empty);
+    }
+
+    /// <summary>The number of segments of a key prefix (0 for the root).</summary>
+    private static int Depth(string prefix) => prefix.Length == 0 ? 0 : prefix.Count(c => c == '/') + 1;
+
+    /// <summary>What a name stands for under one prefix: an object, the prefix of other keys, or both (a tree the policy lets through).</summary>
+    private readonly record struct Child(bool IsObject, bool IsPrefix);
 }
 
 /// <summary>

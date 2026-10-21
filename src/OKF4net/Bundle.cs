@@ -220,53 +220,11 @@ public sealed class Bundle
         // this call (FileSystemBundleProvider's BeginScope says what is and is not reused).
         using var scope = ProviderScopes.Begin(provider);
 
-        // The listing is consumed under the core's own bounds, whatever the provider does:
-        // entries while consuming; depth and key length on every name that parses, before the
-        // tree validation, so a too-deep key rejected for another reason still aborts.
-        var treeInput = new List<string>();
-        // Names refused for their length are still physically there: the tree validation counts
-        // their ancestors as prefixes, so `x.md` beside an over-long `x.md/…` is a conflict.
-        var overLength = new List<string>();
-        var parseProblems = new List<BundleParseError>();
-        var rejectedKeys = new HashSet<BundleKey>();
+        List<string> treeInput;
+        List<string> overLength;
         try
         {
-            var count = 0;
-            foreach (var listing in provider.Enumerate(null, limits))
-            {
-                if (++count > limits.MaxEntries)
-                {
-                    throw new BundleLimitExceededException(BundleBound.Entries, limits.MaxEntries);
-                }
-
-                // Depth and key length are measured on the RAW name, before any parsing: a
-                // name that also breaks a base rule must not bypass a global bound (the third
-                // review slipped `bad\name/a/b.md` past MaxDepth = 1 this way).
-                var raw = listing.RawName;
-                if (raw.Split('/').Length > limits.MaxDepth)
-                {
-                    throw new BundleLimitExceededException(BundleBound.Depth, limits.MaxDepth);
-                }
-
-                if (System.Text.Encoding.UTF8.GetByteCount(raw) > limits.MaxKeyBytes)
-                {
-                    BundleKey.TryParse(raw, out var longKey, out _);
-                    if (longKey is not null)
-                    {
-                        rejectedKeys.Add(longKey);
-                    }
-
-                    if (MarkdownPaths.HasMarkdownExtension(raw))
-                    {
-                        parseProblems.Add(new BundleParseError(raw, longKey, $"key is longer than the {limits.MaxKeyBytes}-byte bound"));
-                    }
-
-                    overLength.Add(raw);
-                    continue;
-                }
-
-                treeInput.Add(raw);
-            }
+            (treeInput, overLength) = ListNames(provider, limits);
         }
         catch (BundleProviderException e)
         {
@@ -275,6 +233,22 @@ public sealed class Bundle
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             throw new BundleLoadException($"I/O error while listing the bundle ({e.GetType().Name})", e);
+        }
+
+        var parseProblems = new List<BundleParseError>();
+        var rejectedKeys = new HashSet<BundleKey>();
+        foreach (var raw in overLength)
+        {
+            BundleKey.TryParse(raw, out var longKey, out _);
+            if (longKey is not null)
+            {
+                rejectedKeys.Add(longKey);
+            }
+
+            if (MarkdownPaths.HasMarkdownExtension(raw))
+            {
+                parseProblems.Add(new BundleParseError(raw, longKey, $"key is longer than the {limits.MaxKeyBytes}-byte bound"));
+            }
         }
 
         BundleVersion version;
@@ -451,6 +425,48 @@ public sealed class Bundle
         BundleReadOnlyException => new BundleLoadException("the provider refused a write", e),
         _ => new BundleLoadException(key is null ? $"provider failure ({e.GetType().Name})" : $"provider failure reading '{key}' ({e.GetType().Name})", e),
     };
+
+    /// <summary>
+    /// Consumes <paramref name="provider"/>'s listing of the whole bundle under the core's own
+    /// bounds, whatever the provider does (spec §6): entries while consuming; depth and key
+    /// length on every RAW name, before any parsing, so a name that also breaks a base rule
+    /// cannot bypass a global bound (the third review slipped <c>bad\name/a/b.md</c> past
+    /// <c>MaxDepth = 1</c> that way). Returns the names to validate as a tree and, apart, the
+    /// names refused for their length — still physically there: the tree validation counts their
+    /// ancestors as prefixes, so <c>x.md</c> beside an over-long <c>x.md/…</c> is a conflict.
+    /// Provider exceptions and the bounds' <see cref="BundleLimitExceededException"/> propagate.
+    /// The one listing consumer of the core: <see cref="Load(IBundleProvider, BundleLoadOptions?)"/>
+    /// and <see cref="IndexGenerator"/> both list through it.
+    /// </summary>
+    internal static (List<string> TreeInput, List<string> OverLength) ListNames(IBundleProvider provider, BundleLimits limits)
+    {
+        var treeInput = new List<string>();
+        var overLength = new List<string>();
+        var count = 0;
+        foreach (var listing in provider.Enumerate(null, limits))
+        {
+            if (++count > limits.MaxEntries)
+            {
+                throw new BundleLimitExceededException(BundleBound.Entries, limits.MaxEntries);
+            }
+
+            var raw = listing.RawName;
+            if (raw.Split('/').Length > limits.MaxDepth)
+            {
+                throw new BundleLimitExceededException(BundleBound.Depth, limits.MaxDepth);
+            }
+
+            if (System.Text.Encoding.UTF8.GetByteCount(raw) > limits.MaxKeyBytes)
+            {
+                overLength.Add(raw);
+                continue;
+            }
+
+            treeInput.Add(raw);
+        }
+
+        return (treeInput, overLength);
+    }
 
     /// <summary>The size of the copy buffer <see cref="ReadText"/> reads through.</summary>
     internal const int ReadChunkBytes = 81920;

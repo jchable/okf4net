@@ -2,7 +2,7 @@
 namespace OKF4net.Internal;
 
 /// <summary>
-/// Compares two absolute file paths component-by-component (splitting on
+/// Compares two absolute file paths, or two bundle keys, component-by-component (splitting on
 /// <c>\</c> and <c>/</c>), ordinal per segment, with a shorter segment list
 /// sorting first when one path is a prefix of the other — comparing by path
 /// component rather than raw bytes. Used for every deterministic file-tree

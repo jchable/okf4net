@@ -31,31 +31,39 @@ public class BundleConceptWriterProviderTests
             .Select(p => Path.GetRelativePath(root, p).Replace(Path.DirectorySeparatorChar, '/'))
             .Order(StringComparer.Ordinal)];
 
-    /// <summary>Every write entry point of the writer, by name (B3).</summary>
-    private static readonly Dictionary<string, Action<BundleConceptWriter>> WriteCalls = new()
+    /// <summary>Every write entry point of the core, by name (B3): the writer's methods, and the index generator's provider overloads, called on the writer's provider.</summary>
+    private static readonly Dictionary<string, Action<BundleConceptWriter, IBundleProvider>> WriteCalls = new()
     {
-        ["WriteConcept(yaml)"] = w => w.WriteConcept("metrics/dau", Fm, "body\n"),
-        ["WriteConcept(frontmatter)"] = w => w.WriteConcept("metrics/dau", Frontmatter.FromMapping((YamlMapping)YamlValue.Parse(Fm)), "body\n"),
-        ["AppendToConceptAtomic"] = w => w.AppendToConceptAtomic("metrics/dau", Fm, b => (b ?? string.Empty) + "more\n"),
-        ["RecordVerifications"] = w => w.RecordVerifications(["metrics/dau"], "human:ada"),
-        ["WriteConcept(yaml, condition)"] = w => w.WriteConcept("metrics/dau", Fm, "body\n", BundleWriteCondition.MustNotExist),
-        ["WriteConcept(frontmatter, condition)"] = w => w.WriteConcept("metrics/dau", Frontmatter.FromMapping((YamlMapping)YamlValue.Parse(Fm)), "body\n", BundleWriteCondition.None),
-        ["AppendLog"] = w => w.AppendLog("Update", "entry"),
+        ["WriteConcept(yaml)"] = (w, _) => w.WriteConcept("metrics/dau", Fm, "body\n"),
+        ["WriteConcept(frontmatter)"] = (w, _) => w.WriteConcept("metrics/dau", Frontmatter.FromMapping((YamlMapping)YamlValue.Parse(Fm)), "body\n"),
+        ["AppendToConceptAtomic"] = (w, _) => w.AppendToConceptAtomic("metrics/dau", Fm, b => (b ?? string.Empty) + "more\n"),
+        ["RecordVerifications"] = (w, _) => w.RecordVerifications(["metrics/dau"], "human:ada"),
+        ["WriteConcept(yaml, condition)"] = (w, _) => w.WriteConcept("metrics/dau", Fm, "body\n", BundleWriteCondition.MustNotExist),
+        ["WriteConcept(frontmatter, condition)"] = (w, _) => w.WriteConcept("metrics/dau", Frontmatter.FromMapping((YamlMapping)YamlValue.Parse(Fm)), "body\n", BundleWriteCondition.None),
+        ["AppendLog"] = (w, _) => w.AppendLog("Update", "entry"),
+        ["IndexGenerator.RegenerateIndexes(provider)"] = (_, p) => IndexGenerator.RegenerateIndexes(p),
+        ["IndexGenerator.RegenerateIndexesWith(provider)"] = (_, p) => IndexGenerator.RegenerateIndexesWith(p, IndexGenerator.DefaultSynthesize),
     };
 
     /// <summary>
     /// The same entry points called with an argument the writer would refuse first (an empty id,
     /// an empty batch), by name: on a read-only provider the capability guard must still win.
     /// </summary>
-    private static readonly Dictionary<string, Action<BundleConceptWriter>> InvalidWriteCalls = new()
+    private static readonly Dictionary<string, Action<BundleConceptWriter, IBundleProvider>> InvalidWriteCalls = new()
     {
-        ["WriteConcept(yaml)"] = w => w.WriteConcept("", Fm, "body\n"),
-        ["WriteConcept(frontmatter)"] = w => w.WriteConcept("", Frontmatter.FromMapping((YamlMapping)YamlValue.Parse(Fm)), "body\n"),
-        ["AppendToConceptAtomic"] = w => w.AppendToConceptAtomic("", Fm, b => (b ?? string.Empty) + "more\n"),
-        ["RecordVerifications"] = w => w.RecordVerifications([], "human:ada"),
-        ["WriteConcept(yaml, condition)"] = w => w.WriteConcept("", Fm, "body\n", BundleWriteCondition.MustNotExist),
-        ["WriteConcept(frontmatter, condition)"] = w => w.WriteConcept("", Frontmatter.FromMapping((YamlMapping)YamlValue.Parse(Fm)), "body\n", BundleWriteCondition.None),
-        ["AppendLog"] = w => w.AppendLog("", "entry"),
+        ["WriteConcept(yaml)"] = (w, _) => w.WriteConcept("", Fm, "body\n"),
+        ["WriteConcept(frontmatter)"] = (w, _) => w.WriteConcept("", Frontmatter.FromMapping((YamlMapping)YamlValue.Parse(Fm)), "body\n"),
+        ["AppendToConceptAtomic"] = (w, _) => w.AppendToConceptAtomic("", Fm, b => (b ?? string.Empty) + "more\n"),
+        ["RecordVerifications"] = (w, _) => w.RecordVerifications([], "human:ada"),
+        ["WriteConcept(yaml, condition)"] = (w, _) => w.WriteConcept("", Fm, "body\n", BundleWriteCondition.MustNotExist),
+        ["WriteConcept(frontmatter, condition)"] = (w, _) => w.WriteConcept("", Frontmatter.FromMapping((YamlMapping)YamlValue.Parse(Fm)), "body\n", BundleWriteCondition.None),
+        ["AppendLog"] = (w, _) => w.AppendLog("", "entry"),
+        // RegenerateIndexes takes no argument the generator could refuse apart from the provider
+        // itself (a null one throws before any capability check, so it cannot be a row here): the
+        // call is the valid one, which on an empty writable provider writes nothing.
+        ["IndexGenerator.RegenerateIndexes(provider)"] = (_, p) => IndexGenerator.RegenerateIndexes(p),
+        // A null synthesizer is checked after the capability guard: read-only wins, writable throws.
+        ["IndexGenerator.RegenerateIndexesWith(provider)"] = (_, p) => IndexGenerator.RegenerateIndexesWith(p, null!),
     };
 
     /// <summary>The names of <see cref="WriteCalls"/>, for the matrix theories.</summary>
@@ -78,6 +86,7 @@ public class BundleConceptWriterProviderTests
             .GroupBy(m => m.Name)
             .ToDictionary(g => g.Key, g => g.Count());
         var matrix = WriteCalls.Keys
+            .Where(k => !k.StartsWith("IndexGenerator.", StringComparison.Ordinal))
             .GroupBy(k => k.Split('(')[0])
             .ToDictionary(g => g.Key, g => g.Count());
 
@@ -91,16 +100,26 @@ public class BundleConceptWriterProviderTests
     public void The_capability_guard_runs_before_the_arguments_are_checked(string entryPoint)
     {
         var storage = new InMemoryBundleProvider().Add("metrics/dau.md", Doc);
-        Assert.Throws<BundleReadOnlyException>(() => InvalidWriteCalls[entryPoint](new BundleConceptWriter(storage)));
+        Assert.Throws<BundleReadOnlyException>(() => InvalidWriteCalls[entryPoint](new BundleConceptWriter(storage), storage));
         Assert.Empty(storage.Calls);
 
         using var tmp = new TempDir();
-        Assert.Throws<BundleReadOnlyException>(() => InvalidWriteCalls[entryPoint](new BundleConceptWriter(new FileSystemBundleProvider(tmp.Path).AsReadOnly())));
+        var readOnlyFiles = new FileSystemBundleProvider(tmp.Path).AsReadOnly();
+        Assert.Throws<BundleReadOnlyException>(() => InvalidWriteCalls[entryPoint](new BundleConceptWriter(readOnlyFiles), readOnlyFiles));
 
         // And on a writable provider the same call is an Error: text, so the guard is what the rows above pin.
         var writable = new InMemoryBundleProvider(canWrite: true);
         var writer = new BundleConceptWriter(writable);
-        InvalidWriteCalls[entryPoint](writer);
+        if (entryPoint == "IndexGenerator.RegenerateIndexesWith(provider)")
+        {
+            // The generator's argument checks throw, as they do for any caller: the order is what the rows above pin.
+            Assert.Throws<ArgumentNullException>(() => InvalidWriteCalls[entryPoint](writer, writable));
+        }
+        else
+        {
+            InvalidWriteCalls[entryPoint](writer, writable);
+        }
+
         Assert.DoesNotContain(writable.Calls, c => c.StartsWith("write ", StringComparison.Ordinal));
     }
 
@@ -118,9 +137,10 @@ public class BundleConceptWriterProviderTests
         tmp.Write("metrics/dau.md", Doc);
         var before = Tree(tmp.Path);
         var bytes = File.ReadAllBytes(Path.Combine(tmp.Path, "metrics", "dau.md"));
-        var writer = new BundleConceptWriter(new FileSystemBundleProvider(tmp.Path).AsReadOnly());
+        var provider = new FileSystemBundleProvider(tmp.Path).AsReadOnly();
+        var writer = new BundleConceptWriter(provider);
 
-        var ex = Assert.Throws<BundleReadOnlyException>(() => WriteCalls[entryPoint](writer));
+        var ex = Assert.Throws<BundleReadOnlyException>(() => WriteCalls[entryPoint](writer, provider));
 
         Assert.DoesNotContain(tmp.Path, ex.Message);
         Assert.Equal(before, Tree(tmp.Path));
@@ -135,7 +155,7 @@ public class BundleConceptWriterProviderTests
         var storage = new InMemoryBundleProvider().Add("metrics/dau.md", Doc);
         var writer = new BundleConceptWriter(storage);
 
-        Assert.Throws<BundleReadOnlyException>(() => WriteCalls[entryPoint](writer));
+        Assert.Throws<BundleReadOnlyException>(() => WriteCalls[entryPoint](writer, storage));
         Assert.Empty(storage.Calls);
     }
 

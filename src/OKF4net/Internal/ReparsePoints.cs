@@ -58,8 +58,8 @@ internal static class ReparsePoints
     /// </summary>
     /// <remarks>
     /// The LENIENT predicate: for a WALK, which enumerates entries and skips
-    /// the links among them (<c>Bundle</c>'s and <c>IndexGenerator</c>'s
-    /// <c>CollectMarkdown</c>, <c>IndexGenerator</c>'s per-child skip) or
+    /// the links among them (<c>FileSystemBundleProvider</c>'s walk, through
+    /// which a load and an index regeneration both list the bundle) or
     /// reports on what it sees (<c>Bundle.TryResolveResource</c>'s status,
     /// which <c>okf validate</c> reports). That status also precedes a read,
     /// so the read re-checks strictly instead: <c>Bundle.ReadResourceText</c>
@@ -243,7 +243,7 @@ internal static class ReparsePoints
     /// The comparison used to detect that the walk has reached
     /// <paramref name="root"/>. Every current caller of this walk and of its
     /// strict twin passes <see cref="StringComparison.Ordinal"/> uniformly --
-    /// the 2-arg overloads, <c>IndexGenerator</c>'s private wrapper,
+    /// the 2-arg overloads, <c>FileSystemBundleProvider</c>'s guards,
     /// <c>FileMemoryStore.PathComparison</c>, <c>CatalogPathResolver</c>'s
     /// <c>ContainmentComparison</c> and <c>HtmlWriter.GuardWithinOutputDirectory</c>
     /// all do. The parameter stays explicit rather than hardcoding

@@ -60,6 +60,16 @@ and this project adheres to
 - **`BundleConceptWriter.AppendLog(kind, text, date?)`**: appends one entry
   to the bundle root's `log.md` (spec §9), with the field guards and result
   strings of `OkfBundleTools.AppendLog`, which now delegates to it.
+- **`IndexGenerator` over a provider.** `IndexGenerator.RegenerateIndexes(provider,
+  options)` and `RegenerateIndexesWith(provider, synthesize, options)`
+  regenerate the `index.md` files of any writable `IBundleProvider` and return
+  a `BundleWriteReport`: the `index.md` keys written, in order, and those that
+  were not, with why (a key the run's key policy refuses — such an `index.md`
+  is neither read nor written — a path the provider refuses, a creation the
+  tree check refuses, a write that kept conflicting, an I/O error, a root
+  `index.md` that cannot be read). `synthesize` receives the directory's key prefix (`a/b`).
+  The `string` overloads keep their return values, their order and
+  `relativeDir` with the OS separator.
 - **`BundleWriteNotCommittedException`**: a write the storage kept refusing
   without any effect, on every attempt; the object is unchanged (see Changed,
   "A failed commit says what happened").
@@ -325,6 +335,21 @@ and this project adheres to
   (`Error: log.md resolves through a reparse point (symlink/junction), or an
   entry that could not be inspected, inside the bundle, which is not
   allowed.`).
+- **`okf index` and `okf_regenerate_indexes` read and write through the
+  provider** (spec §8, §9): the bundle is listed and validated as a load lists
+  and validates it, and each `index.md` is written atomically, conditioned on
+  the version read (or on its absence), a conflict retried at most 3 times.
+  An `index.md` the provider refuses (a symlink or junction on its path, an
+  entry that cannot be inspected) is still skipped silently. The output does
+  not change, except that **a directory with no file under it, at any depth,
+  is no longer referenced by its parent's index** (spec §2, D2); a directory
+  holding only non-`.md` files still is. As in a load, a name that is no key
+  (a backslash, a control character, over 1 024 bytes) is not listed, a
+  directory whose only entries are symlinks or junctions is not referenced
+  (no listing follows a link), and the load's bounds apply. A directory
+  named `index.md` with files under it now ends the run with
+  `BundleWriteConflictException` where the write threw
+  `UnauthorizedAccessException`.
 
 ## [0.7.0] - 2026-10-14
 
