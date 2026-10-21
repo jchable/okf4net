@@ -300,7 +300,12 @@ public sealed class BundleWriter : IBundleWriter
         //   * every index.md is read and written by the provider, whose STRICT guards
         //     (IsReparsePointOrUninspectable) check the whole path AND the index.md entry itself
         //     before the temporary is created, and again under the commit lock right before the
-        //     commit; an index.md they refuse is skipped, never written through;
+        //     commit; an index.md those guards refuse (a link at it or above it) is skipped, never
+        //     written through. Any other refusal -- a name the storage cannot hold or would confuse
+        //     with another entry, a bound, an I/O error, an uninspectable directory met while
+        //     listing -- is not a skip: RegenerateIndexes either throws or skips as the "Failures"
+        //     remarks of IndexGenerator.RegenerateIndexesWith say, and nothing is ever written
+        //     through the refused entry in either case;
         //   * ReparsePoints.IsReparsePoint answers for Windows junctions and Unix symlinks alike.
         //
         // So this is the most heavily gated of the writes reachable from here, not the ungated one.
