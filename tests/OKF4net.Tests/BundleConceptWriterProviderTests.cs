@@ -64,6 +64,8 @@ public class BundleConceptWriterProviderTests
     [Fact]
     public void The_write_matrix_lists_every_public_write_method_of_the_writer()
     {
+        // The guard covers public instance methods returning string or VerificationOutcome: a write
+        // method with another return type would escape it.
         var reflected = typeof(BundleConceptWriter)
             .GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly)
             .Where(m => !m.IsSpecialName && (m.ReturnType == typeof(string) || m.ReturnType == typeof(VerificationOutcome)))
