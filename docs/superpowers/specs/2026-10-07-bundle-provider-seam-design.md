@@ -587,7 +587,7 @@ comme n'importe quelle autre.
   > **Note du 2026-10-20 (lot B, revues externes exécutées, B42 à B48) :**
   > `ReplaceFile` peut aussi échouer **sans effet** (erreur 1175, mesurée deux
   > fois en 1 500 commits, lecteurs ouverts) : le commit est refait, au plus
-  > trois fois, depuis la re-vérification de la condition sur les octets stockés,
+  > trois fois en tout, depuis la re-vérification de la condition sur les octets stockés,
   > puis échoue avec `BundleWriteNotCommittedException`, la cible intacte (B43).
   > Une lecture réessaie la fenêtre de `ReplaceFile` (violation de partage, ou
   > entrée listée un instant plus tôt puis introuvable), sous Windows seulement,

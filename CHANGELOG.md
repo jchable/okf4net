@@ -245,7 +245,7 @@ and this project adheres to
   the target untouched and no temporary. A replacement that Windows
   `ReplaceFile` refuses without any effect — error 1175, seen twice in 1 500
   commits while readers held the object open, or a sharing violation — is made
-  again, at most three times, each time from the re-check of its condition;
+  again, at most three times in all, each time from the re-check of its condition;
   after that it is `BundleWriteNotCommittedException` (new), the object
   unchanged and no temporary left. Any other failure of the commit call is
   classified from the disk once the boundary and the path guards have been
@@ -261,7 +261,7 @@ and this project adheres to
   concurrent reader can for a moment find no object under the name or meet a
   sharing violation (measured on plain opens: 2.07 % and 1.78 % of 192 649);
   `Read` retries both — only when the name had just been listed — at most
-  three times, 5 to 20 ms apart, which narrows that window without closing it.
+  three attempts in all, 5 to 20 ms apart, which narrows that window without closing it.
   A key that does not exist is answered at once.
 - **Durability of a filesystem write, stated** (README, "Writing through a
   provider"): after `Write` returns, the bytes were flushed to stable storage
@@ -338,7 +338,7 @@ and this project adheres to
 - **`okf index` and `okf_regenerate_indexes` read and write through the
   provider** (spec §8, §9): the bundle is listed and validated as a load lists
   and validates it, and each `index.md` is written atomically, conditioned on
-  the version read (or on its absence), a conflict retried at most 3 times.
+  the version read (or on its absence), a conflict retried, at most 3 attempts in all.
   An `index.md` the provider refuses (a symlink or junction on its path, an
   entry that cannot be inspected) is still skipped silently. The output does
   not change, except that **a directory with no file under it, at any depth,
@@ -353,13 +353,17 @@ and this project adheres to
 - **`okf index` is slower on a large bundle.** Regenerating the indexes now
   lists, validates and reads the bundle through the provider, as a load does,
   and commits every `index.md` atomically. On 3 000 flat concepts (medians of
-  7 runs, the two builds alternating), three series measured on one machine
-  for this change put it at +13.6 % to +26.1 % longer than before (0.84 to
-  0.92 s before, 1.03 to 1.05 s after, a median of +19.9 % over the three);
-  `okf validate` varied between -1.1 % and +3.0 % over the same series, with
-  overlapping ranges, so no stable change is established. Measurements on one
-  machine are not a general guarantee. Bringing `okf index` back down is
-  tracked in #208.
+  7 runs, the two builds alternating), eighteen series measured on one
+  machine for this change (fifteen during its drafting and its external
+  reviews, three at its final check) put it at +13.6 % to +37.5 % longer than
+  before, with a median of +23.4 %. Over the twelve of those series that also
+  timed `okf validate`, it varied between -1.3 % and +9.5 % (median +2.4 %),
+  with overlapping ranges, so no stable change is established. The series
+  used the Debug builds through `dotnet okf.dll` (the plan's benchmark script);
+  the cost of the Native AOT (Release) `okf` binary that users run was not
+  measured. In the three final series both builds wrote the same bytes.
+  Measurements on one machine are not a general guarantee. Bringing `okf index`
+  back down is tracked in #208.
 
 ## [0.7.0] - 2026-10-14
 

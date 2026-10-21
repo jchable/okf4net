@@ -322,7 +322,7 @@ or, under a policy that folds names, a sibling differing only in case or
 Unicode form — so it never writes what the next load would discard. A
 read-only provider makes every write method throw `BundleReadOnlyException`.
 `AppendToConceptAtomic` and `RecordVerifications` write conditioned on the
-version they read and retry a conflict at most three times, re-reading each
+version they read and retry a conflict, at most three attempts in all, re-reading each
 time (so `buildBody` must be a pure function of the body it receives);
 `WriteConcept(…, BundleWriteCondition)` lets a caller condition a rewrite on
 the version it read itself, and is never retried.

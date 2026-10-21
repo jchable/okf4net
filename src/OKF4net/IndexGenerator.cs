@@ -149,7 +149,7 @@ public static class IndexGenerator
     /// <para>
     /// <b>Atomic, conditional writes.</b> Each <c>index.md</c> is committed
     /// atomically, conditioned on the version just read (or on its absence), and a
-    /// conflict with another writer is retried at most three times, reading again
+    /// conflict with another writer is retried, at most three attempts in all, reading again
     /// each time. A regeneration takes no lock of its own (its callers lock, or
     /// not): a concurrent write surfaces as a conflict and a retry, never as a lost
     /// update.
@@ -198,7 +198,7 @@ public static class IndexGenerator
     /// conditioned on the version read (<see cref="BundleWriteCondition.IfMatch"/>, or
     /// <see cref="BundleWriteCondition.MustNotExist"/> for a new one), a creation first
     /// passing the tree check every creation of the core passes. A conflict is retried
-    /// at most three times, reading again each time.
+    /// (at most three attempts in all), reading again each time.
     /// </summary>
     /// <param name="provider">Where the bundle is read and written.</param>
     /// <param name="synthesize">The subdirectory-description synthesizer; it receives the directory's key prefix with <c>/</c> as separator (<c>a/b</c>).</param>
