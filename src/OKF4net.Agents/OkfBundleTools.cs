@@ -7,6 +7,7 @@ using Microsoft.Extensions.AI;
 using OKF4net.Agents.Internal;
 using OKF4net.Attestation;
 using OKF4net.Internal;
+using OKF4net.Providers;
 using OKF4net.Yaml;
 
 namespace OKF4net.Agents;
@@ -148,6 +149,17 @@ public sealed class OkfBundleTools
     /// <param name="orchestrator">The attestation orchestrator to run §10.5 computations through, or <see langword="null"/> to leave attested-computation execution unwired.</param>
     /// <exception cref="ArgumentException"><paramref name="bundleRoot"/> does not exist.</exception>
     public OkfBundleTools(string bundleRoot, AttestationOrchestrator? orchestrator)
+        : this(bundleRoot, orchestrator, writeProvider: null)
+    {
+    }
+
+    /// <summary>
+    /// As <see cref="OkfBundleTools(string, AttestationOrchestrator?)"/>, with the provider the
+    /// writer writes through when it is not the filesystem one built over
+    /// <paramref name="bundleRoot"/> — a test seam (a provider that commits and then fails with
+    /// an unknown outcome); reads still go through <paramref name="bundleRoot"/>.
+    /// </summary>
+    internal OkfBundleTools(string bundleRoot, AttestationOrchestrator? orchestrator, IBundleProvider? writeProvider)
     {
         if (!Directory.Exists(bundleRoot))
         {
@@ -157,7 +169,9 @@ public sealed class OkfBundleTools
         BundleRoot = bundleRoot;
         _orchestrator = orchestrator;
 
-        _writer = new BundleConceptWriter(bundleRoot, onWriteCommitted: () => _bundle = null);
+        _writer = writeProvider is null
+            ? new BundleConceptWriter(bundleRoot, onWriteCommitted: () => _bundle = null)
+            : new BundleConceptWriter(writeProvider, onWriteCommitted: () => _bundle = null);
         _writer.AutoStampGenerated = true;
         _writer.UtcNow = () => UtcNow();
     }
@@ -218,6 +232,23 @@ public sealed class OkfBundleTools
         {
             _bundle = null;
         }
+    }
+
+    /// <summary>
+    /// A write tool's result, passed on: an <c>Error:</c> text drops the cached bundle. The
+    /// writer's notification (which does that after a committed write) never runs for a write
+    /// whose outcome is unknown — the content may have landed all the same — so a failed write
+    /// must not leave the cache serving what the file no longer holds. A refused write costs one
+    /// reload at the next read.
+    /// </summary>
+    private string DropBundleOnError(string result)
+    {
+        if (result.StartsWith("Error:", StringComparison.Ordinal))
+        {
+            InvalidateBundle();
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -653,7 +684,7 @@ public sealed class OkfBundleTools
         [Description("The concept id (path without .md), e.g. 'tables/refunds'.")] string conceptId,
         [Description("Frontmatter as 'key: value' lines (YAML subset).")] string frontmatterYaml,
         [Description("The markdown body.")] string body) =>
-        _writer.WriteConcept(conceptId, frontmatterYaml, body);
+        DropBundleOnError(_writer.WriteConcept(conceptId, frontmatterYaml, body));
 
     /// <summary>
     /// Records a review of one or more concepts: adds — or replaces — the
@@ -694,7 +725,7 @@ public sealed class OkfBundleTools
             return VerifyUsageMessage;
         }
 
-        return RunTool(() =>
+        return DropBundleOnError(RunTool(() =>
         {
             // The single governed §11 floor (BundleConceptWriter.CheckVerificationTargets,
             // also called first thing inside RecordVerifications itself, same
@@ -762,6 +793,13 @@ public sealed class OkfBundleTools
             // never dates anything itself.
             var outcome = _writer.RecordVerifications(ids, by, at);
 
+            // A batch that failed part-way (an unknown outcome included) may have written
+            // concepts the writer's notification did not report: drop the cache.
+            if (!outcome.Recorded)
+            {
+                InvalidateBundle();
+            }
+
             // No OneLine here: AuditText.FormatVerificationRecord makes every
             // value it interpolates line-safe itself (#123), quoting one that
             // carries a C0/C1 control or U+2028/U+2029 and leaving every other
@@ -794,7 +832,7 @@ public sealed class OkfBundleTools
             }
 
             return lines.ToString();
-        });
+        }));
     }
 
     /// <summary>
@@ -833,7 +871,7 @@ public sealed class OkfBundleTools
         string conceptId,
         string frontmatterYamlIfCreating,
         Func<string?, string> buildBody) =>
-        _writer.AppendToConceptAtomic(conceptId, frontmatterYamlIfCreating, buildBody);
+        DropBundleOnError(_writer.AppendToConceptAtomic(conceptId, frontmatterYamlIfCreating, buildBody));
 
     /// <summary>
     /// Test-only hook, forwarded to <see cref="BundleConceptWriter.BeforeLateReparseCheckForTest"/>
@@ -884,7 +922,7 @@ public sealed class OkfBundleTools
     public string AppendLog(
         [Description("Entry kind, e.g. 'Update' or 'Creation'.")] string kind,
         [Description("The entry text.")] string text) =>
-        OneLine(_writer.AppendLog(kind, text));
+        OneLine(DropBundleOnError(_writer.AppendLog(kind, text)));
 
     /// <summary>
     /// Regenerates every <c>index.md</c> in the bundle (progressive
@@ -903,8 +941,16 @@ public sealed class OkfBundleTools
             IReadOnlyList<string> written;
             using (_writer.EnterWriteLock())
             {
-                written = IndexGenerator.RegenerateIndexes(BundleRoot);
-                _bundle = null;
+                try
+                {
+                    written = IndexGenerator.RegenerateIndexes(BundleRoot);
+                }
+                finally
+                {
+                    // Also when the pass fails part-way (an unknown outcome among others): the
+                    // indexes it did write are on disk and no notification reports them.
+                    _bundle = null;
+                }
             }
 
             if (written.Count == 0)

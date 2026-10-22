@@ -848,7 +848,15 @@ public sealed class BundleConceptWriter
     /// The write is therefore conditioned on the version read
     /// (<see cref="BundleWriteCondition.IfMatch"/>, or
     /// <see cref="BundleWriteCondition.MustNotExist"/> for a creation): a
-    /// change another writer committed in between is never overwritten. The
+    /// change another writer committed in between, in this process, is not
+    /// overwritten. Another process is not excluded: the filesystem provider
+    /// checks the condition atomically with the replacement only within one
+    /// process, so a write that lands between its last check and its commit
+    /// can still be overwritten, and its entry lost although this call reported
+    /// success (issue #178; measured with two processes each appending 150
+    /// entries to one bundle: on Linux up to 100 of 297 reported-committed
+    /// appends were lost; on Windows 17 were lost, with unknown outcomes
+    /// reported and temporaries left behind). The
     /// whole read-transform-write is then tried again on what is there now —
     /// at most <see cref="MaxAttempts"/> attempts, with a short random delay
     /// between them (spec §4) — and after the last one the conflict is
@@ -925,8 +933,11 @@ public sealed class BundleConceptWriter
                 // the whole read-modify-write atomic against a concurrent
                 // WriteConcept/AppendToConceptAtomic call for the same concept.
                 // The write is conditioned on the version read, so a writer
-                // outside this lock (another process) cannot be overwritten;
-                // its conflict re-reads and runs buildBody again (WithRetries).
+                // outside this lock but in this process (another provider
+                // instance) is not overwritten; its conflict re-reads and runs
+                // buildBody again (WithRetries). Another process is excluded
+                // only up to the provider's last check: the window before the
+                // commit is open (issue #178).
                 using (EnterWriteLock())
                 {
                     return WriteThenNotify(committed => WithRetries(subject, () =>
@@ -2358,7 +2369,8 @@ public sealed class BundleConceptWriter
     /// <see cref="RetryDelay"/> between attempts. Each attempt must re-read the current state. After
     /// <see cref="MaxAttempts"/> conflicting attempts, returns the writer's message for
     /// <paramref name="subject"/>. CALLER MUST hold the write lock: the conflicts come from writers
-    /// outside it (another process, a writer over another provider instance with another lock).
+    /// outside it (a writer over another provider instance with another lock, or another process
+    /// whose write landed before the provider's last check; the window after it is issue #178).
     /// An attempt holds the storage operation only — never the write notification, which its
     /// caller invokes once this method has returned (decision B48) — so a conflict caught here is
     /// always a refused write, never something that happened after a commit.

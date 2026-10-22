@@ -50,7 +50,11 @@ public interface IBundleProvider
     /// Stores <paramref name="content"/> under <paramref name="key"/> if
     /// <paramref name="condition"/> holds, and returns the version a later <see cref="Read"/> of
     /// these bytes reports (spec §1, §4).
-    /// <para><b>Conditions</b>, checked atomically with the replacement:
+    /// <para><b>Conditions</b>, checked against the stored state before the replacement. A
+    /// provider documents how far that check is atomic with the replacement:
+    /// <see cref="FileSystemBundleProvider"/> makes it so only within one process (an in-process
+    /// lock), and another process can write the same object between its last check and its commit
+    /// (issue #178).
     /// <see cref="BundleWriteCondition.None"/> holds whatever the object's state (the storage may
     /// still report a creation that loses a race to another writer as
     /// <see cref="BundleWriteConflictException"/>: on the filesystem, a <c>None</c> creation can be
@@ -59,7 +63,9 @@ public interface IBundleProvider
     /// <see cref="FileSystemBundleProvider.Write"/>);
     /// <see cref="BundleWriteCondition.MustNotExist"/> holds while no object exists under the key;
     /// <see cref="BundleWriteCondition.IfMatch"/> holds while an object exists under the key and
-    /// its current version is the expected one — never for an absent object.</para>
+    /// its current version is the expected one — never for an absent object, so that an
+    /// <see cref="BundleWriteCondition.IfMatch"/> write is refused, with nothing created, where
+    /// the object cannot exist.</para>
     /// <para><b>Atomic</b>, per object: whatever fails, the key holds the previous content (no
     /// object, for a creation) or the whole new content, never a part of it, and no reader, in
     /// this process or another, ever reads a part of the new content. A provider documents

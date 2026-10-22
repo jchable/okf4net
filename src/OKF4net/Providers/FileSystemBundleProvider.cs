@@ -352,7 +352,17 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// sibling differing only in case or Unicode form on a volume that folds them, a Windows name
     /// with a trailing dot or space, a character no Windows name carries — is refused with
     /// <see cref="BundleWriteConflictReason.NameUnavailable"/> before anything is created.</para>
-    /// <para><b>Permissions.</b> A target the process may not write is refused as
+    /// <para><b>Permissions.</b> Every write creates its temporary beside the target and commits by
+    /// rename, so the process needs the right to create files in, and to rename within, the
+    /// target's directory — more than <c>File.WriteAllText</c>, which needed only the right to
+    /// write the target. A directory the process may not create files in (mode 0555 on Unix; on
+    /// Windows an ACL denying it the creation of files) refuses every write, unconditional or not,
+    /// with the raw <see cref="UnauthorizedAccessException"/> naming the temporary, the object
+    /// untouched and no temporary left; on Unix, in a sticky directory shared between users (like
+    /// <c>/tmp</c>), a file owned by another user cannot be replaced either. There is no in-place
+    /// fallback, which would reopen the torn writes of issue #157: a bundle in a directory its
+    /// writer may not create files in is not a supported deployment for writes. Beyond that, a
+    /// target the process may not write is refused as
     /// <c>File.WriteAllText</c> refused it, although a rename would need only the directory's
     /// permission on Unix: the target is opened for writing before the commit. Only
     /// <see cref="BundleWriteConditionKind.IfMatch"/> reads the target (to compare its SHA-256),
@@ -395,9 +405,18 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// preparations and that check. A race lost before the in-lock check ends in a replacement,
     /// as <c>File.WriteAllText</c> did. Nothing was changed.</para>
     /// <para><b>A root that does not exist yet</b> is created by the first write, with any
-    /// missing ancestor, as the bundle writer always did. The confinement boundary is checked
+    /// missing ancestor, as the bundle writer's concept writes always did; its <c>log.md</c>
+    /// append, which wrote with <c>File.WriteAllText</c> without creating the directory, now
+    /// creates it too. The confinement boundary is checked
     /// before and after, and every guard is applied to the path as before; a root that exists
-    /// as a file is an <see cref="IOException"/>.</para>
+    /// as a file is an <see cref="IOException"/>. An <see cref="BundleWriteConditionKind.IfMatch"/>
+    /// write creates nothing: where the root or a parent directory does not exist the object does
+    /// not either, the condition cannot hold, and the write is refused with
+    /// <see cref="BundleWriteConflictException"/> before any directory is created. An
+    /// <see cref="BundleWriteConditionKind.IfMatch"/> write whose object is removed between its
+    /// resolution and the commit is the same conflict; an unconditional write in that case
+    /// creates the object, or prepares again (at most three times in all) and then raises the
+    /// conflict.</para>
     /// <para><b>What a concurrent reader sees.</b> Never a part of the new content. On Unix the
     /// commit is a <c>rename</c>, so a reader finds the old object or the new one. On Windows
     /// <c>ReplaceFile</c> is atomic for the stored state but not for readers: while it runs, a
@@ -413,7 +432,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// object after a creation returned, and a temporary behind: the directory entry is not
     /// flushed (no .NET API flushes a directory).</para>
     /// <para><b>Orphaned temporaries.</b> A temporary left behind — a process crash between its
-    /// creation and the commit, an unknown outcome, or a
+    /// creation and the commit, an unknown outcome (on Windows, ordinary contention between
+    /// two processes writing one object can cause it: <c>ReplaceFile</c> errors 1176 and 1177), or a
     /// failure whose temporary could no longer be reached safely or could not be removed — is not a <c>.md</c>, so the
     /// core ignores it as a concept; it still counts toward <see cref="BundleLimits.MaxEntries"/>
     /// and a producer that requires an empty output directory sees it. Nothing removes it
@@ -423,11 +443,20 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// the committed object (measured). An object whose explicit ACL is narrower than its
     /// directory's is therefore readable under the directory's ACL, through the temporary, while
     /// its next content is being written.</para>
-    /// <para><b>Inter-process window.</b> The commit lock is in-process: between the re-check and
-    /// the commit another process can act (issue #178). On Unix
-    /// <see cref="File.Move(string, string, bool)"/> without overwrite is an <c>lstat</c> then a
-    /// <c>rename</c> (measured), so a name another process creates in that window is
-    /// replaced.</para>
+    /// <para><b>Inter-process window.</b> The condition of a write is checked atomically with
+    /// the replacement only within one process: the commit lock is an in-process lock, and
+    /// between the re-check and the commit another process can write the same object (issue
+    /// #178, the tracked follow-up; nothing here promises a cross-process lock). That write is
+    /// then overwritten although the condition held when it was checked, and its caller was told
+    /// it was committed. Measured during the review of this provider, with two processes each
+    /// making 150 <c>AppendLog</c>/<c>AppendToConceptAtomic</c> appends to one bundle: on Linux up to
+    /// 100 of 297 appends reported committed were lost; on Windows 17 were lost, with
+    /// <c>ReplaceFile</c> errors 1176/1177 (<see cref="BundleWriteOutcomeUnknownException"/>), a log
+    /// momentarily absent and <c>.okf-write-*.tmp</c> temporaries left behind by ordinary
+    /// contention (the former in-place writer lost more entries in the same Windows test but never
+    /// left a temporary). On Unix <see cref="File.Move(string, string, bool)"/> without
+    /// overwrite is an <c>lstat</c> then a <c>rename</c> (measured), so a name another process
+    /// creates in that window is replaced.</para>
     /// </remarks>
     public BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition)
     {
@@ -436,15 +465,15 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
         for (var attempt = 1; ; attempt++)
         {
             CheckBoundary();
-            var parent = ResolveParentForWrite(key);
+            var parent = ResolveParentForWrite(key, condition);
             var existing = FindExactForWrite(key, parent, key.Name);
             if (existing is not null)
             {
                 GuardObject(key, existing);
             }
 
-            var temporary = WriteTemporary(parent, existing, content);
-            if (CommitTemporary(key, parent, temporary, preparedAsReplacement: existing is not null, written, condition))
+            var temporary = WriteTemporary(parent, existing, content, out var preparedAsReplacement);
+            if (CommitTemporary(key, parent, temporary, preparedAsReplacement, written, condition))
             {
                 ForgetListings(key);
                 return written;
@@ -482,6 +511,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
         {
             CheckBoundary();
             GuardStrict(key, parent);
+            DeleteLockedForTest?.Invoke(parent);
             var current = ListExact(parent, key.Name);
             if (current is not null)
             {
@@ -558,6 +588,12 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// </summary>
     internal Action<string, string, bool>? CommitForTest { get; set; }
 
+    /// <summary>Test hook: called under the commit lock of a write once the target's entry is matched and guarded, with its full path, before the target is opened to be hashed or probed for writing — the object vanishing in that window. <see langword="null"/> outside tests.</summary>
+    internal Action<string>? WriteTargetMatchedForTest { get; set; }
+
+    /// <summary>Test hook: called by <see cref="Delete"/> under the commit lock, with the parent directory's full path, once the parent is guarded again and before the object is looked up — another process acting in that window (a link planted under the object's name). <see langword="null"/> outside tests.</summary>
+    internal Action<string>? DeleteLockedForTest { get; set; }
+
     /// <summary>Test hook: called by <see cref="Read"/> with the object's full path on every attempt, once every check has passed and right before the object is opened — what it throws is what the open threw. <see langword="null"/> outside tests.</summary>
     internal Action<string>? ReadOpeningForTest { get; set; }
 
@@ -599,10 +635,18 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// first when it does not exist); finally the whole chain from
     /// the root and the object's own entry are STRICT-checked (<see cref="GuardStrict"/>), after
     /// any creation. Before anything is listed, every segment must be storable literally and the
-    /// path as the OS would follow it passes the same STRICT check.
+    /// path as the OS would follow it passes the same STRICT check. Under
+    /// <see cref="BundleWriteConditionKind.IfMatch"/> nothing is created: a root or a parent that
+    /// is absent means the object is, the condition cannot hold, and the write is refused with a
+    /// <see cref="BundleWriteConflictException"/>.
     /// </summary>
-    private string ResolveParentForWrite(BundleKey key)
+    private string ResolveParentForWrite(BundleKey key, BundleWriteCondition condition)
     {
+        // An IfMatch write names an object that exists: where the root or a parent directory
+        // does not, the condition cannot hold, and the write is refused before anything is
+        // created (a refused write changes nothing, directories included).
+        var creates = condition.Kind != BundleWriteConditionKind.IfMatch;
+
         foreach (var segment in key.Segments)
         {
             if (CannotBeStoredLiterally(segment))
@@ -624,6 +668,11 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
         // create several ancestors, and every guard below stays STRICT.
         if (!Directory.Exists(_fullRoot))
         {
+            if (!creates)
+            {
+                throw new BundleWriteConflictException(key);
+            }
+
             Directory.CreateDirectory(_fullRoot);
             CheckBoundary();
         }
@@ -636,6 +685,11 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
             var next = FindExactForWrite(key, current, segment);
             if (next is null)
             {
+                if (!creates)
+                {
+                    throw new BundleWriteConflictException(key);
+                }
+
                 next = Path.Join(current, segment);
                 Directory.CreateDirectory(next);
                 if (FindExactForWrite(key, current, segment) is null)
@@ -678,6 +732,12 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
         if (!key.Segments.Any(CannotBeStoredLiterally))
         {
             GuardStrict(key, Path.Join(_fullRoot, string.Join(Path.DirectorySeparatorChar, key.Segments)));
+        }
+
+        // A root that does not exist holds nothing, as for Exists: listing it would throw.
+        if (!Directory.Exists(_fullRoot))
+        {
+            return null;
         }
 
         var current = _fullRoot;
@@ -783,8 +843,17 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// closes it and returns its path; on any failure removes it (<see cref="DeleteTemporary"/>)
     /// and rethrows. See <see cref="Write"/> for the modes.
     /// </summary>
-    private string WriteTemporary(string parent, string? existing, ReadOnlyMemory<byte> content)
+    /// <remarks>
+    /// <paramref name="preparedAsReplacement"/> is whether the temporary was prepared for an
+    /// object that exists: <see langword="false"/> for a creation, and also when the object
+    /// named by <paramref name="existing"/> vanished before its mode could be read (Unix: another
+    /// writer deleted it between the resolution and this call) — the temporary then has the mode
+    /// a new file gets, and <see cref="CommitTemporary"/> prepares again if the object is back
+    /// under the lock.
+    /// </remarks>
+    private string WriteTemporary(string parent, string? existing, ReadOnlyMemory<byte> content, out bool preparedAsReplacement)
     {
+        preparedAsReplacement = existing is not null;
         var name = TemporaryNameForTest?.Invoke() ?? TemporaryPrefix + Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(16)) + TemporarySuffix;
         var temporary = Path.Join(parent, name);
         // BufferSize 0: no managed buffer sits between Write and the file. With the default 4 KiB
@@ -796,8 +865,17 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
         UnixFileMode? targetMode = null;
         if (existing is not null && !OperatingSystem.IsWindows())
         {
-            targetMode = File.GetUnixFileMode(existing);
-            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+            try
+            {
+                targetMode = File.GetUnixFileMode(existing);
+                options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+            }
+            catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
+            {
+                // Gone since it was resolved: prepared as a creation (no target mode to give);
+                // the check under the lock decides what that means (A-I1).
+                preparedAsReplacement = false;
+            }
         }
 
         var stream = new FileStream(temporary, options);
@@ -837,7 +915,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// Re-checks and commits under the object's lock (see <see cref="Write"/>): <see langword="true"/>
     /// once committed; <see langword="false"/>, with the temporary removed, when on Unix the object
     /// appeared since an unconditional creation was prepared — its temporary has a new file's mode
-    /// where the object has its own, so <see cref="Write"/> prepares again as a replacement.
+    /// where the object has its own, so <see cref="Write"/> prepares again as a replacement — or
+    /// when an unconditional write found the object gone as it opened it to probe it.
     /// </summary>
     private bool CommitTemporary(BundleKey key, string parent, string temporary, bool preparedAsReplacement, BundleObjectVersion written, BundleWriteCondition condition)
     {
@@ -863,9 +942,19 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
                     if (current is not null)
                     {
                         GuardObject(key, current);
+                        WriteTargetMatchedForTest?.Invoke(current);
                         if (condition.Kind == BundleWriteConditionKind.IfMatch)
                         {
-                            before = HashForWrite(key, current);
+                            try
+                            {
+                                before = HashForWrite(key, current);
+                            }
+                            catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
+                            {
+                                // Removed since the match: the object no longer exists, so the
+                                // condition cannot hold (B-I2).
+                                throw new BundleWriteConflictException(key);
+                            }
                         }
                     }
 
@@ -876,7 +965,16 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
 
                     if (current is not null && condition.Kind == BundleWriteConditionKind.None)
                     {
-                        EnsureWritable(current);
+                        try
+                        {
+                            EnsureWritable(current);
+                        }
+                        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
+                        {
+                            // Removed since the match: prepare again over an absent object, which
+                            // is bounded by MaxPreparations like any other re-preparation (B-I2).
+                            return false;
+                        }
                     }
 
                     if (current is not null && !preparedAsReplacement && !OperatingSystem.IsWindows())
@@ -921,6 +1019,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
                                 throw; // the raw failure; the temporary is removed below
                             case CommitFailure.ChangedByAnother:
                                 throw new BundleWriteConflictException(key);
+                            case CommitFailure.NameTaken:
+                                throw new BundleWriteConflictException(key, BundleWriteConflictReason.NameUnavailable);
                             case CommitFailure.Committed:
                                 settled = true;
                                 return true;
@@ -966,6 +1066,9 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
         /// <summary>The temporary is still there and the target changed: another writer landed, ours did not.</summary>
         ChangedByAnother,
 
+        /// <summary>The temporary is still there and a directory sits under the key: the name is taken, and ours did not land.</summary>
+        NameTaken,
+
         /// <summary>The temporary is gone and the target holds the new bytes: the commit took effect.</summary>
         Committed,
 
@@ -985,8 +1088,11 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// path a link has entered since the commit's checks. That narrows the window between a check
     /// and an access; it does not close it (issue #178). Then a temporary still present means the
     /// rename did not happen: the target is as before (<see cref="CommitFailure.NothingChanged"/>)
-    /// or changed by another writer (<see cref="CommitFailure.ChangedByAnother"/>) — except for an
-    /// unconditional replacement (<paramref name="existed"/> without <paramref name="before"/>),
+    /// or changed by another writer (<see cref="CommitFailure.ChangedByAnother"/>; a directory
+    /// under the key is <see cref="CommitFailure.NameTaken"/>, and an entry under the key that
+    /// cannot be hashed — unreadable by this process, in use, too large — is changed by another
+    /// writer too, so that the verdict does not depend on the caller's read rights) — except for
+    /// an unconditional replacement (<paramref name="existed"/> without <paramref name="before"/>),
     /// whose target is not read, since its version was never needed and it may not be readable:
     /// nothing of that write happened. A temporary gone and a target holding the new bytes means
     /// the commit took effect; anything else is unknown. Reads only; never throws.
@@ -1010,12 +1116,32 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
             }
 
             var now = ListExact(parent, key.Name);
-            BundleObjectVersion? after = now is null ? null : HashForRead(key, now);
             if (temporaryLeft)
             {
-                return after == before ? CommitFailure.NothingChanged : CommitFailure.ChangedByAnother;
+                // The rename did not happen. What is under the key now is what another writer
+                // left, whatever the caller may read of it: a directory is a name taken; an entry
+                // that cannot be hashed (unreadable, too large, in use) is not our bytes.
+                if (now is null)
+                {
+                    return before is null ? CommitFailure.NothingChanged : CommitFailure.ChangedByAnother;
+                }
+
+                if (Directory.Exists(now))
+                {
+                    return CommitFailure.NameTaken;
+                }
+
+                try
+                {
+                    return HashForRead(key, now) == before ? CommitFailure.NothingChanged : CommitFailure.ChangedByAnother;
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException or BundleObjectTooLargeException)
+                {
+                    return CommitFailure.ChangedByAnother;
+                }
             }
 
+            BundleObjectVersion? after = now is null ? null : HashForRead(key, now);
             return after == written ? CommitFailure.Committed : CommitFailure.Unknown;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or BundleAccessRefusedException or BundleObjectTooLargeException)
