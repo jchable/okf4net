@@ -283,6 +283,25 @@ public sealed class BundleConceptWriter
     {
     }
 
+    /// <summary>
+    /// Creates a writer over the provider and options of <paramref name="handle"/> (spec §5.2,
+    /// §9): every committed write first invalidates the handle (its next use reloads the image;
+    /// a refused or failed write does not), then runs <paramref name="onWriteCommitted"/>.
+    /// </summary>
+    /// <param name="handle">The handle whose provider is written and whose image is invalidated after each committed write.</param>
+    /// <param name="onWriteCommitted">As for <see cref="BundleConceptWriter(string, Action?)"/>, run after the handle's invalidation.</param>
+    public BundleConceptWriter(BundleHandle handle, Action? onWriteCommitted = null)
+        : this(
+            (handle ?? throw new ArgumentNullException(nameof(handle))).Provider,
+            onWriteCommitted is null ? handle.Invalidate : () =>
+            {
+                handle.Invalidate();
+                onWriteCommitted();
+            },
+            handle.Options)
+    {
+    }
+
     /// <summary>Creates a writer over <paramref name="provider"/> (spec §9).</summary>
     /// <param name="provider">Where the bundle is read and written. A provider whose <see cref="BundleProviderCapabilities.CanWrite"/> is <see langword="false"/> makes every write method throw <see cref="BundleReadOnlyException"/>. The in-process write lock is keyed by the provider's <see cref="IBundleProvider.Id"/> unless it is a <see cref="FileSystemBundleProvider"/> itself (keyed by its root): a decorator around a <see cref="FileSystemBundleProvider"/> therefore does not share the directory's lock with a writer built from the root string, and two such writers are serialised only by the provider's own commit lock and the write conditions (decision B11).</param>
     /// <param name="onWriteCommitted">As for <see cref="BundleConceptWriter(string, Action?)"/>.</param>

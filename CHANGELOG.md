@@ -73,6 +73,22 @@ and this project adheres to
 - **`BundleWriteNotCommittedException`**: a write the storage kept refusing
   without any effect, on every attempt; the object is unchanged (see Changed,
   "A failed commit says what happened").
+- **`BundleHandle` (#139, lot C; spec §5.2, §5.3).** The holder of one
+  bundle's image: `new BundleHandle(provider, loadOptions, refreshPolicy)`,
+  `Current` (the image, loaded on first use), `Refresh()`, `Invalidate()`,
+  `IsStale`, `LastLoadError`. One load at a time (concurrent callers wait for
+  the load in progress), the image replaced as a whole, a failed reload keeps
+  the previous image served and marks it stale. `BundleRefreshPolicy`:
+  `Manual` (the default: the host calls `Refresh()`), `OnAccess` (the
+  provider's version token is compared before every use), `Every(interval)`
+  (compared at most once per interval, at an access) and `Notify` (a signal
+  from a provider implementing the new `IBundleChangeNotifier` makes the next
+  access compare the token; a signal is a hint, never a reload by itself). No
+  policy runs a timer or a thread. `Invalidate()` obliges the next use to
+  reload whatever the policy, and the obligation is acknowledged only by a
+  successful load started after it (spec §5.1). `new BundleConceptWriter(handle,
+  onWriteCommitted)` writes through the handle's provider under its options
+  and invalidates the handle after each committed write.
 
 ### Changed
 
