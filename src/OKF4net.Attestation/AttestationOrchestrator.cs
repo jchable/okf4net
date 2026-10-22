@@ -113,7 +113,7 @@ public sealed class AttestationOrchestrator
     /// <summary>
     /// Captures, once and before any runtime is called, everything a run executes (spec §5.4):
     /// the sanctioned computation — the inline <c># Computation</c> fence, or the
-    /// <c>computation:</c> file read through the provider (<see cref="Bundle.TryResolveResourceKey"/>,
+    /// <c>computation:</c> file read through the provider (the key the load surveyed,
     /// <see cref="Bundle.ReadResourceText(BundleKey, BundleObjectVersion?, out BundleObjectVersion)"/>),
     /// pinned to the version the image was loaded with (<see cref="Bundle.ExecutableResources"/>)
     /// — and the attester's source, pinned the same way. Each resource's surveyed state must be
@@ -127,7 +127,7 @@ public sealed class AttestationOrchestrator
     /// called with a <see langword="null"/> source. This narrows §10.5 for this implementation
     /// (docs/spec-conformance, S10.5-1).</para>
     /// <para>A refusal is an <see cref="AttestationOutcome"/>; only an unexpected exception
-    /// (not I/O or decoding) escapes.
+    /// (not I/O, decoding or an object over the bound) escapes.
     /// <see cref="AttestationCaptureResult.ImageOutdated"/> says whether the failure is one the
     /// image may be behind on — a resource missing, unreadable, refused, over the bound, or whose
     /// version changed — in which case a caller holding a <see cref="BundleHandle"/> invalidates
@@ -170,6 +170,9 @@ public sealed class AttestationOrchestrator
                     {
                         ExecutableResourceState.Unreadable or ExecutableResourceState.TooLarge
                             => Refused($"computation file '{computation.Path}' could not be read ({file.State})", imageOutdated: true),
+                        // A URL (or an undeclared path) creates no reload obligation (spec §5.1): only a change of the concept alters it.
+                        ExecutableResourceState.Url or ExecutableResourceState.Undeclared
+                            => Refused($"computation file '{computation.Path}' could not be resolved ({file.State})", imageOutdated: false),
                         _ => Refused($"computation file '{computation.Path}' could not be resolved ({file.State})", imageOutdated: true),
                     };
                 }
@@ -191,6 +194,11 @@ public sealed class AttestationOrchestrator
                             ? $"computation file '{computation.Path}' changed since the bundle was loaded"
                             : $"computation file '{computation.Path}' changed since it was shown; read it again with okf_get_computation before running it",
                         imageOutdated: true);
+                }
+                catch (BundleObjectTooLargeException)
+                {
+                    // Pinned at the load, replaced since by an object over the bound (spec §6).
+                    return Refused($"computation file '{computation.Path}' could not be read ({ExecutableResourceState.TooLarge})", imageOutdated: true);
                 }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
                 {
@@ -234,6 +242,10 @@ public sealed class AttestationOrchestrator
         catch (BundleVersionMismatchException)
         {
             return Refused($"attester resource '{attester.RawPath}' changed since the bundle was loaded", imageOutdated: true);
+        }
+        catch (BundleObjectTooLargeException)
+        {
+            return Refused($"attester resource '{attester.RawPath}' could not be read ({ExecutableResourceState.TooLarge})", imageOutdated: true);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
         {

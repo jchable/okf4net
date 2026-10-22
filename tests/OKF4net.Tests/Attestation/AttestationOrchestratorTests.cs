@@ -1333,6 +1333,12 @@ public class AttestationOrchestratorTests
             tmp.Write("references/q.sql", "SELECT 1\n");
         }
 
+        if (kind == "toolarge")
+        {
+            // Shrunk after the load: an unpinned read would now succeed, so only the surveyed state refuses.
+            File.WriteAllText(Path.Combine(tmp.Path, "references", "q.sql"), "SELECT 1\n");
+        }
+
         var captured = AttestationOrchestrator.Capture(bundle, bundle.Get(ConceptId.Parse("c/rev"))!);
 
         Assert.Null(captured.Capture);
@@ -1421,5 +1427,78 @@ public class AttestationOrchestratorTests
         var orch = OrchestratorWith(FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?>())));
 
         Assert.Throws<ArgumentNullException>(() => orch.RunAsync(null!, ConceptId.Parse("c/rev"), new Dictionary<string, object?>()));
+    }
+
+    /// <summary>
+    /// A resource pinned at the load whose read then fails with the over-the-bound exception (a
+    /// provider whose version did not move but whose object grew) is a refusal naming the state
+    /// ("could not be read (TooLarge)", image outdated), not an exception out of Capture or
+    /// RunAsync, and not the exception type's name. (<c>BundleObjectTooLargeException</c> is an
+    /// <see cref="IOException"/>, so the generic filter would also have caught it, with a wording
+    /// that names the type.)
+    /// </summary>
+    [Theory]
+    [InlineData("references/q.sql", "computation file")]
+    [InlineData("att.py", "attester resource")]
+    public async Task A_resource_found_too_large_at_the_run_is_refused_with_its_state_not_thrown(string grown, string what)
+    {
+        var storage = new Providers.InMemoryBundleProvider()
+            .Add("references/q.sql", "SELECT 1\n")
+            .Add("att.py", PinnedAttester)
+            .Add("c/rev.md", AttestedConcept("references/q.sql", "att.py", inlineFence: false));
+        var bundle = Bundle.Load(storage);
+        var id = ConceptId.Parse("c/rev");
+        Assert.All(new[] { bundle.ExecutableResources[id].Computation, bundle.ExecutableResources[id].Attester }, r => Assert.Equal(ExecutableResourceState.Pinned, r.State));
+
+        storage.FailReadOf(grown, new BundleObjectTooLargeException(BundleKey.Parse(grown), 400, 300));
+
+        var captured = AttestationOrchestrator.Capture(bundle, bundle.Get(id)!);
+        Assert.Null(captured.Capture);
+        Assert.True(captured.ImageOutdated);
+        Assert.Equal($"{what} '{grown}' could not be read (TooLarge)", Assert.Single(captured.Failure!.Reasons));
+
+        var outcome = await OrchestratorWith(FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" })))
+            .RunAsync(bundle, id, new Dictionary<string, object?>());
+        Assert.False(outcome.Displayable);
+        Assert.Equal(captured.Failure.Reasons, outcome.Reasons);
+    }
+
+    /// <summary>A version the caller observed that is not the image's is refused up front, though the file is unchanged, and nothing runs.</summary>
+    [Fact]
+    public async Task An_observed_version_that_is_not_the_images_is_refused_though_the_file_is_unchanged()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("references/q.sql", "SELECT 1\n");
+        tmp.Write("att.py", PinnedAttester);
+        tmp.Write("c/rev.md", AttestedConcept("references/q.sql", "att.py", inlineFence: false));
+        var bundle = Bundle.Load(tmp.Path);
+        var id = ConceptId.Parse("c/rev");
+
+        var captured = AttestationOrchestrator.Capture(bundle, bundle.Get(id)!, new BundleObjectVersion("x"));
+
+        Assert.Null(captured.Capture);
+        Assert.True(captured.ImageOutdated);
+        Assert.StartsWith("computation file 'references/q.sql' changed since it was shown", Assert.Single(captured.Failure!.Reasons), StringComparison.Ordinal);
+
+        // The same observation equal to the image's version is accepted.
+        var ok = AttestationOrchestrator.Capture(bundle, bundle.Get(id)!, bundle.ExecutableResources[id].Computation.Version);
+        Assert.NotNull(ok.Capture);
+        await Task.CompletedTask;
+    }
+
+    /// <summary>A URL computation is refused without marking the image outdated: only a change of the concept can alter it (spec §5.1).</summary>
+    [Fact]
+    public void A_URL_computation_is_refused_and_does_not_mark_the_image_outdated()
+    {
+        var storage = new Providers.InMemoryBundleProvider()
+            .Add("c/rev.md", AttestedConcept("https://example.com/q.sql", "att.py", inlineFence: false))
+            .Add("att.py", PinnedAttester);
+        var bundle = Bundle.Load(storage);
+
+        var captured = AttestationOrchestrator.Capture(bundle, bundle.Get(ConceptId.Parse("c/rev"))!);
+
+        Assert.Null(captured.Capture);
+        Assert.False(captured.ImageOutdated);
+        Assert.Equal("computation file 'https://example.com/q.sql' could not be resolved (Url)", Assert.Single(captured.Failure!.Reasons));
     }
 }

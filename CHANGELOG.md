@@ -103,10 +103,11 @@ and this project adheres to
 - **`AttestationOrchestrator.Capture` and `RunCapturedAsync`** (#139, lot C;
   spec §5.4). `Capture(bundle, concept, expectedComputationFileVersion?)`
   reads, once and before any runtime is called, everything a run executes —
-  the computation (inline, or the file through the provider, pinned to the
-  version the caller observed when it gives one) and the attester's source,
-  pinned to the version the image was loaded with — as an
-  `AttestationCapture`, or a non-displayable outcome with `ImageOutdated`
+  the computation (inline, or the file through the provider) and the attester's
+  source, both pinned to the version the image was loaded with (a version the
+  caller observed for the file must equal it) — as an
+  `AttestationCapture` bound to its `ConceptId` (`RunCapturedAsync` refuses a
+  capture taken for another concept), or a non-displayable outcome with `ImageOutdated`
   saying whether the image may be behind. `RunCapturedAsync` runs §10.5 from
   step 3 on a capture; `RunAsync` captures and calls it, and reads nothing
   from the bundle afterwards.
