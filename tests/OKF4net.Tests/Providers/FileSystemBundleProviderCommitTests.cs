@@ -452,12 +452,19 @@ public class FileSystemBundleProviderCommitTests
     /// <summary>
     /// B8: a reader that opened the object the way <see cref="FileSystemBundleProvider.Read"/>
     /// does (<see cref="FileShare.ReadWrite"/> | <see cref="FileShare.Delete"/>) never blocks a
-    /// replacement or a delete, and keeps reading the bytes it opened. A reader that denies
-    /// deletion (<see cref="FileShare.Read"/>) blocks both on Windows — the failure is the raw
-    /// sharing violation, and nothing changed — and blocks nothing elsewhere.
+    /// replacement or a delete, and keeps reading the bytes it opened. On Windows a reader that
+    /// does not share deletion blocks both and nothing changes, but what each row produces
+    /// differs. Sharing <see cref="FileShare.ReadWrite"/> without <see cref="FileShare.Delete"/>:
+    /// the replacement passes the writability probe, <c>ReplaceFile</c> is refused with a sharing
+    /// violation on each of its bounded attempts, and the provider raises
+    /// <see cref="BundleWriteNotCommittedException"/> (the write succeeded in the base
+    /// implementation); the delete is the raw sharing violation. Sharing only
+    /// <see cref="FileShare.Read"/>: the probe itself, which opens the target for writing, is the
+    /// raw sharing violation, and so is the delete. Elsewhere no reader blocks anything.
     /// </summary>
     [Theory]
     [InlineData(FileShare.ReadWrite | FileShare.Delete)]
+    [InlineData(FileShare.ReadWrite)]
     [InlineData(FileShare.Read)]
     public void A_reader_holding_the_object_open_blocks_a_replacement_only_on_Windows_and_only_when_it_denies_deletion(FileShare readerShare)
     {
@@ -471,7 +478,16 @@ public class FileSystemBundleProviderCommitTests
             var blocks = OperatingSystem.IsWindows() && !readerShare.HasFlag(FileShare.Delete);
             if (blocks)
             {
-                Assert.Equal(unchecked((int)0x80070020), Assert.Throws<IOException>(() => p.Write(K("x.md"), B("new"), BundleWriteCondition.None)).HResult);
+                if (readerShare.HasFlag(FileShare.Write))
+                {
+                    var notCommitted = Assert.Throws<BundleWriteNotCommittedException>(() => p.Write(K("x.md"), B("new"), BundleWriteCondition.None));
+                    Assert.Equal(unchecked((int)0x80070020), Assert.IsType<IOException>(notCommitted.InnerException).HResult);
+                }
+                else
+                {
+                    Assert.Equal(unchecked((int)0x80070020), Assert.Throws<IOException>(() => p.Write(K("x.md"), B("new"), BundleWriteCondition.None)).HResult);
+                }
+
                 Assert.Equal(unchecked((int)0x80070020), Assert.Throws<IOException>(() => p.Delete(K("y.md"), BundleWriteCondition.None)).HResult);
                 Assert.Equal("old", File.ReadAllText(file));
                 Assert.Equal(["x.md", "y.md"], Tree(tmp.Path));
@@ -668,6 +684,235 @@ public class FileSystemBundleProviderCommitTests
         Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("j/x.md")));
         Assert.Equal(1, p.DirectoryListings - listings);
         Assert.Equal(1, opens);
+    }
+
+    private static string TemporaryName(char c) =>
+        FileSystemBundleProvider.TemporaryPrefix + new string(c, 32) + FileSystemBundleProvider.TemporarySuffix;
+
+    /// <summary>
+    /// A-I1: the object is resolved outside any lock, and on Unix its mode is read when the
+    /// temporary is prepared. Another writer deleting it in that window made
+    /// <c>File.GetUnixFileMode</c> throw <see cref="FileNotFoundException"/> out of
+    /// <c>Write</c>. The hook runs after the resolution and before the temporary exists: the
+    /// object is gone, so an unconditional write creates it and a conditional one is a conflict,
+    /// never a raw not-found.
+    /// </summary>
+    [Fact]
+    public void An_object_deleted_after_it_was_resolved_is_created_by_an_unconditional_write()
+    {
+        using var tmp = new TempDir();
+        var file = tmp.Write("d/x.md", "old");
+        var p = new FileSystemBundleProvider(tmp.Path);
+        p.TemporaryNameForTest = () =>
+        {
+            File.Delete(file);
+            return TemporaryName('a');
+        };
+        var v = p.Write(K("d/x.md"), B("new"), BundleWriteCondition.None);
+        Assert.Equal("new", File.ReadAllText(file));
+        using var obj = p.Read(K("d/x.md"));
+        Assert.Equal(v, obj.Version);
+        Assert.Equal(["d", "d/x.md"], Tree(tmp.Path));
+    }
+
+    [Fact]
+    public void An_object_deleted_after_it_was_resolved_is_a_conflict_under_IfMatch()
+    {
+        using var tmp = new TempDir();
+        var file = tmp.Write("d/x.md", "old");
+        var p = new FileSystemBundleProvider(tmp.Path);
+        using var current = p.Read(K("d/x.md"));
+        p.TemporaryNameForTest = () =>
+        {
+            File.Delete(file);
+            return TemporaryName('a');
+        };
+        var ex = Assert.Throws<BundleWriteConflictException>(() => p.Write(K("d/x.md"), B("new"), BundleWriteCondition.IfMatch(current.Version)));
+        Assert.Equal(BundleWriteConflictReason.ConditionFailed, ex.Reason);
+        Assert.Equal(["d"], Tree(tmp.Path));
+    }
+
+    /// <summary>
+    /// B-I2: under the commit lock, the target is matched, then opened (to hash it for
+    /// <c>IfMatch</c>, to probe it for writing under <c>None</c>). An object removed between the
+    /// match and the open is, under <c>IfMatch</c>, an object that no longer exists: the
+    /// condition fails (a conflict, the contract's answer), not a raw not-found.
+    /// </summary>
+    [Fact]
+    public void An_object_deleted_between_the_in_lock_match_and_its_hash_is_a_conflict_under_IfMatch()
+    {
+        using var tmp = new TempDir();
+        var file = tmp.Write("d/x.md", "old");
+        var p = new FileSystemBundleProvider(tmp.Path);
+        using var current = p.Read(K("d/x.md"));
+        p.WriteTargetMatchedForTest = _ => File.Delete(file);
+        var ex = Assert.Throws<BundleWriteConflictException>(() => p.Write(K("d/x.md"), B("new"), BundleWriteCondition.IfMatch(current.Version)));
+        Assert.Equal(BundleWriteConflictReason.ConditionFailed, ex.Reason);
+        Assert.Equal(["d"], Tree(tmp.Path));
+    }
+
+    /// <summary>B-I2 under <c>None</c>: the write prepares again, now over an absent object, and creates it (one more preparation, counted).</summary>
+    [Fact]
+    public void An_object_deleted_between_the_in_lock_match_and_the_writability_probe_makes_an_unconditional_write_prepare_again()
+    {
+        using var tmp = new TempDir();
+        var file = tmp.Write("d/x.md", "old");
+        var p = new FileSystemBundleProvider(tmp.Path);
+        var preparations = 0;
+        var matched = 0;
+        p.TemporaryNameForTest = () =>
+        {
+            preparations++;
+            return TemporaryName('a');
+        };
+        p.WriteTargetMatchedForTest = _ =>
+        {
+            if (++matched == 1)
+            {
+                File.Delete(file);
+            }
+        };
+        var v = p.Write(K("d/x.md"), B("new"), BundleWriteCondition.None);
+        Assert.Equal(2, preparations);
+        Assert.Equal("new", File.ReadAllText(file));
+        using var obj = p.Read(K("d/x.md"));
+        Assert.Equal(v, obj.Version);
+        Assert.Equal(["d", "d/x.md"], Tree(tmp.Path));
+    }
+
+    /// <summary>
+    /// The bound on preparations: an object that is gone each time the in-lock probe opens it
+    /// (and back before the next preparation resolves it) is prepared for exactly three times,
+    /// then the conflict is raised and nothing is left behind. Counted, not timed: a bound of
+    /// two or four preparations changes the count.
+    /// </summary>
+    [Fact]
+    public void An_unconditional_write_prepares_exactly_three_times_before_it_gives_up_with_a_conflict()
+    {
+        using var tmp = new TempDir();
+        var file = tmp.Write("x.md", "old");
+        var p = new FileSystemBundleProvider(tmp.Path);
+        var preparations = 0;
+        p.TemporaryNameForTest = () =>
+        {
+            preparations++;
+            File.WriteAllText(file, "back again");
+            return TemporaryName('a');
+        };
+        p.WriteTargetMatchedForTest = _ => File.Delete(file);
+        var ex = Assert.Throws<BundleWriteConflictException>(() => p.Write(K("x.md"), B("new"), BundleWriteCondition.None));
+        Assert.Equal(BundleWriteConflictReason.ConditionFailed, ex.Reason);
+        Assert.Equal(3, preparations);
+        Assert.Empty(Tree(tmp.Path));
+    }
+
+    /// <summary>
+    /// A-M1: the commit call failed with the temporary still in place, so the rename did not
+    /// happen; a directory under the key is a name taken by something that is not our bytes. The
+    /// verdict is the conflict (<see cref="BundleWriteConflictReason.NameUnavailable"/>) and the
+    /// temporary is removed — not an unknown outcome that keeps an orphan because a directory
+    /// cannot be hashed.
+    /// </summary>
+    [Theory]
+    [InlineData("none-creation")]
+    [InlineData("must-not-exist")]
+    [InlineData("if-match")]
+    public void A_commit_that_fails_with_a_directory_under_the_key_is_a_conflict_and_leaves_no_temporary(string kind)
+    {
+        using var tmp = new TempDir();
+        var p = new FileSystemBundleProvider(tmp.Path);
+        var condition = BundleWriteCondition.None;
+        if (kind == "must-not-exist")
+        {
+            condition = BundleWriteCondition.MustNotExist;
+        }
+        else if (kind == "if-match")
+        {
+            tmp.Write("x.md", "old");
+            using var current = p.Read(K("x.md"));
+            condition = BundleWriteCondition.IfMatch(current.Version);
+        }
+
+        p.CommitForTest = (_, target, _) =>
+        {
+            File.Delete(target);
+            Directory.CreateDirectory(target);
+            throw new IOException("simulated");
+        };
+        var ex = Assert.Throws<BundleWriteConflictException>(() => p.Write(K("x.md"), B("new"), condition));
+        Assert.Equal(BundleWriteConflictReason.NameUnavailable, ex.Reason);
+        Assert.Equal(["x.md"], Tree(tmp.Path));
+        Assert.True(Directory.Exists(Path.Combine(tmp.Path, "x.md")));
+        Assert.Empty(p.ListOrphanedTemporaries(BundleLimits.Default));
+    }
+
+    /// <summary>
+    /// A-M1: the same verdict for an entry under the key that this process cannot read (mode
+    /// 0200, Unix, unprivileged): hashing it throws, which does not make the outcome unknown
+    /// while the temporary is still there — the verdict no longer depends on the caller's read
+    /// rights. Skipped as root, which reads everything.
+    /// </summary>
+    [SkippableFact]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public void A_commit_that_fails_with_an_unreadable_file_under_the_key_is_a_conflict_and_leaves_no_temporary()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "POSIX modes");
+        using var tmp = new TempDir();
+        var p = new FileSystemBundleProvider(tmp.Path);
+        var readable = true;
+        p.CommitForTest = (_, target, _) =>
+        {
+            File.WriteAllText(target, "someone else");
+            File.SetUnixFileMode(target, UnixFileMode.UserWrite);
+            try
+            {
+                using (File.OpenHandle(target, FileMode.Open, FileAccess.Read))
+                {
+                }
+            }
+            catch (UnauthorizedAccessException)
+            {
+                readable = false;
+            }
+
+            throw new IOException("simulated");
+        };
+        var thrown = Record.Exception(() => p.Write(K("x.md"), B("new"), BundleWriteCondition.None));
+        Skip.If(readable, "the process reads unreadable files anyway (root)");
+        var ex = Assert.IsType<BundleWriteConflictException>(thrown);
+        Assert.Equal(BundleWriteConflictReason.ConditionFailed, ex.Reason);
+        Assert.Equal(["x.md"], Tree(tmp.Path));
+        Assert.Empty(p.ListOrphanedTemporaries(BundleLimits.Default));
+    }
+
+    /// <summary>
+    /// The late guard of a delete: a link put under the object's name after the early guard (and
+    /// after the parent's guard under the lock) is refused by the guard on the entry the lookup
+    /// returns, and nothing reaches the link's target. Without that guard a junction to a
+    /// directory is read as "a directory is no object" and the delete silently does nothing,
+    /// where a file symlink would be deleted itself.
+    /// </summary>
+    [SkippableFact]
+    public void A_link_put_under_the_objects_name_under_the_delete_lock_is_refused_by_the_late_guard()
+    {
+        using var external = new TempDir();
+        var victim = external.Write("victim.md", "outside");
+        using var tmp = new TempDir();
+        var file = tmp.Write("x.md", "old");
+        var p = new FileSystemBundleProvider(tmp.Path);
+        var linked = false;
+        p.DeleteLockedForTest = _ =>
+        {
+            File.Delete(file);
+            linked = OperatingSystem.IsWindows()
+                ? tmp.TryCreateJunctionToExternalDir("x.md", external.Path)
+                : tmp.TryCreateFileSymlinkToExternalFile("x.md", victim);
+        };
+        var thrown = Record.Exception(() => p.Delete(K("x.md"), BundleWriteCondition.None));
+        Skip.IfNot(linked, "links unavailable");
+        Assert.IsType<BundleAccessRefusedException>(thrown);
+        Assert.Equal("outside", File.ReadAllText(victim));
+        Assert.Equal(["victim.md"], Tree(external.Path));
     }
 
     private static IOException Window(string window, string path) => window switch

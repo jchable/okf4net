@@ -549,4 +549,59 @@ public class BundleConceptWriterProviderTests
         Assert.DoesNotContain(storage.Calls, c => c.StartsWith("write ", StringComparison.Ordinal));
         Assert.NotNull(writer.CheckVerificationTargets(["metrics/dau"]));
     }
+
+    /// <summary>
+    /// D1: a write needs the right to create files in the target's directory (its temporary is
+    /// created beside it and renamed over it). Where the process may write the object but not
+    /// create files beside it (directory 0555, object 0666; Unix, unprivileged), the writer
+    /// reports the raw access error as the <c>Error:</c> text, which names the temporary under
+    /// the host path — a raw I/O text is not path-free (issue #211) — and the object keeps its
+    /// content. Skipped as root and on Windows.
+    /// </summary>
+    [SkippableFact]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public void A_concept_in_a_directory_the_process_may_not_create_files_in_is_reported_with_the_raw_access_error()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "POSIX modes");
+        using var tmp = new TempDir();
+        var file = tmp.Write("t/orders.md", Doc);
+        File.SetUnixFileMode(file, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.OtherRead | UnixFileMode.OtherWrite);
+        var dir = Path.Combine(tmp.Path, "t");
+        File.SetUnixFileMode(dir, UnixFileMode.UserRead | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+        try
+        {
+            var privileged = true;
+            try
+            {
+                using (new FileStream(Path.Combine(dir, "probe"), FileMode.CreateNew))
+                {
+                }
+
+                File.Delete(Path.Combine(dir, "probe"));
+            }
+            catch (UnauthorizedAccessException)
+            {
+                privileged = false;
+            }
+
+            Skip.If(privileged, "the process creates files in any directory anyway (root)");
+            var writer = new BundleConceptWriter(tmp.Path);
+            var written = writer.WriteConcept("t/orders", Fm, "changed\n");
+            var appended = writer.AppendToConceptAtomic("t/orders", Fm, b => (b ?? string.Empty) + "more\n");
+
+            foreach (var result in new[] { written, appended })
+            {
+                Assert.StartsWith("Error: Access to the path '", result, StringComparison.Ordinal);
+                Assert.Contains(Path.Combine(tmp.Path, "t", FileSystemBundleProvider.TemporaryPrefix), result, StringComparison.Ordinal);
+                Assert.EndsWith("' is denied.", result, StringComparison.Ordinal);
+            }
+
+            Assert.Equal(Doc, File.ReadAllText(file));
+            Assert.Equal(["t", "t/orders.md"], Tree(tmp.Path));
+        }
+        finally
+        {
+            File.SetUnixFileMode(dir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
 }

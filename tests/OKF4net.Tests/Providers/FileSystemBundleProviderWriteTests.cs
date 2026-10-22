@@ -544,6 +544,131 @@ public class FileSystemBundleProviderWriteTests
         Assert.Empty(Bundle.Load(p).Concepts);
     }
 
+    /// <summary>
+    /// A delete under a bundle root that does not exist answers as <see cref="FileSystemBundleProvider.Exists"/>
+    /// does: nothing is there, so a condition that holds on an absent object (<c>None</c>,
+    /// <c>MustNotExist</c>) is a no-op and <c>IfMatch</c> is a conflict, for a top-level and a
+    /// nested key; the root is not created and no raw not-found escapes.
+    /// </summary>
+    [Theory]
+    [InlineData("x.md")]
+    [InlineData("a/b/x.md")]
+    public void A_delete_under_an_absent_root_is_a_no_op_where_the_condition_holds_and_a_conflict_under_IfMatch(string key)
+    {
+        using var tmp = new TempDir();
+        var root = Path.Combine(tmp.Path, "absent");
+        var p = new FileSystemBundleProvider(root);
+
+        p.Delete(K(key), BundleWriteCondition.None);
+        p.Delete(K(key), BundleWriteCondition.MustNotExist);
+        var ex = Assert.Throws<BundleWriteConflictException>(() => p.Delete(K(key), BundleWriteCondition.IfMatch(new BundleObjectVersion(Sha("x")))));
+
+        Assert.Equal(BundleWriteConflictReason.ConditionFailed, ex.Reason);
+        Assert.False(p.Exists(K(key)));
+        Assert.False(Directory.Exists(root));
+        Assert.Empty(Tree(tmp.Path));
+    }
+
+    /// <summary>
+    /// A refused conditional write changes nothing, directories included: an <c>IfMatch</c> on a
+    /// key whose parent (or whose root) does not exist cannot hold, and is refused before
+    /// anything is created, over an existing root and over an absent one. The same write
+    /// unconditionally, or under <c>MustNotExist</c>, creates its parents as before.
+    /// </summary>
+    [Theory]
+    [InlineData("new/deep/x.md", false)]
+    [InlineData("d/new/x.md", false)]
+    [InlineData("top.md", false)]
+    [InlineData("new/deep/x.md", true)]
+    [InlineData("top.md", true)]
+    public void An_IfMatch_write_whose_parent_or_root_does_not_exist_is_a_conflict_and_creates_nothing(string key, bool absentRoot)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("root/keep.md", "kept");
+        tmp.Write("root/d/y.md", "y");
+        var root = absentRoot ? Path.Combine(tmp.Path, "absent", "bundle") : Path.Combine(tmp.Path, "root");
+        var p = new FileSystemBundleProvider(root);
+        var before = Tree(tmp.Path);
+
+        var ex = Assert.Throws<BundleWriteConflictException>(() => p.Write(K(key), B("new"), BundleWriteCondition.IfMatch(new BundleObjectVersion(Sha("old")))));
+
+        Assert.Equal(BundleWriteConflictReason.ConditionFailed, ex.Reason);
+        Assert.Equal(before, Tree(tmp.Path));
+        Assert.False(absentRoot && Directory.Exists(root));
+
+        p.Write(K(key), B("created"), BundleWriteCondition.MustNotExist);
+        Assert.Equal("created", File.ReadAllText(Path.Combine(root, key.Replace('/', Path.DirectorySeparatorChar))));
+    }
+
+    /// <summary>
+    /// An <c>IfMatch</c> write of an object that exists still works through the same path, and a
+    /// stale version over an existing parent is the same conflict with nothing created.
+    /// </summary>
+    [Fact]
+    public void An_IfMatch_write_of_an_existing_object_still_replaces_it_and_a_stale_version_creates_nothing()
+    {
+        using var tmp = new TempDir();
+        var file = tmp.Write("d/x.md", "old");
+        var p = new FileSystemBundleProvider(tmp.Path);
+        var before = Tree(tmp.Path);
+
+        Assert.Throws<BundleWriteConflictException>(() => p.Write(K("d/x.md"), B("new"), BundleWriteCondition.IfMatch(new BundleObjectVersion(Sha("stale")))));
+        Assert.Equal(before, Tree(tmp.Path));
+
+        p.Write(K("d/x.md"), B("new"), BundleWriteCondition.IfMatch(new BundleObjectVersion(Sha("old"))));
+        Assert.Equal("new", File.ReadAllText(file));
+        Assert.Equal(before, Tree(tmp.Path));
+    }
+
+    /// <summary>
+    /// D1: every write creates its temporary beside the target and commits by rename, so the
+    /// process needs the right to create files in the target's directory — not only the right to
+    /// write the target, as <c>File.WriteAllText</c> did. A directory it may not create files in
+    /// (mode 0555) with a writable object (0666) refuses the write, unconditional or
+    /// <c>IfMatch</c>, with the raw <see cref="UnauthorizedAccessException"/>, the object
+    /// unchanged and no temporary left. No in-place fallback exists: it would reopen the torn
+    /// writes of issue #157. Skipped as root, which creates files anywhere.
+    /// </summary>
+    [SkippableFact]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public void A_write_into_a_directory_the_process_may_not_create_files_in_is_refused_and_leaves_nothing()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "POSIX modes");
+        using var tmp = new TempDir();
+        var file = tmp.Write("t/x.md", "old");
+        File.SetUnixFileMode(file, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.OtherRead | UnixFileMode.OtherWrite);
+        var dir = Path.Combine(tmp.Path, "t");
+        File.SetUnixFileMode(dir, UnixFileMode.UserRead | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+        try
+        {
+            var privileged = true;
+            try
+            {
+                using (new FileStream(Path.Combine(dir, "probe"), FileMode.CreateNew))
+                {
+                }
+
+                File.Delete(Path.Combine(dir, "probe"));
+            }
+            catch (UnauthorizedAccessException)
+            {
+                privileged = false;
+            }
+
+            Skip.If(privileged, "the process creates files in any directory anyway (root)");
+            var p = new FileSystemBundleProvider(tmp.Path);
+            Assert.Throws<UnauthorizedAccessException>(() => p.Write(K("t/x.md"), B("new"), BundleWriteCondition.None));
+            Assert.Throws<UnauthorizedAccessException>(() => p.Write(K("t/x.md"), B("conditional"), BundleWriteCondition.IfMatch(new BundleObjectVersion(Sha("old")))));
+            Assert.Throws<UnauthorizedAccessException>(() => p.Write(K("t/y.md"), B("created"), BundleWriteCondition.MustNotExist));
+            Assert.Equal("old", File.ReadAllText(file));
+            Assert.Equal(["t", "t/x.md"], Tree(tmp.Path));
+        }
+        finally
+        {
+            File.SetUnixFileMode(dir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
     [Fact]
     public void A_delete_never_touches_a_directory_under_the_key()
     {
