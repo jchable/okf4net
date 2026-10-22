@@ -12,7 +12,7 @@ namespace OKF4net.Providers;
 /// <para><b>One load at a time.</b> The token comparison of <see cref="BundleRefreshMode.OnAccess"/> and <see cref="BundleRefreshMode.Interval"/> also runs serially under the load lock (on the filesystem provider it is a walk), blocking concurrent callers. Concurrent callers wait for the load in progress instead of
 /// each starting one; the image is replaced as a whole, so a call never sees two versions.</para>
 /// <para><b>Failure.</b> When a reload fails (the storage is unreachable, a bound is exceeded) the
-/// previous image stays served and <see cref="IsStale"/> says so; only the very first load throws.</para>
+/// previous image stays served and <see cref="IsStale"/> says so; only the very first load throws from <see cref="Current"/> (<see cref="Refresh"/> also throws on a failed reload).</para>
 /// <para><b>The reload obligation</b> (spec §5.1): <see cref="Invalidate"/> obliges the next access
 /// to reload, whatever the policy, and the obligation is acknowledged only by a successful load
 /// started after it — a load already running when it is made, or a load that fails, leaves it
@@ -128,8 +128,9 @@ public sealed class BundleHandle : IDisposable
     }
 
     /// <summary>
-    /// Obliges the next use to reload (spec §5.1, §5.2): after this handle's own writes, a
-    /// write conflict, or a refused pin of sanctioned code. Never blocks and never throws; the
+    /// Obliges the next use to reload (spec §5.1, §5.2): after this handle's own writes, or
+    /// whenever a host calls it (for instance on a write conflict or a refused pin of sanctioned
+    /// code). Never blocks and never throws; the
     /// obligation is acknowledged only by a successful load started after this call.
     /// </summary>
     public void Invalidate() => Interlocked.Increment(ref _required);
@@ -138,7 +139,9 @@ public sealed class BundleHandle : IDisposable
     /// Ends the subscription to the provider's change signals. A <see cref="BundleRefreshMode.Notify"/>
     /// handle should be disposed: the subscription closure captures the handle, so a long-lived
     /// notifier keeps an undisposed handle and its image alive. After disposal the handle still
-    /// serves and reloads (on an obligation or a <see cref="Refresh"/>), but no signal reaches it.
+    /// serves and reloads: <see cref="BundleRefreshMode.OnAccess"/> and <see cref="BundleRefreshMode.Interval"/>
+    /// handles keep reloading by policy, and so does any handle on an obligation or a
+    /// <see cref="Refresh"/>; only the signals of a <see cref="BundleRefreshMode.Notify"/> handle are lost.
     /// </summary>
     public void Dispose() => _subscription?.Dispose();
 

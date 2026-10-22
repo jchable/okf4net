@@ -13,6 +13,8 @@ namespace OKF4net.Tests.Providers;
 /// </summary>
 public class BundleHandleTests
 {
+    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
+
     private const string Doc = "---\ntype: Note\ntitle: A\ndescription: a.\n---\n\nA.\n";
 
     private static InMemoryBundleProvider Storage() => new InMemoryBundleProvider(canWrite: true).Add("a.md", Doc);
@@ -216,19 +218,19 @@ public class BundleHandleTests
         hooked.OnEnumerate = () =>
         {
             inFirstLoad.Set();
-            release.Wait();
+            release.Wait(Timeout);
         };
         var threads = Enumerable.Range(0, results.Length).Select(i => new Thread(() => results[i] = handle.Current)).ToList();
         threads[0].Start();
-        inFirstLoad.Wait();
+        Assert.True(inFirstLoad.Wait(Timeout), "the first load never started");
         threads.Skip(1).ToList().ForEach(t => t.Start());
         foreach (var t in threads.Skip(1))
         {
-            SpinWait.SpinUntil(() => t.ThreadState.HasFlag(ThreadState.WaitSleepJoin));
+            Assert.True(SpinWait.SpinUntil(() => t.ThreadState.HasFlag(ThreadState.WaitSleepJoin), Timeout), "a thread never parked on the load lock");
         }
 
         release.Set();
-        threads.ForEach(t => t.Join());
+        Assert.All(threads, t => Assert.True(t.Join(Timeout), "a thread never finished"));
 
         Assert.Equal(1, Loads(storage));
         Assert.All(results, b => Assert.Same(results[0], b));
