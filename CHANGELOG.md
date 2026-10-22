@@ -99,9 +99,16 @@ and this project adheres to
   loaded, validated and audited; a global failure (a bound, a refusal that is
   not the resource's own path) still fails the load. `Bundle.ReadResourceText(key,
   expected, out version)` reads a resource pinned to a version: an object that
-  changed since throws `BundleVersionMismatchException` and nothing is read.
+  changed since throws `BundleVersionMismatchException` and nothing is returned.
 
 ### Changed
+
+- **`Load` reads the executable resources.** Every `computation` and
+  `attester.resource` file of an Attested Computation concept is now read and
+  hashed once per load (a file shared by several concepts is read once), which
+  costs those reads at every load and every handle reload, and adds a failure
+  mode: a provider exception other than the per-resource states above fails
+  the load.
 
 - **Finite default bounds on loading** (spec §6), out of reach of real
   bundles: a concept over 256 MiB is a `ParseErrors` entry instead of being

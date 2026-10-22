@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-using System.Text;
 using OKF4net.Providers;
 
 namespace OKF4net.Tests.Providers;
@@ -77,7 +76,8 @@ public class BundleExecutableResourceTests
         Assert.Equal(attester, resource.RawPath);
         Assert.NotNull(bundle.Get(ConceptId.Parse("c/rev")));
         Assert.Empty(bundle.ParseErrors);
-        Assert.NotNull(BundleValidator.Validate(bundle));
+        // The concept is validated like any other: the survey adds no error (an escaping path keeps its pre-existing warning).
+        Assert.DoesNotContain(BundleValidator.Validate(bundle).Diagnostics, d => d.Severity == Severity.Error);
     }
 
     [Fact]
@@ -111,6 +111,36 @@ public class BundleExecutableResourceTests
     }
 
     [Fact]
+    public void A_provider_refusal_or_a_vanished_object_at_the_read_is_a_state_of_the_resource()
+    {
+        var refused = new InMemoryBundleProvider().Add("c/rev.md", Concept(null, "att.py")).Add("att.py", Attester)
+            .FailReadOf("att.py", new BundleAccessRefusedException(BundleKey.Parse("att.py"), "refused"));
+        var unsafeAttester = Bundle.Load(refused).ExecutableResources[ConceptId.Parse("c/rev")].Attester;
+        Assert.Equal(ExecutableResourceState.Unsafe, unsafeAttester.State);
+        Assert.Equal(BundleKey.Parse("att.py"), unsafeAttester.Key);
+
+        var vanished = new InMemoryBundleProvider().Add("c/rev.md", Concept(null, "att.py")).Add("att.py", Attester)
+            .FailReadOf("att.py", new BundleObjectNotFoundException(BundleKey.Parse("att.py")));
+        var missing = Bundle.Load(vanished).ExecutableResources[ConceptId.Parse("c/rev")].Attester;
+        Assert.Equal(ExecutableResourceState.Missing, missing.State);
+        Assert.Equal(BundleKey.Parse("att.py"), missing.Key);
+    }
+
+    [Fact]
+    public void A_resource_shared_by_several_concepts_is_read_once_per_load()
+    {
+        var storage = new InMemoryBundleProvider().Add("a.md", Concept(null, "att.py")).Add("b.md", Concept(null, "att.py")).Add("c.md", Concept("att.py", "att.py"))
+            .Add("att.py", Attester);
+        var bundle = Bundle.Load(storage);
+
+        Assert.Equal(1, storage.Calls.Count(c => c == "read att.py"));
+        var versions = bundle.ExecutableResources.Values.SelectMany(s => new[] { s.Attester, s.Computation }).Where(r => r.IsPinned).Select(r => r.Version).ToList();
+        Assert.Equal(4, versions.Count);
+        Assert.Single(versions.Distinct());
+        Assert.Equal(3, bundle.ExecutableResources.Count);
+    }
+
+    [Fact]
     public void A_global_failure_during_the_survey_fails_the_load()
     {
         var storage = new InMemoryBundleProvider().Add("c/rev.md", Concept(null, "att.py")).Add("att.py", Attester)
@@ -136,7 +166,7 @@ public class BundleExecutableResourceTests
 
         var e = Assert.Throws<BundleVersionMismatchException>(() => bundle.ReadResourceText(pinned.Key!, pinned.Version, out _));
         Assert.Equal(BundleKey.Parse("att.py"), e.Key);
-        Assert.Equal(Encoding.UTF8.GetString(Encoding.UTF8.GetBytes("def attest(**_):\n    return {'tampered': True}\n")), bundle.ReadResourceText(pinned.Key!, null, out var current));
+        Assert.Equal("def attest(**_):\n    return {'tampered': True}\n", bundle.ReadResourceText(pinned.Key!, null, out var current));
         Assert.NotEqual(pinned.Version, current);
     }
 }

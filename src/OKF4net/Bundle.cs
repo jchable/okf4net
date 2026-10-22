@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Collections.ObjectModel;
 using OKF4net.Internal;
 using OKF4net.Providers;
 
@@ -388,6 +389,8 @@ public sealed class Bundle
     /// </summary>
     private void SurveyExecutableResources(byte[] chunk)
     {
+        // One read per KEY per load (design decision 17): N concepts sharing one file cost one read.
+        var readKeys = new Dictionary<BundleKey, (ExecutableResourceState State, BundleObjectVersion? Version)>();
         foreach (var concept in Concepts)
         {
             var frontmatter = concept.Document.Frontmatter;
@@ -398,12 +401,14 @@ public sealed class Bundle
 
             var contract = frontmatter.ComputationContract;
             _executableResources[concept.Id] = new ExecutableResourceSurvey(
-                SurveyResource(concept, "computation", contract.ComputationPath, chunk),
-                SurveyResource(concept, "attester.resource", contract.Attester?.Resource, chunk));
+                SurveyResource(concept, "computation", contract.ComputationPath, chunk, readKeys),
+                SurveyResource(concept, "attester.resource", contract.Attester?.Resource, chunk, readKeys));
         }
+
+        ExecutableResources = new ReadOnlyDictionary<ConceptId, ExecutableResourceSurvey>(_executableResources);
     }
 
-    private ExecutableResource SurveyResource(Concept concept, string field, string? rawPath, byte[] chunk)
+    private ExecutableResource SurveyResource(Concept concept, string field, string? rawPath, byte[] chunk, Dictionary<BundleKey, (ExecutableResourceState State, BundleObjectVersion? Version)> readKeys)
     {
         if (string.IsNullOrEmpty(rawPath))
         {
@@ -421,22 +426,34 @@ public sealed class Bundle
                 return new ExecutableResource(field, rawPath, ExecutableResourceState.Missing, null, null);
         }
 
+        if (readKeys.TryGetValue(key!, out var known))
+        {
+            return new ExecutableResource(field, rawPath, known.State, key, known.Version);
+        }
+
+        var result = ReadForSurvey(key!, chunk);
+        readKeys[key!] = (result.State, result.Version);
+        return new ExecutableResource(field, rawPath, result.State, key, result.Version);
+    }
+
+    private (ExecutableResourceState State, BundleObjectVersion? Version) ReadForSurvey(BundleKey key, byte[] chunk)
+    {
         try
         {
-            ReadTextAt(Provider, key!, Options.Limits, chunk, null, out var version);
-            return new ExecutableResource(field, rawPath, ExecutableResourceState.Pinned, key, version);
+            ReadTextAt(Provider, key, Options.Limits, chunk, null, out var version);
+            return (ExecutableResourceState.Pinned, version);
         }
         catch (BundleObjectTooLargeException)
         {
-            return new ExecutableResource(field, rawPath, ExecutableResourceState.TooLarge, key, null);
+            return (ExecutableResourceState.TooLarge, null);
         }
         catch (BundleObjectNotFoundException)
         {
-            return new ExecutableResource(field, rawPath, ExecutableResourceState.Missing, key, null);
+            return (ExecutableResourceState.Missing, null);
         }
         catch (BundleAccessRefusedException)
         {
-            return new ExecutableResource(field, rawPath, ExecutableResourceState.Unsafe, key, null);
+            return (ExecutableResourceState.Unsafe, null);
         }
         catch (BundleProviderException e)
         {
@@ -444,7 +461,7 @@ public sealed class Bundle
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
         {
-            return new ExecutableResource(field, rawPath, ExecutableResourceState.Unreadable, key, null);
+            return (ExecutableResourceState.Unreadable, null);
         }
     }
 
@@ -636,7 +653,7 @@ public sealed class Bundle
     /// <see cref="Frontmatter.IsAttestedComputation"/>; a concept with a problem is still in
     /// <see cref="Concepts"/>, readable, validated and audited.
     /// </summary>
-    public IReadOnlyDictionary<ConceptId, ExecutableResourceSurvey> ExecutableResources => _executableResources;
+    public IReadOnlyDictionary<ConceptId, ExecutableResourceSurvey> ExecutableResources { get; private set; } = new ReadOnlyDictionary<ConceptId, ExecutableResourceSurvey>(new Dictionary<ConceptId, ExecutableResourceSurvey>());
 
     private readonly BundleKeyValidator _validator;
     private readonly HashSet<string> _rejectedPrefixFolds;
@@ -1060,7 +1077,7 @@ public sealed class Bundle
     /// <param name="key">The resolved key.</param>
     /// <param name="expected">The version the read is pinned to, or <see langword="null"/> for the current object.</param>
     /// <param name="version">The version of the object read.</param>
-    /// <exception cref="BundleVersionMismatchException">The object's version is not <paramref name="expected"/>; nothing was read.</exception>
+    /// <exception cref="BundleVersionMismatchException">The object's version is not <paramref name="expected"/>; nothing is returned.</exception>
     /// <exception cref="UnauthorizedAccessException">The key is not allowed, or the provider refused the access.</exception>
     /// <exception cref="IOException">The object is missing, too large, or cannot be read.</exception>
     /// <exception cref="System.Text.DecoderFallbackException">The content is not valid UTF-8.</exception>

@@ -8,7 +8,8 @@ namespace OKF4net;
 /// file or its <c>attester.resource</c> — as surveyed when the bundle was loaded (spec §5.1).
 /// A state other than <see cref="Pinned"/> never fails the load and never removes the concept
 /// from the image; it refuses the execution of that computation, naming the resource and the
-/// state.
+/// state — except <see cref="Undeclared"/> for the <c>computation</c> field, where the code is
+/// inline and still runs.
 /// </summary>
 public enum ExecutableResourceState
 {
@@ -38,7 +39,7 @@ public enum ExecutableResourceState
 /// <param name="Field">The frontmatter field: <c>computation</c> or <c>attester.resource</c>.</param>
 /// <param name="RawPath">The field's raw value, or <see langword="null"/> when <see cref="State"/> is <see cref="ExecutableResourceState.Undeclared"/>.</param>
 /// <param name="State">The surveyed state.</param>
-/// <param name="Key">The resolved key, when the value resolved to one (<see cref="ExecutableResourceState.Pinned"/>, <see cref="ExecutableResourceState.Missing"/>, <see cref="ExecutableResourceState.Unreadable"/>, <see cref="ExecutableResourceState.TooLarge"/>).</param>
+/// <param name="Key">The resolved key, when the value resolved to one and the read was attempted (<see cref="ExecutableResourceState.Pinned"/>, <see cref="ExecutableResourceState.Unreadable"/>, <see cref="ExecutableResourceState.TooLarge"/>, and <see cref="ExecutableResourceState.Missing"/> or <see cref="ExecutableResourceState.Unsafe"/> when the provider reported it at the read); <see langword="null"/> for a value the §6.2 resolution itself classified.</param>
 /// <param name="Version">The object's version when <see cref="State"/> is <see cref="ExecutableResourceState.Pinned"/>: what a later read is pinned to.</param>
 public sealed record ExecutableResource(string Field, string? RawPath, ExecutableResourceState State, BundleKey? Key, BundleObjectVersion? Version)
 {
