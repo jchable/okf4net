@@ -75,6 +75,11 @@ public sealed class AttestationOrchestrator
     /// happen. A host whose <see cref="IAttester"/> attested without a source in the bundle
     /// sees its computations refused until the bundle declares a file attester
     /// (docs/spec-conformance, S10.5-1).</para>
+    /// <para>This method is not <c>async</c>: a <see langword="null"/> <paramref name="bundle"/>
+    /// (<see cref="ArgumentNullException"/>) and an unexpected exception from <see cref="Capture"/>
+    /// (anything other than the I/O and decoding failures it turns into a refusal) are thrown
+    /// synchronously instead of faulting the returned <see cref="ValueTask{TResult}"/>; a stage
+    /// failure after the capture is still an outcome (errors-as-data).</para>
     /// </summary>
     /// <param name="bundle">The bundle to load the concept from.</param>
     /// <param name="conceptId">The attested-computation concept to run.</param>
@@ -110,16 +115,19 @@ public sealed class AttestationOrchestrator
     /// the sanctioned computation — the inline <c># Computation</c> fence, or the
     /// <c>computation:</c> file read through the provider (<see cref="Bundle.TryResolveResourceKey"/>,
     /// <see cref="Bundle.ReadResourceText(BundleKey, BundleObjectVersion?, out BundleObjectVersion)"/>),
-    /// pinned to <paramref name="expectedComputationFileVersion"/> when the caller observed one —
-    /// and the attester's source, pinned to the version the image was loaded with
-    /// (<see cref="Bundle.ExecutableResources"/>): its state must be
-    /// <see cref="ExecutableResourceState.Pinned"/>, and it is read at that version only.
+    /// pinned to the version the image was loaded with (<see cref="Bundle.ExecutableResources"/>)
+    /// — and the attester's source, pinned the same way. Each resource's surveyed state must be
+    /// <see cref="ExecutableResourceState.Pinned"/> (spec §5.1), and it is read at that version
+    /// only: a file replaced after the load is refused, never run at its new bytes. A version
+    /// the caller observed (<paramref name="expectedComputationFileVersion"/>) must equal the
+    /// image's, or the capture is refused as outdated.
     /// <para><b>D6 (spec §5.1, §10).</b> A concept that declares no <c>attester.resource</c>, or
     /// declares a URL, is refused here: there is nothing to pin, so nothing the host or the model
     /// could hold for the attestation code that ran. The host's <see cref="IAttester"/> is never
     /// called with a <see langword="null"/> source. This narrows §10.5 for this implementation
     /// (docs/spec-conformance, S10.5-1).</para>
-    /// <para>A failure is an <see cref="AttestationOutcome"/>, never an exception.
+    /// <para>A refusal is an <see cref="AttestationOutcome"/>; only an unexpected exception
+    /// (not I/O or decoding) escapes.
     /// <see cref="AttestationCaptureResult.ImageOutdated"/> says whether the failure is one the
     /// image may be behind on — a resource missing, unreadable, refused, over the bound, or whose
     /// version changed — in which case a caller holding a <see cref="BundleHandle"/> invalidates
@@ -128,11 +136,19 @@ public sealed class AttestationOrchestrator
     /// </summary>
     /// <param name="bundle">The image the concept was loaded from.</param>
     /// <param name="concept">The attested-computation concept, from that image.</param>
-    /// <param name="expectedComputationFileVersion">The version of the <c>computation</c> file the caller observed, which the read is pinned to; <see langword="null"/> reads the file as it is.</param>
+    /// <param name="expectedComputationFileVersion">The version of the <c>computation</c> file the caller observed, which must equal the version the image pinned; <see langword="null"/> uses the image's version alone.</param>
     public static AttestationCaptureResult Capture(Bundle bundle, Concept concept, BundleObjectVersion? expectedComputationFileVersion = null)
     {
         ArgumentNullException.ThrowIfNull(bundle);
         ArgumentNullException.ThrowIfNull(concept);
+
+        // The image's own survey of this concept (spec §5.1): what the load found and pinned.
+        // The concept must be the one this image holds, not a namesake from another image.
+        if (!ReferenceEquals(bundle.Get(concept.Id), concept)
+            || !bundle.ExecutableResources.TryGetValue(concept.Id, out var survey))
+        {
+            return Refused($"concept '{concept.Id}' is not part of the bundle image it was given with", imageOutdated: false);
+        }
 
         SanctionedComputation resolved;
         var computation = concept.Document.Computation();
@@ -143,20 +159,38 @@ public sealed class AttestationOrchestrator
                 break;
 
             case ComputationSource.File when !string.IsNullOrEmpty(computation.Path):
-                if (!bundle.TryResolveResourceKey(concept, computation.Path, out var key, out var status)
-                    || status != ResourceResolutionStatus.Resolved)
+                // Sanctioned code is pinned to the image (spec §5.1, §5.4): only a Pinned file
+                // is executable, and it is read at the version the load pinned. A version the
+                // caller observed must be that same version: if the file moved on after the
+                // observation, or the image is behind the observation, nothing runs.
+                var file = survey.Computation;
+                if (file.State != ExecutableResourceState.Pinned || file.Key is null || file.Version is null)
                 {
-                    return Refused($"computation file '{computation.Path}' could not be resolved ({status})", imageOutdated: true);
+                    return file.State switch
+                    {
+                        ExecutableResourceState.Unreadable or ExecutableResourceState.TooLarge
+                            => Refused($"computation file '{computation.Path}' could not be read ({file.State})", imageOutdated: true),
+                        _ => Refused($"computation file '{computation.Path}' could not be resolved ({file.State})", imageOutdated: true),
+                    };
+                }
+
+                if (expectedComputationFileVersion is { } observed && observed != file.Version)
+                {
+                    return Refused($"computation file '{computation.Path}' changed since it was shown; read it again with okf_get_computation before running it", imageOutdated: true);
                 }
 
                 string text;
                 try
                 {
-                    text = bundle.ReadResourceText(key!, expectedComputationFileVersion, out _);
+                    text = bundle.ReadResourceText(file.Key, file.Version, out _);
                 }
                 catch (BundleVersionMismatchException)
                 {
-                    return Refused($"computation file '{computation.Path}' changed since it was shown; read it again with okf_get_computation before running it", imageOutdated: true);
+                    return Refused(
+                        expectedComputationFileVersion is null
+                            ? $"computation file '{computation.Path}' changed since the bundle was loaded"
+                            : $"computation file '{computation.Path}' changed since it was shown; read it again with okf_get_computation before running it",
+                        imageOutdated: true);
                 }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
                 {
@@ -173,30 +207,29 @@ public sealed class AttestationOrchestrator
                 return Refused("attested computation has no computation (neither an inline `# Computation` fence nor a `computation:` path)", imageOutdated: false);
         }
 
-        if (!bundle.ExecutableResources.TryGetValue(concept.Id, out var survey))
-        {
-            return Refused($"concept '{concept.Id}' is not part of the bundle image it was given with", imageOutdated: false);
-        }
-
+        // A positive check: anything that is not a fully pinned resource refuses, so that a
+        // state this code does not name can never reach an unpinned read.
         var attester = survey.Attester;
-        switch (attester.State)
+        if (attester.State != ExecutableResourceState.Pinned || attester.Key is null || attester.Version is null)
         {
-            case ExecutableResourceState.Undeclared:
-                return Refused("no attester.resource is declared, so the computation cannot be attested and is not run", imageOutdated: false);
-            case ExecutableResourceState.Url:
-                return Refused($"attester resource '{attester.RawPath}' is a URL, which is never read, so the computation cannot be attested and is not run", imageOutdated: false);
-            case ExecutableResourceState.Unsafe:
-            case ExecutableResourceState.Missing:
-                return Refused($"attester resource '{attester.RawPath}' could not be resolved ({attester.State})", imageOutdated: true);
-            case ExecutableResourceState.Unreadable:
-            case ExecutableResourceState.TooLarge:
-                return Refused($"attester resource '{attester.RawPath}' could not be read ({attester.State})", imageOutdated: true);
+            switch (attester.State)
+            {
+                case ExecutableResourceState.Undeclared:
+                    return Refused("no attester.resource is declared, so the computation cannot be attested and is not run", imageOutdated: false);
+                case ExecutableResourceState.Url:
+                    return Refused($"attester resource '{attester.RawPath}' is a URL, which is never read, so the computation cannot be attested and is not run", imageOutdated: false);
+                case ExecutableResourceState.Unreadable:
+                case ExecutableResourceState.TooLarge:
+                    return Refused($"attester resource '{attester.RawPath}' could not be read ({attester.State})", imageOutdated: true);
+                default:
+                    return Refused($"attester resource '{attester.RawPath}' could not be resolved ({attester.State})", imageOutdated: true);
+            }
         }
 
         string attesterSourceText;
         try
         {
-            attesterSourceText = bundle.ReadResourceText(attester.Key!, attester.Version, out _);
+            attesterSourceText = bundle.ReadResourceText(attester.Key, attester.Version, out _);
         }
         catch (BundleVersionMismatchException)
         {
@@ -207,7 +240,7 @@ public sealed class AttestationOrchestrator
             return Refused($"attester resource '{attester.RawPath}' could not be read: {e.GetType().Name}", imageOutdated: true);
         }
 
-        return new AttestationCaptureResult(new AttestationCapture(resolved, attesterSourceText), null, false);
+        return new AttestationCaptureResult(new AttestationCapture(concept.Id, resolved, attesterSourceText), null, false);
     }
 
     private static AttestationCaptureResult Refused(string reason, bool imageOutdated) => new(null, Fail(reason), imageOutdated);
@@ -240,6 +273,11 @@ public sealed class AttestationOrchestrator
         // itself: a caller passing null must get the normal "missing required
         // parameter" outcome below, never a NullReferenceException.
         parameterValues ??= new Dictionary<string, object?>();
+
+        if (!capture.ConceptId.Equals(conceptId))
+        {
+            return Fail($"the capture was taken for concept '{capture.ConceptId}', not '{conceptId}', and is not run");
+        }
 
         var concept = bundle.Get(conceptId);
         if (concept is null || !concept.Document.Frontmatter.IsAttestedComputation)

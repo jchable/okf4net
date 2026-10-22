@@ -136,18 +136,28 @@ and this project adheres to
   `attester.resource` on keys (`Bundle.TryResolveResourceKey`,
   `Bundle.ReadResourceText(BundleKey, …)`) instead of the historical
   path-based members: the key policy, the rejected-key guard, the exact-case
-  and backslash rules now apply to what a run reads, which closes the gap the
-  previous release listed as temporary (`okf_run_computation` could read a
-  resource `okf validate` reported `Unsafe` or `Missing`). The attester is
-  read at the version the image was loaded with: a script replaced after the
+  and backslash rules now apply to what a run reads, which closes, for
+  `okf_run_computation`, the gap listed below as temporary (it could read a
+  resource `okf validate` reported `Unsafe` or `Missing`). Only a `Pinned`
+  resource is run, and at the version the image was loaded with, for the
+  `computation` file as for the attester: a file replaced after the
   load — same length, same second, which the filesystem's bundle token cannot
   see — is refused (`attester resource 'x' changed since the bundle was
-  loaded`), as is one whose surveyed state is not `Pinned` (`could not be
-  resolved (Missing)`, `could not be read (TooLarge)`). A refusal's wording
+  loaded`; a `computation` file says `changed since the bundle was loaded`,
+  or `changed since it was shown` when the caller observed another version
+  than the image's), as is one whose surveyed state is not `Pinned` (`could
+  not be resolved (Missing)`, `could not be read (TooLarge)`, `could not be
+  read (Unreadable)`: a computation file that is not valid UTF-8 is now
+  refused by its state, not by the decoder exception's name). A refusal's wording
   for a resource that could not be opened after the load names the exception
   type as before; a resource whose directory can no longer be listed (a
   junction that denies listing) is now refused at the resolution (`could not
-  be resolved (Missing)`) rather than at the read.
+  be resolved (Missing)`) rather than at the read. `AttestationOrchestrator.RunAsync`
+  is no longer `async`: a `null` bundle (`ArgumentNullException`) and an
+  unexpected exception from `Capture` (anything but the I/O and decoding
+  failures it turns into a refusal) are now thrown at the call instead of
+  faulting the returned `ValueTask`; a refusal and a stage failure stay
+  outcomes.
 
 - **Finite default bounds on loading** (spec §6), out of reach of real
   bundles: a concept over 256 MiB is a `ParseErrors` entry instead of being
@@ -293,10 +303,11 @@ and this project adheres to
   neither the key policy, nor the rejected-key guard, nor the exact-case and
   backslash rules above (they still resolve through the OS filesystem, so
   `references\a.sql` resolves on Windows and a case-folded name on Windows and
-  macOS). The readers that still use them (`AttestationOrchestrator`,
-  `OkfBundleTools`) follow in the next lots, so until then `okf validate` can
-  flag a resource `Unsafe` or `Missing` — for a key-policy, case or backslash
-  reason — that `okf_run_computation` still reads.
+  macOS). The reader that still uses them (`OkfBundleTools`, behind
+  `okf_get_computation`) follows in a next lot, so until then `okf validate`
+  can flag a resource `Unsafe` or `Missing` — for a key-policy, case or
+  backslash reason — that `okf_get_computation` still shows. `AttestationOrchestrator`
+  no longer uses them.
 - **`FileSystemBundleProvider` is writable** (`Capabilities.CanWrite` is
   `true`; `provider.AsReadOnly()` gives a read-only view). `Write` commits each
   object atomically (issue #157): the bytes go to a temporary

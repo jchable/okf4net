@@ -88,9 +88,10 @@ public sealed record AttestationOutcome(
 /// sanctioned computation (inline, or the file's text) and the attester's source, read pinned
 /// to the version the image was loaded with. Built by <see cref="AttestationOrchestrator.Capture"/>.
 /// </summary>
+/// <param name="ConceptId">The concept the capture was taken for; <see cref="AttestationOrchestrator.RunCapturedAsync"/> refuses it for any other.</param>
 /// <param name="Computation">The sanctioned computation: inline code, or the file's already-read text.</param>
 /// <param name="AttesterSourceText">The attester's source, read at its pinned version.</param>
-public sealed record AttestationCapture(SanctionedComputation Computation, string AttesterSourceText);
+public sealed record AttestationCapture(ConceptId ConceptId, SanctionedComputation Computation, string AttesterSourceText);
 
 /// <summary>The result of <see cref="AttestationOrchestrator.Capture"/>: a capture, or a non-displayable outcome saying why nothing is run.</summary>
 /// <param name="Capture">What the run executes, or <see langword="null"/> when the capture was refused.</param>

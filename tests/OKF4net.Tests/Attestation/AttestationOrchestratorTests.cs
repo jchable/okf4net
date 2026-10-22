@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using OKF4net;
 using OKF4net.Attestation;
+using OKF4net.Providers;
 using Xunit;
 
 namespace OKF4net.Tests.Attestation;
@@ -828,7 +829,9 @@ public class AttestationOrchestratorTests
         // "could not be resolved (Missing)", so the old substring assertion
         // stayed green when the file stopped resolving and the decoder was
         // never reached.
-        Assert.Contains(outcome.Reasons, r => r.Contains("could not be read: DecoderFallbackException", StringComparison.Ordinal));
+        // Since lot C the load surveys the file (strict decoder: invalid UTF-8 is `Unreadable`) and
+        // a run refuses it by state; the decoder exception is no longer reached at the run.
+        Assert.Contains(outcome.Reasons, r => r.Contains("could not be read (Unreadable)", StringComparison.Ordinal));
         Assert.DoesNotContain(outcome.Reasons, r => r.Contains("could not be resolved", StringComparison.Ordinal));
     }
 
@@ -869,7 +872,9 @@ public class AttestationOrchestratorTests
         // assertion has to name the decoder failure. `Displayable == false`
         // plus a shared "revenue.sql" substring is satisfied by a file that
         // never resolved, which proves nothing about BOM sniffing.
-        Assert.Contains(outcome.Reasons, r => r.Contains("could not be read: DecoderFallbackException", StringComparison.Ordinal));
+        // Since lot C the load surveys the file (strict decoder: invalid UTF-8 is `Unreadable`) and
+        // a run refuses it by state; the decoder exception is no longer reached at the run.
+        Assert.Contains(outcome.Reasons, r => r.Contains("could not be read (Unreadable)", StringComparison.Ordinal));
         Assert.DoesNotContain(outcome.Reasons, r => r.Contains("could not be resolved", StringComparison.Ordinal));
     }
 
@@ -1136,7 +1141,7 @@ public class AttestationOrchestratorTests
         Assert.True(attested);
     }
 
-    /// <summary>A computation file pinned to the version a caller observed (spec §5.4, point 2) is refused when it changed; unpinned, it is read as it is.</summary>
+    /// <summary>A computation file pinned to the version a caller observed (spec §5.4, point 2) is refused when it changed; unpinned, it is still pinned to the image's version.</summary>
     [Fact]
     public void A_computation_file_pinned_to_an_observed_version_is_refused_when_it_changed()
     {
@@ -1160,8 +1165,12 @@ public class AttestationOrchestratorTests
         Assert.True(refused.ImageOutdated);
         Assert.Contains(refused.Failure!.Reasons, r => r.StartsWith("computation file 'references/revenue.sql' changed since it was shown", StringComparison.Ordinal));
 
+        // Pinned to the image (spec §5.1, §5.4): without an observation the file is still read at
+        // the version the load pinned, never at its new bytes.
         var unpinned = AttestationOrchestrator.Capture(bundle, concept);
-        Assert.Equal("SELECT 2\n", unpinned.Capture!.Computation.InlineCode);
+        Assert.Null(unpinned.Capture);
+        Assert.True(unpinned.ImageOutdated);
+        Assert.Equal("computation file 'references/revenue.sql' changed since the bundle was loaded", Assert.Single(unpinned.Failure!.Reasons));
     }
 
     /// <summary>
@@ -1200,9 +1209,10 @@ public class AttestationOrchestratorTests
 
         Assert.False(outcome.Displayable);
         Assert.Null(capturedText);
-        // The refusal moved from the read to the resolution (lot C): the provider's exact-name
-        // lookup cannot list "x" once the junction denies it, so the key resolves Missing. Either
-        // refusal is what this test pins: nothing outside the bundle reaches the binder.
+        // The refusal moved from the read to the survey (lot C): the provider's exact-name
+        // lookup cannot list "x" once the junction denies it, so the load surveys it Missing
+        // ("could not be resolved"); a pinned read that fails says "could not be read". The
+        // prefix tolerates both: what this test pins is that nothing outside the bundle reaches the binder.
         Assert.Contains(outcome.Reasons, r => r.StartsWith("computation file 'x/y/secret.sql' could not be re", StringComparison.Ordinal));
     }
 
@@ -1242,5 +1252,174 @@ public class AttestationOrchestratorTests
         // As for the computation file above: refused at the resolution (the survey finds it
         // Missing once "x" denies listing), or at the pinned read — never attested.
         Assert.Contains(outcome.Reasons, r => r.StartsWith("attester resource 'x/y/att.py' could not be re", StringComparison.Ordinal));
+    }
+
+    private const string PinnedAttester = "def attest(**_):\n    return {}\n";
+
+    private static string AttestedConcept(string? computationFile, string? attesterResource, bool inlineFence = true) =>
+        "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { receipt: [job_id] }\n"
+        + (computationFile is null ? string.Empty : $"computation: {computationFile}\n")
+        + (attesterResource is null ? string.Empty : $"attester: {{ resource: {attesterResource} }}\n")
+        + "---\n"
+        + (inlineFence ? "# Computation\n\n```sql\nSELECT 1\n```\n" : string.Empty);
+
+    private static AttestationOrchestrator OrchestratorWith(FakeRuntime runtime) =>
+        new(new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime }),
+            clock: new FixedClock(new DateOnly(2026, 1, 1)));
+
+    /// <summary>
+    /// Sanctioned code is pinned to the image (spec §5.1, §5.4): a <c>computation:</c> file replaced
+    /// after the load, same length and timestamp, is refused and never reaches the runtime, exactly
+    /// as the attester is; it does not run at its new bytes.
+    /// </summary>
+    [Fact]
+    public async Task A_computation_file_replaced_after_the_load_is_refused_and_never_executed()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("references/q.sql", "SELECT 1\n");
+        tmp.Write("att.py", PinnedAttester);
+        tmp.Write("c/rev.md", AttestedConcept("references/q.sql", "att.py", inlineFence: false));
+        var bundle = Bundle.Load(tmp.Path);
+        var id = ConceptId.Parse("c/rev");
+
+        var stages = 0;
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
+        runtime.BindFunc = (_, computation, values, _) =>
+        {
+            stages++;
+            return ValueTask.FromResult(new BoundComputation("bigquery", computation.InlineCode, null, values));
+        };
+
+        var path = Path.Combine(tmp.Path, "references", "q.sql");
+        var stamp = File.GetLastWriteTimeUtc(path);
+        File.WriteAllText(path, "SELECT 2\n");
+        File.SetLastWriteTimeUtc(path, stamp);
+
+        var outcome = await OrchestratorWith(runtime).RunAsync(bundle, id, new Dictionary<string, object?>());
+
+        Assert.False(outcome.Displayable);
+        Assert.Equal(0, stages);
+        Assert.Contains(outcome.Reasons, r => r == "computation file 'references/q.sql' changed since the bundle was loaded");
+        var captured = AttestationOrchestrator.Capture(bundle, bundle.Get(id)!);
+        Assert.Null(captured.Capture);
+        Assert.True(captured.ImageOutdated);
+
+        // A version the caller observed that is not the image's: refused as well, image outdated.
+        var observed = AttestationOrchestrator.Capture(bundle, bundle.Get(id)!, new BundleObjectVersion("not-the-image-version"));
+        Assert.Null(observed.Capture);
+        Assert.True(observed.ImageOutdated);
+        Assert.StartsWith("computation file 'references/q.sql' changed since it was shown", Assert.Single(observed.Failure!.Reasons), StringComparison.Ordinal);
+    }
+
+    /// <summary>A computation file the survey found Missing or TooLarge is not executable, even when a file is there at the capture.</summary>
+    [Theory]
+    [InlineData("missing", "could not be resolved (Missing)")]
+    [InlineData("toolarge", "could not be read (TooLarge)")]
+    public void A_computation_file_surveyed_missing_or_too_large_is_refused_even_if_present_now(string kind, string expectedText)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("att.py", PinnedAttester);
+        tmp.Write("c/rev.md", AttestedConcept("references/q.sql", "att.py", inlineFence: false));
+        BundleLoadOptions? options = null;
+        if (kind == "toolarge")
+        {
+            tmp.Write("references/q.sql", new string('-', 400) + "\n");
+            options = new BundleLoadOptions { Limits = new BundleLimits { MaxObjectBytes = 300 } };
+        }
+
+        var bundle = options is null ? Bundle.Load(tmp.Path) : Bundle.Load(new FileSystemBundleProvider(tmp.Path), options);
+        if (kind == "missing")
+        {
+            tmp.Write("references/q.sql", "SELECT 1\n");
+        }
+
+        var captured = AttestationOrchestrator.Capture(bundle, bundle.Get(ConceptId.Parse("c/rev"))!);
+
+        Assert.Null(captured.Capture);
+        Assert.True(captured.ImageOutdated);
+        Assert.Equal($"computation file 'references/q.sql' {expectedText}", Assert.Single(captured.Failure!.Reasons));
+    }
+
+    /// <summary>Every negative state of the attester refuses with the resource and its state; only an undeclared or URL attester leaves the image alone.</summary>
+    [Theory]
+    [InlineData("../../att.py", "could not be resolved (Unsafe)", true)]
+    [InlineData("nope.py", "could not be resolved (Missing)", true)]
+    [InlineData("unreadable.py", "could not be read (Unreadable)", true)]
+    [InlineData("big.py", "could not be read (TooLarge)", true)]
+    public void A_negative_attester_state_is_refused_with_its_state_and_marks_the_image_outdated(string resource, string expectedText, bool imageOutdated)
+    {
+        var storage = new Providers.InMemoryBundleProvider()
+            .Add("c/rev.md", AttestedConcept(null, resource))
+            .Add("unreadable.py", PinnedAttester)
+            .Add("big.py", new string('#', 400) + "\n")
+            .FailReadOf("unreadable.py", new IOException("disk"));
+        var bundle = Bundle.Load(storage, new BundleLoadOptions { Limits = new BundleLimits { MaxObjectBytes = 300 } });
+
+        var captured = AttestationOrchestrator.Capture(bundle, bundle.Get(ConceptId.Parse("c/rev"))!);
+
+        Assert.Null(captured.Capture);
+        Assert.Equal(imageOutdated, captured.ImageOutdated);
+        Assert.Equal($"attester resource '{resource}' {expectedText}", Assert.Single(captured.Failure!.Reasons));
+    }
+
+    /// <summary>A concept with neither an inline fence nor a computation file has nothing to run; the image cannot be behind on that.</summary>
+    [Fact]
+    public void A_concept_without_a_computation_is_refused_and_does_not_mark_the_image_outdated()
+    {
+        var storage = new Providers.InMemoryBundleProvider().Add("c/rev.md", AttestedConcept(null, "att.py", inlineFence: false)).Add("att.py", PinnedAttester);
+        var bundle = Bundle.Load(storage);
+
+        var captured = AttestationOrchestrator.Capture(bundle, bundle.Get(ConceptId.Parse("c/rev"))!);
+
+        Assert.Null(captured.Capture);
+        Assert.False(captured.ImageOutdated);
+        Assert.StartsWith("attested computation has no computation", Assert.Single(captured.Failure!.Reasons), StringComparison.Ordinal);
+    }
+
+    /// <summary>A concept object that is not the one this image holds (a namesake from another image) is not captured.</summary>
+    [Fact]
+    public void A_concept_from_another_image_is_refused_as_not_part_of_the_bundle_image()
+    {
+        var one = Bundle.Load(new Providers.InMemoryBundleProvider().Add("c/rev.md", AttestedConcept(null, "att.py")).Add("att.py", PinnedAttester));
+        var other = Bundle.Load(new Providers.InMemoryBundleProvider().Add("c/rev.md", AttestedConcept(null, "att.py")).Add("att.py", PinnedAttester));
+
+        var captured = AttestationOrchestrator.Capture(one, other.Get(ConceptId.Parse("c/rev"))!);
+
+        Assert.Null(captured.Capture);
+        Assert.False(captured.ImageOutdated);
+        Assert.Contains("is not part of the bundle image", Assert.Single(captured.Failure!.Reasons), StringComparison.Ordinal);
+    }
+
+    /// <summary>A capture belongs to the concept it was taken for: run under another id it is refused and no stage is called.</summary>
+    [Fact]
+    public async Task A_capture_taken_for_another_concept_is_not_run()
+    {
+        var bundle = Bundle.Load(new Providers.InMemoryBundleProvider().Add("c/rev.md", AttestedConcept(null, "att.py")).Add("att.py", PinnedAttester));
+        var captured = AttestationOrchestrator.Capture(bundle, bundle.Get(ConceptId.Parse("c/rev"))!);
+        Assert.NotNull(captured.Capture);
+        Assert.Equal(ConceptId.Parse("c/rev"), captured.Capture!.ConceptId);
+
+        var stages = 0;
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
+        runtime.BindFunc = (_, computation, values, _) =>
+        {
+            stages++;
+            return ValueTask.FromResult(new BoundComputation("bigquery", computation.InlineCode, null, values));
+        };
+
+        var outcome = await OrchestratorWith(runtime).RunCapturedAsync(bundle, ConceptId.Parse("c/other"), new Dictionary<string, object?>(), captured.Capture);
+
+        Assert.False(outcome.Displayable);
+        Assert.Equal(0, stages);
+        Assert.Contains("the capture was taken for concept 'c/rev', not 'c/other'", Assert.Single(outcome.Reasons), StringComparison.Ordinal);
+    }
+
+    /// <summary><see cref="AttestationOrchestrator.RunAsync"/> is not <c>async</c>: a null bundle throws at the call instead of faulting the returned task.</summary>
+    [Fact]
+    public void RunAsync_throws_synchronously_for_a_null_bundle()
+    {
+        var orch = OrchestratorWith(FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?>())));
+
+        Assert.Throws<ArgumentNullException>(() => orch.RunAsync(null!, ConceptId.Parse("c/rev"), new Dictionary<string, object?>()));
     }
 }
