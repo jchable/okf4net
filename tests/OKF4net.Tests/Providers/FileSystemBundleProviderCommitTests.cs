@@ -772,6 +772,54 @@ public class FileSystemBundleProviderCommitTests
         Assert.Equal(["x.md"], Tree(tmp.Path));
     }
 
+    /// <summary>
+    /// I1: a replacement needs its destination. A target removed between the in-lock probe and the
+    /// commit call is no failure of an unconditional write, which prepares again and creates the
+    /// object (it ended in a raw not-found); under <c>IfMatch</c> it stays a conflict.
+    /// </summary>
+    [Fact]
+    public void An_object_removed_right_before_the_commit_is_created_by_an_unconditional_write_and_a_conflict_under_IfMatch()
+    {
+        using var tmp = new TempDir();
+        var file = tmp.Write("d/x.md", "old");
+        var p = new FileSystemBundleProvider(tmp.Path);
+        var preparations = 0;
+        var removed = false;
+        p.TemporaryNameForTest = () =>
+        {
+            preparations++;
+            return TemporaryName('a');
+        };
+        p.BeforeCommitForTest = (_, target) =>
+        {
+            if (!removed)
+            {
+                removed = true;
+                File.Delete(target);
+            }
+        };
+        var v = p.Write(K("d/x.md"), B("new"), BundleWriteCondition.None);
+        Assert.Equal(2, preparations);
+        Assert.Equal("new", File.ReadAllText(file));
+        using (var obj = p.Read(K("d/x.md")))
+        {
+            Assert.Equal(v, obj.Version);
+        }
+
+        Assert.Equal(["d", "d/x.md"], Tree(tmp.Path));
+
+        removed = false;
+        BundleObjectVersion current;
+        using (var obj = p.Read(K("d/x.md")))
+        {
+            current = obj.Version;
+        }
+
+        var ex = Assert.Throws<BundleWriteConflictException>(() => p.Write(K("d/x.md"), B("newer"), BundleWriteCondition.IfMatch(current)));
+        Assert.Equal(BundleWriteConflictReason.ConditionFailed, ex.Reason);
+        Assert.Equal(["d"], Tree(tmp.Path));
+    }
+
     /// <summary>A delete conditioned on a version, of an object removed between the lock's match and its hash: the object no longer exists, so the condition fails (a conflict), not a raw not-found.</summary>
     [Fact]
     public void An_object_deleted_between_the_in_lock_match_and_its_hash_is_a_conflict_for_an_IfMatch_delete()

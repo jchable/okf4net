@@ -342,7 +342,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// opened) and <see cref="FileShare.None"/>; on Unix a replacement's temporary is created
     /// owner-only (0600) before any byte is written and gets the target's mode through its handle
     /// before it is closed, while a new object's temporary gets the mode any new file gets in that
-    /// directory. The bytes are flushed to stable storage and the handle closed. (3) Under an
+    /// directory (except that an object created because its predecessor vanished after its mode
+    /// was read carries that predecessor's mode). The bytes are flushed to stable storage and the handle closed. (3) Under an
     /// in-process lock per object, shared by every instance of this provider, the boundary, the
     /// chain and the temporary are STRICT-checked again, the target's exact name and current
     /// SHA-256 are read again, and the condition is checked against them. (4) The commit:
@@ -419,7 +420,10 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// <see cref="BundleWriteConditionKind.IfMatch"/> write whose object is removed between its
     /// resolution and the commit is the same conflict; an unconditional write in that case
     /// creates the object, or prepares again (at most three times in all) and then raises the
-    /// conflict.</para>
+    /// conflict; so does an unconditional replacement whose target is removed between the
+    /// writability probe and the commit call. A parent directory removed in those windows stays
+    /// the raw <see cref="DirectoryNotFoundException"/>, whose message names a host path (issue
+    /// #211).</para>
     /// <para><b>What a concurrent reader sees.</b> Never a part of the new content. On Unix the
     /// commit is a <c>rename</c>, so a reader finds the old object or the new one. On Windows
     /// <c>ReplaceFile</c> is atomic for the stored state but not for readers: while it runs, a
@@ -496,6 +500,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// the condition holds on an absent object (<see cref="Exists"/> answers false), where a
     /// <see cref="Write"/> under <see cref="BundleWriteConditionKind.None"/> raises an
     /// <see cref="IOException"/> for a root that is a file.
+    /// Like a write, a delete needs the right to write the object's directory (an unprivileged
+    /// process in a 0555 directory gets <see cref="UnauthorizedAccessException"/>, the file kept).
     /// A key that names a directory names no object, so nothing is deleted. The same exact-name
     /// resolution, STRICT guards, boundary re-check and per-object lock as <see cref="Write"/>.
     /// </remarks>
@@ -874,7 +880,9 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// named by <paramref name="existing"/> vanished before its mode could be read (Unix: another
     /// writer deleted it between the resolution and this call) — the temporary then has the mode
     /// a new file gets, and <see cref="CommitTemporary"/> prepares again if the object is back
-    /// under the lock.
+    /// under the lock. If it is not, the object is created with that mode: a predecessor's, read
+    /// before it vanished, where a new file gets the directory's default (measured: 640 where a
+    /// new file gets 644 as root, 664 as an unprivileged user).
     /// </remarks>
     private string WriteTemporary(string parent, string? existing, ReadOnlyMemory<byte> content, out bool preparedAsReplacement)
     {
@@ -1042,6 +1050,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
                         {
                             case CommitFailure.NothingChanged:
                                 throw; // the raw failure; the temporary is removed below
+                            case CommitFailure.TargetGone:
+                                return false; // the temporary is removed below; the write prepares again
                             case CommitFailure.ChangedByAnother:
                                 throw new BundleWriteConflictException(key);
                             case CommitFailure.NameTaken:
@@ -1091,6 +1101,9 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
         /// <summary>The temporary is still there and the target changed: another writer landed, ours did not.</summary>
         ChangedByAnother,
 
+        /// <summary>The temporary is still there, the write was an unconditional replacement and nothing is under the key any more: the target was removed since the probe, so the write prepares again.</summary>
+        TargetGone,
+
         /// <summary>The temporary is still there and a directory sits under the key: the name is taken, and ours did not land.</summary>
         NameTaken,
 
@@ -1120,7 +1133,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// the caller's read rights) — except for
     /// an unconditional replacement (<paramref name="existed"/> without <paramref name="before"/>),
     /// whose target is not read, since its version was never needed and it may not be readable:
-    /// nothing of that write happened. A temporary gone and a target holding the new bytes means
+    /// nothing of that write happened (the key is only listed: with nothing under it the verdict
+    /// is <see cref="CommitFailure.TargetGone"/>, and the write prepares again). A temporary gone and a target holding the new bytes means
     /// the commit took effect; anything else is unknown. Reads only; never throws.
     /// </summary>
     private CommitFailure ClassifyCommitFailure(BundleKey key, string parent, string temporary, bool existed, BundleObjectVersion? before, BundleObjectVersion written, Exception failure)
@@ -1138,6 +1152,20 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
             var temporaryLeft = File.Exists(temporary);
             if (temporaryLeft && existed && before is null)
             {
+                // Not read, but listed: a replacement needs its destination, so a target removed
+                // since the probe is no failure of this write, which prepares again.
+                try
+                {
+                    if (ListExact(parent, key.Name) is null)
+                    {
+                        return CommitFailure.TargetGone;
+                    }
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    // the listing failed: nothing more is claimed than before
+                }
+
                 return CommitFailure.NothingChanged;
             }
 
