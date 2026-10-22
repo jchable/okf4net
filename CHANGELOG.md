@@ -254,9 +254,12 @@ and this project adheres to
   temporary left. Any other failure of the commit call is
   classified from the disk once the boundary and the path guards have been
   checked again: nothing happened (the raw error), another writer landed
-  (`BundleWriteConflictException`; so does a directory under the key, reason
-  `NameUnavailable`, and an entry under it that this process cannot read, since
-  the verdict does not depend on the caller's read rights), or it took effect
+  (`BundleWriteConflictException`; so is a directory under the key, reason
+  `NameUnavailable`, and an entry under it that cannot be shown to be the
+  version read — for instance one this process cannot read — so that the
+  verdict does not depend on the caller's read rights; this applies to a
+  conditional write or a creation while the temporary is still in place, an
+  unconditional replacement still gets the raw error), or it took effect
   (success); otherwise, and
   always for Windows `ReplaceFile` error 1176/1177, it is
   `BundleWriteOutcomeUnknownException` and the temporary — possibly the only
@@ -459,8 +462,11 @@ and this project adheres to
   (`Access to the path … is denied` became `… cannot be stored under that name:
   …`); a parent segment that is a file (a `Cannot create …` or `The file …
   already exists` error became `"f/y.md" cannot be created: "f" is an object,
-  so it cannot also be a prefix of other keys.`); a root that is a file (on
-  Linux `The file '<root>' already exists.`); `new BundleConceptWriter("")`
+  so it cannot also be a prefix of other keys.`); a root that has become a
+  file, for the log append (`Could not find a part of the path '…/log.md'`
+  became `The file '<root>' already exists.` on Linux and `Cannot create
+  '<root>' because a file or directory with the same name already exists.` on
+  Windows; concept writes are unchanged); `new BundleConceptWriter("")`
   (the `ArgumentException` now names the parameter `root`: `The value cannot
   be an empty string. (Parameter 'root')`); and `okf index` in a directory the
   process may not create files in, which names the `.okf-write` temporary (see
@@ -470,15 +476,18 @@ and this project adheres to
   conflict before any directory is created (it used to create the root and
   every parent, then refuse, against "nothing was changed"). An object removed
   by another writer between a write's resolution and its commit is, under
-  `IfMatch`, a `BundleWriteConflictException` (the object no longer exists),
+  `IfMatch` (a delete included), a `BundleWriteConflictException` (the object
+  no longer exists),
   and under `None` a new preparation (at most three in all, then the
   conflict) or, once it is gone for good, a creation (a creation under
   `MustNotExist` too, when it was gone before the temporary's mode was read) —
   it used to be a raw `FileNotFoundException` (the first window on Unix only)
   that the writer's retry did not cover. A
-  commit that failed while a directory, or an entry this process cannot read,
-  sits under the key is a conflict with its temporary removed, not an unknown
-  outcome that keeps an orphan. `Delete` under a bundle root that does not
+  commit that failed while its temporary was still in place and a directory, or
+  an entry that cannot be shown to be the version read (one this process cannot
+  read, say), sits under the key is, for a conditional write or a creation, a
+  conflict with its temporary removed, not an unknown outcome that keeps an
+  orphan (an unconditional replacement still gets the raw error). `Delete` under a bundle root that does not
   exist is a no-op where the condition holds (`Exists` already answered false),
   where it was a raw `DirectoryNotFoundException`. The `OkfBundleTools` write
   tools (`okf_write_concept`, `okf_verify`, `okf_append_log`,

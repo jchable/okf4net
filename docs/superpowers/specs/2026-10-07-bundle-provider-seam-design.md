@@ -636,8 +636,11 @@ comme n'importe quelle autre.
   > soit ; un objet qui disparaît entre sa résolution et le commit est, sous
   > `IfMatch`, un conflit, et sous `None` une nouvelle préparation (bornée par
   > les trois préparations) ou une création, jamais un « introuvable » brut ;
-  > un commit échoué avec un répertoire ou une entrée illisible sous la clé est
-  > un conflit et son temporaire est retiré ; `Delete` sous une racine absente
+  > un commit échoué dont le temporaire est encore en place, avec un répertoire
+  > ou une entrée dont on ne peut montrer qu'elle est la version lue (illisible,
+  > par exemple) sous la clé, est un conflit et son temporaire est retiré, pour
+  > une écriture conditionnelle ou une création (un remplacement inconditionnel
+  > garde l'erreur brute) ; `Delete` sous une racine absente
   > est sans effet quand la condition tient ; les outils de `OkfBundleTools`
   > oublient leur bundle en cache dès qu'une écriture se termine en `Error:`,
   > car la notification de commit ne s'exécute pas pour une issue inconnue (B46,
