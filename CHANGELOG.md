@@ -74,7 +74,7 @@ and this project adheres to
   without any effect, on every attempt; the object is unchanged (see Changed,
   "A failed commit says what happened").
 - **`BundleHandle` (#139, lot C; spec §5.2, §5.3).** The holder of one
-  bundle's image: `new BundleHandle(provider, loadOptions, refreshPolicy)`,
+  bundle's image: `new BundleHandle(provider, options, refreshPolicy, time)`,
   `Current` (the image, loaded on first use), `Refresh()`, `Invalidate()`,
   `IsStale`, `LastLoadError`. One load at a time (concurrent callers wait for
   the load in progress), the image replaced as a whole, a failed reload keeps

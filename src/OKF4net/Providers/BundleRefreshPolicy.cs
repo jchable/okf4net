@@ -22,7 +22,7 @@ public enum BundleRefreshMode
 /// core runs no timer and no background thread, and a reload only ever happens inside an
 /// access to <see cref="BundleHandle.Current"/> or a call to <see cref="BundleHandle.Refresh"/>.
 /// Three events reload whatever the policy (spec §5.1, §5.2): the handle's own writes (a
-/// <see cref="BundleConceptWriter"/> built over it), a write conflict, and a refused pin of
+/// <see cref="BundleConceptWriter"/> built over it), a write conflict reported by the agent tools (a writer over a handle does not invalidate on a conflict), and a refused pin of
 /// sanctioned code — each through <see cref="BundleHandle.Invalidate"/>.
 /// </summary>
 public sealed record BundleRefreshPolicy

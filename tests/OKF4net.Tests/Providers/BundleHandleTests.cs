@@ -200,20 +200,34 @@ public class BundleHandleTests
         Assert.False(handle.IsStale);
     }
 
+    /// <summary>
+    /// Deterministic: the first listing blocks until every other thread is parked on the handle's
+    /// load lock, so each of them would load again if the re-check under the lock were missing.
+    /// </summary>
     [Fact]
     public void Concurrent_first_accesses_share_one_load()
     {
         var storage = Storage();
-        using var handle = new BundleHandle(storage);
+        var hooked = new HookedProvider(storage);
+        using var handle = new BundleHandle(hooked);
         var results = new Bundle[16];
-        using var start = new ManualResetEventSlim(false);
-        var threads = Enumerable.Range(0, results.Length).Select(i => new Thread(() =>
+        using var release = new ManualResetEventSlim(false);
+        using var inFirstLoad = new ManualResetEventSlim(false);
+        hooked.OnEnumerate = () =>
         {
-            start.Wait();
-            results[i] = handle.Current;
-        })).ToList();
-        threads.ForEach(t => t.Start());
-        start.Set();
+            inFirstLoad.Set();
+            release.Wait();
+        };
+        var threads = Enumerable.Range(0, results.Length).Select(i => new Thread(() => results[i] = handle.Current)).ToList();
+        threads[0].Start();
+        inFirstLoad.Wait();
+        threads.Skip(1).ToList().ForEach(t => t.Start());
+        foreach (var t in threads.Skip(1))
+        {
+            SpinWait.SpinUntil(() => t.ThreadState.HasFlag(ThreadState.WaitSleepJoin));
+        }
+
+        release.Set();
         threads.ForEach(t => t.Join());
 
         Assert.Equal(1, Loads(storage));
@@ -248,16 +262,111 @@ public class BundleHandleTests
         var storage = Storage();
         using var handle = new BundleHandle(storage);
         var notified = 0;
-        var writer = new BundleConceptWriter(handle, onWriteCommitted: () => notified++);
+        var staleInCallback = false;
+        var writer = new BundleConceptWriter(handle, onWriteCommitted: () =>
+        {
+            notified++;
+            staleInCallback = handle.IsStale; // the handle is invalidated BEFORE the caller's notification
+        });
         Assert.Equal(1, handle.Current.Count);
 
         var result = writer.WriteConcept("b", "type: Note\ntitle: B\ndescription: b.\n", "B.\n");
 
         Assert.StartsWith("Written", result, StringComparison.Ordinal);
         Assert.Equal(1, notified);
+        Assert.True(staleInCallback);
         Assert.True(handle.IsStale);
         Assert.Equal(2, handle.Current.Count);
         Assert.Throws<NotSupportedException>(() => writer.BundleRoot);
+    }
+
+    [Fact]
+    public void A_refused_write_does_not_invalidate_the_handle()
+    {
+        var storage = Storage();
+        using var handle = new BundleHandle(storage);
+        var notified = 0;
+        var writer = new BundleConceptWriter(handle, onWriteCommitted: () => notified++);
+        _ = handle.Current;
+
+        var result = writer.WriteConcept("a", "type: Note\ntitle: A\ndescription: a.\n", "A2.\n", BundleWriteCondition.IfMatch(new BundleObjectVersion("not-the-current-version")));
+
+        Assert.StartsWith("Error", result, StringComparison.Ordinal);
+        Assert.Equal(0, notified);
+        Assert.False(handle.IsStale);
+    }
+
+    [Fact]
+    public void A_signal_consumed_by_a_failed_reload_is_not_lost_under_Notify()
+    {
+        var storage = Storage();
+        var notifying = new NotifyingBundleProvider(storage);
+        using var handle = new BundleHandle(notifying, refreshPolicy: BundleRefreshPolicy.Notify);
+        var first = handle.Current;
+        storage.Add("b.md", Doc);
+        storage.FailEnumerateWith = new IOException("network down");
+        notifying.Signal();
+
+        Assert.Same(first, handle.Current);
+        Assert.True(handle.IsStale);
+
+        storage.FailEnumerateWith = null; // no second signal
+        var second = handle.Current;
+        Assert.Equal(2, second.Count);
+        Assert.False(handle.IsStale);
+    }
+
+    [Fact]
+    public void An_unreadable_token_counts_as_changed_and_never_throws_from_Current()
+    {
+        var storage = Storage();
+        using var handle = new BundleHandle(storage, refreshPolicy: BundleRefreshPolicy.OnAccess);
+        var first = handle.Current;
+        storage.FailVersionWith = new IOException("network down");
+        var loadsBefore = Loads(storage);
+
+        Assert.Same(first, handle.Current); // the comparison fails, the reload fails too: the previous image is served
+        Assert.True(handle.IsStale);
+        Assert.IsType<BundleLoadException>(handle.LastLoadError);
+        Assert.True(Loads(storage) > loadsBefore); // a reload was attempted
+    }
+
+    [Fact]
+    public void A_comparison_that_finds_the_image_current_clears_the_stale_mark()
+    {
+        var storage = Storage();
+        using var handle = new BundleHandle(storage, refreshPolicy: BundleRefreshPolicy.OnAccess);
+        var first = handle.Current;
+        storage.FailVersionWith = new IOException("network down");
+        storage.FailEnumerateWith = new IOException("network down");
+        Assert.Same(first, handle.Current);
+        Assert.True(handle.IsStale);
+
+        storage.FailVersionWith = null; // storage recovers with the same token
+        storage.FailEnumerateWith = null;
+        Assert.Same(first, handle.Current);
+        Assert.False(handle.IsStale);
+        Assert.Null(handle.LastLoadError);
+    }
+
+    [Fact]
+    public void Refresh_rethrows_with_the_stack_of_the_failure()
+    {
+        var storage = Storage();
+        using var handle = new BundleHandle(storage);
+        _ = handle.Current;
+        storage.FailEnumerateWith = new IOException("network down");
+
+        var thrown = Assert.Throws<BundleLoadException>(() => handle.Refresh());
+
+        Assert.Contains("LoadLocked", thrown.StackTrace, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Every_needs_a_positive_interval()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => BundleRefreshPolicy.Every(TimeSpan.Zero));
+        Assert.Throws<ArgumentOutOfRangeException>(() => BundleRefreshPolicy.Every(TimeSpan.FromSeconds(-1)));
     }
 
     /// <summary>A clock the test moves by hand, for <see cref="BundleRefreshMode.Interval"/>.</summary>

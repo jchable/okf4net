@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Runtime.ExceptionServices;
+
 namespace OKF4net.Providers;
 
 /// <summary>
@@ -7,7 +9,7 @@ namespace OKF4net.Providers;
 /// shared by every consumer of that source (the agent tools, a context provider, a catalog
 /// source) so that they serve one image; the sharing is explicit — a consumer built from a
 /// root string creates its own handle, and two such consumers have two images.
-/// <para><b>One load at a time.</b> Concurrent callers wait for the load in progress instead of
+/// <para><b>One load at a time.</b> The token comparison of <see cref="BundleRefreshMode.OnAccess"/> and <see cref="BundleRefreshMode.Interval"/> also runs serially under the load lock (on the filesystem provider it is a walk), blocking concurrent callers. Concurrent callers wait for the load in progress instead of
 /// each starting one; the image is replaced as a whole, so a call never sees two versions.</para>
 /// <para><b>Failure.</b> When a reload fails (the storage is unreachable, a bound is exceeded) the
 /// previous image stays served and <see cref="IsStale"/> says so; only the very first load throws.</para>
@@ -77,7 +79,7 @@ public sealed class BundleHandle : IDisposable
     /// </summary>
     public bool IsStale => Volatile.Read(ref _stale) || (_image is { } image && image.Generation < Volatile.Read(ref _required));
 
-    /// <summary>The failure of the last reload that kept the previous image served, or <see langword="null"/>.</summary>
+    /// <summary>The failure of the last load, or <see langword="null"/>: a reload that kept the previous image served (then <see cref="IsStale"/> is set), or a failed first load (then there is no image and <see cref="IsStale"/> stays <see langword="false"/>). Cleared by a successful load, or by a comparison that finds the image current.</summary>
     public Exception? LastLoadError => Volatile.Read(ref _lastLoadError);
 
     /// <summary>
@@ -118,7 +120,7 @@ public sealed class BundleHandle : IDisposable
             var image = LoadLocked();
             if (_lastLoadError is { } error)
             {
-                throw error;
+                ExceptionDispatchInfo.Capture(error).Throw();
             }
 
             return image.Bundle;
@@ -132,7 +134,12 @@ public sealed class BundleHandle : IDisposable
     /// </summary>
     public void Invalidate() => Interlocked.Increment(ref _required);
 
-    /// <inheritdoc/>
+    /// <summary>
+    /// Ends the subscription to the provider's change signals. A <see cref="BundleRefreshMode.Notify"/>
+    /// handle should be disposed: the subscription closure captures the handle, so a long-lived
+    /// notifier keeps an undisposed handle and its image alive. After disposal the handle still
+    /// serves and reloads (on an obligation or a <see cref="Refresh"/>), but no signal reaches it.
+    /// </summary>
     public void Dispose() => _subscription?.Dispose();
 
     private bool NeedsReload(Image image)
@@ -145,7 +152,7 @@ public sealed class BundleHandle : IDisposable
         switch (RefreshPolicy.Mode)
         {
             case BundleRefreshMode.OnAccess:
-                return TokenChanged(image);
+                return CheckToken(image);
             case BundleRefreshMode.Interval:
                 {
                     var now = _time.GetTimestamp();
@@ -155,7 +162,7 @@ public sealed class BundleHandle : IDisposable
                     }
 
                     _lastCheck = now;
-                    return TokenChanged(image);
+                    return CheckToken(image);
                 }
 
             case BundleRefreshMode.Notify:
@@ -165,10 +172,23 @@ public sealed class BundleHandle : IDisposable
                 }
 
                 Volatile.Write(ref _checkRequested, false);
-                return TokenChanged(image);
+                return CheckToken(image);
             default:
                 return false;
         }
+    }
+
+    /// <summary>Compares the tokens; an unchanged one means the image served is in fact current, so a stale mark left by an earlier failure is cleared (an obligation is not: it is generation-based).</summary>
+    private bool CheckToken(Image image)
+    {
+        if (TokenChanged(image))
+        {
+            return true;
+        }
+
+        Volatile.Write(ref _lastLoadError, null);
+        Volatile.Write(ref _stale, false);
+        return false;
     }
 
     /// <summary>A token that cannot be read counts as changed: the reload then fails the same way, and the image is marked stale.</summary>
@@ -206,6 +226,11 @@ public sealed class BundleHandle : IDisposable
             }
 
             Volatile.Write(ref _stale, true);
+            if (RefreshPolicy.Mode == BundleRefreshMode.Notify)
+            {
+                Volatile.Write(ref _checkRequested, true); // the signal was consumed by the comparison: re-arm it so the next access retries
+            }
+
             return previous;
         }
     }
