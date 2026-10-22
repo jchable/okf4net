@@ -151,8 +151,9 @@ public static class IndexGenerator
     /// atomically, conditioned on the version just read (or on its absence), and a
     /// conflict with another writer is retried, at most three attempts in all, reading again
     /// each time. A regeneration takes no lock of its own (its callers lock, or
-    /// not): a concurrent write surfaces as a conflict and a retry, never as a lost
-    /// update.
+    /// not): a concurrent write in this process surfaces as a conflict and a retry; another
+    /// process's write landing between the provider's last check and its commit is
+    /// overwritten (issue #178).
     /// </para>
     /// <para>
     /// <b>Failures.</b> A root <c>index.md</c> that cannot be read or parsed is left

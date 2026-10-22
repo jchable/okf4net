@@ -351,7 +351,9 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// <para><b>Names.</b> A name the volume would confuse with a stored entry — a directory, a
     /// sibling differing only in case or Unicode form on a volume that folds them, a Windows name
     /// with a trailing dot or space, a character no Windows name carries — is refused with
-    /// <see cref="BundleWriteConflictReason.NameUnavailable"/> before anything is created.</para>
+    /// <see cref="BundleWriteConflictReason.NameUnavailable"/> before anything is created, with one exception: a
+    /// directory this write has just created and cannot find back under exactly its name (the volume
+    /// stored it under another) is refused after its creation, and is left in place.</para>
     /// <para><b>Permissions.</b> Every write creates its temporary beside the target and commits by
     /// rename, so the process needs the right to create files in, and to rename within, the
     /// target's directory — more than <c>File.WriteAllText</c>, which needed only the right to
@@ -409,7 +411,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// append, which wrote with <c>File.WriteAllText</c> without creating the directory, now
     /// creates it too. The confinement boundary is checked
     /// before and after, and every guard is applied to the path as before; a root that exists
-    /// as a file is an <see cref="IOException"/>. An <see cref="BundleWriteConditionKind.IfMatch"/>
+    /// as a file is an <see cref="IOException"/> (under <see cref="BundleWriteConditionKind.IfMatch"/>, a
+    /// conflict: the object cannot exist). An <see cref="BundleWriteConditionKind.IfMatch"/>
     /// write creates nothing: where the root or a parent directory does not exist the object does
     /// not either, the condition cannot hold, and the write is refused with
     /// <see cref="BundleWriteConflictException"/> before any directory is created. An
@@ -489,6 +492,10 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// <inheritdoc/>
     /// <remarks>
     /// The object's directories are left in place, empty or not: an empty directory holds no key.
+    /// A root that does not exist, or exists as a file, holds nothing: the delete is a no-op where
+    /// the condition holds on an absent object (<see cref="Exists"/> answers false), where a
+    /// <see cref="Write"/> under <see cref="BundleWriteConditionKind.None"/> raises an
+    /// <see cref="IOException"/> for a root that is a file.
     /// A key that names a directory names no object, so nothing is deleted. The same exact-name
     /// resolution, STRICT guards, boundary re-check and per-object lock as <see cref="Write"/>.
     /// </remarks>
@@ -522,8 +529,26 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
                 }
             }
 
+            if (current is not null)
+            {
+                TargetMatchedForTest?.Invoke(current);
+            }
+
             // Only IfMatch reads the object: deleting it needs no right to read it.
-            BundleObjectVersion? version = current is not null && condition.Kind == BundleWriteConditionKind.IfMatch ? HashForRead(key, current) : null;
+            BundleObjectVersion? version = null;
+            if (current is not null && condition.Kind == BundleWriteConditionKind.IfMatch)
+            {
+                try
+                {
+                    version = HashForRead(key, current);
+                }
+                catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
+                {
+                    // Removed since the match: the object no longer exists, so IfMatch cannot hold.
+                    throw new BundleWriteConflictException(key);
+                }
+            }
+
             if (!Holds(condition, current is not null, version))
             {
                 throw new BundleWriteConflictException(key);
@@ -547,7 +572,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// <summary>The temporaries' name suffix.</summary>
     internal const string TemporarySuffix = ".tmp";
 
-    /// <summary>How many times <see cref="Write"/> prepares a temporary before giving up on an object that keeps appearing under an unconditional creation (Unix only, see <see cref="CommitTemporary"/>).</summary>
+    /// <summary>How many times <see cref="Write"/> prepares a temporary before giving up on an object that keeps appearing under an unconditional creation (Unix) or keeps vanishing as the in-lock probe opens it (every OS), see <see cref="CommitTemporary"/>.</summary>
     private const int MaxPreparations = 3;
 
     /// <summary>
@@ -588,8 +613,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// </summary>
     internal Action<string, string, bool>? CommitForTest { get; set; }
 
-    /// <summary>Test hook: called under the commit lock of a write once the target's entry is matched and guarded, with its full path, before the target is opened to be hashed or probed for writing — the object vanishing in that window. <see langword="null"/> outside tests.</summary>
-    internal Action<string>? WriteTargetMatchedForTest { get; set; }
+    /// <summary>Test hook: called under the commit lock of a write or a delete once the target's entry is matched and guarded, with its full path, before the target is opened to be hashed or probed for writing — the object vanishing in that window. <see langword="null"/> outside tests.</summary>
+    internal Action<string>? TargetMatchedForTest { get; set; }
 
     /// <summary>Test hook: called by <see cref="Delete"/> under the commit lock, with the parent directory's full path, once the parent is guarded again and before the object is looked up — another process acting in that window (a link planted under the object's name). <see langword="null"/> outside tests.</summary>
     internal Action<string>? DeleteLockedForTest { get; set; }
@@ -942,7 +967,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
                     if (current is not null)
                     {
                         GuardObject(key, current);
-                        WriteTargetMatchedForTest?.Invoke(current);
+                        TargetMatchedForTest?.Invoke(current);
                         if (condition.Kind == BundleWriteConditionKind.IfMatch)
                         {
                             try
@@ -1090,8 +1115,9 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// rename did not happen: the target is as before (<see cref="CommitFailure.NothingChanged"/>)
     /// or changed by another writer (<see cref="CommitFailure.ChangedByAnother"/>; a directory
     /// under the key is <see cref="CommitFailure.NameTaken"/>, and an entry under the key that
-    /// cannot be hashed — unreadable by this process, in use, too large — is changed by another
-    /// writer too, so that the verdict does not depend on the caller's read rights) — except for
+    /// cannot be hashed — unreadable by this process, in use, too large — cannot be shown to be
+    /// the version read, so it is reported as a conflict too, and the verdict does not depend on
+    /// the caller's read rights) — except for
     /// an unconditional replacement (<paramref name="existed"/> without <paramref name="before"/>),
     /// whose target is not read, since its version was never needed and it may not be readable:
     /// nothing of that write happened. A temporary gone and a target holding the new bytes means
@@ -1120,7 +1146,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
             {
                 // The rename did not happen. What is under the key now is what another writer
                 // left, whatever the caller may read of it: a directory is a name taken; an entry
-                // that cannot be hashed (unreadable, too large, in use) is not our bytes.
+                // that cannot be hashed (unreadable, too large, in use) cannot be shown to be
+                // the version read.
                 if (now is null)
                 {
                     return before is null ? CommitFailure.NothingChanged : CommitFailure.ChangedByAnother;

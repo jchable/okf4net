@@ -9,6 +9,8 @@ namespace OKF4net.Tests.Agents;
 /// reported by the writer as an <c>Error:</c> text and never notified as committed, although
 /// its content may have landed. The tool set caches the loaded bundle, so each write tool
 /// drops that cache on an <c>Error:</c> result: the next read shows what the file holds.
+/// The cache is primed by a read before each write (a concept for the concept writes, the
+/// change log for <c>AppendLog</c>), so that a test goes red when the drop is removed.
 /// </summary>
 public class OkfBundleToolsUnknownOutcomeTests
 {
@@ -89,17 +91,16 @@ public class OkfBundleToolsUnknownOutcomeTests
     }
 
     [Fact]
-    public void AppendLog_with_an_unknown_outcome_reports_it_and_leaves_the_cache_consistent()
+    public void AppendLog_with_an_unknown_outcome_drops_the_cache_so_that_the_entry_is_seen()
     {
         using var tmp = new TempDir();
         var tools = ToolsOver(tmp);
-        Assert.Contains("OLD BODY", tools.ReadConcept("metrics/dau"), StringComparison.Ordinal);
+        Assert.StartsWith("No changes since 2000-01-01.", tools.ChangesSince("2000-01-01"), StringComparison.Ordinal); // primes the cache: no log.md yet
 
         var result = tools.AppendLog("Update", "an entry");
 
         Assert.StartsWith("Error: ", result, StringComparison.Ordinal);
         Assert.Contains("unknown outcome", result, StringComparison.Ordinal);
-        Assert.Contains("an entry", File.ReadAllText(Path.Combine(tmp.Path, "log.md")), StringComparison.Ordinal);
-        Assert.Contains("OLD BODY", tools.ReadConcept("metrics/dau"), StringComparison.Ordinal);
+        Assert.Contains("an entry", tools.ChangesSince("2000-01-01"), StringComparison.Ordinal);
     }
 }

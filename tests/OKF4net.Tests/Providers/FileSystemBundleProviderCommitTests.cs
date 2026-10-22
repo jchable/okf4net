@@ -733,6 +733,60 @@ public class FileSystemBundleProviderCommitTests
     }
 
     /// <summary>
+    /// A-I1 and B27 together (Unix): an object deleted after it was resolved is prepared as a
+    /// creation (a new file's mode); if it is back under the lock, owner-only, the write
+    /// prepares again as a replacement so that the committed object keeps its own mode. Without
+    /// the re-preparation the temporary's default mode would replace the 0600 object's.
+    /// </summary>
+    [SkippableFact]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public void An_object_deleted_after_it_was_resolved_and_back_before_the_commit_is_prepared_again_and_keeps_its_mode()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "POSIX modes");
+        using var tmp = new TempDir();
+        var file = tmp.Write("x.md", "old");
+        var p = new FileSystemBundleProvider(tmp.Path);
+        var preparations = 0;
+        var written = 0;
+        p.TemporaryNameForTest = () =>
+        {
+            if (++preparations == 1)
+            {
+                File.Delete(file);
+            }
+
+            return TemporaryName('a');
+        };
+        p.AfterTemporaryWrittenForTest = _ =>
+        {
+            if (++written == 1)
+            {
+                File.WriteAllText(file, "created elsewhere");
+                File.SetUnixFileMode(file, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+        };
+        p.Write(K("x.md"), B("mine"), BundleWriteCondition.None);
+        Assert.Equal(2, preparations);
+        Assert.Equal("mine", File.ReadAllText(file));
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(file));
+        Assert.Equal(["x.md"], Tree(tmp.Path));
+    }
+
+    /// <summary>A delete conditioned on a version, of an object removed between the lock's match and its hash: the object no longer exists, so the condition fails (a conflict), not a raw not-found.</summary>
+    [Fact]
+    public void An_object_deleted_between_the_in_lock_match_and_its_hash_is_a_conflict_for_an_IfMatch_delete()
+    {
+        using var tmp = new TempDir();
+        var file = tmp.Write("d/x.md", "old");
+        var p = new FileSystemBundleProvider(tmp.Path);
+        using var current = p.Read(K("d/x.md"));
+        p.TargetMatchedForTest = _ => File.Delete(file);
+        var ex = Assert.Throws<BundleWriteConflictException>(() => p.Delete(K("d/x.md"), BundleWriteCondition.IfMatch(current.Version)));
+        Assert.Equal(BundleWriteConflictReason.ConditionFailed, ex.Reason);
+        Assert.Equal(["d"], Tree(tmp.Path));
+    }
+
+    /// <summary>
     /// B-I2: under the commit lock, the target is matched, then opened (to hash it for
     /// <c>IfMatch</c>, to probe it for writing under <c>None</c>). An object removed between the
     /// match and the open is, under <c>IfMatch</c>, an object that no longer exists: the
@@ -745,7 +799,7 @@ public class FileSystemBundleProviderCommitTests
         var file = tmp.Write("d/x.md", "old");
         var p = new FileSystemBundleProvider(tmp.Path);
         using var current = p.Read(K("d/x.md"));
-        p.WriteTargetMatchedForTest = _ => File.Delete(file);
+        p.TargetMatchedForTest = _ => File.Delete(file);
         var ex = Assert.Throws<BundleWriteConflictException>(() => p.Write(K("d/x.md"), B("new"), BundleWriteCondition.IfMatch(current.Version)));
         Assert.Equal(BundleWriteConflictReason.ConditionFailed, ex.Reason);
         Assert.Equal(["d"], Tree(tmp.Path));
@@ -765,7 +819,7 @@ public class FileSystemBundleProviderCommitTests
             preparations++;
             return TemporaryName('a');
         };
-        p.WriteTargetMatchedForTest = _ =>
+        p.TargetMatchedForTest = _ =>
         {
             if (++matched == 1)
             {
@@ -799,7 +853,7 @@ public class FileSystemBundleProviderCommitTests
             File.WriteAllText(file, "back again");
             return TemporaryName('a');
         };
-        p.WriteTargetMatchedForTest = _ => File.Delete(file);
+        p.TargetMatchedForTest = _ => File.Delete(file);
         var ex = Assert.Throws<BundleWriteConflictException>(() => p.Write(K("x.md"), B("new"), BundleWriteCondition.None));
         Assert.Equal(BundleWriteConflictReason.ConditionFailed, ex.Reason);
         Assert.Equal(3, preparations);

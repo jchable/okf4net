@@ -852,12 +852,12 @@ public sealed class BundleConceptWriter
     /// overwritten. Another process is not excluded: the filesystem provider
     /// checks the condition atomically with the replacement only within one
     /// process, so a write that lands between its last check and its commit
-    /// can still be overwritten, and its entry lost although this call reported
-    /// success (issue #178; measured with two processes each appending 150
+    /// can still be overwritten by this call although that write reported
+    /// success (and this call's own entry can be lost the same way; issue #178; measured with two processes each appending 150
     /// entries to one bundle: on Linux up to 100 of 297 reported-committed
     /// appends were lost; on Windows 17 were lost, with unknown outcomes
-    /// reported and temporaries left behind). The
-    /// whole read-transform-write is then tried again on what is there now —
+    /// reported and temporaries left behind). On a conflict, the
+    /// whole read-transform-write is tried again on what is there now —
     /// at most <see cref="MaxAttempts"/> attempts, with a short random delay
     /// between them (spec §4) — and after the last one the conflict is
     /// returned as an <c>Error: ...</c> message. Reuses the exact same target validation (<see cref="ValidateConceptTarget"/>),
@@ -1033,8 +1033,9 @@ public sealed class BundleConceptWriter
     /// <c>— already written: …</c>; <see cref="VerificationOutcome"/> states
     /// exactly what the list does and does not promise.
     /// The lock is also in-process, so an external actor mutating the bundle
-    /// mid-batch is not stopped: the version condition refuses to overwrite
-    /// its change rather than losing it.
+    /// mid-batch is not stopped: the version condition refuses to overwrite a
+    /// change that landed before the provider's last check; one landing between that check
+    /// and the commit is overwritten (issue #178).
     ///
     /// A stamp is a dated declaration, not an authentication result: this
     /// method cannot and does not check that the caller is who
@@ -1495,7 +1496,8 @@ public sealed class BundleConceptWriter
                 // AppendLog calls could both read the same "before" text, each
                 // append their own entry to it, and the second write would
                 // silently clobber the first (a lost update). A writer outside
-                // the lock is met by the version condition instead.
+                // the lock in this process is met by the version condition; another
+                // process only up to the provider's last check (issue #178).
                 using (EnterWriteLock())
                 {
                     return WriteThenNotify(committed => WithRetries(LogKey, () =>
