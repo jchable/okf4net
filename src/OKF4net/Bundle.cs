@@ -368,7 +368,84 @@ public sealed class Bundle
         // names that compare equal (`a\b.md` and `a/b.md`) keep the order they were found in.
         parseProblems = [.. parseProblems.OrderBy(p => p.RawName, Comparer<string>.Create(PathOrdering.CompareComponentWise))];
 
-        return new Bundle(provider, options, validator, version, okfVersion, concepts, index, indexKeys, logKeys, parseProblems, rejectedKeys, tree.RejectedPrefixes.ToList(), portabilityIssues, objectVersions, outbound, backlinks);
+        var bundle = new Bundle(provider, options, validator, version, okfVersion, concepts, index, indexKeys, logKeys, parseProblems, rejectedKeys, tree.RejectedPrefixes.ToList(), portabilityIssues, objectVersions, outbound, backlinks);
+
+        // The executable resources of every §10 concept are read and hashed now (spec §5.1),
+        // inside the load's scope, so that an execution can later be pinned to the version
+        // this image was loaded with. A resource's own problem is a state, never a load failure.
+        bundle.SurveyExecutableResources(chunk);
+        return bundle;
+    }
+
+    /// <summary>
+    /// Surveys the <c>computation</c> file and the <c>attester.resource</c> of every Attested
+    /// Computation concept (spec §5.1): each is resolved like any §6.2 value
+    /// (<see cref="TryResolveResourceKey"/>) and, when it resolves, read through the one bounded
+    /// reader so that its version is known. The rule is local: a missing, unreadable, oversized
+    /// or refused resource is a state of that resource; a global failure (a bound of spec §6, a
+    /// provider refusal that is not the resource's own path) still fails the load, as it would
+    /// without the survey (spec §5.1, revision 6).
+    /// </summary>
+    private void SurveyExecutableResources(byte[] chunk)
+    {
+        foreach (var concept in Concepts)
+        {
+            var frontmatter = concept.Document.Frontmatter;
+            if (!frontmatter.IsAttestedComputation)
+            {
+                continue;
+            }
+
+            var contract = frontmatter.ComputationContract;
+            _executableResources[concept.Id] = new ExecutableResourceSurvey(
+                SurveyResource(concept, "computation", contract.ComputationPath, chunk),
+                SurveyResource(concept, "attester.resource", contract.Attester?.Resource, chunk));
+        }
+    }
+
+    private ExecutableResource SurveyResource(Concept concept, string field, string? rawPath, byte[] chunk)
+    {
+        if (string.IsNullOrEmpty(rawPath))
+        {
+            return new ExecutableResource(field, null, ExecutableResourceState.Undeclared, null, null);
+        }
+
+        TryResolveResourceKey(concept, rawPath, out var key, out var status);
+        switch (status)
+        {
+            case ResourceResolutionStatus.Url:
+                return new ExecutableResource(field, rawPath, ExecutableResourceState.Url, null, null);
+            case ResourceResolutionStatus.Unsafe:
+                return new ExecutableResource(field, rawPath, ExecutableResourceState.Unsafe, null, null);
+            case ResourceResolutionStatus.Missing:
+                return new ExecutableResource(field, rawPath, ExecutableResourceState.Missing, null, null);
+        }
+
+        try
+        {
+            ReadTextAt(Provider, key!, Options.Limits, chunk, null, out var version);
+            return new ExecutableResource(field, rawPath, ExecutableResourceState.Pinned, key, version);
+        }
+        catch (BundleObjectTooLargeException)
+        {
+            return new ExecutableResource(field, rawPath, ExecutableResourceState.TooLarge, key, null);
+        }
+        catch (BundleObjectNotFoundException)
+        {
+            return new ExecutableResource(field, rawPath, ExecutableResourceState.Missing, key, null);
+        }
+        catch (BundleAccessRefusedException)
+        {
+            return new ExecutableResource(field, rawPath, ExecutableResourceState.Unsafe, key, null);
+        }
+        catch (BundleProviderException e)
+        {
+            throw Translate(e, key); // a bound or a global refusal: the load fails, as without the survey
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
+        {
+            return new ExecutableResource(field, rawPath, ExecutableResourceState.Unreadable, key, null);
+        }
     }
 
     /// <summary>
@@ -479,9 +556,13 @@ public sealed class Bundle
     /// counted and an overrun still throws, whatever the declared length. The one bounded reader
     /// of the core: <see cref="BundleConceptWriter"/> reads the objects it rewrites through it.
     /// </summary>
-    internal static string ReadText(IBundleProvider provider, BundleKey key, BundleLimits limits, byte[] chunk, out BundleObjectVersion version)
+    internal static string ReadText(IBundleProvider provider, BundleKey key, BundleLimits limits, byte[] chunk, out BundleObjectVersion version) =>
+        ReadTextAt(provider, key, limits, chunk, null, out version);
+
+    /// <summary>As <see cref="ReadText"/>, pinned: with <paramref name="expected"/>, the provider reads only the object at that version (spec §5.4) and throws <see cref="BundleVersionMismatchException"/> otherwise.</summary>
+    internal static string ReadTextAt(IBundleProvider provider, BundleKey key, BundleLimits limits, byte[] chunk, BundleObjectVersion? expected, out BundleObjectVersion version)
     {
-        using var obj = provider.Read(key);
+        using var obj = provider.Read(key, expected);
         version = obj.Version;
         using var buffer = obj.Length is { } declared && declared >= 0 && declared <= limits.MaxObjectBytes && declared <= Array.MaxLength
             ? new MemoryStream((int)declared)
@@ -544,6 +625,18 @@ public sealed class Bundle
 
     /// <summary>The version of every concept object read at load time (spec §5.1).</summary>
     public IReadOnlyDictionary<BundleKey, BundleObjectVersion> ObjectVersions { get; }
+
+    private readonly Dictionary<ConceptId, ExecutableResourceSurvey> _executableResources = [];
+
+    /// <summary>
+    /// The executable resources of every Attested Computation concept of this image — its
+    /// <c>computation</c> file and its <c>attester.resource</c> — with the state each was found
+    /// in at the load (spec §5.1): <see cref="ExecutableResourceState.Pinned"/> with its version,
+    /// or why it cannot be executed. One entry per concept whose frontmatter
+    /// <see cref="Frontmatter.IsAttestedComputation"/>; a concept with a problem is still in
+    /// <see cref="Concepts"/>, readable, validated and audited.
+    /// </summary>
+    public IReadOnlyDictionary<ConceptId, ExecutableResourceSurvey> ExecutableResources => _executableResources;
 
     private readonly BundleKeyValidator _validator;
     private readonly HashSet<string> _rejectedPrefixFolds;
@@ -956,7 +1049,22 @@ public sealed class Bundle
     /// <exception cref="UnauthorizedAccessException">The key is not allowed, or the provider refused the access.</exception>
     /// <exception cref="IOException">The object is missing, too large, or cannot be read.</exception>
     /// <exception cref="System.Text.DecoderFallbackException">The content is not valid UTF-8.</exception>
-    public string ReadResourceText(BundleKey key)
+    public string ReadResourceText(BundleKey key) => ReadResourceText(key, null, out _);
+
+    /// <summary>
+    /// As <see cref="ReadResourceText(BundleKey)"/>, reporting the object's
+    /// <paramref name="version"/> and, with <paramref name="expected"/>, pinned to it (spec §5.4):
+    /// the provider reads only the object at that version, so sanctioned code that changed since
+    /// it was observed or surveyed is never handed to a runtime.
+    /// </summary>
+    /// <param name="key">The resolved key.</param>
+    /// <param name="expected">The version the read is pinned to, or <see langword="null"/> for the current object.</param>
+    /// <param name="version">The version of the object read.</param>
+    /// <exception cref="BundleVersionMismatchException">The object's version is not <paramref name="expected"/>; nothing was read.</exception>
+    /// <exception cref="UnauthorizedAccessException">The key is not allowed, or the provider refused the access.</exception>
+    /// <exception cref="IOException">The object is missing, too large, or cannot be read.</exception>
+    /// <exception cref="System.Text.DecoderFallbackException">The content is not valid UTF-8.</exception>
+    public string ReadResourceText(BundleKey key, BundleObjectVersion? expected, out BundleObjectVersion version)
     {
         ArgumentNullException.ThrowIfNull(key);
         if (!IsKeyAllowed(key, out var reason))
@@ -966,7 +1074,11 @@ public sealed class Bundle
 
         try
         {
-            return ReadText(Provider, key, Options.Limits, new byte[ReadChunkBytes], out _);
+            return ReadTextAt(Provider, key, Options.Limits, new byte[ReadChunkBytes], expected, out version);
+        }
+        catch (BundleVersionMismatchException)
+        {
+            throw;
         }
         catch (BundleAccessRefusedException e)
         {

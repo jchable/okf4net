@@ -89,6 +89,17 @@ and this project adheres to
   successful load started after it (spec §5.1). `new BundleConceptWriter(handle,
   onWriteCommitted)` writes through the handle's provider under its options
   and invalidates the handle after each committed write.
+- **Executable resources surveyed at the load (#139, lot C; spec §5.1).**
+  `Bundle.ExecutableResources` gives, for every Attested Computation concept,
+  the state of its `computation` file and of its `attester.resource`
+  (`ExecutableResourceSurvey`, `ExecutableResource`,
+  `ExecutableResourceState`): `Pinned` with the object's version when it was
+  read and hashed, or `Undeclared`, `Url`, `Unsafe`, `Missing`, `Unreadable`
+  or `TooLarge`. A resource's own problem is a state: the concept is still
+  loaded, validated and audited; a global failure (a bound, a refusal that is
+  not the resource's own path) still fails the load. `Bundle.ReadResourceText(key,
+  expected, out version)` reads a resource pinned to a version: an object that
+  changed since throws `BundleVersionMismatchException` and nothing is read.
 
 ### Changed
 
