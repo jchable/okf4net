@@ -601,6 +601,48 @@ comme n'importe quelle autre.
   > n'est pris pour un refus de l'écriture (B48). La politique de clés couvre
   > aussi les clés `index.md` que produit `IndexGenerator` (B47).
 
+  > **Note du 2026-10-22 (lot B, revue complète, vague de correctifs) :**
+  > corrige ce que les notes précédentes affirmaient. (1) Une écriture n'exige
+  > pas seulement le droit d'écrire la cible (B42, note du 2026-10-20) : son
+  > temporaire `.okf-write-*.tmp` est créé à côté de la cible et le commit est
+  > un renommage, il faut donc le droit de créer des fichiers dans le dossier de
+  > la cible et d'y renommer ; `File.WriteAllText` n'exigeait que le droit
+  > d'écrire la cible. Mesuré (Linux, utilisateur non privilégié, base contre
+  > tête) : `okf verify B t/orders` avec `t` en 0555 et un fichier inscriptible
+  > sortait 0, sort maintenant 1 avec `error: Access to the path
+  > '…/t/.okf-write-<hex>.tmp' is denied.`, fichier inchangé ; même chose pour
+  > `okf index`, `WriteConcept`, `AppendToConceptAtomic` et `AppendLog` ; sous
+  > Windows, un dossier dont l'ACL refuse à l'utilisateur la création de
+  > fichiers refuse de même ; sous Unix, dans un dossier collant partagé (comme
+  > `/tmp`), un fichier appartenant à un autre utilisateur ne peut pas non plus
+  > être remplacé. Décision du mainteneur : pas de repli en place, qui
+  > rouvrirait les écritures tronquées de #157 ; un bundle dans un dossier non
+  > inscriptible ou collant partagé n'est pas un déploiement supporté pour
+  > l'écriture. (2) La condition d'une écriture n'est vérifiée atomiquement avec
+  > le remplacement qu'**à l'intérieur d'un processus** : le verrou de commit est
+  > un verrou en processus (B20 ne fermait la fenêtre que pour un processus), et
+  > un autre processus peut écrire le même objet entre la dernière vérification
+  > et le commit (#178). Mesuré par la revue, avec deux processus faisant chacun
+  > 150 `AppendLog` / `AppendToConceptAtomic` sur un bundle : sous Linux jusqu'à
+  > 100 ajouts sur 297 déclarés validés étaient perdus ; sous Windows 17 entrées
+  > déclarées validées étaient perdues, avec des erreurs `ReplaceFile`
+  > 1176/1177 (issue inconnue), un log absent un instant et des temporaires
+  > `.okf-write-*.tmp` laissés par une simple contention, pas seulement par un
+  > crash (l'ancien écrivain en place perdait plus d'entrées dans le même test
+  > mais ne laissait jamais de temporaire). Décision du mainteneur : pas de
+  > fichier verrou dans cette branche ; #178 reste le suivi, sans promesse.
+  > (3) Une écriture `IfMatch` dont la racine ou un dossier parent n'existe pas
+  > ne peut pas tenir : elle est refusée en conflit avant de créer quoi que ce
+  > soit ; un objet qui disparaît entre sa résolution et le commit est, sous
+  > `IfMatch`, un conflit, et sous `None` une nouvelle préparation (bornée par
+  > les trois préparations) ou une création, jamais un « introuvable » brut ;
+  > un commit échoué avec un répertoire ou une entrée illisible sous la clé est
+  > un conflit et son temporaire est retiré ; `Delete` sous une racine absente
+  > est sans effet quand la condition tient ; les outils de `OkfBundleTools`
+  > oublient leur bundle en cache dès qu'une écriture se termine en `Error:`,
+  > car la notification de commit ne s'exécute pas pour une issue inconnue (B46,
+  > B48).
+
 - **Version d'objet sur le filesystem : SHA-256 du contenu**, pas la date de
   modification, dont la résolution est d'1 à 2 s sur certains systèmes de
   fichiers.

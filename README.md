@@ -284,8 +284,19 @@ exact stored names) and the condition (on the SHA-256 of the stored bytes)
 again under a per-object lock, and commits with `File.Replace` or, for a new
 object, `File.Move` without overwrite. On Unix a replacement's temporary is
 owner-only until it takes the target's mode, and a read-only target is
-refused as before; an unconditional write needs only the right to write its
-target, as before (only `IfMatch` reads it). What this promises:
+refused as before; only `IfMatch` reads the target. **What a write needs:** the
+right to create files in, and rename within, the target's directory — more
+than the old in-place `File.WriteAllText`, which needed only the right to write
+the target. In a directory the process cannot create files in (mode 0555 on
+Unix; on Windows an ACL denying it that right) every write is refused with the
+raw access error, which names the `.okf-write-*.tmp` it could not create
+(`okf verify`, `okf index` and the writer's methods exit 1 or return
+`Error: Access to the path '…/.okf-write-….tmp' is denied.`), the object
+unchanged and no temporary left; on Unix, in a sticky directory shared between
+users (like `/tmp`), a file owned by another user cannot be replaced either.
+There is no in-place fallback — it would reopen the torn writes of #157 — so a
+bundle in a directory its writer cannot create files in is not a supported
+deployment for writes. What this promises:
 
 - **Crash or I/O error mid-write:** never a part of either content: the object
   holds its whole old content or its whole new content, or (Windows,
@@ -301,14 +312,28 @@ target, as before (only `IfMatch` reads it). What this promises:
 - **A replacement Windows refuses without effect** (`ReplaceFile` error 1175,
   or a sharing violation) is made again, at most three times in all, then
   fails with `BundleWriteNotCommittedException`, the object unchanged.
-- **Other processes:** the lock is per process; between the last check and
-  the commit another process can still write the same object (#178).
+- **Other processes:** a condition is checked atomically with the replacement
+  within one process only (the lock is an in-process lock); between the last
+  check and the commit another process can still write the same object, which is
+  then overwritten although its caller was told it was committed (#178, the
+  tracked follow-up; there is no cross-process lock yet). Measured in the review
+  of this change, with two processes each making 150 `AppendLog` /
+  `AppendToConceptAtomic` appends to one bundle: on Linux up to 100 of 297
+  appends reported committed were lost; on Windows 17 were lost, with
+  `ReplaceFile` errors 1176/1177 reported as unknown outcomes, the log
+  momentarily absent, and `.okf-write-*.tmp` files left behind by ordinary
+  contention. The old in-place writer lost more entries in the same Windows
+  test (127 + 136 reported committed, 83 + 89 present) but never left a
+  temporary. Do not run two processes writing the same objects of one bundle
+  where an append must not be lost.
 
 A write whose outcome cannot be established (`BundleWriteOutcomeUnknownException`,
 for instance Windows `ReplaceFile` error 1176, which can leave no object
 under the key) keeps its temporary: it may be the only copy of the new
 content. So does a process crash between the temporary's creation and the
-commit, and so can a failed write whose temporary could not be removed safely.
+commit, so can a failed write whose temporary could not be removed safely, and
+on Windows so can ordinary contention between two processes writing one object
+(the same `ReplaceFile` errors, see "Other processes").
 `okf validate` ignores such a file (it is not `.md`), but it counts
 toward the entry bound and an empty-directory check sees it; look for
 `.okf-write-*.tmp` files and remove them by hand once you have checked them.

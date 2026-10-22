@@ -231,7 +231,8 @@ and this project adheres to
   and replace the target with `File.Replace` (or appear with `File.Move`
   without overwrite) only after the boundary, the path and the condition
   (`None`, `MustNotExist`, `IfMatch` on the SHA-256 of the stored bytes) are
-  checked again under a per-object lock. On Unix a replacement's temporary is
+  checked again under a per-object lock (in-process: see the entry on
+  concurrent processes below). On Unix a replacement's temporary is
   owner-only (0600) until it takes the target's mode. A name the volume would
   confuse with a stored entry (a case or Unicode-form twin on a folding
   volume, a Windows trailing dot or space, a directory) is refused before
@@ -253,7 +254,10 @@ and this project adheres to
   temporary left. Any other failure of the commit call is
   classified from the disk once the boundary and the path guards have been
   checked again: nothing happened (the raw error), another writer landed
-  (`BundleWriteConflictException`), or it took effect (success); otherwise, and
+  (`BundleWriteConflictException`; so does a directory under the key, reason
+  `NameUnavailable`, and an entry under it that this process cannot read, since
+  the verdict does not depend on the caller's read rights), or it took effect
+  (success); otherwise, and
   always for Windows `ReplaceFile` error 1176/1177, it is
   `BundleWriteOutcomeUnknownException` and the temporary — possibly the only
   copy of the new content — is kept. `okf validate` ignores it (not `.md`).
@@ -312,8 +316,10 @@ and this project adheres to
   included); an exception the writer does not convert, such as
   `OperationCanceledException`, propagates unchanged, the write committed.
 - **Read-modify-writes retry a conflict, and `buildBody` runs once per
-  attempt** (spec §4). When another writer — another process, or a writer
-  over another provider instance — commits between the read and the write,
+  attempt** (spec §4). When another writer — a writer over another provider
+  instance, or another process whose write lands before the provider's last
+  check (see the entry on concurrent processes below) — commits between the
+  read and the write,
   `AppendToConceptAtomic` and `RecordVerifications` read again and retry, at
   most 3 attempts, waiting 10–40 ms then 30–120 ms (`Thread.Sleep` on the
   caller's thread); after the third the conflict is an `Error: … kept
@@ -344,7 +350,8 @@ and this project adheres to
   the version read (or on its absence), a conflict retried, at most 3 attempts in all.
   An `index.md` the provider refuses (a symlink or junction on its path, an
   entry that cannot be inspected) is still skipped silently. The output does
-  not change, except in the cases this bullet lists: **a directory with no
+  not change, except in the cases this bullet lists (and those of the entries
+  below on the permission a write needs): **a directory with no
   file under it, at any depth, is no longer referenced by its parent's
   index** (spec §2, D2); a directory holding only non-`.md` files still is.
   As in a load, a name that is no key
@@ -373,6 +380,12 @@ and this project adheres to
   now ends the run too, with the raw `UnauthorizedAccessException` or
   `BundleObjectTooLargeException` and the same exit code, since its version is
   read before it is replaced; the old write replaced it without reading it.
+  **A directory the process may not create files in** (mode 0555) now ends the
+  run with exit 1 and `error: Access to the path '…/.okf-write-<hex>.tmp' is
+  denied.` (see "A write needs the right to create files in the target's
+  directory"). **A directory at mode 0644** (readable, not searchable; Linux,
+  unprivileged) is no longer referenced by its parent's index and gets no
+  `index.md`: it cannot be inspected.
 - **`okf index` is slower on a large bundle.** Regenerating the indexes now
   lists, validates and reads the bundle through the provider, as a load does,
   and commits every `index.md` atomically. On 3 000 flat concepts (medians of
@@ -387,7 +400,92 @@ and this project adheres to
   the cost of the Native AOT (Release) `okf` binary that users run was not
   measured. In the three final series both builds wrote the same bytes.
   Measurements on one machine are not a general guarantee. Bringing `okf index`
-  back down is tracked in #208.
+  back down is tracked in #208. On Windows, every `.md` that another process
+  holds locked (a sharing violation) costs `Read`'s retry before it is skipped
+  or ends the run: three opens in all, with up to two pauses of 5 to 20 ms
+  between them.
+- **A write needs the right to create files in the target's directory.**
+  Every write of `FileSystemBundleProvider`, hence of `BundleConceptWriter`,
+  `okf verify`, `okf index` and the `okf_*` write tools, creates its
+  `.okf-write-*.tmp` beside the target and commits by rename (the atomic
+  replacement of #157), so the process needs the right to create files in, and
+  to rename within, the target's directory; the old in-place
+  `File.WriteAllText` needed only the right to write the target. Measured on
+  Linux as an unprivileged user, base against this change: `okf verify B
+  t/orders` with `t` at mode 0555 and `orders.md` writable exited 0 and now
+  exits 1 with `error: Access to the path '…/t/.okf-write-<hex>.tmp' is
+  denied.`, the file unchanged; `okf index`, `WriteConcept`,
+  `AppendToConceptAtomic` and `AppendLog` behave the same, and on Windows so
+  does a directory whose ACL denies the user the creation of files. On Unix,
+  in a sticky directory shared between users (like `/tmp`), a file owned by
+  another user cannot be replaced either. The message is the raw access error
+  and names the temporary under the host path (path-free texts are tracked by
+  #211). There is no in-place fallback, which would reopen the torn writes of
+  #157: a bundle in a non-writable or sticky-shared directory is not a
+  supported deployment for writes.
+- **A condition is atomic with the replacement within one process only.** The
+  per-object lock that makes the check of a write's condition and the
+  replacement one step is an in-process lock. Another process can write the
+  same object between the provider's last check and its commit, and is then
+  overwritten although the condition held when it was checked and its caller
+  was told it was committed; there is no cross-process lock, and none is
+  promised here (#178 is the tracked follow-up). Measured during the review of
+  this change, with two processes each making 150 `AppendLog` /
+  `AppendToConceptAtomic` appends to one bundle: on Linux, up to 100 of 297
+  appends reported committed were lost; on Windows, 17 reported-committed
+  entries were lost, `ReplaceFile` errors 1176/1177 were reported as
+  `BundleWriteOutcomeUnknownException`, a log was momentarily absent, and
+  `.okf-write-*.tmp` files were left behind by ordinary contention, not only
+  by a crash or an unknown outcome. The old in-place writer lost more entries
+  in the same Windows log test (127 + 136 appends reported committed, 83 + 89
+  present) but never left a temporary. Measurements on one machine are not a
+  general guarantee. Two processes should not write the same objects of one
+  bundle where a lost append matters.
+- **A few write behaviours changed, each checked against the code.**
+  `okf_append_log` (and `BundleConceptWriter.AppendLog`) now creates a bundle
+  root that vanished after the writer was built; before, it returned `Error:
+  Could not find a part of the path`. (A missing root was created by concept
+  writes already; the provider creates it for any write that creates, never for
+  an `IfMatch` write.) On a volume that folds case, a `Log.md` is refused when
+  the log is appended (`Error: log.md cannot be stored under that name: …`),
+  like a case-variant concept id or `Index.md`; it was appended to. On
+  Windows, a reader holding an object open with `FileShare.ReadWrite` but
+  without `FileShare.Delete` now blocks a replacement of it: after the three
+  bounded attempts the write ends with `BundleWriteNotCommittedException` and
+  the object is unchanged, where the former write succeeded; a reader that
+  shares `ReadWrite | Delete` (what `Read` itself does, and
+  `Get-Content -Wait`) blocks nothing. The `Error:` texts of the writer and
+  the CLI that changed: a `log.md` or a concept path that is a directory
+  (`Access to the path … is denied` became `… cannot be stored under that name:
+  …`); a parent segment that is a file (a `Cannot create …` or `The file …
+  already exists` error became `"f/y.md" cannot be created: "f" is an object,
+  so it cannot also be a prefix of other keys.`); a root that is a file (on
+  Linux `The file '<root>' already exists.`); `new BundleConceptWriter("")`
+  (the `ArgumentException` now names the parameter `root`: `The value cannot
+  be an empty string. (Parameter 'root')`); and `okf index` in a directory the
+  process may not create files in, which names the `.okf-write` temporary (see
+  above).
+- **A refused or raced write leaves nothing behind and no raw not-found.** An
+  `IfMatch` write whose root or parent directory does not exist is refused as a
+  conflict before any directory is created (it used to create the root and
+  every parent, then refuse, against "nothing was changed"). An object removed
+  by another writer between a write's resolution and its commit is, under
+  `IfMatch`, a `BundleWriteConflictException` (the object no longer exists),
+  and under `None` a new preparation (at most three in all, then the
+  conflict) or, once it is gone for good, a creation (a creation under
+  `MustNotExist` too, when it was gone before the temporary's mode was read) —
+  it used to be a raw `FileNotFoundException` (the first window on Unix only)
+  that the writer's retry did not cover. A
+  commit that failed while a directory, or an entry this process cannot read,
+  sits under the key is a conflict with its temporary removed, not an unknown
+  outcome that keeps an orphan. `Delete` under a bundle root that does not
+  exist is a no-op where the condition holds (`Exists` already answered false),
+  where it was a raw `DirectoryNotFoundException`. The `OkfBundleTools` write
+  tools (`okf_write_concept`, `okf_verify`, `okf_append_log`,
+  `okf_regenerate_indexes`) drop their cached bundle whenever the write ends in
+  an `Error:` text, so that a write whose outcome was unknown, which the
+  writer never reports as committed, no longer leaves a read tool serving
+  content the file no longer holds.
 
 ## [0.7.0] - 2026-10-14
 
