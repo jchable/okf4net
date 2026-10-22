@@ -293,8 +293,9 @@ raw access error, which names the `.okf-write-*.tmp` it could not create
 (`okf verify`, `okf index` and the writer's methods exit 1 or return
 `Error: Access to the path '…/.okf-write-….tmp' is denied.`), the object
 unchanged and no temporary left; on Unix, in a sticky directory shared between
-users (like `/tmp`), a file owned by another user cannot be replaced either.
-There is no in-place fallback — it would reopen the torn writes of #157 — so a
+users (like `/tmp`), a file owned by another user cannot be replaced either. A
+delete needs the right to write the object's directory too (an unprivileged
+process in a 0555 directory gets the access error, the file kept). There is no in-place fallback — it would reopen the torn writes of #157 — so a
 bundle in a directory its writer cannot create files in is not a supported
 deployment for writes. What this promises:
 

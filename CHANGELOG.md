@@ -471,7 +471,7 @@ and this project adheres to
   be an empty string. (Parameter 'root')`); and `okf index` in a directory the
   process may not create files in, which names the `.okf-write` temporary (see
   above).
-- **A refused or raced write leaves nothing behind and no raw not-found.** An
+- **A refused or raced write leaves nothing behind and no raw not-found for a removed object.** An
   `IfMatch` write whose root or parent directory does not exist is refused as a
   conflict before any directory is created (it used to create the root and
   every parent, then refuse, against "nothing was changed"). An object removed
@@ -480,9 +480,17 @@ and this project adheres to
   no longer exists),
   and under `None` a new preparation (at most three in all, then the
   conflict) or, once it is gone for good, a creation (a creation under
-  `MustNotExist` too, when it was gone before the temporary's mode was read) —
-  it used to be a raw `FileNotFoundException` (the first window on Unix only)
-  that the writer's retry did not cover. A
+  `MustNotExist` too, whenever it is gone at the check under the lock; on Unix an
+  object created because its predecessor vanished after its mode was read
+  carries that predecessor's mode, where a new file gets the directory's
+  default) — it used to be a raw `FileNotFoundException` (the first window on
+  Unix only) that the writer's retry did not cover. An unconditional
+  replacement whose target is removed between the writability probe and the
+  commit call prepares again and creates the object too (it ended in a raw
+  `FileNotFoundException`, where the former in-place write recreated the file);
+  under `IfMatch` that window is a conflict. A parent directory removed in those
+  windows stays a raw `DirectoryNotFoundException` naming a host path, under
+  every condition, as before (#211). A
   commit that failed while its temporary was still in place and a directory, or
   an entry that cannot be shown to be the version read (one this process cannot
   read, say), sits under the key is, for a conditional write or a creation, a
