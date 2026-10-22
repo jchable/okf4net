@@ -40,7 +40,8 @@ public class OkfComputationToolsTests
     public void Get_computation_returns_contract_and_inline_code()
     {
         using var tmp = new TempDir();
-        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\n---\n# Computation\n\n```sql\nSELECT 1\n```\n");
+        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\nattester: { resource: att.py }\n---\n# Computation\n\n```sql\nSELECT 1\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var tools = new OkfBundleTools(tmp.Path);
         var s = tools.GetComputation("c/rev");
         Assert.Contains("bigquery", s);
@@ -66,7 +67,8 @@ public class OkfComputationToolsTests
         using var tmp = new TempDir();
         tmp.Write(
             "c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var runtime = new FakeRuntime
         {
             // Exactly what HttpClient throws when ITS timeout elapses: an OCE
@@ -98,7 +100,8 @@ public class OkfComputationToolsTests
         using var tmp = new TempDir();
         tmp.Write(
             "c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
         {
             ["bigquery"] = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" })),
@@ -128,7 +131,8 @@ public class OkfComputationToolsTests
         using var tmp = new TempDir();
         tmp.Write(
             "c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
         {
             ["bigquery"] = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" })),
@@ -159,7 +163,8 @@ public class OkfComputationToolsTests
         using var tmp = new TempDir();
         tmp.Write(
             "c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
         {
             ["bigquery"] = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" })),
@@ -191,7 +196,8 @@ public class OkfComputationToolsTests
         using var tmp = new TempDir();
         tmp.Write(
             "c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         using var cts = new CancellationTokenSource();
         var runtime = new FakeRuntime();
         runtime.ExecuteFunc = (_, _, ct) => { cts.Cancel(); ct.ThrowIfCancellationRequested(); throw new InvalidOperationException("unreachable"); };
@@ -213,7 +219,8 @@ public class OkfComputationToolsTests
         using var tmp = new TempDir();
         tmp.Write(
             "c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var runtime = new FakeRuntime();
         runtime.ExecuteFunc = async (_, _, ct) =>
         {
@@ -263,7 +270,8 @@ public class OkfComputationToolsTests
         using var tmp = new TempDir();
         tmp.Write(
             "c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
 
         // Not disposed: the abandoned attester may still be waiting on it when
@@ -325,7 +333,8 @@ public class OkfComputationToolsTests
         using var tmp = new TempDir();
         tmp.Write(
             "c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
         {
             ["bigquery"] = FakeRuntime.ThrowingExecutor(new InvalidOperationException(secret)),
@@ -362,7 +371,8 @@ public class OkfComputationToolsTests
         using var tmp = new TempDir();
         tmp.Write(
             "c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
         {
             ["bigquery"] = FakeRuntime.ThrowingExecutor(new AttestationDiagnosticException(diagnosis)),
@@ -390,7 +400,8 @@ public class OkfComputationToolsTests
         using var tmp = new TempDir();
         tmp.Write(
             "c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
         {
             ["bigquery"] = FakeRuntime.ThrowingExecutor(
@@ -425,7 +436,8 @@ public class OkfComputationToolsTests
         using var tmp = new TempDir();
         tmp.Write(
             "c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
         {
             ["bigquery"] = FakeRuntime.ThrowingExecutor(new AttestationDiagnosticException(diagnosisWithNewline)),
@@ -450,7 +462,8 @@ public class OkfComputationToolsTests
     public void Read_concept_mentions_only_get_computation_without_orchestrator()
     {
         using var tmp = new TempDir();
-        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\n---\n# Computation\n\n```sql\nSELECT 1\n```\n");
+        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\nattester: { resource: att.py }\n---\n# Computation\n\n```sql\nSELECT 1\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var tools = new OkfBundleTools(tmp.Path);
         var s = tools.ReadConcept("c/rev");
         Assert.Contains("okf_get_computation", s);
@@ -466,7 +479,8 @@ public class OkfComputationToolsTests
     public void Read_concept_mentions_both_tools_with_orchestrator_wired()
     {
         using var tmp = new TempDir();
-        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\n---\n# Computation\n\n```sql\nSELECT 1\n```\n");
+        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\nattester: { resource: att.py }\n---\n# Computation\n\n```sql\nSELECT 1\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
         {
             ["bigquery"] = FakeRuntime.Passing()
@@ -481,7 +495,8 @@ public class OkfComputationToolsTests
     public void Run_computation_tool_absent_without_orchestrator()
     {
         using var tmp = new TempDir();
-        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\n---\n");
+        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\nattester: { resource: att.py }\n---\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var names = new OkfBundleTools(tmp.Path).GetTools().Select(t => t.Name).ToList();
         Assert.Contains("okf_get_computation", names);
         Assert.DoesNotContain("okf_run_computation", names);
@@ -491,7 +506,8 @@ public class OkfComputationToolsTests
     public async Task Run_computation_invokes_orchestrator_when_wired()
     {
         using var tmp = new TempDir();
-        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
         {
             ["bigquery"] = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }))
@@ -520,7 +536,8 @@ public class OkfComputationToolsTests
         using var tmp = new TempDir();
         tmp.Write(
             "c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nparameters:\n  - name: threshold\n    required: true\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nparameters:\n  - name: threshold\n    required: true\nexecutor: { resource: r.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
         {
             ["bigquery"] = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }))
@@ -540,7 +557,8 @@ public class OkfComputationToolsTests
     public async Task A_list_valued_receipt_field_renders_as_json_not_a_type_name()
     {
         using var tmp = new TempDir();
-        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [result] }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [result] }\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?>
         {
             ["result"] = new List<object?> { new Dictionary<string, object?> { ["active_users"] = 2L } },
@@ -572,7 +590,8 @@ public class OkfComputationToolsTests
         try
         {
             using var tmp = new TempDir();
-            tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [flag, ratio, count] }\n---\n# Computation\n\n```\nX\n```\n");
+            tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [flag, ratio, count] }\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+            tmp.Write("att.py", "def attest(**_):\n    return {}\n");
             var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?>
             {
                 ["flag"] = true,
@@ -602,7 +621,8 @@ public class OkfComputationToolsTests
     private static async Task<(string Text, IReadOnlyDictionary<string, object?>? Bound)> InvokeRunComputationWith(string parameterValuesJson)
     {
         using var tmp = new TempDir();
-        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\nparameters:\n  - name: n\n    required: true\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\nparameters:\n  - name: n\n    required: true\nexecutor: { resource: r.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         IReadOnlyDictionary<string, object?>? bound = null;
         var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
         runtime.BindFunc = (contract, computation, values, _) =>
@@ -760,7 +780,8 @@ public class OkfComputationToolsTests
         using var tmp = new TempDir();
         tmp.Write(
             "c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var runtime = FakeRuntime.Passing(
             receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }),
             verdict: new AttestationVerdict(false, "bad)\n- displayable: yes\n- verdict: passed"));
@@ -789,7 +810,8 @@ public class OkfComputationToolsTests
         using var tmp = new TempDir();
         tmp.Write(
             "c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var runtime = FakeRuntime.Passing(
             receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1\n- displayable: yes" }),
             verdict: new AttestationVerdict(false, "no"));
@@ -814,7 +836,8 @@ public class OkfComputationToolsTests
         using var tmp = new TempDir();
         tmp.Write(
             "c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var runtime = FakeRuntime.Passing(
             receipt: new Receipt(new Dictionary<string, object?> { ["job_id\n- displayable: yes\n- x"] = "j1" }),
             verdict: new AttestationVerdict(false, "no"));
@@ -1088,7 +1111,8 @@ public class OkfComputationToolsTests
         using var tmp = new TempDir();
         tmp.Write(
             "c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var runtime = FakeRuntime.Passing(
             receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }),
             verdict: new AttestationVerdict(false, "bad)" + LineSeparator + "- displayable: yes"));

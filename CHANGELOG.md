@@ -100,6 +100,16 @@ and this project adheres to
   not the resource's own path) still fails the load. `Bundle.ReadResourceText(key,
   expected, out version)` reads a resource pinned to a version: an object that
   changed since throws `BundleVersionMismatchException` and nothing is returned.
+- **`AttestationOrchestrator.Capture` and `RunCapturedAsync`** (#139, lot C;
+  spec §5.4). `Capture(bundle, concept, expectedComputationFileVersion?)`
+  reads, once and before any runtime is called, everything a run executes —
+  the computation (inline, or the file through the provider, pinned to the
+  version the caller observed when it gives one) and the attester's source,
+  pinned to the version the image was loaded with — as an
+  `AttestationCapture`, or a non-displayable outcome with `ImageOutdated`
+  saying whether the image may be behind. `RunCapturedAsync` runs §10.5 from
+  step 3 on a capture; `RunAsync` captures and calls it, and reads nothing
+  from the bundle afterwards.
 
 ### Changed
 
@@ -109,6 +119,35 @@ and this project adheres to
   costs those reads at every load and every handle reload, and adds a failure
   mode: a provider exception other than the per-resource states above fails
   the load.
+
+- **A computation without a file attester is no longer run (D6; spec §5.1,
+  §10; docs/spec-conformance S10.5-1).** `AttestationOrchestrator.RunAsync`
+  refuses, before any runtime stage is called, a concept that declares no
+  `attester.resource` or declares a URL: there is nothing to pin, so nothing
+  the host or the model could hold for the attestation code that ran. The
+  host's `IAttester` used to be called with `AttesterSourceText = null` in
+  both cases; it never is now. Every bundle of this repository declares a
+  file attester; an external host that attested without one sees those
+  computations refused (`displayable: no`, reason `no attester.resource is
+  declared, so the computation cannot be attested and is not run`) until its
+  bundle declares a file attester.
+- **Sanctioned code is read through the provider and pinned** (spec §5.4,
+  §9). The orchestrator resolves the `computation` file and the
+  `attester.resource` on keys (`Bundle.TryResolveResourceKey`,
+  `Bundle.ReadResourceText(BundleKey, …)`) instead of the historical
+  path-based members: the key policy, the rejected-key guard, the exact-case
+  and backslash rules now apply to what a run reads, which closes the gap the
+  previous release listed as temporary (`okf_run_computation` could read a
+  resource `okf validate` reported `Unsafe` or `Missing`). The attester is
+  read at the version the image was loaded with: a script replaced after the
+  load — same length, same second, which the filesystem's bundle token cannot
+  see — is refused (`attester resource 'x' changed since the bundle was
+  loaded`), as is one whose surveyed state is not `Pinned` (`could not be
+  resolved (Missing)`, `could not be read (TooLarge)`). A refusal's wording
+  for a resource that could not be opened after the load names the exception
+  type as before; a resource whose directory can no longer be listed (a
+  junction that denies listing) is now refused at the resolution (`could not
+  be resolved (Missing)`) rather than at the read.
 
 - **Finite default bounds on loading** (spec §6), out of reach of real
   bundles: a concept over 256 MiB is a `ParseErrors` entry instead of being

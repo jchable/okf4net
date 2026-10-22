@@ -27,7 +27,8 @@ public class AttestationOrchestratorTests
         tmp.Write("c/rev.md",
             "---\ntype: Attested Computation\nruntime: bigquery\n" +
             "parameters:\n  - { name: year, type: integer, required: true }\n" +
-            "executor: { receipt: [job_id, result] }\n---\n# Computation\n\n```sql\nSELECT @year\n```\n");
+            "executor: { receipt: [job_id, result] }\nattester: { resource: att.py }\n---\n# Computation\n\n```sql\nSELECT @year\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         return (Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"));
     }
 
@@ -495,7 +496,8 @@ public class AttestationOrchestratorTests
     {
         using var tmp = new TempDir();
         tmp.Write("c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nstale_after: 2025-01-01\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nstale_after: 2025-01-01\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
         var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
         var outcome = await orch.RunAsync(bundle: Bundle.Load(tmp.Path), conceptId: ConceptId.Parse("c/rev"),
@@ -511,7 +513,8 @@ public class AttestationOrchestratorTests
     {
         using var tmp = new TempDir();
         tmp.Write("c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nstale_after: 2099-01-01\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nstale_after: 2099-01-01\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
         var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
         var outcome = await orch.RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"),
@@ -537,7 +540,8 @@ public class AttestationOrchestratorTests
     {
         using var tmp = new TempDir();
         tmp.Write("c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nstale_after: 2025-06-30T14:00:00Z\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nstale_after: 2025-06-30T14:00:00Z\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
         var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
         var outcome = await orch.RunAsync(bundle: Bundle.Load(tmp.Path), conceptId: ConceptId.Parse("c/rev"),
@@ -586,7 +590,8 @@ public class AttestationOrchestratorTests
         using var tmp = new TempDir();
         var staleAfter = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
         tmp.Write("c/rev.md",
-            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\n---\n# Computation\n\n```\nX\n```\n");
+            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\nattester: {{ resource: att.py }}\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var clock = new SteppingClock(staleAfter - TimeSpan.FromSeconds(1));
         var runtime = FakeRuntime.Passing();
         runtime.AttestFunc = (_, _) =>
@@ -623,7 +628,8 @@ public class AttestationOrchestratorTests
         using var tmp = new TempDir();
         var staleAfter = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
         tmp.Write("c/rev.md",
-            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\n---\n# Computation\n\n```\nX\n```\n");
+            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\nattester: {{ resource: att.py }}\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var clock = new SteppingClock(staleAfter - TimeSpan.FromSeconds(1));
         var runtime = FakeRuntime.Passing();
         var callerThreadId = Environment.CurrentManagedThreadId;
@@ -660,7 +666,8 @@ public class AttestationOrchestratorTests
         using var tmp = new TempDir();
         var staleAfter = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
         tmp.Write("c/rev.md",
-            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\n---\n# Computation\n\n```\nX\n```\n");
+            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\nattester: {{ resource: att.py }}\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var clock = new SteppingClock(staleAfter - TimeSpan.FromSeconds(1));
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
         var orch = new AttestationOrchestrator(reg, clock: clock);
@@ -683,7 +690,8 @@ public class AttestationOrchestratorTests
         using var tmp = new TempDir();
         var staleAfter = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
         tmp.Write("c/rev.md",
-            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\n---\n# Computation\n\n```\nX\n```\n");
+            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\nattester: {{ resource: att.py }}\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var clock = new SteppingClock(staleAfter - TimeSpan.FromSeconds(1));
         var runtime = new FakeRuntime();
         runtime.ExecuteFunc = (_, _, _) =>
@@ -757,7 +765,8 @@ public class AttestationOrchestratorTests
         using var tmp = new TempDir();
         tmp.Write("c/rev.md",
             "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: references/revenue.sql\n" +
-            "executor: { resource: references/run.md, receipt: [job_id] }\n---\n");
+            "executor: { resource: references/run.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         // Laid out as Appendix A does: the concept sits in a subdirectory and its
         // bare `computation` path resolves from the BUNDLE ROOT, not from "c/".
         tmp.Write("references/revenue.sql", "SELECT revenue FROM t;\n");
@@ -779,7 +788,8 @@ public class AttestationOrchestratorTests
     {
         using var tmp = new TempDir();
         tmp.Write("c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: references/missing.sql\n---\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: references/missing.sql\nattester: { resource: att.py }\n---\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
         var outcome = await new AttestationOrchestrator(reg).RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"), new Dictionary<string, object?>());
         Assert.False(outcome.Displayable);
@@ -797,7 +807,8 @@ public class AttestationOrchestratorTests
     {
         using var tmp = new TempDir();
         tmp.Write("c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: references/revenue.sql\n---\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: references/revenue.sql\nattester: { resource: att.py }\n---\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         // At the BUNDLE ROOT, because a bare `computation` path resolves from
         // there (§6.2) -- same layout as File_based_computation_resolved_and_read,
         // so the only thing that differs between the two is the file's BYTES,
@@ -844,7 +855,8 @@ public class AttestationOrchestratorTests
     {
         using var tmp = new TempDir();
         tmp.Write("c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: references/revenue.sql\n---\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: references/revenue.sql\nattester: { resource: att.py }\n---\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         // At the BUNDLE ROOT: a bare `computation` path resolves from there (§6.2).
         var sqlPath = System.IO.Path.Combine(tmp.Path, "references", "revenue.sql");
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(sqlPath)!);
@@ -874,8 +886,9 @@ public class AttestationOrchestratorTests
     {
         using var tmp = new TempDir();
         tmp.Write("c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\n---\n" +
+            "---\ntype: Attested Computation\nruntime: bigquery\nattester: { resource: att.py }\n---\n" +
             "Just prose -- no `# Computation` fence and no `computation:` path.\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
         var outcome = await new AttestationOrchestrator(reg).RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"), new Dictionary<string, object?>());
         Assert.False(outcome.Displayable);
@@ -1032,22 +1045,36 @@ public class AttestationOrchestratorTests
         Assert.False(attested, "the attester ran despite its own resource being unresolvable");
     }
 
-    [Fact]
-    public async Task Absent_attester_declaration_yields_null_source_text_not_a_failure()
+    /// <summary>
+    /// D6 (spec §5.1, §10; docs/spec-conformance S10.5-1): a computation that declares no
+    /// <c>attester.resource</c>, or declares a URL, is refused before any stage runs. Until lot C
+    /// this test was <c>Absent_attester_declaration_yields_null_source_text_not_a_failure</c>:
+    /// the host's attester ran with a null source. There is nothing to pin in either case, so
+    /// nothing the host or the model could hold for the attestation code that ran.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("attester: { resource: https://example.com/att.py }\n")]
+    public async Task An_undeclared_or_URL_attester_is_refused_before_the_runtime_is_called(string attesterLine)
     {
         using var tmp = new TempDir();
         tmp.Write("c/rev.md",
             "---\ntype: Attested Computation\nruntime: bigquery\n" +
             "parameters:\n  - { name: year, type: integer, required: true }\n" +
-            "executor: { receipt: [job_id, result] }\n---\n# Computation\n\n```sql\nSELECT @year\n```\n");
+            "executor: { receipt: [job_id, result] }\n" + attesterLine + "---\n# Computation\n\n```sql\nSELECT @year\n```\n");
         var bundle = Bundle.Load(tmp.Path);
         var id = ConceptId.Parse("c/rev");
 
-        AttestationContext? captured = null;
+        var stages = 0;
         var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
-        runtime.AttestFunc = (ctx, _) =>
+        runtime.BindFunc = (contract, computation, values, _) =>
         {
-            captured = ctx;
+            stages++;
+            return ValueTask.FromResult(new BoundComputation("bigquery", computation.InlineCode, null, values));
+        };
+        runtime.AttestFunc = (_, _) =>
+        {
+            stages++;
             return ValueTask.FromResult(new AttestationVerdict(true, null));
         };
 
@@ -1055,8 +1082,86 @@ public class AttestationOrchestratorTests
         var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
         var outcome = await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 });
 
-        Assert.True(outcome.Displayable);
-        Assert.Null(captured!.AttesterSourceText);
+        Assert.False(outcome.Displayable);
+        Assert.Equal(0, stages);
+        Assert.Null(outcome.Receipt);
+        var reason = Assert.Single(outcome.Reasons);
+        Assert.Contains(attesterLine.Length == 0 ? "no attester.resource is declared" : "is a URL, which is never read", reason, StringComparison.Ordinal);
+        Assert.Contains("is not run", reason, StringComparison.Ordinal);
+
+        var captured = AttestationOrchestrator.Capture(bundle, bundle.Get(id)!);
+        Assert.Null(captured.Capture);
+        Assert.False(captured.ImageOutdated);
+        Assert.Equal(outcome.Reasons, captured.Failure!.Reasons);
+    }
+
+    /// <summary>
+    /// The pin (spec §5.4, point 17): the attester's source is read at the version the image
+    /// was loaded with. A script replaced after the load — same length, same second, which the
+    /// filesystem's weak bundle token cannot see — is refused, the attester never called, and
+    /// the capture says the image is outdated so that a handle reloads it.
+    /// </summary>
+    [Fact]
+    public async Task The_attester_is_pinned_to_the_version_the_image_was_loaded_with()
+    {
+        using var tmp = new TempDir();
+        var (bundle, id) = InlineComputationWithAttesterFile(tmp, "def attest(**_):\n    return {}  # v1\n");
+        var attested = false;
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
+        runtime.AttestFunc = (_, _) =>
+        {
+            attested = true;
+            return ValueTask.FromResult(new AttestationVerdict(true, null));
+        };
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+
+        var path = Path.Combine(tmp.Path, "att.py");
+        var stamp = File.GetLastWriteTimeUtc(path);
+        File.WriteAllText(path, "def attest(**_):\n    return {}  # v2\n");
+        File.SetLastWriteTimeUtc(path, stamp);
+
+        var outcome = await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 });
+
+        Assert.False(outcome.Displayable);
+        Assert.False(attested);
+        Assert.Contains(outcome.Reasons, r => r == "attester resource 'att.py' changed since the bundle was loaded");
+        var captured = AttestationOrchestrator.Capture(bundle, bundle.Get(id)!);
+        Assert.Null(captured.Capture);
+        Assert.True(captured.ImageOutdated);
+
+        var reloaded = Bundle.Load(tmp.Path);
+        var fresh = await orch.RunAsync(reloaded, id, new Dictionary<string, object?> { ["year"] = 2026 });
+        Assert.True(fresh.Displayable);
+        Assert.True(attested);
+    }
+
+    /// <summary>A computation file pinned to the version a caller observed (spec §5.4, point 2) is refused when it changed; unpinned, it is read as it is.</summary>
+    [Fact]
+    public void A_computation_file_pinned_to_an_observed_version_is_refused_when_it_changed()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("references/revenue.sql", "SELECT 1\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
+        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: references/revenue.sql\nattester: { resource: att.py }\n---\n");
+        var bundle = Bundle.Load(tmp.Path);
+        var concept = bundle.Get(ConceptId.Parse("c/rev"))!;
+        var observed = bundle.ExecutableResources[concept.Id].Computation.Version;
+
+        var pinned = AttestationOrchestrator.Capture(bundle, concept, observed);
+        Assert.NotNull(pinned.Capture);
+        Assert.Equal("SELECT 1\n", pinned.Capture!.Computation.InlineCode);
+        Assert.Equal("def attest(**_):\n    return {}\n", pinned.Capture.AttesterSourceText);
+
+        File.WriteAllText(Path.Combine(tmp.Path, "references", "revenue.sql"), "SELECT 2\n");
+
+        var refused = AttestationOrchestrator.Capture(bundle, concept, observed);
+        Assert.Null(refused.Capture);
+        Assert.True(refused.ImageOutdated);
+        Assert.Contains(refused.Failure!.Reasons, r => r.StartsWith("computation file 'references/revenue.sql' changed since it was shown", StringComparison.Ordinal));
+
+        var unpinned = AttestationOrchestrator.Capture(bundle, concept);
+        Assert.Equal("SELECT 2\n", unpinned.Capture!.Computation.InlineCode);
     }
 
     /// <summary>
@@ -1074,7 +1179,8 @@ public class AttestationOrchestratorTests
         using var tmp = new TempDir();
         tmp.Write("c/rev.md",
             "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: x/y/secret.sql\n" +
-            "executor: { resource: references/run.md, receipt: [job_id] }\n---\n");
+            "executor: { resource: references/run.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         System.IO.Directory.CreateDirectory(System.IO.Path.Combine(tmp.Path, "x"));
         var bundle = Bundle.Load(tmp.Path);
         using var external = new TempDir();
@@ -1094,7 +1200,10 @@ public class AttestationOrchestratorTests
 
         Assert.False(outcome.Displayable);
         Assert.Null(capturedText);
-        Assert.Contains(outcome.Reasons, r => r.Contains("computation file 'x/y/secret.sql' could not be read: UnauthorizedAccessException", StringComparison.Ordinal));
+        // The refusal moved from the read to the resolution (lot C): the provider's exact-name
+        // lookup cannot list "x" once the junction denies it, so the key resolves Missing. Either
+        // refusal is what this test pins: nothing outside the bundle reaches the binder.
+        Assert.Contains(outcome.Reasons, r => r.StartsWith("computation file 'x/y/secret.sql' could not be re", StringComparison.Ordinal));
     }
 
     /// <summary>
@@ -1130,6 +1239,8 @@ public class AttestationOrchestratorTests
 
         Assert.False(outcome.Displayable);
         Assert.Null(captured);
-        Assert.Contains(outcome.Reasons, r => r.Contains("attester resource 'x/y/att.py' could not be read: UnauthorizedAccessException", StringComparison.Ordinal));
+        // As for the computation file above: refused at the resolution (the survey finds it
+        // Missing once "x" denies listing), or at the pinned read — never attested.
+        Assert.Contains(outcome.Reasons, r => r.StartsWith("attester resource 'x/y/att.py' could not be re", StringComparison.Ordinal));
     }
 }

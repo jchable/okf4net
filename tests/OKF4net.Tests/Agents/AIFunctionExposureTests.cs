@@ -266,7 +266,8 @@ public class AIFunctionExposureTests
         using var tmp = new TempDir();
         tmp.Write(
             "c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nparameters:\n  - name: threshold\n    required: true\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nparameters:\n  - name: threshold\n    required: true\nexecutor: { resource: r.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
 
         IReadOnlyDictionary<string, object?>? captured = null;
         var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
@@ -391,7 +392,8 @@ public class AIFunctionExposureTests
     public void okf_run_computation_does_not_expose_its_cancellation_token_to_the_model()
     {
         using var tmp = new TempDir();
-        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: fake\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: fake\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["fake"] = new FakeRuntime() });
         var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg));
 
@@ -414,7 +416,8 @@ public class AIFunctionExposureTests
     {
         tmp.Write(
             "c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nparameters:\n  - name: n\n    required: true\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nparameters:\n  - name: n\n    required: true\nexecutor: { resource: r.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
         runtime.BindFunc = (contract, computation, values, _) =>
         {

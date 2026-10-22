@@ -35,11 +35,12 @@ public readonly record struct AttestationVerdict(bool Passed, string? Detail);
 /// <param name="Values">The parameter values supplied for this run.</param>
 /// <param name="Receipt">The receipt produced by the executor.</param>
 /// <param name="AttesterSourceText">
-/// The attester's script source, already resolved and read via §6.2
-/// (mirrors how <see cref="Computation"/> is resolved) — <see langword="null"/>
-/// when the concept declares no attester, an empty resource, or a URL
-/// resource. No <see cref="IAttester"/> implementation needs a
-/// <see cref="Bundle"/> or <see cref="Concept"/> as a result.
+/// The attester's script source, resolved and read through the bundle's provider (§6.2),
+/// pinned to the version the image was loaded with (spec §5.4). Never <see langword="null"/>
+/// at a runtime's entry since D6: a concept that declares no attester, or a URL, is refused
+/// before any stage runs. The type stays nullable so that hosts building a context of their
+/// own are not broken. No <see cref="IAttester"/> implementation needs a <see cref="Bundle"/>
+/// or <see cref="Concept"/> as a result.
 /// </param>
 public sealed record AttestationContext(
     AttestedComputationContract Contract,
@@ -81,3 +82,18 @@ public sealed record AttestationOutcome(
     StaleState Stale,
     IReadOnlyList<string> Reasons,
     Exception? Error);
+
+/// <summary>
+/// What one run executes, captured once before any runtime is called (spec §5.4): the
+/// sanctioned computation (inline, or the file's text) and the attester's source, read pinned
+/// to the version the image was loaded with. Built by <see cref="AttestationOrchestrator.Capture"/>.
+/// </summary>
+/// <param name="Computation">The sanctioned computation: inline code, or the file's already-read text.</param>
+/// <param name="AttesterSourceText">The attester's source, read at its pinned version.</param>
+public sealed record AttestationCapture(SanctionedComputation Computation, string AttesterSourceText);
+
+/// <summary>The result of <see cref="AttestationOrchestrator.Capture"/>: a capture, or a non-displayable outcome saying why nothing is run.</summary>
+/// <param name="Capture">What the run executes, or <see langword="null"/> when the capture was refused.</param>
+/// <param name="Failure">The non-displayable outcome to report, when <see cref="Capture"/> is <see langword="null"/>.</param>
+/// <param name="ImageOutdated"><see langword="true"/> when the refusal is one the image may be behind on — a resource missing, unreadable, refused, over the bound, or whose version changed — so that a caller holding a <c>BundleHandle</c> invalidates it (spec §5.1); <see langword="false"/> for an undeclared or URL attester and for a concept without a computation.</param>
+public sealed record AttestationCaptureResult(AttestationCapture? Capture, AttestationOutcome? Failure, bool ImageOutdated);
