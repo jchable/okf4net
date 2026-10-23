@@ -448,7 +448,7 @@ public sealed class OkfBundleTools
     /// </summary>
     /// <param name="conceptId">The concept id, e.g. <c>tables/orders</c>.</param>
     [Description(ReadConceptDescription)]
-    public string ReadConcept([Description(ConceptIdDescription)] string conceptId) => ReadConceptCore(conceptId, out _, out _);
+    public string ReadConcept([Description(ConceptIdDescription)] string conceptId) => ReadConceptCore(conceptId, describeUnreadable: false, out _, out _);
 
     /// <summary>
     /// <c>okf_read_concept</c>: <see cref="ReadConcept"/>, then the observation (spec §5.4):
@@ -459,7 +459,7 @@ public sealed class OkfBundleTools
     [Description(ReadConceptDescription)]
     internal string ReadConceptTool([Description(ConceptIdDescription)] string conceptId)
     {
-        var result = ReadConceptCore(conceptId, out var key, out var version);
+        var result = ReadConceptCore(conceptId, describeUnreadable: true, out var key, out var version);
         if (key is not null)
         {
             if (version is { } shown)
@@ -481,9 +481,12 @@ public sealed class OkfBundleTools
     /// <paramref name="key"/> alone when the id parsed and nothing exists under it (shown
     /// absent), neither otherwise (an invalid id, a bundle that failed to load, an object that
     /// exists without a known version). An object that exists but is no concept (a parse
-    /// failure) is shown, with its version, in the message that says so — never absent.
+    /// failure) is never reported absent to the observation: with <paramref name="describeUnreadable"/>
+    /// (the model-facing <c>okf_read_concept</c>) it is described in the message and shown with
+    /// its version; without it (the public method, whose text is what it always was) the message
+    /// is the plain not-found one and nothing is reported.
     /// </summary>
-    private string ReadConceptCore(string conceptId, out BundleKey? key, out BundleObjectVersion? version)
+    private string ReadConceptCore(string conceptId, bool describeUnreadable, out BundleKey? key, out BundleObjectVersion? version)
     {
         key = null;
         version = null;
@@ -505,6 +508,10 @@ public sealed class OkfBundleTools
             if (bundle.Get(id) is not { } concept)
             {
                 var missingKey = id.ToKey();
+                if (!describeUnreadable)
+                {
+                    return ConceptNotFoundMessage(conceptId);
+                }
 
                 // An object that exists but did not become a concept (an unterminated
                 // frontmatter fence, invalid YAML, an oversized file, a bundle index or log)

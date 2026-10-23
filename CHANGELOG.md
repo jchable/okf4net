@@ -140,8 +140,9 @@ and this project adheres to
   first now makes one more call; the refusal says which. Build one tool set
   per conversation: observations are per instance. A file that exists but is
   no concept (an unterminated frontmatter fence, invalid YAML, a bundle index
-  or log) is no longer reported `not found` by `ReadConcept` and
-  `okf_read_concept`: they say `Concept 'x' exists but could not be read as a
+  or log) is no longer reported `not found` by the `okf_read_concept` tool
+  (the public `ReadConcept` is unchanged and still says `not found`): the tool
+  says `Concept 'x' exists but could not be read as a
   concept: <the loader's reason> It can be rewritten with okf_write_concept.`
   (an index or log file: `'x' is not a concept: …`), and the read authorises
   the repair — an `IfMatch` rewrite at the version shown, as before the task

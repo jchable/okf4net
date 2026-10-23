@@ -249,6 +249,33 @@ public class ObservationTests
         Assert.DoesNotContain(storage.Calls, c => c.StartsWith("write ", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// Nothing changes for a host: the public method keeps the text it always had for an object
+    /// that exists but is no concept (an unparseable file, an oversized one, an index), the plain
+    /// "not found"; the honest texts and the observations belong to the exposed function only.
+    /// </summary>
+    [Fact]
+    public void The_public_method_keeps_its_not_found_text_for_an_object_that_is_no_concept()
+    {
+        var storage = new InMemoryBundleProvider(canWrite: true)
+            .Add("notes/broken.md", "---\ntype: Note\ntitle: B\n\nno closing fence\n")
+            .Add("notes/big.md", "---\n" + Fm + "---\n\n" + new string('x', 600) + "\n")
+            .Add("notes/index.md", "# Notes\n");
+        var tools = new OkfBundleTools(new BundleHandle(storage, new BundleLoadOptions { Limits = new BundleLimits { MaxObjectBytes = 300 } }));
+
+        foreach (var id in new[] { "notes/broken", "notes/big", "notes/index" })
+        {
+            Assert.Equal($"Concept '{id}' not found. Use okf_browse to list available concepts.", tools.ReadConcept(id));
+        }
+
+        Assert.Equal(0, tools.Observations.Count); // the public method records nothing
+        Assert.StartsWith("Concept 'notes/broken' exists but could not be read as a concept: ", tools.ReadConceptTool("notes/broken"), StringComparison.Ordinal);
+        Assert.Contains("It cannot be rewritten through this tool.", tools.ReadConceptTool("notes/big"), StringComparison.Ordinal);
+        Assert.Equal("'notes/index' is not a concept: that name is a bundle index or log file.", tools.ReadConceptTool("notes/index"));
+        Assert.Equal("Concept 'notes/broken' not found. Use okf_browse to list available concepts.", tools.ReadConcept("notes/broken"));
+        Assert.Equal(1, tools.Observations.Count); // only the exposed function recorded (notes/broken, with its version)
+    }
+
     /// <summary>The observation survives a write the writer refused: nothing was written, and IfMatch still guards the retry.</summary>
     [Fact]
     public void A_write_that_answers_an_error_keeps_the_observation()
