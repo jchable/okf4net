@@ -84,12 +84,17 @@ public static class OkfBundleDiscovery
         return false;
     }
 
+    /// <summary>The most a candidate's root <c>index.md</c> is read (16 MiB, spec §6, §9): a larger one is unreadable, hence unmarked, without reading it.</summary>
+    public const long MaxRootIndexBytes = 16L * 1024 * 1024;
+
     /// <summary>
     /// Production <c>readRootIndex</c> accessor: reads
-    /// <c>&lt;directory&gt;/index.md</c> as strict UTF-8, returning
-    /// <see langword="null"/> on any read failure (missing file, I/O error,
-    /// permission denied, invalid UTF-8) — the same "unreadable means no
-    /// declared version" stance as <see cref="Bundle.OkfVersion"/>.
+    /// <c>&lt;directory&gt;/index.md</c> as strict UTF-8, within
+    /// <see cref="MaxRootIndexBytes"/>, returning <see langword="null"/> on any
+    /// read failure (missing file, I/O error, permission denied, invalid UTF-8,
+    /// over the bound) — the same "unreadable means no declared version" stance
+    /// as <see cref="Bundle.OkfVersion"/>. The bytes are counted as they are
+    /// read, so a file that grows while it is read is bounded too.
     /// </summary>
     /// <param name="directory">Candidate bundle root.</param>
     /// <returns>The root index text, or <see langword="null"/>.</returns>
@@ -97,7 +102,28 @@ public static class OkfBundleDiscovery
     {
         try
         {
-            return StrictUtf8.GetString(File.ReadAllBytes(Path.Combine(directory, IndexFilename)));
+            using var stream = new FileStream(Path.Combine(directory, IndexFilename), FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            if (stream.Length > MaxRootIndexBytes)
+            {
+                return null;
+            }
+
+            using var buffer = new MemoryStream((int)stream.Length);
+            var chunk = new byte[81920];
+            long total = 0;
+            int read;
+            while ((read = stream.Read(chunk, 0, chunk.Length)) > 0)
+            {
+                total += read;
+                if (total > MaxRootIndexBytes)
+                {
+                    return null;
+                }
+
+                buffer.Write(chunk, 0, read);
+            }
+
+            return StrictUtf8.GetString(buffer.GetBuffer(), 0, (int)buffer.Length);
         }
         catch (IOException)
         {

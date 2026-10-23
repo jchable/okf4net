@@ -166,6 +166,41 @@ public sealed class OkfBundleDiscoveryTests
         }
     }
 
+    /// <summary>
+    /// Spec §6, §9 (lot C): the root <c>index.md</c> is read under the 16 MiB bound; past it
+    /// the index is unreadable, hence "no declared version", without reading it. The file is
+    /// a sparse one of 16 MiB + 1 bytes, created by setting its length.
+    /// </summary>
+    [Fact]
+    public void Adapter_returns_null_when_the_index_exceeds_the_bound_without_reading_it()
+    {
+        var dir = Directory.CreateTempSubdirectory("okf-disc-").FullName;
+        try
+        {
+            var path = Path.Combine(dir, "index.md");
+            using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write))
+            {
+                var marked = Encoding.UTF8.GetBytes(Marked);
+                stream.Write(marked, 0, marked.Length);
+                stream.SetLength(OkfBundleDiscovery.MaxRootIndexBytes + 1);
+            }
+
+            Assert.Equal(16L * 1024 * 1024, OkfBundleDiscovery.MaxRootIndexBytes);
+            Assert.Null(OkfBundleDiscovery.ReadRootIndexOrNull(dir));
+
+            using (var stream = new FileStream(path, FileMode.Open, FileAccess.Write))
+            {
+                stream.SetLength(OkfBundleDiscovery.MaxRootIndexBytes);
+            }
+
+            Assert.NotNull(OkfBundleDiscovery.ReadRootIndexOrNull(dir)); // exactly at the bound: read
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     [Fact]
     public void Adapter_returns_null_on_invalid_utf8()
     {
