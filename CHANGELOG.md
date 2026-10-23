@@ -151,9 +151,9 @@ and this project adheres to
   once per assembly, as before (the model reads `bundle unavailable`), and a
   reload that fails after a load is now reported on every assembly while the
   handle holds the failure, while the model reads the context of the image it
-  was served. What the callback receives is the handle's `BundleLoadException`
-  (its message names no host path, its inner exception is the raw cause)
-  rather than the raw `IOException`.
+  was served. What the callback receives is still a `BundleLoadException`, but
+  its message no longer names the host path: the path moves to its inner
+  exception, the raw cause, so a host that logs only `.Message` loses it.
   `okf_browse` also differs in what it resolves, on volumes that fold case or
   accept `.` segments: a path is now exactly the key's spelling
   (`Browse("Tables")` used to find `tables/` on NTFS and default macOS, and
