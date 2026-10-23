@@ -132,6 +132,31 @@ public sealed class OkfBundleTools
     private readonly AttestationOrchestrator? _orchestrator;
 
     /// <summary>
+    /// What this tool set's session was shown, and to what end (spec §5.4, D1): recorded only
+    /// by the functions exposed to the model (<c>okf_read_concept</c>, <c>okf_get_computation</c>),
+    /// once they have produced their complete result — never by the public
+    /// <see cref="ReadConcept"/> and <see cref="GetComputation"/> a host or an
+    /// <c>OkfContextProvider</c> calls (D5: an injection is not an observation). Consulted by
+    /// <c>okf_write_concept</c> and <c>okf_run_computation</c>. Per instance: not shared
+    /// through the handle, and it survives every refresh of the image.
+    /// </summary>
+    private readonly ObservationRegistry _observations = new();
+
+    /// <summary>The session's observation registry; a test seam.</summary>
+    internal ObservationRegistry Observations => _observations;
+
+    private const string ReadConceptDescription = "Read one concept from the OKF bundle: its frontmatter, body, outgoing links and backlinks.";
+    private const string ConceptIdDescription = "The concept id, e.g. 'tables/orders'.";
+    private const string WriteConceptDescription = "Create or update a concept document. The frontmatter must contain non-empty type, title and description (producer-grade validation is enforced before writing).";
+    private const string WriteConceptIdDescription = "The concept id (path without .md), e.g. 'tables/refunds'.";
+    private const string FrontmatterYamlDescription = "Frontmatter as 'key: value' lines (YAML subset).";
+    private const string BodyDescription = "The markdown body.";
+    private const string GetComputationDescription = "Read an Attested Computation's §10 contract (runtime, parameters, executor, attester) and its sanctioned computation source (inline code, or the text of a referenced file).";
+    private const string ComputationIdDescription = "The concept id, e.g. 'computations/monthly-revenue'.";
+    private const string RunComputationDescription = "Run an Attested Computation (§10.5: bind, execute, attest, gate on staleness) via the configured attestation runtime, and return the resulting outcome (displayable, verdict, receipt, reasons).";
+    private const string ParameterValuesDescription = "Parameter values for this run, by name (§10.3: values only, never computation code).";
+
+    /// <summary>
     /// Creates the tool set rooted at <paramref name="bundleRoot"/>, without an
     /// attestation orchestrator (so <c>okf_run_computation</c> is not exposed;
     /// see <see cref="OkfBundleTools(string, AttestationOrchestrator?)"/>).
@@ -356,18 +381,18 @@ public sealed class OkfBundleTools
     {
         var tools = new List<AITool>
         {
-            AIFunctionFactory.Create(ReadConcept, "okf_read_concept"),
+            AIFunctionFactory.Create(ReadConceptTool, "okf_read_concept"),
             AIFunctionFactory.Create(Browse, "okf_browse"),
             AIFunctionFactory.Create(Graph, "okf_graph"),
             AIFunctionFactory.Create(Search, "okf_search"),
             AIFunctionFactory.Create(Audit, "okf_audit"),
-            AIFunctionFactory.Create(WriteConcept, "okf_write_concept"),
+            AIFunctionFactory.Create(WriteConceptTool, "okf_write_concept"),
             AIFunctionFactory.Create(Verify, "okf_verify"),
             AIFunctionFactory.Create(AppendLog, "okf_append_log"),
             AIFunctionFactory.Create(RegenerateIndexes, "okf_regenerate_indexes"),
             AIFunctionFactory.Create(ValidateBundle, "okf_validate_bundle"),
             AIFunctionFactory.Create(ChangesSince, "okf_changes_since"),
-            AIFunctionFactory.Create(GetComputation, "okf_get_computation"),
+            AIFunctionFactory.Create(GetComputationTool, "okf_get_computation"),
         };
 
         if (_orchestrator is not null)
@@ -409,20 +434,70 @@ public sealed class OkfBundleTools
     /// message instead.
     /// </summary>
     /// <param name="conceptId">The concept id, e.g. <c>tables/orders</c>.</param>
-    [Description("Read one concept from the OKF bundle: its frontmatter, body, outgoing links and backlinks.")]
-    public string ReadConcept([Description("The concept id, e.g. 'tables/orders'.")] string conceptId)
+    [Description(ReadConceptDescription)]
+    public string ReadConcept([Description(ConceptIdDescription)] string conceptId) => ReadConceptCore(conceptId, out _, out _);
+
+    /// <summary>
+    /// <c>okf_read_concept</c>: <see cref="ReadConcept"/>, then the observation (spec §5.4):
+    /// the whole concept shown at its version, or the key shown absent. Recorded here, at the
+    /// presentation boundary, never in the public method a host or an <c>OkfContextProvider</c>
+    /// calls (D5). Internal so that tests reach the exposed function without the AI plumbing.
+    /// </summary>
+    [Description(ReadConceptDescription)]
+    internal string ReadConceptTool([Description(ConceptIdDescription)] string conceptId)
     {
+        var result = ReadConceptCore(conceptId, out var key, out var version);
+        if (key is not null)
+        {
+            if (version is { } shown)
+            {
+                _observations.RecordFullConcept(key, shown);
+            }
+            else
+            {
+                _observations.RecordAbsent(key);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// <see cref="ReadConcept"/>, reporting what the rendering showed: <paramref name="key"/>
+    /// with its <paramref name="version"/> when the whole concept was rendered, the
+    /// <paramref name="key"/> alone when the id parsed but no concept exists under it (shown
+    /// absent), neither otherwise (an invalid id, a bundle that failed to load).
+    /// </summary>
+    private string ReadConceptCore(string conceptId, out BundleKey? key, out BundleObjectVersion? version)
+    {
+        key = null;
+        version = null;
         if (GuardConceptId(conceptId) is { } err)
         {
             return err;
         }
 
-        return RunTool(() =>
+        BundleKey? shownKey = null;
+        BundleObjectVersion? shownVersion = null;
+        var result = RunTool(() =>
         {
             var bundle = GetBundle();
-            if (!ConceptId.TryParse(conceptId, out var id) || bundle.Get(id) is not { } concept)
+            if (!ConceptId.TryParse(conceptId, out var id))
             {
                 return ConceptNotFoundMessage(conceptId);
+            }
+
+            if (bundle.Get(id) is not { } concept)
+            {
+                shownKey = id.ToKey();
+                return ConceptNotFoundMessage(conceptId);
+            }
+
+            var conceptKey = concept.Key ?? id.ToKey();
+            if (bundle.ObjectVersions.TryGetValue(conceptKey, out var objectVersion))
+            {
+                shownKey = conceptKey;
+                shownVersion = objectVersion;
             }
 
             var sb = new StringBuilder();
@@ -457,6 +532,9 @@ public sealed class OkfBundleTools
 
             return sb.ToString();
         });
+        key = shownKey;
+        version = shownVersion;
+        return result;
     }
 
     /// <summary>
@@ -740,12 +818,60 @@ public sealed class OkfBundleTools
     /// <param name="conceptId">The concept id (path without <c>.md</c>), e.g. <c>tables/refunds</c>.</param>
     /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines (the same YAML subset used inside a document's frontmatter block, without the <c>---</c> delimiters).</param>
     /// <param name="body">The markdown body.</param>
-    [Description("Create or update a concept document. The frontmatter must contain non-empty type, title and description (producer-grade validation is enforced before writing).")]
+    [Description(WriteConceptDescription)]
     public string WriteConcept(
-        [Description("The concept id (path without .md), e.g. 'tables/refunds'.")] string conceptId,
-        [Description("Frontmatter as 'key: value' lines (YAML subset).")] string frontmatterYaml,
-        [Description("The markdown body.")] string body) =>
+        [Description(WriteConceptIdDescription)] string conceptId,
+        [Description(FrontmatterYamlDescription)] string frontmatterYaml,
+        [Description(BodyDescription)] string body) =>
         DropBundleOnError(_writer.WriteConcept(conceptId, frontmatterYaml, body));
+
+    /// <summary>
+    /// <c>okf_write_concept</c>: <see cref="WriteConcept"/> conditioned on what this session
+    /// observed (spec §4, §5.4, D1). A whole-concept observation at version v writes with
+    /// <see cref="BundleWriteCondition.IfMatch"/>; an absent observation creates with
+    /// <see cref="BundleWriteCondition.MustNotExist"/>; anything else — never read in full,
+    /// only shown by <c>okf_get_computation</c>, injected by a context provider (D5), or
+    /// evicted from the registry — is refused with no write, whether the concept exists or
+    /// not. A condition that does not hold is the writer's refusal (the concept changed, or no
+    /// longer exists, since it was read; read it again), and the image is refreshed. A
+    /// committed write drops the observation: what the session saw is no longer what the
+    /// bundle holds, so the next rewrite reads first. An id that does not parse goes to the
+    /// writer, whose refusal is unchanged.
+    /// </summary>
+    [Description(WriteConceptDescription)]
+    internal string WriteConceptTool(
+        [Description(WriteConceptIdDescription)] string conceptId,
+        [Description(FrontmatterYamlDescription)] string frontmatterYaml,
+        [Description(BodyDescription)] string body)
+    {
+        if (!ConceptId.TryParse(conceptId, out var id))
+        {
+            return WriteConcept(conceptId, frontmatterYaml, body);
+        }
+
+        var key = id.ToKey();
+        BundleWriteCondition condition;
+        if (_observations.TryGetFullConcept(key, out var observed))
+        {
+            condition = BundleWriteCondition.IfMatch(observed);
+        }
+        else if (_observations.IsAbsent(key))
+        {
+            condition = BundleWriteCondition.MustNotExist;
+        }
+        else
+        {
+            return $"Error: '{id}' has not been read by this session; read it first with okf_read_concept (a context block injected for you, or okf_get_computation, does not count), then write it.";
+        }
+
+        var result = DropBundleOnError(_writer.WriteConcept(conceptId, frontmatterYaml, body, condition));
+        if (!result.StartsWith("Error:", StringComparison.Ordinal))
+        {
+            _observations.Forget(key);
+        }
+
+        return result;
+    }
 
     /// <summary>
     /// Records a review of one or more concepts: adds — or replaces — the
@@ -1177,15 +1303,53 @@ public sealed class OkfBundleTools
     /// message instead.
     /// </summary>
     /// <param name="conceptId">The concept id, e.g. <c>computations/monthly-revenue</c>.</param>
-    [Description("Read an Attested Computation's §10 contract (runtime, parameters, executor, attester) and its sanctioned computation source (inline code, or the text of a referenced file).")]
-    public string GetComputation([Description("The concept id, e.g. 'computations/monthly-revenue'.")] string conceptId)
+    [Description(GetComputationDescription)]
+    public string GetComputation([Description(ComputationIdDescription)] string conceptId) => GetComputationCore(conceptId, out _, out _, out _, out _);
+
+    /// <summary>
+    /// <c>okf_get_computation</c>: <see cref="GetComputation"/>, then the code observation
+    /// (spec §5.4) — the concept (contract and code) at its version and, for a file
+    /// computation, the file at its version — recorded only when the rendering showed the
+    /// code: a file that could not be resolved or read records nothing. Never by the public
+    /// method (D5). Internal so that tests reach the exposed function without the AI plumbing.
+    /// </summary>
+    [Description(GetComputationDescription)]
+    internal string GetComputationTool([Description(ComputationIdDescription)] string conceptId)
     {
+        var result = GetComputationCore(conceptId, out var conceptKey, out var conceptVersion, out var fileKey, out var fileVersion);
+        if (conceptKey is not null && conceptVersion is { } shown)
+        {
+            _observations.RecordCode(conceptKey, shown);
+            if (fileKey is not null && fileVersion is { } shownFile)
+            {
+                _observations.RecordCode(fileKey, shownFile);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// <see cref="GetComputation"/>, reporting what the rendering showed when it showed the
+    /// code: the concept's key and version, and the computation file's when the code came
+    /// from one; all <see langword="null"/> otherwise.
+    /// </summary>
+    private string GetComputationCore(string conceptId, out BundleKey? conceptKey, out BundleObjectVersion? conceptVersion, out BundleKey? fileKey, out BundleObjectVersion? fileVersion)
+    {
+        conceptKey = null;
+        conceptVersion = null;
+        fileKey = null;
+        fileVersion = null;
         if (GuardConceptId(conceptId) is { } err)
         {
             return err;
         }
 
-        return RunTool(() =>
+        BundleKey? shownConcept = null;
+        BundleObjectVersion? shownConceptVersion = null;
+        BundleKey? shownFile = null;
+        BundleObjectVersion? shownFileVersion = null;
+        var result = RunTool(() =>
         {
             var bundle = GetBundle();
             if (!ConceptId.TryParse(conceptId, out var id) || bundle.Get(id) is not { } concept)
@@ -1220,7 +1384,7 @@ public sealed class OkfBundleTools
             switch (computation)
             {
                 case { Source: ComputationSource.File, Path.Length: > 0 } file:
-                    if (!bundle.TryResolveResourceKey(concept, file.Path!, out var fileKey, out var status)
+                    if (!bundle.TryResolveResourceKey(concept, file.Path!, out var resolvedKey, out var status)
                         || status != ResourceResolutionStatus.Resolved)
                     {
                         // OneLine on file.Path here and on the two lines below:
@@ -1232,6 +1396,7 @@ public sealed class OkfBundleTools
                     }
 
                     string text;
+                    BundleObjectVersion readVersion;
                     try
                     {
                         // Guarded: TryResolveResourceKey only establishes that
@@ -1239,7 +1404,7 @@ public sealed class OkfBundleTools
                         // object may still fail to read (I/O error, refused path,
                         // non-UTF-8 content), same lesson as the orchestrator's
                         // own file-computation capture.
-                        text = bundle.ReadResourceText(fileKey!);
+                        text = bundle.ReadResourceText(resolvedKey!, null, out readVersion);
                     }
                     catch (Exception e) when (e is IOException or UnauthorizedAccessException or DecoderFallbackException)
                     {
@@ -1249,10 +1414,14 @@ public sealed class OkfBundleTools
 
                     sb.Append("File: ").Append(OneLine(file.Path!)).Append('\n').Append('\n');
                     sb.Append("```\n").Append(text.TrimEnd('\n')).Append('\n').Append("```\n");
+                    shownFile = resolvedKey;
+                    shownFileVersion = readVersion;
+                    Shown();
                     break;
 
                 case { Source: ComputationSource.Inline, InlineCode.Length: > 0 } inline:
                     sb.Append("```\n").Append(inline.InlineCode!.TrimEnd('\n')).Append('\n').Append("```\n");
+                    Shown();
                     break;
 
                 default:
@@ -1261,7 +1430,23 @@ public sealed class OkfBundleTools
             }
 
             return sb.ToString();
+
+            // The code was shown: the concept (contract and code) at the version of this image.
+            void Shown()
+            {
+                var conceptKeyShown = concept.Key ?? id.ToKey();
+                if (bundle.ObjectVersions.TryGetValue(conceptKeyShown, out var objectVersion))
+                {
+                    shownConcept = conceptKeyShown;
+                    shownConceptVersion = objectVersion;
+                }
+            }
         });
+        conceptKey = shownConcept;
+        conceptVersion = shownConceptVersion;
+        fileKey = shownFile;
+        fileVersion = shownFileVersion;
+        return result;
     }
 
     /// <summary>

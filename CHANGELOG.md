@@ -114,6 +114,31 @@ and this project adheres to
 
 ### Changed
 
+- **`okf_write_concept` writes only what the session has read** (#139,
+  lot C; spec §4, §5.4; decisions D1, D5). Each `OkfBundleTools` keeps an
+  observation registry of what its session was shown and to what end:
+  `okf_read_concept` records the whole concept at its version (or the id
+  shown absent), `okf_get_computation` records the concept's contract and
+  code, and the computation file, at their versions. `okf_write_concept`
+  rewrites a concept read in full with `IfMatch(version)` and creates one
+  shown absent with `MustNotExist`; otherwise it refuses with no write —
+  `Error: 'x' has not been read by this session; read it first with
+  okf_read_concept (a context block injected for you, or okf_get_computation,
+  does not count), then write it.` — whether the concept exists or not. A
+  concept that changed, or vanished, since it was read is the writer's
+  conflict (`Error: 'x' changed since it was read, or no longer exists; the
+  write was refused. Read it again before writing it.`) and the image is
+  refreshed; reading it again (`not found` included) re-authorises the write.
+  A committed write drops the observation, so a second rewrite reads first.
+  The registry is per tool set (never shared through the handle, nor with
+  another tool set or a context provider), survives every refresh, and holds
+  10 000 keys, the least recently used evicted first; an evicted entry
+  authorises nothing until a new read. Only the functions exposed to the
+  model record: the public `ReadConcept` and `GetComputation` a host calls
+  record nothing, and a concept `OkfContextProvider` injects, whole or
+  truncated, is not an observation (D5). An agent that wrote without reading
+  first now makes one more call; the refusal says which. The tool names,
+  descriptions and schemas are unchanged.
 - **`OkfBundleTools` serves its image from a `BundleHandle` and makes no
   direct I/O** (#139, lot C; spec §5.2, §9). `new OkfBundleTools(handle,
   orchestrator)` shares the handle's image with every consumer the host gives

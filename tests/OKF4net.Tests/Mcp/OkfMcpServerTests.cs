@@ -49,6 +49,13 @@ public sealed class OkfMcpServerTests
             await using var _ = server;
             await using var __ = client;
 
+            // Read first (spec §5.4, D1): the session must have seen the concept absent
+            // before okf_write_concept creates it.
+            var absent = await client.CallToolAsync(
+                "okf_read_concept",
+                new Dictionary<string, object?> { ["conceptId"] = "notes/test" });
+            Assert.Contains("not found", ResultText(absent));
+
             var write = await client.CallToolAsync(
                 "okf_write_concept",
                 new Dictionary<string, object?>
