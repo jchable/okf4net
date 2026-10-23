@@ -6,11 +6,13 @@ namespace OKF4net.Agents.Internal;
 /// <summary>
 /// What one session was shown, and to what end (spec §5.4, D1): per key, the version shown
 /// as a <b>full concept</b> (<c>okf_read_concept</c>), the version shown as <b>code</b>
-/// (<c>okf_get_computation</c>, for the concept and for its computation file), or that the
-/// key was shown <b>absent</b> (<c>okf_read_concept</c> answered not found). A full-concept
-/// observation authorises a rewrite and the run of an inline computation; a code observation
-/// the run only; an absent one a creation. A new observation of the same purpose replaces the
-/// previous one; an absent observation clears both others and either of them clears absent.
+/// (<c>okf_get_computation</c>, for the concept), the version of a computation <b>file</b>
+/// it showed, or that the key was shown <b>absent</b> (<c>okf_read_concept</c> answered not
+/// found). A full-concept observation authorises a rewrite and, like a code observation, the
+/// run of the concept at that version; a file observation the run of a computation that
+/// reads that file only; an absent one a creation. A new observation of the same purpose
+/// replaces the previous one; an absent observation clears the others and any of them clears
+/// absent.
 /// <para><b>Bounded</b> to <see cref="Capacity"/> keys, the least recently used evicted first
 /// (a record, or a lookup that finds what it asks for, makes a key the most recent; a lookup
 /// that finds nothing of that purpose touches nothing); an evicted entry is gone, and the
@@ -60,13 +62,24 @@ internal sealed class ObservationRegistry
         }
     }
 
-    /// <summary>Records that the code under <paramref name="key"/> (a concept's contract and code, or a computation file) was shown at <paramref name="version"/>.</summary>
+    /// <summary>Records that the code of the concept under <paramref name="key"/> (its contract and code) was shown at <paramref name="version"/>.</summary>
     public void RecordCode(BundleKey key, BundleObjectVersion version)
     {
         lock (_gate)
         {
             var entry = Touch(key);
             entry.Code = version;
+            entry.Absent = false;
+        }
+    }
+
+    /// <summary>Records that the computation file under <paramref name="key"/> was shown at <paramref name="version"/> — a purpose of its own: a concept's code observation does not show the file that happens to share its key.</summary>
+    public void RecordFile(BundleKey key, BundleObjectVersion version)
+    {
+        lock (_gate)
+        {
+            var entry = Touch(key);
+            entry.File = version;
             entry.Absent = false;
         }
     }
@@ -80,6 +93,7 @@ internal sealed class ObservationRegistry
             entry.Absent = true;
             entry.FullConcept = null;
             entry.Code = null;
+            entry.File = null;
         }
     }
 
@@ -100,6 +114,9 @@ internal sealed class ObservationRegistry
 
     /// <summary>The version the code was shown at, if it was.</summary>
     public bool TryGetCode(BundleKey key, out BundleObjectVersion version) => TryGet(key, static e => e.Code, out version);
+
+    /// <summary>The version the computation file was shown at, if it was.</summary>
+    public bool TryGetFile(BundleKey key, out BundleObjectVersion version) => TryGet(key, static e => e.File, out version);
 
     /// <summary>Whether the key was shown absent (and not shown since).</summary>
     public bool IsAbsent(BundleKey key)
@@ -170,6 +187,8 @@ internal sealed class ObservationRegistry
         public BundleObjectVersion? FullConcept { get; set; }
 
         public BundleObjectVersion? Code { get; set; }
+
+        public BundleObjectVersion? File { get; set; }
 
         public bool Absent { get; set; }
     }

@@ -347,13 +347,16 @@ public sealed class OkfBundleTools
     /// call returns a fresh list of freshly-created <see cref="AIFunction"/>
     /// instances bound to this <see cref="OkfBundleTools"/> — invoking one
     /// invokes the corresponding public method above, including its
-    /// never-throw behavior, with three exceptions: <c>okf_read_concept</c>,
-    /// <c>okf_get_computation</c> and <c>okf_write_concept</c> invoke internal
-    /// wrappers that record what the session was shown (spec §5.4), and
-    /// <c>okf_write_concept</c> refuses a concept this session has not read
-    /// (or seen absent) with no write. The public methods record and require
-    /// nothing. Observations are per instance: use one tool set per
-    /// conversation.
+    /// never-throw behavior, with four exceptions: <c>okf_read_concept</c>,
+    /// <c>okf_get_computation</c>, <c>okf_write_concept</c> and
+    /// <c>okf_run_computation</c> invoke internal wrappers that record what the
+    /// session was shown (spec §5.4), <c>okf_write_concept</c> refuses a concept
+    /// this session has not read (or seen absent) with no write, and
+    /// <c>okf_run_computation</c> refuses a computation this session was not
+    /// shown (the concept in full or as code, a file computation's file as code,
+    /// at the versions the image holds) with no runtime called. The public
+    /// methods record and require nothing. Observations are per instance: use
+    /// one tool set per conversation.
     ///
     /// Names are explicit snake_case (the default would be the C# method
     /// name); descriptions are omitted here and instead derived by
@@ -1388,7 +1391,7 @@ public sealed class OkfBundleTools
             _observations.RecordCode(conceptKey, shown);
             if (fileKey is not null && fileVersion is { } shownFile)
             {
-                _observations.RecordCode(fileKey, shownFile);
+                _observations.RecordFile(fileKey, shownFile);
             }
         }
 
@@ -1577,8 +1580,12 @@ public sealed class OkfBundleTools
     }
 
     /// <summary>
-    /// The §10.5 attested-computation workflow, asynchronous and cancellable —
-    /// the form <see cref="GetTools()"/> exposes as <c>okf_run_computation</c>.
+    /// The §10.5 attested-computation workflow, asynchronous and cancellable.
+    /// <c>okf_run_computation</c> binds the gated wrapper <see cref="RunComputationToolAsync"/>
+    /// instead; this public method, which a host calls directly, needs no
+    /// observation, but captures the sanctioned code and the pinned attester
+    /// the same way and invalidates the handle after a refusal the image may
+    /// be behind on, so that its next call starts from a fresh survey.
     ///
     /// This is the only tool here that hands control to host-plugged code
     /// (<c>IParameterBinder</c>/<c>IComputationExecutor</c>/<c>IAttester</c>),
@@ -1763,38 +1770,58 @@ public sealed class OkfBundleTools
     /// <summary>
     /// The gate of <c>okf_run_computation</c> (spec §5.4, points 1 and 2): the refusal text, or
     /// <see langword="null"/> when the session observed <paramref name="concept"/> at the version
-    /// this image holds and, for a file computation whose file resolves, that file too
-    /// (<paramref name="fileVersion"/> is then the version the read is pinned to). A concept
-    /// shown at another version refreshes the image: a changed contract or runtime is run only
-    /// after it is shown again. A file that does not resolve is left to the capture, which
-    /// refuses it as before.
+    /// this image holds — in full (<c>okf_read_concept</c>) <b>or</b> as code
+    /// (<c>okf_get_computation</c>), either at that version being enough — and, for a file
+    /// computation, that file too (<paramref name="fileVersion"/> is then the version the read
+    /// is pinned to). The file is decided from the <b>image's survey</b>, never from live I/O:
+    /// a guard that decides which code runs must not depend on a lookup that can fail
+    /// transiently. A concept shown only at another version refreshes the image: a changed
+    /// contract or runtime is run only after it is shown again.
+    /// <para>When the survey says the run cannot be captured at all — a computation file or an
+    /// attester that is not <see cref="ExecutableResourceState.Pinned"/>, no computation to run —
+    /// the gate answers <see langword="null"/> and leaves the refusal to
+    /// <see cref="AttestationOrchestrator.Capture"/>, whose text is the honest one: telling the
+    /// model to "read it first with okf_get_computation" is no use where that tool can never
+    /// record. Capture refuses every such state, so nothing runs.</para>
     /// </summary>
     private string? GuardObserved(Bundle bundle, Concept concept, out BundleObjectVersion? fileVersion)
     {
         fileVersion = null;
+        var computation = concept.Document.Computation();
+        var survey = bundle.ExecutableResources.TryGetValue(concept.Id, out var found) ? found : null;
+        var capturable = survey is { Attester: { State: ExecutableResourceState.Pinned, Key: not null, Version: not null } }
+            && computation.Source switch
+            {
+                ComputationSource.Inline => !string.IsNullOrEmpty(computation.InlineCode),
+                ComputationSource.File => !string.IsNullOrEmpty(computation.Path)
+                    && survey.Computation is { State: ExecutableResourceState.Pinned, Key: not null, Version: not null },
+                _ => false,
+            };
+        if (!capturable)
+        {
+            return null; // Capture refuses it, with the reason.
+        }
+
         var key = concept.Key ?? concept.Id.ToKey();
-        BundleObjectVersion? observed = _observations.TryGetFullConcept(key, out var full) ? full
-            : _observations.TryGetCode(key, out var code) ? code
-            : null;
-        if (observed is null)
+        var shownFull = _observations.TryGetFullConcept(key, out var full);
+        var shownCode = _observations.TryGetCode(key, out var code);
+        if (!shownFull && !shownCode)
         {
             return $"Error: '{concept.Id}' has not been shown to this session; read it first with okf_get_computation, then run it.";
         }
 
-        if (!bundle.ObjectVersions.TryGetValue(key, out var current) || current != observed.Value)
+        if (!bundle.ObjectVersions.TryGetValue(key, out var current)
+            || !((shownFull && full == current) || (shownCode && code == current)))
         {
             InvalidateBundle();
             return $"Error: '{concept.Id}' changed since it was shown to this session; read it again with okf_get_computation before running it.";
         }
 
-        var computation = concept.Document.Computation();
-        if (computation is { Source: ComputationSource.File, Path.Length: > 0 } file
-            && bundle.TryResolveResourceKey(concept, file.Path!, out var fileKey, out var status)
-            && status == ResourceResolutionStatus.Resolved)
+        if (computation.Source == ComputationSource.File)
         {
-            if (!_observations.TryGetCode(fileKey!, out var shownFile))
+            if (!_observations.TryGetFile(survey!.Computation.Key!, out var shownFile))
             {
-                return $"Error: the computation file '{OneLine(file.Path!)}' of '{concept.Id}' has not been shown to this session; read it first with okf_get_computation, then run it.";
+                return $"Error: the computation file '{OneLine(computation.Path!)}' of '{concept.Id}' has not been shown to this session; read it first with okf_get_computation, then run it.";
             }
 
             fileVersion = shownFile;

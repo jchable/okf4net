@@ -30,7 +30,28 @@ public class RunComputationObservationTests
         public string? CodeSeen;
     }
 
-    private static (InMemoryBundleProvider Storage, OkfBundleTools Tools, Runs Runs) ToolsOver(string concept, BundleRefreshPolicy? policy = null, IBundleProvider? wrapped = null)
+    /// <summary>A provider whose <c>Exists</c> can be made to answer wrongly or throw after the load: the transient failure of a HEAD that a guard must not depend on.</summary>
+    private sealed class FlakyExists(IBundleProvider inner) : IBundleProvider
+    {
+        public bool? Answer { get; set; }
+
+        public bool Throw { get; set; }
+
+        public string Id => inner.Id;
+        public string Location => inner.Location;
+        public BundleProviderCapabilities Capabilities => inner.Capabilities;
+        public BundleKeyConstraints NativeConstraints => inner.NativeConstraints;
+        public BundleVersion GetVersion(BundleLimits limits) => inner.GetVersion(limits);
+        public IEnumerable<BundleListing> Enumerate(BundleKey? prefix, BundleLimits limits) => inner.Enumerate(prefix, limits);
+        public BundleObject Read(BundleKey key, BundleObjectVersion? expected = null) => inner.Read(key, expected);
+        public BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition) => inner.Write(key, content, condition);
+        public void Delete(BundleKey key, BundleWriteCondition condition) => inner.Delete(key, condition);
+
+        public bool Exists(BundleKey key) =>
+            Throw ? throw new IOException("transient failure") : Answer ?? inner.Exists(key);
+    }
+
+    private static (InMemoryBundleProvider Storage, OkfBundleTools Tools, Runs Runs) ToolsOver(string concept, BundleRefreshPolicy? policy = null, Func<IBundleProvider, IBundleProvider>? wrap = null)
     {
         var storage = new InMemoryBundleProvider(canWrite: true).Add("c/rev.md", concept).Add("att.py", Attester).Add("q.sql", "SELECT 2\n");
         var runs = new Runs();
@@ -48,7 +69,7 @@ public class RunComputationObservationTests
             return ValueTask.FromResult(new AttestationVerdict(true, null));
         };
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
-        var handle = new BundleHandle(wrapped ?? storage, refreshPolicy: policy);
+        var handle = new BundleHandle(wrap is null ? storage : wrap(storage), refreshPolicy: policy);
         return (storage, new OkfBundleTools(handle, new AttestationOrchestrator(reg)), runs);
     }
 
@@ -99,6 +120,7 @@ public class RunComputationObservationTests
 
         Assert.Equal("Error: 'c/rev' changed since it was shown to this session; read it again with okf_get_computation before running it.", await Run(tools));
         Assert.Equal(0, runs.Stages);
+        Assert.True(tools.Handle.IsStale); // the refusal itself obliged the reload (the test's own Invalidate was acknowledged by the load of that run)
 
         Assert.Contains("year", tools.GetComputationTool("c/rev"), StringComparison.Ordinal); // the refreshed image
         var refused = await Run(tools); // the required parameter is missing: the run reached the orchestrator
@@ -147,6 +169,7 @@ public class RunComputationObservationTests
     public async Task An_observation_survives_a_refresh_of_the_image()
     {
         var (storage, tools, runs) = ToolsOver(Inline);
+        Assert.StartsWith("Error: 'c/rev' has not been shown", await Run(tools), StringComparison.Ordinal);
         tools.GetComputationTool("c/rev");
         storage.Add("notes/other.md", "---\ntype: Note\ntitle: O\ndescription: o.\n---\n\nO.\n");
         tools.Handle.Invalidate();
@@ -172,6 +195,134 @@ public class RunComputationObservationTests
 
         Assert.StartsWith("Error: 'c/rev' changed since it was shown", await Run(first), StringComparison.Ordinal);
         Assert.Contains("displayable: yes", await Run(second), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// An old full-concept observation does not hide a fresh code one (spec §5.4 point 1: either,
+    /// at the current version, is enough): after a refusal for a changed concept, obeying it
+    /// by reading it again with okf_get_computation lets the run through instead of refusing for ever.
+    /// </summary>
+    [Fact]
+    public async Task A_fresh_code_observation_recovers_from_a_stale_full_concept_observation()
+    {
+        var (storage, tools, runs) = ToolsOver(Inline);
+        tools.ReadConceptTool("c/rev"); // full, at v1
+        storage.Add("c/rev.md", Inline.Replace("SELECT 1", "SELECT 9", StringComparison.Ordinal));
+        tools.Handle.Invalidate();
+
+        Assert.StartsWith("Error: 'c/rev' changed since it was shown", await Run(tools), StringComparison.Ordinal);
+        Assert.Equal(0, runs.Stages);
+
+        Assert.Contains("SELECT 9", tools.GetComputationTool("c/rev"), StringComparison.Ordinal); // code, at v2
+        Assert.Contains("displayable: yes", await Run(tools), StringComparison.Ordinal);
+        Assert.Equal("SELECT 9", runs.CodeSeen!.Trim());
+
+        // The other way round: a code observation left behind does not hide a fresh full one.
+        storage.Add("c/rev.md", Inline.Replace("SELECT 1", "SELECT 8", StringComparison.Ordinal));
+        tools.Handle.Invalidate();
+        Assert.StartsWith("Error: 'c/rev' changed since it was shown", await Run(tools), StringComparison.Ordinal);
+        tools.ReadConceptTool("c/rev");
+        Assert.Contains("displayable: yes", await Run(tools), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The file requirement is decided from the image's survey, never from a live lookup: a
+    /// provider whose Exists answers wrongly or throws must not let a computation file the
+    /// session never saw run, and must not refuse one it saw.
+    /// </summary>
+    [Theory]
+    [InlineData("false")]
+    [InlineData("throw")]
+    public async Task A_failing_exists_lookup_never_lets_an_unseen_computation_file_run(string failure)
+    {
+        FlakyExists? flaky = null;
+        var (_, tools, runs) = ToolsOver(FromFile, wrap: storage => flaky = new FlakyExists(storage));
+        tools.ReadConceptTool("c/rev"); // the concept in full, but never the file
+        void Fail()
+        {
+            flaky!.Answer = failure == "false" ? false : null;
+            flaky.Throw = failure == "throw";
+        }
+
+        Fail();
+        var refused = await Run(tools);
+        Assert.Equal(0, runs.Stages);
+        Assert.DoesNotContain("displayable: yes", refused, StringComparison.Ordinal);
+        Assert.Null(runs.CodeSeen);
+
+        flaky!.Answer = null;
+        flaky.Throw = false;
+        Assert.Equal("Error: the computation file 'q.sql' of 'c/rev' has not been shown to this session; read it first with okf_get_computation, then run it.", await Run(tools));
+        Assert.Contains("SELECT 2", tools.GetComputationTool("c/rev"), StringComparison.Ordinal);
+
+        Fail(); // the file was shown: the lookup failing now refuses nothing
+        Assert.Contains("displayable: yes", await Run(tools), StringComparison.Ordinal);
+        Assert.Equal("SELECT 2\n", runs.CodeSeen);
+    }
+
+    /// <summary>
+    /// A file observation is a purpose of its own: showing the concept that happens to sit under a
+    /// computation file's key (code of another concept) does not show that file.
+    /// </summary>
+    [Fact]
+    public async Task A_code_observation_of_a_concept_is_not_the_observation_of_a_file_sharing_its_key()
+    {
+        var (storage, tools, runs) = ToolsOver(FromFile.Replace("computation: q.sql", "computation: a.md", StringComparison.Ordinal));
+        storage.Add("a.md", Inline);
+        tools.Handle.Invalidate();
+        tools.ReadConceptTool("c/rev");
+        Assert.Contains("SELECT 1", tools.GetComputationTool("a"), StringComparison.Ordinal); // a.md as a concept: its code, not the file c/rev runs
+
+        Assert.Equal("Error: the computation file 'a.md' of 'c/rev' has not been shown to this session; read it first with okf_get_computation, then run it.", await Run(tools));
+        Assert.Equal(0, runs.Stages);
+
+        tools.GetComputationTool("c/rev");
+        Assert.Contains("displayable: yes", await Run(tools), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Where the survey says nothing can be captured, the gate does not tell the model to read first
+    /// with a tool that could never record: the capture's honest refusal comes first.
+    /// </summary>
+    [Fact]
+    public async Task A_run_that_cannot_be_captured_is_refused_for_its_own_reason()
+    {
+        var (_, noAttester, noAttesterRuns) = ToolsOver(Inline.Replace("attester: { resource: att.py }\n", "", StringComparison.Ordinal));
+        Assert.Contains("no attester.resource is declared", await Run(noAttester), StringComparison.Ordinal);
+        Assert.False(noAttester.Handle.IsStale); // only a change of the concept alters it
+
+        var (_, urlFile, _) = ToolsOver(FromFile.Replace("computation: q.sql", "computation: https://example.org/q.sql", StringComparison.Ordinal));
+        var refused = await Run(urlFile);
+        Assert.Contains("computation file 'https://example.org/q.sql' could not be resolved (Url)", refused, StringComparison.Ordinal);
+        Assert.DoesNotContain("has not been shown", refused, StringComparison.Ordinal);
+
+        var (_, missing, missingRuns) = ToolsOver(FromFile.Replace("computation: q.sql", "computation: nothing.sql", StringComparison.Ordinal));
+        Assert.Contains("computation file 'nothing.sql' could not be resolved (Missing)", await Run(missing), StringComparison.Ordinal);
+        Assert.True(missing.Handle.IsStale);
+        Assert.Equal(0, noAttesterRuns.Stages + missingRuns.Stages);
+    }
+
+    /// <summary>
+    /// Open decision 4: the public method, which needs no observation, still obliges the reload after
+    /// a refused pin, so that a host on the Manual policy recovers without calling Refresh().
+    /// </summary>
+    [Fact]
+    public async Task The_public_method_obliges_a_reload_after_a_refused_pin()
+    {
+        var (storage, tools, runs) = ToolsOver(Inline, BundleRefreshPolicy.Manual);
+        Assert.Contains("displayable: yes", await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>()), StringComparison.Ordinal);
+        var loaded = tools.Handle.Current;
+
+        const string v2 = "def attest(**_):\n    return {}  # v2\n";
+        storage.Add("att.py", v2);
+
+        var refused = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>());
+        Assert.Contains("attester resource 'att.py' changed since the bundle was loaded", refused, StringComparison.Ordinal);
+        Assert.True(tools.Handle.IsStale);
+
+        Assert.Contains("displayable: yes", await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>()), StringComparison.Ordinal);
+        Assert.Equal(v2, runs.AttesterSeen);
+        Assert.NotSame(loaded, tools.Handle.Current);
     }
 
     /// <summary>
@@ -228,6 +379,14 @@ public class RunComputationObservationTests
             Assert.Contains(missingFirst ? "attester resource 'att.py' could not be resolved (Missing)" : "attester resource 'att.py' changed since the bundle was loaded", first, StringComparison.Ordinal);
             Assert.Equal(0, runs.Stages);
             Assert.True(handle.IsStale);
+        }
+        else
+        {
+            // OnAccess compares the (content-hashing) token at every access: the image is
+            // reloaded before the run, so there is nothing to refuse and no recovery to make.
+            // (This row pins that no spurious refusal appears; it does not exercise the gate.)
+            Assert.Contains("displayable: yes", first, StringComparison.Ordinal);
+            Assert.Equal(v2, runs.AttesterSeen);
         }
 
         var second = await Run(tools);
