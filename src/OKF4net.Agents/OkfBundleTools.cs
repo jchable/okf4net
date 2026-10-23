@@ -274,10 +274,10 @@ public sealed class OkfBundleTools
     }
 
     /// <summary>
-    /// A write tool's result, passed on: an <c>Error:</c> text drops the cached bundle. The
+    /// A write tool's result, passed on: an <c>Error:</c> text invalidates the handle's image. The
     /// writer's notification (which does that after a committed write) never runs for a write
     /// whose outcome is unknown — the content may have landed all the same — so a failed write
-    /// must not leave the cache serving what the file no longer holds. A refused write costs one
+    /// must not leave the handle serving what the file no longer holds. A refused write costs one
     /// reload at the next read.
     /// </summary>
     private string DropBundleOnError(string result)
@@ -516,7 +516,12 @@ public sealed class OkfBundleTools
             var indexKey = prefix is null ? BundleKey.Parse(IndexFilename) : prefix.Append(IndexFilename);
             try
             {
-                return bundle.ReadResourceText(indexKey);
+                // One leading U+FEFF is the file's byte-order mark, which the direct read
+                // used to drop; the strict reader keeps it as a character. Browse is the
+                // one producer of an index text, for the tool and for the context provider
+                // (its root block is Browse(null)).
+                var index = bundle.ReadResourceText(indexKey);
+                return index.Length > 0 && index[0] == (char)0xFEFF ? index[1..] : index;
             }
             catch (FileNotFoundException)
             {
@@ -1087,7 +1092,7 @@ public sealed class OkfBundleTools
 
     /// <summary>
     /// Summarizes bundle changes since a given ISO date (inclusive),
-    /// aggregated across every <c>log.md</c> in the bundle (<see cref="Bundle.LogFiles"/>).
+    /// aggregated across every <c>log.md</c> in the bundle (<see cref="Bundle.LogKeys"/>).
     /// Each log is parsed with <see cref="ChangeLog.Parse"/>, filtered to the
     /// <see cref="LogDay"/>s whose <see cref="LogDay.Date"/> is a valid ISO
     /// date (<see cref="ChangeLog.IsIsoDate"/>) greater than or equal to
@@ -1468,7 +1473,7 @@ public sealed class OkfBundleTools
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DecoderFallbackException)
         {
-            // `rel` is a path on disk, not text this process wrote: a POSIX
+            // `rel` is a key the storage listed, not text this process wrote: a POSIX
             // filename may hold a line terminator, and (as of the post-audit
             // re-review's Important 1) any of the other filesystems here
             // accepts a bidi control in a directory name too, with no
@@ -1683,11 +1688,23 @@ public sealed class OkfBundleTools
     /// </summary>
     private static bool PrefixExists(Bundle bundle, BundleKey prefix)
     {
+        // Strictly under the prefix: an object stored under the prefix's own key (a
+        // provider may list it) is not a directory, and the old Directory.Exists said so.
+        var under = prefix + "/";
+
+        // The image first, with no I/O: any concept, index or log the load saw under the
+        // prefix proves it. The read that follows still goes through the provider's guards
+        // (a prefix that has become a link is refused there, never listed); only a prefix
+        // the image knows nothing of costs a listing.
+        if (bundle.Concepts.Any(c => c.Key?.ToString().StartsWith(under, StringComparison.Ordinal) == true)
+            || bundle.IndexKeys.Any(k => k.ToString().StartsWith(under, StringComparison.Ordinal))
+            || bundle.LogKeys.Any(k => k.ToString().StartsWith(under, StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
         try
         {
-            // Strictly under the prefix: an object stored under the prefix's own key (a
-            // provider may list it) is not a directory, and the old Directory.Exists said so.
-            var under = prefix + "/";
             return bundle.Provider.Enumerate(prefix, bundle.Options.Limits).Any(l => l.RawName.StartsWith(under, StringComparison.Ordinal));
         }
         catch (Exception e) when (e is BundleProviderException or IOException or UnauthorizedAccessException)

@@ -114,6 +114,54 @@ and this project adheres to
 
 ### Changed
 
+- **`OkfBundleTools` serves its image from a `BundleHandle` and makes no
+  direct I/O** (#139, lot C; spec §5.2, §9). `new OkfBundleTools(handle,
+  orchestrator)` shares the handle's image with every consumer the host gives
+  the same handle to (an `OkfContextProvider` built over the tool set uses it);
+  `Handle` and `Location` are new; the root-based constructors build a handle
+  of their own (`Manual` refresh, as the cache was) and `BundleRoot` throws
+  `NotSupportedException` for a tool set over any other provider. What moved
+  onto the provider, and what changed with it: `okf_browse` answers through
+  the provider's listing and reads a directory's `index.md` through it as
+  strict UTF-8 — an empty directory is now `not found` (a prefix exists while
+  an object lies under it, spec §2, D2), an `index.md` that is not valid UTF-8
+  is an `Error:` where it was read with replacement characters, and one
+  reached through a symlink or junction is refused where it was read;
+  `okf_changes_since` reads every `log.md` through the provider (the skip
+  notes are unchanged); `okf_regenerate_indexes` regenerates through the
+  handle's provider and options under the `string` overload's contract (same
+  output, same skips and failures), so a confinement boundary the host gave
+  the provider applies to it; `okf_get_computation` resolves and reads the
+  computation file on keys (its `could not be read:` text now carries the
+  library's message, `I/O error reading 'references/q.sql' (IOException)`,
+  never a host path, and a file whose directory can no longer be listed is
+  `could not be resolved (Missing)`). The write tools are offered only when
+  the handle's provider can write (`provider.CanWrite && mode != ReadOnly`,
+  spec §3): over a read-only provider `GetTools` filters them out whatever the
+  mode, and a direct call throws `BundleReadOnlyException` (`okf_verify`,
+  which runs inside the tool's error channel, returns it as `Error: the
+  provider is read-only; …`). **A reload that fails after a successful load
+  keeps the previous image served** (spec §5.2): `okf_validate_bundle` and
+  the context provider used to answer `bundle unavailable` once the bundle
+  root vanished after a load; they now serve the last image, `Handle.IsStale`
+  is `true` and `Handle.LastLoadError` carries the failure (the raw cause,
+  path included, as its inner exception); the first load failing still
+  reports `bundle unavailable`. `OkfContextProviderOptions.OnInternalError`
+  still hears of an unreachable bundle: a first load that fails is reported
+  once per assembly, as before (the model reads `bundle unavailable`), and a
+  reload that fails after a load is now reported on every assembly while the
+  handle holds the failure, while the model reads the context of the image it
+  was served. What the callback receives is the handle's `BundleLoadException`
+  (its message names no host path, its inner exception is the raw cause)
+  rather than the raw `IOException`.
+  `okf_browse` also differs in what it resolves, on volumes that fold case or
+  accept `.` segments: a path is now exactly the key's spelling
+  (`Browse("Tables")` used to find `tables/` on NTFS and default macOS, and
+  an `Index.md` was taken for the directory's `index.md`: now not found, and
+  the generated listing), and a `.` segment (`Browse("./tables")`) used to
+  resolve and now names no directory. A directory's `index.md` that starts
+  with a UTF-8 byte-order mark is still returned without it (one is dropped);
+  a UTF-16 `index.md` that was decoded by its mark is now an `Error:`.
 - **`Load` reads the executable resources.** Every `computation` and
   `attester.resource` file of an Attested Computation concept is now read and
   hashed once per load (a file shared by several concepts is read once), which
@@ -160,39 +208,6 @@ and this project adheres to
   faulting the returned `ValueTask`; a refusal and a stage failure stay
   outcomes.
 
-- **`OkfBundleTools` serves its image from a `BundleHandle` and makes no
-  direct I/O** (#139, lot C; spec §5.2, §9). `new OkfBundleTools(handle,
-  orchestrator)` shares the handle's image with every consumer the host gives
-  the same handle to (an `OkfContextProvider` built over the tool set uses it);
-  `Handle` and `Location` are new; the root-based constructors build a handle
-  of their own (`Manual` refresh, as the cache was) and `BundleRoot` throws
-  `NotSupportedException` for a tool set over any other provider. What moved
-  onto the provider, and what changed with it: `okf_browse` answers through
-  the provider's listing and reads a directory's `index.md` through it as
-  strict UTF-8 — an empty directory is now `not found` (a prefix exists while
-  an object lies under it, spec §2, D2), an `index.md` that is not valid UTF-8
-  is an `Error:` where it was read with replacement characters, and one
-  reached through a symlink or junction is refused where it was read;
-  `okf_changes_since` reads every `log.md` through the provider (the skip
-  notes are unchanged); `okf_regenerate_indexes` regenerates through the
-  handle's provider and options under the `string` overload's contract (same
-  output, same skips and failures), so a confinement boundary the host gave
-  the provider applies to it; `okf_get_computation` resolves and reads the
-  computation file on keys (its `could not be read:` text now carries the
-  library's message, `I/O error reading 'references/q.sql' (IOException)`,
-  never a host path, and a file whose directory can no longer be listed is
-  `could not be resolved (Missing)`). The write tools are offered only when
-  the handle's provider can write (`provider.CanWrite && mode != ReadOnly`,
-  spec §3): over a read-only provider `GetTools` filters them out whatever the
-  mode, and a direct call throws `BundleReadOnlyException` (`okf_verify`,
-  which runs inside the tool's error channel, returns it as `Error: the
-  provider is read-only; …`). **A reload that fails after a successful load
-  keeps the previous image served** (spec §5.2): `okf_validate_bundle` and
-  the context provider used to answer `bundle unavailable` once the bundle
-  root vanished after a load; they now serve the last image, `Handle.IsStale`
-  is `true` and `Handle.LastLoadError` carries the failure (the raw cause,
-  path included, as its inner exception); the first load failing still
-  reports `bundle unavailable`.
 - **Finite default bounds on loading** (spec §6), out of reach of real
   bundles: a concept over 256 MiB is a `ParseErrors` entry instead of being
   loaded; a listing over 10 000 000 entries or holding a name deeper than

@@ -126,7 +126,7 @@ public class OkfBundleToolsHandleTests
     }
 
     [Fact]
-    public void An_empty_directory_is_not_a_prefix_and_an_index_through_a_link_is_refused()
+    public void An_empty_directory_is_not_a_prefix()
     {
         using var tmp = new TempDir();
         tmp.Write("tables/orders.md", string.Format(null, Note, "Orders", "o."));
@@ -134,6 +134,104 @@ public class OkfBundleToolsHandleTests
         var tools = new OkfBundleTools(tmp.Path);
 
         Assert.Equal("Error: path 'empty' not found in the bundle. Use okf_browse to list available directories.", tools.Browse("empty"));
+    }
+
+    [Fact]
+    public void A_prefix_the_image_knows_costs_no_listing_and_one_it_does_not_costs_one()
+    {
+        var storage = Storage();
+        using var handle = new BundleHandle(storage);
+        var tools = new OkfBundleTools(handle);
+        tools.GetBundle();
+        storage.ClearCalls();
+
+        // notes/ holds a concept of the image: proven without touching the storage.
+        Assert.StartsWith("# notes", tools.Browse("notes"), StringComparison.Ordinal);
+        Assert.DoesNotContain(storage.Calls, c => c.StartsWith("enumerate", StringComparison.Ordinal));
+
+        // assets/ holds only a non-.md object, which the image does not list: one listing.
+        Assert.StartsWith("# assets", tools.Browse("assets"), StringComparison.Ordinal);
+        Assert.Contains(storage.Calls, c => c.StartsWith("enumerate assets", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void An_index_the_provider_refuses_is_an_error_naming_the_key_and_not_the_generated_listing()
+    {
+        // The refusal is not "no such file": were it read as one (or swallowed), Browse
+        // would answer the generated listing and the guard's verdict would be lost.
+        var storage = Storage().FailReadOf("tables/index.md", new BundleAccessRefusedException(BundleKey.Parse("tables/index.md"), "/host/secret/storage/detail"));
+        using var handle = new BundleHandle(storage);
+        var tools = new OkfBundleTools(handle);
+
+        var rendered = tools.Browse("tables");
+
+        Assert.Equal("Error: access to 'tables/index.md' was refused by the provider", rendered);
+        Assert.DoesNotContain("secret", rendered, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public void An_index_that_is_a_symlink_to_a_file_outside_the_bundle_is_refused_not_read()
+    {
+        using var tmp = new TempDir();
+        using var outside = new TempDir();
+        tmp.Write("tables/orders.md", string.Format(null, Note, "Orders", "o."));
+        var secret = outside.Write("secret.txt", "# OUTSIDE-THE-BUNDLE\n");
+        Skip.IfNot(tmp.TryCreateFileSymlinkToExternalFile(Path.Combine("tables", "index.md"), secret), "no symlink privilege on this machine");
+
+        var rendered = new OkfBundleTools(tmp.Path).Browse("tables");
+
+        Assert.DoesNotContain("OUTSIDE-THE-BUNDLE", rendered, StringComparison.Ordinal);
+        Assert.StartsWith("Error: ", rendered, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_index_with_a_byte_order_mark_is_browsed_without_it_as_before()
+    {
+        // The direct File.ReadAllText dropped one leading BOM; the strict reader keeps it as
+        // U+FEFF, so Browse (the one producer of an index text, for the tool and for the
+        // context provider's root block) drops exactly one.
+        var bom = ((char)0xFEFF).ToString();
+        var storage = Storage().Add("tables/index.md", bom + "# tables\n").Add("index.md", bom + "# root\n");
+        using var handle = new BundleHandle(storage);
+        var tools = new OkfBundleTools(handle);
+
+        Assert.Equal("# tables\n", tools.Browse("tables"));
+        Assert.Equal("# root\n", tools.Browse());
+
+        storage.Add("tables/index.md", bom + bom + "# twice\n");
+        Assert.Equal(bom + "# twice\n", tools.Browse("tables"));
+    }
+
+    [Fact]
+    public void A_path_is_case_exact_and_a_dot_segment_names_no_directory()
+    {
+        // Browse("Tables") used to resolve to tables/ on a case-folding volume (NTFS, default
+        // macOS), and an Index.md was taken for the directory's index; a prefix is now exactly
+        // the key's spelling, and "." is a segment like any other, naming nothing.
+        using var tmp = new TempDir();
+        tmp.Write("tables/orders.md", string.Format(null, Note, "Orders", "o."));
+        tmp.Write("tables/index.md", "# tables\n");
+        tmp.Write("cased/a.md", string.Format(null, Note, "A", "a."));
+        tmp.Write("cased/Index.md", "# CASED\n");
+        var tools = new OkfBundleTools(tmp.Path);
+
+        Assert.Equal("# tables\n", tools.Browse("tables"));
+        Assert.Equal("Error: path 'Tables' not found in the bundle. Use okf_browse to list available directories.", tools.Browse("Tables"));
+        Assert.Equal("Error: path './tables' not found in the bundle. Use okf_browse to list available directories.", tools.Browse("./tables"));
+        Assert.DoesNotContain("CASED", tools.Browse("cased"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BundleRoot_keeps_the_callers_spelling_of_the_root()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", string.Format(null, Note, "A", "a."));
+        var trailing = tmp.Path + Path.DirectorySeparatorChar;
+        var relative = Path.GetRelativePath(Environment.CurrentDirectory, tmp.Path);
+
+        Assert.Equal(trailing, new OkfBundleTools(trailing).BundleRoot);
+        Assert.Equal(relative, new OkfBundleTools(relative).BundleRoot);
+        Assert.Equal(1, new OkfBundleTools(relative).GetBundle().Count);
     }
 
     [Fact]
