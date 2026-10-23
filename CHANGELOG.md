@@ -106,14 +106,27 @@ and this project adheres to
   the computation (inline, or the file through the provider) and the attester's
   source, both pinned to the version the image was loaded with (a version the
   caller observed for the file must equal it) — as an
-  `AttestationCapture` bound to its `ConceptId` (`RunCapturedAsync` refuses a
-  capture taken for another concept), or a non-displayable outcome with `ImageOutdated`
+  `AttestationCapture` bound to its `ConceptId` and to the `Bundle` image it was
+  taken on (`RunCapturedAsync` refuses a capture taken for another concept, or on
+  another image than the one it is run on: the code it holds was pinned to that
+  image, while the contract is read from the image given to the run), or a
+  non-displayable outcome with `ImageOutdated`
   saying whether the image may be behind. `RunCapturedAsync` runs §10.5 from
   step 3 on a capture; `RunAsync` captures and calls it, and reads nothing
   from the bundle afterwards.
 
 ### Changed
 
+- **`okf-mcp`'s bundle discovery reads a candidate's root `index.md` under a
+  16 MiB bound** (#139, lot C; spec §6, §9): `OkfBundleDiscovery.ReadRootIndexOrNull`
+  answers `null` — "no declared version", as for any unreadable index — for
+  a larger file without reading it (`OkfBundleDiscovery.MaxRootIndexBytes`),
+  where it read the whole file before; a file that grows while it is read is
+  bounded too, and an `index.md` that cannot report its length (a FIFO) is
+  unmarked. The 16 MiB is fixed, independent of `BundleLimits.MaxObjectBytes`
+  (256 MiB by default): a root index of that size is not a real one. A
+  directory whose `index.md` is over the bound is therefore not discovered as
+  a marked bundle; name it on the command line or in `OKF_BUNDLE_ROOT` instead.
 - **`okf_run_computation` runs only what the session was shown, pinned**
   (#139, lot C; spec §5.1, §5.4; D1). The exposed tool captures, once and
   before any runtime is called, everything the run executes: the concept
@@ -229,13 +242,6 @@ and this project adheres to
   resolve and now names no directory. A directory's `index.md` that starts
   with a UTF-8 byte-order mark is still returned without it (one is dropped);
   a UTF-16 `index.md` that was decoded by its mark is now an `Error:`.
-- **`Load` reads the executable resources.** Every `computation` and
-  `attester.resource` file of an Attested Computation concept is now read and
-  hashed once per load (a file shared by several concepts is read once), which
-  costs those reads at every load and every handle reload, and adds a failure
-  mode: a provider exception other than the per-resource states above fails
-  the load.
-
 - **A computation without a file attester is no longer run (D6; spec §5.1,
   §10; docs/spec-conformance S10.5-1).** `AttestationOrchestrator.RunAsync`
   refuses, before any runtime stage is called, a concept that declares no
@@ -274,17 +280,12 @@ and this project adheres to
   failures it turns into a refusal) are now thrown at the call instead of
   faulting the returned `ValueTask`; a refusal and a stage failure stay
   outcomes.
-
-- **`okf-mcp`'s bundle discovery reads a candidate's root `index.md` under a
-  16 MiB bound** (#139, lot C; spec §6, §9): `OkfBundleDiscovery.ReadRootIndexOrNull`
-  answers `null` — "no declared version", as for any unreadable index — for
-  a larger file without reading it (`OkfBundleDiscovery.MaxRootIndexBytes`),
-  where it read the whole file before; a file that grows while it is read is
-  bounded too, and an `index.md` that cannot report its length (a FIFO) is
-  unmarked. The 16 MiB is fixed, independent of `BundleLimits.MaxObjectBytes`
-  (256 MiB by default): a root index of that size is not a real one. A
-  directory whose `index.md` is over the bound is therefore not discovered as
-  a marked bundle; name it on the command line or in `OKF_BUNDLE_ROOT` instead.
+- **`Load` reads the executable resources.** Every `computation` and
+  `attester.resource` file of an Attested Computation concept is now read and
+  hashed once per load (a file shared by several concepts is read once), which
+  costs those reads at every load and every handle reload, and adds a failure
+  mode: a provider exception other than the per-resource states above fails
+  the load.
 - **Finite default bounds on loading** (spec §6), out of reach of real
   bundles: a concept over 256 MiB is a `ParseErrors` entry instead of being
   loaded; a listing over 10 000 000 entries or holding a name deeper than
@@ -424,16 +425,17 @@ and this project adheres to
   confinement boundary — and throws `BundleAccessRefusedException`, as `Read`
   does. A resource reached through a symlink or junction is therefore still
   reported as escaping the bundle (`FrontmatterPathUnsafe`), as before.
-- **Known, temporary gap:** `Bundle.TryResolveResource` and
-  `Bundle.ReadResourceText(string)` are kept unchanged in this lot and apply
-  neither the key policy, nor the rejected-key guard, nor the exact-case and
-  backslash rules above (they still resolve through the OS filesystem, so
-  `references\a.sql` resolves on Windows and a case-folded name on Windows and
-  macOS). The reader that still uses them (`OkfBundleTools`, behind
-  `okf_get_computation`) follows in a next lot, so until then `okf validate`
-  can flag a resource `Unsafe` or `Missing` — for a key-policy, case or
-  backslash reason — that `okf_get_computation` still shows. `AttestationOrchestrator`
-  no longer uses them.
+- **The path-based members are left unchanged, and no longer read anything in
+  this repository:** `Bundle.TryResolveResource` and
+  `Bundle.ReadResourceText(string)` apply neither the key policy, nor the
+  rejected-key guard, nor the exact-case and backslash rules above (they still
+  resolve through the OS filesystem, so `references\a.sql` resolves on Windows
+  and a case-folded name on Windows and macOS). They remain public utilities,
+  but no code in `src/` calls them any more: `AttestationOrchestrator` and
+  `okf_get_computation` (`OkfBundleTools`) resolve on keys
+  (`TryResolveResourceKey`, `ReadResourceText(BundleKey, …)`), as `okf validate`
+  does, so what the tool shows is what `okf validate` accepts. A host that
+  still calls the path-based members keeps their historical, looser behaviour.
 - **`FileSystemBundleProvider` is writable** (`Capabilities.CanWrite` is
   `true`; `provider.AsReadOnly()` gives a read-only view). `Write` commits each
   object atomically (issue #157): the bytes go to a temporary
