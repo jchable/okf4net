@@ -102,9 +102,13 @@ public class OkfValidateChangesTests
         Directory.Delete(tmp.Path, recursive: true);
         tools.InvalidateBundle();
 
+        // Since lot C (spec §5.2) the reload that fails keeps the previous image served,
+        // marked stale: the report is that image's, with the resources it can no longer
+        // find, and nothing is thrown.
         var result = tools.ValidateBundle();
 
-        Assert.Contains("Error", result);
+        Assert.Contains("concept(s)", result, StringComparison.Ordinal);
+        Assert.True(tools.Handle.IsStale);
     }
 
     // ----- ChangesSince ---------------------------------------------------

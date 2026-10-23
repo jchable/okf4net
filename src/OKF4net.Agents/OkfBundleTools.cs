@@ -55,14 +55,13 @@ public sealed class OkfBundleTools
     /// atomic read-modify-write append (<see cref="AppendToConceptAtomic"/>),
     /// plus the bundle's write lock, which this class takes through
     /// <see cref="BundleConceptWriter.EnterWriteLock"/> at each site rather
-    /// than caching a lock object. Constructed with <c>onWriteCommitted:
-    /// () =&gt; _bundle = null</c> so a successful write invalidates this
-    /// instance's cache atomically with the write, from inside the shared
-    /// lock.
+    /// than caching a lock object. Built over <see cref="_handle"/>, so a
+    /// successful write invalidates the handle's image atomically with the
+    /// write, from inside the shared lock.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The write lock guards <see cref="_bundle"/> and every write this class
+    /// The write lock guards the image (<see cref="_handle"/>) and every write this class
     /// performs to disk. Agent hosts may invoke tool methods concurrently from
     /// multiple threads, so the lazy cache in <see cref="GetBundle"/> and the
     /// invalidation in <see cref="InvalidateBundle"/> must not race; the same
@@ -99,8 +98,8 @@ public sealed class OkfBundleTools
     /// serialize writes across separate processes (e.g. two CLI invocations,
     /// or two server processes sharing a network path), and a C# lock cannot
     /// defend against a concurrent external actor mutating the bundle's files
-    /// directly on disk. The per-instance <see cref="_bundle"/> CACHE
-    /// deliberately stays instance-level: <see cref="AppendToConceptAtomic"/>
+    /// directly on disk. The image (<see cref="_handle"/>) is per handle, shared
+    /// only with the consumers the host gives the same handle to: <see cref="AppendToConceptAtomic"/>
     /// always re-reads the concept's on-disk body under this lock rather than
     /// trusting any cache, so two instances having independent caches does not
     /// affect write correctness, only how eagerly each one's read-only calls
@@ -109,7 +108,16 @@ public sealed class OkfBundleTools
     /// </remarks>
     private readonly BundleConceptWriter _writer;
 
-    private Bundle? _bundle;
+    /// <summary>
+    /// The image holder (spec §5.2): the one cache of this tool set, shared with any
+    /// <c>OkfContextProvider</c> built over it and with whatever else the host hands the same
+    /// handle to. Every read tool takes its <see cref="Bundle"/> from it through
+    /// <see cref="GetBundle"/>; every write invalidates it (<see cref="BundleConceptWriter(BundleHandle, Action?)"/>).
+    /// </summary>
+    private readonly BundleHandle _handle;
+
+    /// <summary>The root directory when the handle is over a <see cref="FileSystemBundleProvider"/> (the string the constructor was given, or that provider's <see cref="FileSystemBundleProvider.Root"/>); <see langword="null"/> otherwise.</summary>
+    private readonly string? _root;
 
     /// <summary>
     /// The §10.5 attestation orchestrator, if one has been wired for this tool
@@ -160,24 +168,54 @@ public sealed class OkfBundleTools
     /// an unknown outcome); reads still go through <paramref name="bundleRoot"/>.
     /// </summary>
     internal OkfBundleTools(string bundleRoot, AttestationOrchestrator? orchestrator, IBundleProvider? writeProvider)
+        : this(
+            Directory.Exists(bundleRoot)
+                ? new BundleHandle(new FileSystemBundleProvider(bundleRoot))
+                : throw new ArgumentException($"bundle root does not exist: {bundleRoot}", nameof(bundleRoot)),
+            orchestrator,
+            writeProvider)
     {
-        if (!Directory.Exists(bundleRoot))
-        {
-            throw new ArgumentException($"bundle root does not exist: {bundleRoot}", nameof(bundleRoot));
-        }
+        _root = bundleRoot;
+    }
 
-        BundleRoot = bundleRoot;
+    /// <summary>
+    /// Creates the tool set over <paramref name="handle"/> (spec §5.2, §9): its image is the
+    /// handle's, reloaded under the handle's refresh policy and after this tool set's own
+    /// writes, and shared with every other consumer the host gives the same handle to — an
+    /// <c>OkfContextProvider</c> built over this tool set uses it too. The write tools are
+    /// offered only when the handle's provider can write (<see cref="GetTools(OkfToolMode)"/>).
+    /// </summary>
+    /// <param name="handle">The handle over the bundle's provider.</param>
+    /// <param name="orchestrator">The attestation orchestrator to run §10.5 computations through, or <see langword="null"/> to leave attested-computation execution unwired.</param>
+    public OkfBundleTools(BundleHandle handle, AttestationOrchestrator? orchestrator = null)
+        : this(handle, orchestrator, writeProvider: null)
+    {
+    }
+
+    private OkfBundleTools(BundleHandle handle, AttestationOrchestrator? orchestrator, IBundleProvider? writeProvider)
+    {
+        ArgumentNullException.ThrowIfNull(handle);
+        _handle = handle;
+        _root = (handle.Provider as FileSystemBundleProvider)?.Root;
         _orchestrator = orchestrator;
 
         _writer = writeProvider is null
-            ? new BundleConceptWriter(bundleRoot, onWriteCommitted: () => _bundle = null)
-            : new BundleConceptWriter(writeProvider, onWriteCommitted: () => _bundle = null);
+            ? new BundleConceptWriter(handle)
+            : new BundleConceptWriter(writeProvider, onWriteCommitted: handle.Invalidate, handle.Options);
         _writer.AutoStampGenerated = true;
         _writer.UtcNow = () => UtcNow();
     }
 
-    /// <summary>The bundle's root directory, as passed to the constructor.</summary>
-    public string BundleRoot { get; }
+    /// <summary>The handle this tool set serves its image from (spec §5.2); give it to an <c>OkfContextProvider</c> or another tool set to share one image.</summary>
+    public BundleHandle Handle => _handle;
+
+    /// <summary>The bundle's displayable location (the root directory for the filesystem provider).</summary>
+    public string Location => _handle.Location;
+
+    /// <summary>The bundle's root directory: the string a root-based constructor was given, or the filesystem provider's root.</summary>
+    /// <exception cref="NotSupportedException">The tool set is over another provider: a path has no meaning for it (spec §9).</exception>
+    public string BundleRoot => _root
+        ?? throw new NotSupportedException("this tool set is not over a filesystem provider, so it has no bundle root");
 
     /// <summary>
     /// Wall-clock ceiling on one <see cref="RunComputationAsync"/> run, default
@@ -210,27 +248,28 @@ public sealed class OkfBundleTools
     private DateTimeOffset Now => new(DateTime.SpecifyKind(UtcNow(), DateTimeKind.Utc), TimeSpan.Zero);
 
     /// <summary>
-    /// Returns the loaded bundle, loading it from <see cref="BundleRoot"/> on
-    /// first access and caching it thereafter until <see cref="InvalidateBundle"/>
-    /// is called.
+    /// Returns the handle's image (<see cref="BundleHandle.Current"/>): loaded on first
+    /// access, reloaded under the handle's refresh policy and after <see cref="InvalidateBundle"/>.
+    /// Taken under the write lock, as before the handle, so that a read never interleaves
+    /// with this tool set's own writes.
     /// </summary>
     internal Bundle GetBundle()
     {
         using (_writer.EnterWriteLock())
         {
-            return _bundle ??= Bundle.Load(BundleRoot);
+            return _handle.Current;
         }
     }
 
     /// <summary>
-    /// Drops the cached bundle so the next <see cref="GetBundle"/> call
-    /// reloads it from disk. Call after any write to <see cref="BundleRoot"/>.
+    /// Obliges the handle to reload at the next <see cref="GetBundle"/>
+    /// (<see cref="BundleHandle.Invalidate"/>). Call after any write to the bundle.
     /// </summary>
     internal void InvalidateBundle()
     {
         using (_writer.EnterWriteLock())
         {
-            _bundle = null;
+            _handle.Invalidate();
         }
     }
 
@@ -341,6 +380,15 @@ public sealed class OkfBundleTools
             tools.Add(new TopLevelDuplicateParameterGuard(AIFunctionFactory.Create(RunComputationAsync, "okf_run_computation")));
         }
 
+        // The effective permission to write is `provider.CanWrite && mode != ReadOnly`
+        // (spec §3): over a provider that cannot write, the write tools are not offered,
+        // by the same filtering as ReadOnly; the library's BundleReadOnlyException stays
+        // the last rampart for a direct caller.
+        if (!_handle.Provider.Capabilities.CanWrite)
+        {
+            mode = OkfToolMode.ReadOnly;
+        }
+
         return mode switch
         {
             OkfToolMode.ReadOnly =>
@@ -444,14 +492,17 @@ public sealed class OkfBundleTools
             }
 
             var bundle = GetBundle();
-            var fullDir = segments.Length == 0 ? bundle.Root : Path.Combine([bundle.Root, .. segments]);
 
-            // Strict ancestor walk: Browse reads through fullDir, so a directory
-            // whose link status cannot be read is refused like a link (a guard
-            // fails closed -- see ReparsePoints.IsReparsePointOrUninspectable).
-            if (!ReparsePoints.IsWithinBundleRoot(bundle.Root, fullDir)
-                || !Directory.Exists(fullDir)
-                || ReparsePoints.HasReparsePointOrUninspectableAncestor(bundle.Root, fullDir))
+            // A directory is a prefix of the key space (spec §2): it exists while an object
+            // lies under it, and its key must pass the load's policy. The provider answers
+            // through its own guards -- a prefix through a junction, or one whose entry cannot
+            // be inspected, is refused, never listed -- so every path that does not resolve
+            // lands on the one not-found line below.
+            BundleKey? prefix = null;
+            if (segments.Length > 0
+                && (!BundleKey.TryParse(string.Join('/', segments), out prefix, out _)
+                    || !bundle.IsKeyAllowed(prefix, out _)
+                    || !PrefixExists(bundle, prefix)))
             {
                 // Folded, same reason as the invalid-path line above: this is
                 // the one Browse message an arbitrary string reaches, since
@@ -459,13 +510,18 @@ public sealed class OkfBundleTools
                 return $"Error: path '{OneLine(path ?? string.Empty)}' not found in the bundle. Use okf_browse to list available directories.";
             }
 
-            var indexPath = Path.Combine(fullDir, IndexFilename);
-            if (File.Exists(indexPath))
+            // The directory's index.md as it is now, read through the provider as strict
+            // UTF-8 (spec §9; a non-UTF-8 index is an Error: like any unreadable object);
+            // without one, a listing generated from the image.
+            var indexKey = prefix is null ? BundleKey.Parse(IndexFilename) : prefix.Append(IndexFilename);
+            try
             {
-                return File.ReadAllText(indexPath);
+                return bundle.ReadResourceText(indexKey);
             }
-
-            return BuildLevelListing(bundle, segments, relPath);
+            catch (FileNotFoundException)
+            {
+                return BuildLevelListing(bundle, segments, relPath);
+            }
         });
     }
 
@@ -936,20 +992,32 @@ public sealed class OkfBundleTools
     [Description("Regenerate every index.md in the bundle (progressive-disclosure listings). Run after adding or changing concepts.")]
     public string RegenerateIndexes()
     {
+        // The capability guard of every write entry point (spec §3), outside RunTool like
+        // the writer's own: a read-only provider is a host mistake, not a content error.
+        if (!_handle.Provider.Capabilities.CanWrite)
+        {
+            throw new BundleReadOnlyException(_handle.Provider.Id);
+        }
+
         return RunTool(() =>
         {
-            IReadOnlyList<string> written;
+            IReadOnlyList<BundleKey> written;
             using (_writer.EnterWriteLock())
             {
                 try
                 {
-                    written = IndexGenerator.RegenerateIndexes(BundleRoot);
+                    // The string overload's contract (what it skips silently, what it
+                    // throws), through the handle's provider and options rather than a
+                    // second provider built from the root: the output of this tool does
+                    // not change, and a confinement boundary the host gave the provider
+                    // still applies.
+                    written = IndexGenerator.Regenerate(_handle.Provider, IndexGenerator.DefaultSynthesize, _handle.Options, legacy: true).Written;
                 }
                 finally
                 {
                     // Also when the pass fails part-way (an unknown outcome among others): the
                     // indexes it did write are on disk and no notification reports them.
-                    _bundle = null;
+                    _handle.Invalidate();
                 }
             }
 
@@ -958,19 +1026,15 @@ public sealed class OkfBundleTools
                 return "No index.md files were regenerated (empty bundle?).";
             }
 
-            var relative = written
-                .Select(p => Path.GetRelativePath(BundleRoot, p).Replace('\\', '/'))
-                .ToList();
-
             var sb = new StringBuilder();
-            sb.Append("Regenerated ").Append(relative.Count).Append(" index file(s):").Append('\n');
-            foreach (var rel in relative)
+            sb.Append("Regenerated ").Append(written.Count).Append(" index file(s):").Append('\n');
+            foreach (var key in written)
             {
                 // Same sink shape as AppendLogFileChanges's "## {rel}" and
-                // "> Skipped {rel}": `rel` is a Path.GetRelativePath over a
-                // bundle path (just above), and a directory name may carry a
-                // line terminator. One index file, one "- " line.
-                sb.Append("- ").Append(OneLine(rel)).Append('\n');
+                // "> Skipped {rel}": a key is the '/'-joined path under the
+                // root, and a directory name may carry a line terminator. One
+                // index file, one "- " line.
+                sb.Append("- ").Append(OneLine(key.ToString())).Append('\n');
             }
 
             return sb.ToString();
@@ -1074,9 +1138,9 @@ public sealed class OkfBundleTools
             var changes = new StringBuilder();
             var any = false;
 
-            foreach (var logPath in bundle.LogFiles)
+            foreach (var logKey in bundle.LogKeys)
             {
-                any |= AppendLogFileChanges(bundle.Root, logPath, date, notes, changes);
+                any |= AppendLogFileChanges(bundle, logKey, date, notes, changes);
             }
 
             if (!any)
@@ -1151,7 +1215,7 @@ public sealed class OkfBundleTools
             switch (computation)
             {
                 case { Source: ComputationSource.File, Path.Length: > 0 } file:
-                    if (!bundle.TryResolveResource(concept, file.Path!, out var absolutePath, out var status)
+                    if (!bundle.TryResolveResourceKey(concept, file.Path!, out var fileKey, out var status)
                         || status != ResourceResolutionStatus.Resolved)
                     {
                         // OneLine on file.Path here and on the two lines below:
@@ -1165,12 +1229,12 @@ public sealed class OkfBundleTools
                     string text;
                     try
                     {
-                        // Guarded: TryResolveResource only establishes path
-                        // safety, not readability -- the file may still fail
-                        // to read (I/O error, or non-UTF-8 content), same
-                        // lesson as AttestationOrchestrator.RunAsync's own
-                        // file-computation step.
-                        text = bundle.ReadResourceText(absolutePath!);
+                        // Guarded: TryResolveResourceKey only establishes that
+                        // the key is allowed and exists, not readability -- the
+                        // object may still fail to read (I/O error, refused path,
+                        // non-UTF-8 content), same lesson as the orchestrator's
+                        // own file-computation capture.
+                        text = bundle.ReadResourceText(fileKey!);
                     }
                     catch (Exception e) when (e is IOException or UnauthorizedAccessException or DecoderFallbackException)
                     {
@@ -1391,14 +1455,16 @@ public sealed class OkfBundleTools
     /// matched — appends a <c>## {relative path}</c> section to <paramref name="changes"/>
     /// and returns <c>true</c>.
     /// </summary>
-    private static bool AppendLogFileChanges(string bundleRoot, string logPath, string date, StringBuilder notes, StringBuilder changes)
+    private static bool AppendLogFileChanges(Bundle bundle, BundleKey logKey, string date, StringBuilder notes, StringBuilder changes)
     {
-        var rel = Path.GetRelativePath(bundleRoot, logPath).Replace('\\', '/');
+        var rel = logKey.ToString();
 
         string text;
         try
         {
-            text = OkfEncodings.Strict.GetString(File.ReadAllBytes(logPath));
+            // Through the provider, strict UTF-8, bounded (spec §6, §9): a missing, refused,
+            // oversized or non-UTF-8 log is the skip note below, as the direct read's was.
+            text = bundle.ReadResourceText(logKey);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DecoderFallbackException)
         {
@@ -1606,6 +1672,28 @@ public sealed class OkfBundleTools
         }
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Whether an object lies under <paramref name="prefix"/> at the provider now (spec §2: a
+    /// prefix exists while an object lives under it; an empty directory does not, D2). A
+    /// listing the provider refuses — a junction or an entry that cannot be inspected on the
+    /// prefix's path, the confinement boundary — or that fails is "not found": nothing is
+    /// read through it, which is what the old strict ancestor walk refused too.
+    /// </summary>
+    private static bool PrefixExists(Bundle bundle, BundleKey prefix)
+    {
+        try
+        {
+            // Strictly under the prefix: an object stored under the prefix's own key (a
+            // provider may list it) is not a directory, and the old Directory.Exists said so.
+            var under = prefix + "/";
+            return bundle.Provider.Enumerate(prefix, bundle.Options.Limits).Any(l => l.RawName.StartsWith(under, StringComparison.Ordinal));
+        }
+        catch (Exception e) when (e is BundleProviderException or IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     /// <summary>

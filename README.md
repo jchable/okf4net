@@ -379,6 +379,37 @@ case (`Index.md` at the root or in a subdirectory): that file is never written
 through, where the write that preceded the provider overwrote it. The
 "Failures" remarks of `RegenerateIndexesWith` give the rest of what they throw.
 
+### One image per source: `BundleHandle`
+
+A `BundleHandle` (spec §5.2) holds one bundle's image: its provider, the
+`BundleLoadOptions` every load uses, a refresh policy and the current `Bundle`
+(`handle.Current`, loaded on first use). One load runs at a time — concurrent
+callers wait for it instead of starting their own — and the image is replaced
+as a whole, so a caller never sees two versions. A reload that fails (the
+storage unreachable, a bound exceeded) keeps the previous image served:
+`handle.IsStale` is `true` and `handle.LastLoadError` holds the failure (its
+inner exception is the raw cause, for the host's log only); only the very
+first load throws. `handle.Invalidate()` obliges the next use to reload
+whatever the policy; the obligation is acknowledged only by a successful load
+started after it. The refresh policies (`BundleRefreshPolicy`) are all lazy —
+no timer, no thread: `Manual` (the default: the host calls `handle.Refresh()`),
+`OnAccess` (the provider's version token is compared before every use),
+`Every(interval)` (compared at most once per interval, at an access) and
+`Notify` (a provider implementing `IBundleChangeNotifier` signals a possible
+change; the next access compares the token — a signal is a hint, never a
+reload by itself, and asking for `Notify` over a provider that cannot signal is
+an `ArgumentException`).
+
+Sharing is explicit: `new OkfBundleTools(handle)` and `new
+BundleConceptWriter(handle)` work on that image (the writer invalidates it
+after each committed write), an `OkfContextProvider` built over the tool set
+uses the tool set's handle, and two consumers built from a root string
+(`new OkfBundleTools(root)`) have two handles and two images. `tools.Handle`
+is the handle a tool set serves from; `tools.Location` the provider's
+displayable location. The image is replaced as a whole but its documents are
+not frozen (the `Frontmatter` of today is mutable): modifying a document of a
+shared image is not supported.
+
 ### As a CLI
 
 On Windows, install via [winget](https://github.com/microsoft/winget-pkgs):

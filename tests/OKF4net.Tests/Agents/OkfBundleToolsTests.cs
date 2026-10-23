@@ -384,7 +384,10 @@ public class OkfBundleToolsTests
         var result = tools.GetComputation("c/rev");
 
         Assert.DoesNotContain("OUTSIDE-THE-BUNDLE", result, StringComparison.Ordinal);
-        Assert.Contains("Error: computation file 'x/y/secret.sql' could not be read: ", result, StringComparison.Ordinal);
+        // Refused at the resolution since lot C (the provider cannot list "x" once the
+        // junction denies it, so the key is Missing) or at the read: either way nothing
+        // outside the bundle is shown.
+        Assert.Contains("Error: computation file 'x/y/secret.sql' could not be re", result, StringComparison.Ordinal);
     }
 
     [SkippableFact]
@@ -499,7 +502,9 @@ public class OkfBundleToolsTests
     {
         using var tmp = new TempDir();
         var dir = "sub" + LineSeparator + "FORGED";
-        Directory.CreateDirectory(Path.Combine(tmp.Path, dir));
+        // A concept inside: a directory is a prefix of the key space, which exists while an
+        // object lies under it (spec §2, D2) -- an empty one is "not found" since lot C.
+        tmp.Write(dir + "/a.md", "---\ntype: Note\ntitle: A\ndescription: a.\n---\n\nA.\n");
 
         var rendered = new OkfBundleTools(tmp.Path).Browse(dir);
 
