@@ -632,6 +632,7 @@ public class OkfComputationToolsTests
         };
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
         var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg));
+        tools.GetComputationTool("c/rev"); // shown first (spec §5.4): okf_run_computation runs only what the session was shown
         var function = tools.GetTools().Cast<AIFunction>().Single(f => f.Name == "okf_run_computation");
 
         // Parsed with the default options, which keep a duplicate: that is what a
@@ -737,6 +738,7 @@ public class OkfComputationToolsTests
         // Through GetTools(), not a hand-built AIFunctionFactory.Create: G4 wraps the
         // model-facing okf_run_computation in a top-level duplicate-parameter check, and
         // this test must cover that wrapper too, exactly as a real host calls it.
+        tools.GetComputationTool("c/rev"); // shown first (spec §5.4)
         var function = tools.GetTools().Cast<AIFunction>().Single(f => f.Name == "okf_run_computation");
 
         using var doc = JsonDocument.Parse("""{"conceptId": "c/rev", "parameterValues": {"n": 42}}""");

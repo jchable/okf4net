@@ -415,7 +415,7 @@ public sealed class OkfBundleTools
             // same two parameters while the host gains a way to stop a wedged run.
             // Wrapped so a duplicate top-level parameter name in the model's JSON is an
             // error rather than last-wins; the schema the model sees is unchanged.
-            tools.Add(new TopLevelDuplicateParameterGuard(AIFunctionFactory.Create(RunComputationAsync, "okf_run_computation")));
+            tools.Add(new TopLevelDuplicateParameterGuard(AIFunctionFactory.Create(RunComputationToolAsync, "okf_run_computation")));
         }
 
         // The effective permission to write is `provider.CanWrite && mode != ReadOnly`
@@ -1604,11 +1604,33 @@ public sealed class OkfBundleTools
     /// <param name="conceptId">The Attested Computation concept id to run.</param>
     /// <param name="parameterValues">The parameter values for this run (§10.3: values only, never computation code).</param>
     /// <param name="cancellationToken">The host's token; combined with <see cref="ComputationTimeout"/>.</param>
-    [Description("Run an Attested Computation (§10.5: bind, execute, attest, gate on staleness) via the configured attestation runtime, and return the resulting outcome (displayable, verdict, receipt, reasons).")]
-    public async Task<string> RunComputationAsync(
-        [Description("The concept id, e.g. 'computations/monthly-revenue'.")] string conceptId,
-        [Description("Parameter values for this run, by name (§10.3: values only, never computation code).")] IReadOnlyDictionary<string, object?> parameterValues,
-        CancellationToken cancellationToken = default)
+    [Description(RunComputationDescription)]
+    public Task<string> RunComputationAsync(
+        [Description(ComputationIdDescription)] string conceptId,
+        [Description(ParameterValuesDescription)] IReadOnlyDictionary<string, object?> parameterValues,
+        CancellationToken cancellationToken = default) =>
+        RunComputationCoreAsync(conceptId, parameterValues, gated: false, cancellationToken);
+
+    /// <summary>
+    /// <c>okf_run_computation</c>: <see cref="RunComputationAsync"/>, gated on what this session
+    /// observed (spec §5.4, D1). The concept must have been shown — in full by
+    /// <c>okf_read_concept</c>, or as code by <c>okf_get_computation</c> — at the version the
+    /// current image holds, so that the contract and the runtime run are the ones shown; a
+    /// file computation must also have been shown by <c>okf_get_computation</c>, and the file is
+    /// read pinned to that version. Otherwise the run is refused with no runtime called:
+    /// <c>Error: … has not been shown to this session; read it first with okf_get_computation</c>,
+    /// or <c>… changed since it was shown …</c>, in which case the image is refreshed. The
+    /// attester is pinned to the image whatever the path (<see cref="AttestationOrchestrator.Capture"/>).
+    /// Internal so that tests reach the exposed function without the AI plumbing.
+    /// </summary>
+    [Description(RunComputationDescription)]
+    internal Task<string> RunComputationToolAsync(
+        [Description(ComputationIdDescription)] string conceptId,
+        [Description(ParameterValuesDescription)] IReadOnlyDictionary<string, object?> parameterValues,
+        CancellationToken cancellationToken = default) =>
+        RunComputationCoreAsync(conceptId, parameterValues, gated: true, cancellationToken);
+
+    private async Task<string> RunComputationCoreAsync(string conceptId, IReadOnlyDictionary<string, object?> parameterValues, bool gated, CancellationToken cancellationToken)
     {
         if (GuardConceptId(conceptId) is { } err)
         {
@@ -1681,9 +1703,44 @@ public sealed class OkfBundleTools
 
         try
         {
-            var outcome = await _orchestrator
-                .RunAsync(GetBundle(), ConceptId.Parse(conceptId), parameterValues, cancellationToken: linked.Token)
-                .ConfigureAwait(false);
+            var bundle = GetBundle();
+            var id = ConceptId.Parse(conceptId);
+            AttestationOutcome outcome;
+            if (bundle.Get(id) is not { } concept || !concept.Document.Frontmatter.IsAttestedComputation)
+            {
+                // Not found, or not a computation: the orchestrator's own refusal, as before.
+                outcome = await _orchestrator.RunAsync(bundle, id, parameterValues, cancellationToken: linked.Token).ConfigureAwait(false);
+            }
+            else
+            {
+                BundleObjectVersion? fileVersion = null;
+                if (gated && GuardObserved(bundle, concept, out fileVersion) is { } refused)
+                {
+                    return refused;
+                }
+
+                // Captured once, before any runtime is called (spec §5.4): the computation
+                // (pinned to the file version the session observed, when gated) and the
+                // attester at the version the image was loaded with. A refusal the image may
+                // be behind on invalidates it, so that the next attempt starts from a fresh
+                // survey (spec §5.1) -- whatever the handle's policy, and for a direct caller
+                // of RunComputationAsync too.
+                var captured = AttestationOrchestrator.Capture(bundle, concept, fileVersion);
+                if (captured.Capture is null)
+                {
+                    if (captured.ImageOutdated)
+                    {
+                        InvalidateBundle();
+                    }
+
+                    return FormatOutcome(captured.Failure!);
+                }
+
+                outcome = await _orchestrator
+                    .RunCapturedAsync(bundle, id, parameterValues, captured.Capture, cancellationToken: linked.Token)
+                    .ConfigureAwait(false);
+            }
+
             return FormatOutcome(outcome);
         }
         // Ours, not the caller's: the token fired because ComputationTimeout
@@ -1701,6 +1758,49 @@ public sealed class OkfBundleTools
         {
             return $"Error: {OneLine(ex.Message)}";
         }
+    }
+
+    /// <summary>
+    /// The gate of <c>okf_run_computation</c> (spec §5.4, points 1 and 2): the refusal text, or
+    /// <see langword="null"/> when the session observed <paramref name="concept"/> at the version
+    /// this image holds and, for a file computation whose file resolves, that file too
+    /// (<paramref name="fileVersion"/> is then the version the read is pinned to). A concept
+    /// shown at another version refreshes the image: a changed contract or runtime is run only
+    /// after it is shown again. A file that does not resolve is left to the capture, which
+    /// refuses it as before.
+    /// </summary>
+    private string? GuardObserved(Bundle bundle, Concept concept, out BundleObjectVersion? fileVersion)
+    {
+        fileVersion = null;
+        var key = concept.Key ?? concept.Id.ToKey();
+        BundleObjectVersion? observed = _observations.TryGetFullConcept(key, out var full) ? full
+            : _observations.TryGetCode(key, out var code) ? code
+            : null;
+        if (observed is null)
+        {
+            return $"Error: '{concept.Id}' has not been shown to this session; read it first with okf_get_computation, then run it.";
+        }
+
+        if (!bundle.ObjectVersions.TryGetValue(key, out var current) || current != observed.Value)
+        {
+            InvalidateBundle();
+            return $"Error: '{concept.Id}' changed since it was shown to this session; read it again with okf_get_computation before running it.";
+        }
+
+        var computation = concept.Document.Computation();
+        if (computation is { Source: ComputationSource.File, Path.Length: > 0 } file
+            && bundle.TryResolveResourceKey(concept, file.Path!, out var fileKey, out var status)
+            && status == ResourceResolutionStatus.Resolved)
+        {
+            if (!_observations.TryGetCode(fileKey!, out var shownFile))
+            {
+                return $"Error: the computation file '{OneLine(file.Path!)}' of '{concept.Id}' has not been shown to this session; read it first with okf_get_computation, then run it.";
+            }
+
+            fileVersion = shownFile;
+        }
+
+        return null;
     }
 
     /// <summary>

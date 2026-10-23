@@ -114,6 +114,30 @@ and this project adheres to
 
 ### Changed
 
+- **`okf_run_computation` runs only what the session was shown, pinned**
+  (#139, lot C; spec §5.1, §5.4; D1). The exposed tool captures, once and
+  before any runtime is called, everything the run executes: the concept
+  must have been shown — in full by `okf_read_concept`, or as code by
+  `okf_get_computation` — at the version the current image holds (a changed
+  contract or runtime is refused: `Error: 'x' changed since it was shown to
+  this session; read it again with okf_get_computation before running it.`,
+  and the image is refreshed); a file computation must also have been shown
+  by `okf_get_computation`, and the file is read pinned to that version (a
+  file changed since is refused at the read: `computation file 'q.sql'
+  changed since it was shown; read it again …`); the attester is read pinned
+  to the version the image was loaded with. A computation never shown is
+  refused with `Error: 'x' has not been shown to this session; read it first
+  with okf_get_computation, then run it.` and no stage runs; a context
+  injection does not count (D5). **Recovery after a refusal** (spec §5.1): a
+  refusal for a changed version or a negative resource state (`Missing`,
+  `Unreadable`, `TooLarge`, `Unsafe`) obliges the handle to reload, so the
+  next attempt — with no host `Refresh()`, under every policy — runs on the
+  new state; an undeclared or URL attester does not (only a change of the
+  concept can alter it). The public `RunComputationAsync` a host calls
+  needs no observation and is otherwise unchanged (it captures the same way,
+  with the attester pinned, and reloads after such a refusal too); the
+  session's observations survive every refresh. The tool's name, description
+  and schema are unchanged.
 - **`okf_write_concept` writes only what the session has read** (#139,
   lot C; spec §4, §5.4; decisions D1, D5). Each `OkfBundleTools` keeps an
   observation registry of what its session was shown and to what end:
