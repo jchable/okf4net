@@ -726,7 +726,7 @@ public sealed class OkfContextProvider : AIContextProvider
     /// <para>
     /// Never throws: any failure -- I/O, a validation/lock/reparse-point
     /// rejection surfaced as the tool's own <c>"Error: ..."</c> text, or a
-    /// bundle that fails to (re)load -- is recorded in the
+    /// bundle whose first load fails -- is recorded in the
     /// <see langword="internal"/> <see cref="LastMemoryError"/> (reset to
     /// <see langword="null"/> at the start of every call) instead of
     /// propagating or being reported to the invocation pipeline.

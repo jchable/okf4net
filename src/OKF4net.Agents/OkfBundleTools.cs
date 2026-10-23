@@ -446,8 +446,9 @@ public sealed class OkfBundleTools
     /// Reads one concept: its frontmatter, body, outgoing links, and
     /// backlinks, rendered as agent-friendly markdown. Never throws for
     /// expected errors (a null/blank, malformed, or unknown concept id, or a
-    /// bundle that fails to (re)load) — those are reported as a plain-text
-    /// message instead.
+    /// bundle whose first load fails) — those are reported as a plain-text
+    /// message instead. A reload that fails keeps the previous image served
+    /// (<see cref="BundleHandle.IsStale"/>, <see cref="BundleHandle.LastLoadError"/>).
     /// </summary>
     /// <param name="conceptId">The concept id, e.g. <c>tables/orders</c>.</param>
     [Description(ReadConceptDescription)]
@@ -608,8 +609,8 @@ public sealed class OkfBundleTools
     /// disclosure): returns the raw content of the requested directory's
     /// index if one exists, otherwise a generated listing of the concepts
     /// and subdirectories at that level. Never throws for expected errors
-    /// (an invalid, traversing, or out-of-bundle path, or a bundle that
-    /// fails to (re)load) — those are reported as a plain-text message
+    /// (an invalid, traversing, or out-of-bundle path, or a bundle whose
+    /// first load fails) — those are reported as a plain-text message
     /// instead.
     /// </summary>
     /// <param name="path">Optional directory path within the bundle, e.g. <c>tables</c>. Omit to list the bundle root.</param>
@@ -678,7 +679,7 @@ public sealed class OkfBundleTools
     /// Inspects the cross-link graph: bundle-wide stats, or (with a concept
     /// id) that concept's outgoing links, backlinks, and broken links.
     /// Never throws for expected errors (an unknown concept id, or a bundle
-    /// that fails to (re)load) — reported as a plain-text message instead.
+    /// whose first load fails) — reported as a plain-text message instead.
     /// </summary>
     /// <param name="conceptId">Optional concept id to focus on.</param>
     [Description("Inspect the cross-link graph. With a concept id: its outgoing links, backlinks and broken links. Without: bundle-wide stats.")]
@@ -710,8 +711,8 @@ public sealed class OkfBundleTools
     /// <summary>
     /// Full-text search across concept titles, descriptions, tags and
     /// bodies. Never throws for expected errors (a null/blank query, a
-    /// query or tag containing a null character, or a bundle that fails to
-    /// (re)load) — those are reported as a plain-text message instead.
+    /// query or tag containing a null character, or a bundle whose first
+    /// load fails) — those are reported as a plain-text message instead.
     ///
     /// The query is split into terms on whitespace; each term is matched as
     /// an <see cref="StringComparison.OrdinalIgnoreCase"/> substring. A
@@ -1247,7 +1248,7 @@ public sealed class OkfBundleTools
     /// per <see cref="Diagnostic"/> (via its own <see cref="Diagnostic.ToString"/>),
     /// then a summary line with the concept/error/warning/info counts and a
     /// conformant ✓/✗ verdict. Never throws for expected errors (a bundle
-    /// that fails to (re)load) — reported as a plain-text message instead.
+    /// whose first load fails) — reported as a plain-text message instead.
     /// </summary>
     [Description("Validate the bundle against OKF v0.2 conformance (§11). Returns the diagnostics report.")]
     public string ValidateBundle()
@@ -1301,8 +1302,8 @@ public sealed class OkfBundleTools
     /// than aborting the whole report (mirroring <see cref="BundleValidator"/>'s
     /// permissive handling of reserved files); that note is preserved even
     /// when no other log contributes matching days. Never throws for
-    /// expected errors (a null/blank/invalid date, or a bundle that fails to
-    /// (re)load) — those are reported as a plain-text message instead.
+    /// expected errors (a null/blank/invalid date, or a bundle whose first
+    /// load fails) — those are reported as a plain-text message instead.
     /// </summary>
     /// <param name="sinceDate">ISO date (<c>yyyy-MM-dd</c>), inclusive.</param>
     [Description("Summarize bundle changes since a given ISO date, aggregated from every log.md in the bundle.")]
@@ -1362,13 +1363,14 @@ public sealed class OkfBundleTools
     /// <summary>
     /// Reads one §10 Attested Computation's contract and sanctioned
     /// computation source (§10.3: an inline <c># Computation</c> fence, or the
-    /// text of a file resolved through <see cref="Bundle.TryResolveResource"/>),
+    /// text of a file resolved through <see cref="Bundle.TryResolveResourceKey"/>
+    /// and read with <see cref="Bundle.ReadResourceText(BundleKey)"/>),
     /// rendered as agent-friendly markdown. Always available — it is
     /// read-only and needs no attestation runtime (unlike
     /// <see cref="RunComputation"/>). Never throws for expected errors (a
     /// null/blank/malformed/unknown concept id, a concept that is not an
     /// Attested Computation, an unresolved or unreadable computation file, or
-    /// a bundle that fails to (re)load) — those are reported as a plain-text
+    /// a bundle whose first load fails) — those are reported as a plain-text
     /// message instead.
     /// </summary>
     /// <param name="conceptId">The concept id, e.g. <c>computations/monthly-revenue</c>.</param>
@@ -2650,8 +2652,8 @@ public sealed class OkfBundleTools
 
     /// <summary>
     /// Runs a tool method body, converting any exception that a well-formed
-    /// but unlucky input could still trigger — a bundle that fails to
-    /// (re)load (<see cref="OkfException"/>, e.g. <see cref="BundleLoadException"/>
+    /// but unlucky input could still trigger — a bundle whose first load
+    /// fails (<see cref="OkfException"/>, e.g. <see cref="BundleLoadException"/>
     /// for I/O failures, a missing root, or non-UTF-8 content), a rejected
     /// argument surfaced late by a BCL API (<see cref="ArgumentException"/>),
     /// a filesystem read failure (<see cref="IOException"/>,

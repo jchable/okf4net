@@ -252,7 +252,7 @@ public sealed class AttestationOrchestrator
             return Refused($"attester resource '{attester.RawPath}' could not be read: {e.GetType().Name}", imageOutdated: true);
         }
 
-        return new AttestationCaptureResult(new AttestationCapture(concept.Id, resolved, attesterSourceText), null, false);
+        return new AttestationCaptureResult(new AttestationCapture(concept.Id, bundle, resolved, attesterSourceText), null, false);
     }
 
     private static AttestationCaptureResult Refused(string reason, bool imageOutdated) => new(null, Fail(reason), imageOutdated);
@@ -289,6 +289,14 @@ public sealed class AttestationOrchestrator
         if (!capture.ConceptId.Equals(conceptId))
         {
             return Fail($"the capture was taken for concept '{capture.ConceptId}', not '{conceptId}', and is not run");
+        }
+
+        // One capture, one image: the code it holds was read at the versions that image pinned,
+        // while the contract (runtime, parameters, policy) is read below from the image given to
+        // this run. On another image (a reload) the two would not describe the same concept.
+        if (!ReferenceEquals(bundle, capture.Image))
+        {
+            return Fail($"the capture of concept '{conceptId}' was taken on another image of the bundle than the one it is run on, and is not run");
         }
 
         var concept = bundle.Get(conceptId);
