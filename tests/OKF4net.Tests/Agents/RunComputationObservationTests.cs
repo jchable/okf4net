@@ -442,4 +442,24 @@ public class RunComputationObservationTests
         Assert.False(handle.IsStale);
         Assert.Equal(1, tools.Observations.Count);
     }
+
+    /// <summary>
+    /// What a model reaches: <c>GetTools()</c> binds <c>okf_run_computation</c> to the gated wrapper, not to the
+    /// public ungated method (which authorises nothing and needs no observation). Pinned by the bound method's
+    /// name and by invoking the exposed function on a computation the session never saw: refused, no stage called.
+    /// </summary>
+    [Fact]
+    public async Task The_exposed_run_function_is_the_gated_wrapper()
+    {
+        var (_, tools, runs) = ToolsOver(Inline);
+        var function = tools.GetTools().Cast<AIFunction>().Single(f => f.Name == "okf_run_computation");
+
+        Assert.Equal(nameof(OkfBundleTools.RunComputationToolAsync), function.UnderlyingMethod!.Name);
+
+        var arguments = new AIFunctionArguments(new Dictionary<string, object?> { ["conceptId"] = "c/rev", ["parameterValues"] = new Dictionary<string, object?>() });
+        var refused = await function.InvokeAsync(arguments);
+
+        Assert.Contains("Error: 'c/rev' has not been shown to this session", refused?.ToString(), StringComparison.Ordinal);
+        Assert.Equal(0, runs.Stages);
+    }
 }

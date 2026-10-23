@@ -1420,6 +1420,31 @@ public class AttestationOrchestratorTests
         Assert.Contains("the capture was taken for concept 'c/rev', not 'c/other'", Assert.Single(outcome.Reasons), StringComparison.Ordinal);
     }
 
+    /// <summary>A capture belongs to the image it was taken on: run on another image of the same bundle (a reload) it is refused and no stage is called.</summary>
+    [Fact]
+    public async Task A_capture_taken_on_another_image_is_not_run()
+    {
+        var imageA = Bundle.Load(new Providers.InMemoryBundleProvider().Add("c/rev.md", AttestedConcept(null, "att.py")).Add("att.py", PinnedAttester));
+        var imageB = Bundle.Load(new Providers.InMemoryBundleProvider().Add("c/rev.md", AttestedConcept(null, "att.py")).Add("att.py", PinnedAttester));
+        var captured = AttestationOrchestrator.Capture(imageA, imageA.Get(ConceptId.Parse("c/rev"))!);
+        Assert.NotNull(captured.Capture);
+        Assert.Same(imageA, captured.Capture!.Image);
+
+        var stages = 0;
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
+        runtime.BindFunc = (_, computation, values, _) =>
+        {
+            stages++;
+            return ValueTask.FromResult(new BoundComputation("bigquery", computation.InlineCode, null, values));
+        };
+
+        var outcome = await OrchestratorWith(runtime).RunCapturedAsync(imageB, ConceptId.Parse("c/rev"), new Dictionary<string, object?>(), captured.Capture);
+
+        Assert.False(outcome.Displayable);
+        Assert.Equal(0, stages);
+        Assert.Contains("was taken on another image of the bundle", Assert.Single(outcome.Reasons), StringComparison.Ordinal);
+    }
+
     /// <summary><see cref="AttestationOrchestrator.RunAsync"/> is not <c>async</c>: a null bundle throws at the call instead of faulting the returned task.</summary>
     [Fact]
     public void RunAsync_throws_synchronously_for_a_null_bundle()
