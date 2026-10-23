@@ -326,6 +326,52 @@ public class RunComputationObservationTests
     }
 
     /// <summary>
+    /// Liveness under Manual: the file is surveyed Pinned, then removed after the load, and the session never
+    /// showed it. okf_get_computation, which fails to read it, obliges the reload, so the run's next attempt
+    /// carries the capture's own refusal instead of telling the model again to read it first.
+    /// </summary>
+    [Fact]
+    public async Task A_file_that_disappears_after_the_load_does_not_leave_the_model_looping_under_Manual()
+    {
+        var (storage, tools, runs) = ToolsOver(FromFile, BundleRefreshPolicy.Manual);
+        tools.ReadConceptTool("c/rev"); // the concept in full, never the file
+        storage.Delete(BundleKey.Parse("q.sql"), BundleWriteCondition.None);
+
+        Assert.StartsWith("Error: the computation file 'q.sql' of 'c/rev' has not been shown", await Run(tools), StringComparison.Ordinal);
+
+        Assert.Contains("could not be resolved (Missing)", tools.GetComputationTool("c/rev"), StringComparison.Ordinal);
+        Assert.True(tools.Handle.IsStale);
+
+        var refused = await Run(tools);
+        Assert.Contains("computation file 'q.sql' could not be resolved (Missing)", refused, StringComparison.Ordinal);
+        Assert.DoesNotContain("has not been shown", refused, StringComparison.Ordinal);
+        Assert.Equal(0, runs.Stages);
+    }
+
+    /// <summary>
+    /// Defence in depth: the gate defers a run its predicate judges not capturable to Capture's refusal. If Capture
+    /// accepts it (the predicate and Capture drifted apart), nothing observed covers what would run: the run is
+    /// refused. The seam makes the predicate say "not capturable" for a computation that is in fact runnable.
+    /// </summary>
+    [Fact]
+    public async Task A_run_the_gate_deferred_and_the_capture_accepted_is_refused()
+    {
+        var (_, tools, runs) = ToolsOver(Inline);
+        tools.GateCapturable = (_, _) => false;
+
+        var refused = await Run(tools); // never shown: the gate would have refused, had it judged the run capturable
+        Assert.Equal("Error: 'c/rev' was not gated by this session's observations (a defect in the run gate); it is not run.", refused);
+        Assert.Equal(0, runs.Stages);
+
+        tools.GetComputationTool("c/rev"); // shown, too: still refused, the gate's judgement is what failed
+        Assert.StartsWith("Error: 'c/rev' was not gated", await Run(tools), StringComparison.Ordinal);
+        Assert.Equal(0, runs.Stages);
+
+        tools.GateCapturable = (_, _) => true; // a predicate that agrees with Capture: the observed run goes through
+        Assert.Contains("displayable: yes", await Run(tools), StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// Recovery after a refused pin (spec §5.1, §11), under each policy: the attester changes
     /// after the load; the first attempt is refused (unless the policy itself reloads, as
     /// OnAccess does on the in-memory token, which hashes content); the next attempt, with no

@@ -1373,19 +1373,32 @@ public sealed class OkfBundleTools
     /// </summary>
     /// <param name="conceptId">The concept id, e.g. <c>computations/monthly-revenue</c>.</param>
     [Description(GetComputationDescription)]
-    public string GetComputation([Description(ComputationIdDescription)] string conceptId) => GetComputationCore(conceptId, out _, out _, out _, out _);
+    public string GetComputation([Description(ComputationIdDescription)] string conceptId) => GetComputationCore(conceptId, out _, out _, out _, out _, out _);
 
     /// <summary>
     /// <c>okf_get_computation</c>: <see cref="GetComputation"/>, then the code observation
-    /// (spec §5.4) — the concept (contract and code) at its version and, for a file
-    /// computation, the file at its version — recorded only when the rendering showed the
-    /// code: a file that could not be resolved or read records nothing. Never by the public
-    /// method (D5). Internal so that tests reach the exposed function without the AI plumbing.
+    /// (spec §5.4) — the concept (contract and code) at its version — and, for a file
+    /// computation, a separate file observation of the file at the version read — recorded only
+    /// when the rendering showed the code. A file that could not be resolved or read (a URL
+    /// excepted) records nothing and invalidates the handle: the image may be behind, and the
+    /// reload lets the run's capture name the state instead of telling the model for ever to
+    /// read first. Never by the public method (D5). Internal so that tests reach the exposed
+    /// function without the AI plumbing.
     /// </summary>
     [Description(GetComputationDescription)]
     internal string GetComputationTool([Description(ComputationIdDescription)] string conceptId)
     {
-        var result = GetComputationCore(conceptId, out var conceptKey, out var conceptVersion, out var fileKey, out var fileVersion);
+        var result = GetComputationCore(conceptId, out var conceptKey, out var conceptVersion, out var fileKey, out var fileVersion, out var fileFailed);
+        if (fileFailed)
+        {
+            // The image says the file is there (or does not say), the provider now says it is not
+            // or cannot be read: the image may be behind (spec §5.1). Nothing is recorded, and the
+            // handle must reload, or a Manual host would see the model told to "read it first" with
+            // a tool that cannot show it, for ever; after the reload the capture's own refusal
+            // names the state.
+            InvalidateBundle();
+        }
+
         if (conceptKey is not null && conceptVersion is { } shown)
         {
             _observations.RecordCode(conceptKey, shown);
@@ -1403,8 +1416,9 @@ public sealed class OkfBundleTools
     /// code: the concept's key and version, and the computation file's when the code came
     /// from one; all <see langword="null"/> otherwise.
     /// </summary>
-    private string GetComputationCore(string conceptId, out BundleKey? conceptKey, out BundleObjectVersion? conceptVersion, out BundleKey? fileKey, out BundleObjectVersion? fileVersion)
+    private string GetComputationCore(string conceptId, out BundleKey? conceptKey, out BundleObjectVersion? conceptVersion, out BundleKey? fileKey, out BundleObjectVersion? fileVersion, out bool fileFailed)
     {
+        fileFailed = false;
         conceptKey = null;
         conceptVersion = null;
         fileKey = null;
@@ -1418,6 +1432,7 @@ public sealed class OkfBundleTools
         BundleObjectVersion? shownConceptVersion = null;
         BundleKey? shownFile = null;
         BundleObjectVersion? shownFileVersion = null;
+        var failedFile = false;
         var result = RunTool(() =>
         {
             var bundle = GetBundle();
@@ -1460,6 +1475,7 @@ public sealed class OkfBundleTools
                         // it is the frontmatter `computation` field, so a block
                         // scalar can put a line break in the middle of an
                         // "Error: "/"File: " line. `status` is an enum.
+                        failedFile = status != ResourceResolutionStatus.Url; // a URL is never read: no reload can change that
                         sb.Append("Error: computation file '").Append(OneLine(file.Path!)).Append("' could not be resolved (").Append(status).Append(").\n");
                         break;
                     }
@@ -1477,6 +1493,7 @@ public sealed class OkfBundleTools
                     }
                     catch (Exception e) when (e is IOException or UnauthorizedAccessException or DecoderFallbackException)
                     {
+                        failedFile = true;
                         sb.Append("Error: computation file '").Append(OneLine(file.Path!)).Append("' could not be read: ").Append(OneLine(e.Message)).Append('\n');
                         break;
                     }
@@ -1515,6 +1532,7 @@ public sealed class OkfBundleTools
         conceptVersion = shownConceptVersion;
         fileKey = shownFile;
         fileVersion = shownFileVersion;
+        fileFailed = failedFile;
         return result;
     }
 
@@ -1626,8 +1644,12 @@ public sealed class OkfBundleTools
     /// file computation must also have been shown by <c>okf_get_computation</c>, and the file is
     /// read pinned to that version. Otherwise the run is refused with no runtime called:
     /// <c>Error: … has not been shown to this session; read it first with okf_get_computation</c>,
-    /// or <c>… changed since it was shown …</c>, in which case the image is refreshed. The
-    /// attester is pinned to the image whatever the path (<see cref="AttestationOrchestrator.Capture"/>).
+    /// or <c>… changed since it was shown …</c>, in which case the image is refreshed. A run the
+    /// image's survey says cannot be captured (an undeclared, URL, missing or unreadable file or
+    /// attester, no computation) is not judged by the observations: the gate defers to
+    /// <see cref="AttestationOrchestrator.Capture"/>, whose own refusal comes first, and refuses
+    /// the run itself (<c>… was not gated …</c>) should Capture accept what the gate deferred.
+    /// The attester is pinned to the image whatever the path (<see cref="AttestationOrchestrator.Capture"/>).
     /// Internal so that tests reach the exposed function without the AI plumbing.
     /// </summary>
     [Description(RunComputationDescription)]
@@ -1721,7 +1743,8 @@ public sealed class OkfBundleTools
             else
             {
                 BundleObjectVersion? fileVersion = null;
-                if (gated && GuardObserved(bundle, concept, out fileVersion) is { } refused)
+                var deferred = false;
+                if (gated && GuardObserved(bundle, concept, out fileVersion, out deferred) is { } refused)
                 {
                     return refused;
                 }
@@ -1741,6 +1764,15 @@ public sealed class OkfBundleTools
                     }
 
                     return FormatOutcome(captured.Failure!);
+                }
+
+                if (deferred)
+                {
+                    // The gate judged this run not capturable and left the refusal to Capture, which
+                    // accepted it: the gate's predicate and Capture's preconditions have drifted
+                    // apart, and nothing has been observed that covers what would run. A defect, not
+                    // a runnable computation: fail closed.
+                    return $"Error: '{concept.Id}' was not gated by this session's observations (a defect in the run gate); it is not run.";
                 }
 
                 outcome = await _orchestrator
@@ -1768,6 +1800,34 @@ public sealed class OkfBundleTools
     }
 
     /// <summary>
+    /// Whether <see cref="AttestationOrchestrator.Capture"/> can be expected to accept this
+    /// concept from the image's survey: a computation (inline code, or a file surveyed
+    /// <see cref="ExecutableResourceState.Pinned"/> with its key and version) and a pinned
+    /// attester. An exact copy of Capture's preconditions, which is why a run the gate
+    /// judged otherwise is refused even if Capture then accepts it.
+    /// </summary>
+    private static bool IsCapturable(Bundle bundle, Concept concept)
+    {
+        var computation = concept.Document.Computation();
+        var survey = bundle.ExecutableResources.TryGetValue(concept.Id, out var found) ? found : null;
+        return survey is { Attester: { State: ExecutableResourceState.Pinned, Key: not null, Version: not null } }
+            && computation.Source switch
+            {
+                ComputationSource.Inline => !string.IsNullOrEmpty(computation.InlineCode),
+                ComputationSource.File => !string.IsNullOrEmpty(computation.Path)
+                    && survey.Computation is { State: ExecutableResourceState.Pinned, Key: not null, Version: not null },
+                _ => false,
+            };
+    }
+
+    /// <summary>
+    /// The predicate <see cref="GuardObserved"/> asks whether the run is capturable; the real one by
+    /// default. A seam for the tests of the defence that refuses a run the gate deferred and Capture
+    /// accepted anyway.
+    /// </summary>
+    internal Func<Bundle, Concept, bool> GateCapturable { get; set; } = IsCapturable;
+
+    /// <summary>
     /// The gate of <c>okf_run_computation</c> (spec §5.4, points 1 and 2): the refusal text, or
     /// <see langword="null"/> when the session observed <paramref name="concept"/> at the version
     /// this image holds — in full (<c>okf_read_concept</c>) <b>or</b> as code
@@ -1782,24 +1842,21 @@ public sealed class OkfBundleTools
     /// the gate answers <see langword="null"/> and leaves the refusal to
     /// <see cref="AttestationOrchestrator.Capture"/>, whose text is the honest one: telling the
     /// model to "read it first with okf_get_computation" is no use where that tool can never
-    /// record. Capture refuses every such state, so nothing runs.</para>
+    /// record. Capture refuses every such state, so nothing runs: and if it accepts one (the
+    /// predicate and Capture drifted apart), <paramref name="deferred"/> is <see langword="true"/>
+    /// and the caller refuses the run all the same.</para>
     /// </summary>
-    private string? GuardObserved(Bundle bundle, Concept concept, out BundleObjectVersion? fileVersion)
+    private string? GuardObserved(Bundle bundle, Concept concept, out BundleObjectVersion? fileVersion, out bool deferred)
     {
         fileVersion = null;
+        deferred = false;
         var computation = concept.Document.Computation();
-        var survey = bundle.ExecutableResources.TryGetValue(concept.Id, out var found) ? found : null;
-        var capturable = survey is { Attester: { State: ExecutableResourceState.Pinned, Key: not null, Version: not null } }
-            && computation.Source switch
-            {
-                ComputationSource.Inline => !string.IsNullOrEmpty(computation.InlineCode),
-                ComputationSource.File => !string.IsNullOrEmpty(computation.Path)
-                    && survey.Computation is { State: ExecutableResourceState.Pinned, Key: not null, Version: not null },
-                _ => false,
-            };
-        if (!capturable)
+        if (!GateCapturable(bundle, concept)
+            || !bundle.ExecutableResources.TryGetValue(concept.Id, out var survey))
         {
-            return null; // Capture refuses it, with the reason.
+            // Capture refuses it, with the reason; if it does not, the caller refuses the run.
+            deferred = true;
+            return null;
         }
 
         var key = concept.Key ?? concept.Id.ToKey();
@@ -1819,7 +1876,13 @@ public sealed class OkfBundleTools
 
         if (computation.Source == ComputationSource.File)
         {
-            if (!_observations.TryGetFile(survey!.Computation.Key!, out var shownFile))
+            if (survey.Computation.Key is not { } fileKey)
+            {
+                deferred = true; // the predicate said Pinned and keyed: a drift, left to the caller's refusal
+                return null;
+            }
+
+            if (!_observations.TryGetFile(fileKey, out var shownFile))
             {
                 return $"Error: the computation file '{OneLine(computation.Path!)}' of '{concept.Id}' has not been shown to this session; read it first with okf_get_computation, then run it.";
             }

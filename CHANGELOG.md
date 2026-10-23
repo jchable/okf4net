@@ -127,8 +127,15 @@ and this project adheres to
   changed since it was shown; read it again …`); the attester is read pinned
   to the version the image was loaded with. A computation never shown is
   refused with `Error: 'x' has not been shown to this session; read it first
-  with okf_get_computation, then run it.` and no stage runs; a context
-  injection does not count (D5). **Recovery after a refusal** (spec §5.1): a
+  with okf_get_computation, then run it.` and no stage runs — unless the
+  image already says the run cannot be captured at all (an undeclared, URL,
+  missing or unreadable computation file or attester, no computation), in
+  which case the capture's own reason comes first, since reading the
+  computation could not help; a context injection does not count (D5). A
+  file `okf_get_computation` cannot resolve or read (a URL excepted)
+  obliges the same reload. The observation of a concept (in full or as code,
+  either at the current version) and that of a computation file are separate
+  purposes. **Recovery after a refusal** (spec §5.1): a
   refusal for a changed version or a negative resource state (`Missing`,
   `Unreadable`, `TooLarge`, `Unsafe`) obliges the handle to reload, so the
   next attempt — with no host `Refresh()`, under every policy — runs on the
