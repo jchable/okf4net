@@ -12,7 +12,14 @@ using OKF4net.Yaml;
 
 namespace OKF4net.Agents;
 
-/// <summary>OKF bundle operations exposed as Microsoft Agent Framework function tools.</summary>
+/// <summary>
+/// OKF bundle operations exposed as Microsoft Agent Framework function tools.
+/// <para>Build <b>one instance per conversation</b> (spec §5.4): the functions exposed to the
+/// model record what the session was shown, per instance, and <c>okf_write_concept</c> writes
+/// only what that record holds. A second tool set over the same handle shares the image and
+/// each other's writes, but not the observations: what one was shown authorises nothing for
+/// the other.</para>
+/// </summary>
 public sealed class OkfBundleTools
 {
     private const string IndexFilename = "index.md";
@@ -340,7 +347,13 @@ public sealed class OkfBundleTools
     /// call returns a fresh list of freshly-created <see cref="AIFunction"/>
     /// instances bound to this <see cref="OkfBundleTools"/> — invoking one
     /// invokes the corresponding public method above, including its
-    /// never-throw behavior.
+    /// never-throw behavior, with three exceptions: <c>okf_read_concept</c>,
+    /// <c>okf_get_computation</c> and <c>okf_write_concept</c> invoke internal
+    /// wrappers that record what the session was shown (spec §5.4), and
+    /// <c>okf_write_concept</c> refuses a concept this session has not read
+    /// (or seen absent) with no write. The public methods record and require
+    /// nothing. Observations are per instance: use one tool set per
+    /// conversation.
     ///
     /// Names are explicit snake_case (the default would be the C# method
     /// name); descriptions are omitted here and instead derived by
@@ -465,8 +478,10 @@ public sealed class OkfBundleTools
     /// <summary>
     /// <see cref="ReadConcept"/>, reporting what the rendering showed: <paramref name="key"/>
     /// with its <paramref name="version"/> when the whole concept was rendered, the
-    /// <paramref name="key"/> alone when the id parsed but no concept exists under it (shown
-    /// absent), neither otherwise (an invalid id, a bundle that failed to load).
+    /// <paramref name="key"/> alone when the id parsed and nothing exists under it (shown
+    /// absent), neither otherwise (an invalid id, a bundle that failed to load, an object that
+    /// exists without a known version). An object that exists but is no concept (a parse
+    /// failure) is shown, with its version, in the message that says so — never absent.
     /// </summary>
     private string ReadConceptCore(string conceptId, out BundleKey? key, out BundleObjectVersion? version)
     {
@@ -489,17 +504,39 @@ public sealed class OkfBundleTools
 
             if (bundle.Get(id) is not { } concept)
             {
-                shownKey = id.ToKey();
+                var missingKey = id.ToKey();
+
+                // An object that exists but did not become a concept (an unterminated
+                // frontmatter fence, invalid YAML, an oversized file, a bundle index or log)
+                // is NOT absent: recording it absent would make the write a MustNotExist
+                // that the storage refuses ("already exists"), and the re-read would say
+                // "not found" again, for ever. Where the image holds a version of the
+                // object, show it as read in full at that version, so that the repair is a
+                // rewrite conditioned on it (IfMatch), as the writer allows it.
+                if (bundle.ObjectVersions.TryGetValue(missingKey, out var existingVersion))
+                {
+                    shownKey = missingKey;
+                    shownVersion = existingVersion;
+                    return $"Concept '{id}' exists but could not be read as a concept: {UnreadableReason(bundle, missingKey)} It can be rewritten with okf_write_concept.";
+                }
+
+                if (bundle.ParseProblems.Any(p => missingKey.Equals(p.Key)))
+                {
+                    // Existing, with no version in the image (an oversized object): nothing
+                    // was shown that a write could be conditioned on, so nothing is recorded.
+                    return $"Concept '{id}' exists but could not be read as a concept: {UnreadableReason(bundle, missingKey)} It cannot be rewritten through this tool.";
+                }
+
+                if (bundle.IndexKeys.Contains(missingKey) || bundle.LogKeys.Contains(missingKey))
+                {
+                    return $"'{id}' is not a concept: that name is a bundle index or log file.";
+                }
+
+                shownKey = missingKey;
                 return ConceptNotFoundMessage(conceptId);
             }
 
             var conceptKey = concept.Key ?? id.ToKey();
-            if (bundle.ObjectVersions.TryGetValue(conceptKey, out var objectVersion))
-            {
-                shownKey = conceptKey;
-                shownVersion = objectVersion;
-            }
-
             var sb = new StringBuilder();
             sb.Append("# ").Append(DisplayTitle(concept, concept.Id.ToString())).Append('\n').Append('\n');
 
@@ -530,11 +567,30 @@ public sealed class OkfBundleTools
                     : "(Use okf_get_computation for the full computation source.)").Append('\n');
             }
 
+            // Recorded only now, after a complete rendering (an exception above shows nothing).
+            if (bundle.ObjectVersions.TryGetValue(conceptKey, out var objectVersion))
+            {
+                shownKey = conceptKey;
+                shownVersion = objectVersion;
+            }
+
             return sb.ToString();
         });
         key = shownKey;
         version = shownVersion;
         return result;
+    }
+
+    /// <summary>
+    /// The library-authored reason the loader gave for an object that exists but is no concept,
+    /// as one sentence ending in a period and followed by a space; a generic sentence when the
+    /// loader recorded none. Names keys and parser messages, never a host path.
+    /// </summary>
+    private static string UnreadableReason(Bundle bundle, BundleKey key)
+    {
+        var problem = bundle.ParseProblems.FirstOrDefault(p => key.Equals(p.Key));
+        var reason = problem is null ? "its content is not a valid OKF document" : OneLine(problem.Error).TrimEnd();
+        return reason.EndsWith('.') ? reason + " " : reason + ". ";
     }
 
     /// <summary>
@@ -835,7 +891,10 @@ public sealed class OkfBundleTools
     /// not. A condition that does not hold is the writer's refusal (the concept changed, or no
     /// longer exists, since it was read; read it again), and the image is refreshed. A
     /// committed write drops the observation: what the session saw is no longer what the
-    /// bundle holds, so the next rewrite reads first. An id that does not parse goes to the
+    /// bundle holds, so the next rewrite reads first. A write that answers <c>Error:</c> keeps
+    /// the observation (the writer's own refusals, a failed commit): nothing was written, and
+    /// <c>IfMatch</c>/<c>MustNotExist</c> already refuse a later write over a changed object,
+    /// so a retry needs no new read. An id that does not parse goes to the
     /// writer, whose refusal is unchanged.
     /// </summary>
     [Description(WriteConceptDescription)]

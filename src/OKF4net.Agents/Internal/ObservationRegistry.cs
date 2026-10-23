@@ -12,7 +12,8 @@ namespace OKF4net.Agents.Internal;
 /// the run only; an absent one a creation. A new observation of the same purpose replaces the
 /// previous one; an absent observation clears both others and either of them clears absent.
 /// <para><b>Bounded</b> to <see cref="Capacity"/> keys, the least recently used evicted first
-/// (a record or a lookup makes a key the most recent); an evicted entry is gone, and the
+/// (a record, or a lookup that finds what it asks for, makes a key the most recent; a lookup
+/// that finds nothing of that purpose touches nothing); an evicted entry is gone, and the
 /// action it would have authorised is refused until a new read. The registry is per tool
 /// set: it is not shared through the handle, nor with another tool set, nor with a context
 /// provider, and it survives every refresh of the image. Thread-safe.</para>
@@ -105,13 +106,13 @@ internal sealed class ObservationRegistry
     {
         lock (_gate)
         {
-            if (!_entries.TryGetValue(key, out var node))
+            if (!_entries.TryGetValue(key, out var node) || !node.Value.Absent)
             {
                 return false;
             }
 
             MoveToFront(node);
-            return node.Value.Absent;
+            return true;
         }
     }
 

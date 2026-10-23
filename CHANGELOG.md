@@ -137,7 +137,17 @@ and this project adheres to
   model record: the public `ReadConcept` and `GetComputation` a host calls
   record nothing, and a concept `OkfContextProvider` injects, whole or
   truncated, is not an observation (D5). An agent that wrote without reading
-  first now makes one more call; the refusal says which. The tool names,
+  first now makes one more call; the refusal says which. Build one tool set
+  per conversation: observations are per instance. A file that exists but is
+  no concept (an unterminated frontmatter fence, invalid YAML, a bundle index
+  or log) is no longer reported `not found` by `ReadConcept` and
+  `okf_read_concept`: they say `Concept 'x' exists but could not be read as a
+  concept: <the loader's reason> It can be rewritten with okf_write_concept.`
+  (an index or log file: `'x' is not a concept: …`), and the read authorises
+  the repair — an `IfMatch` rewrite at the version shown, as before the task
+  the tool could overwrite a broken file; an object too large to load has no
+  version to condition on and says `It cannot be rewritten through this
+  tool.` (the host's public `WriteConcept` still can). The tool names,
   descriptions and schemas are unchanged.
 - **`OkfBundleTools` serves its image from a `BundleHandle` and makes no
   direct I/O** (#139, lot C; spec §5.2, §9). `new OkfBundleTools(handle,

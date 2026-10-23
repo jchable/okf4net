@@ -134,6 +134,8 @@ public class ObservationTests
         Assert.Equal(0, tools.Observations.Count);
 
         Assert.Contains("SELECT 1", tools.GetComputationTool("c/rev"), StringComparison.Ordinal);
+        Assert.True(tools.Observations.TryGetCode(K("c/rev.md"), out _)); // the exposed function recorded the code it showed
+        Assert.False(tools.Observations.TryGetFullConcept(K("c/rev.md"), out _)); // ... and that is no full-concept observation
         Assert.Equal(Refusal.Replace("notes/a", "c/rev", StringComparison.Ordinal), tools.WriteConceptTool("c/rev", "type: Attested Computation\ntitle: R\ndescription: r.\n", "Rewritten.\n"));
 
         Assert.Equal(Refusal, tools.WriteConceptTool("notes/a", Fm, "Changed.\n"));
@@ -191,6 +193,92 @@ public class ObservationTests
         Assert.StartsWith("Error: 'n/c0' has not been read by this session", tools.WriteConceptTool("n/c0", Fm, "Changed.\n"), StringComparison.Ordinal);
         tools.ReadConceptTool("n/c0");
         Assert.StartsWith("Written", tools.WriteConceptTool("n/c0", Fm, "Changed.\n"), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// An object that exists but is no concept is never shown absent: that made the write a
+    /// MustNotExist the storage refused, and the re-read said "not found" again, for ever.
+    /// It is shown as read, at the image's version, so the repair is an IfMatch rewrite.
+    /// </summary>
+    [Fact]
+    public void A_file_that_exists_but_is_no_concept_can_be_repaired_and_is_never_shown_absent()
+    {
+        var (storage, tools) = ToolsOver(("notes/broken.md", "---\ntype: Note\ntitle: B\n\nno closing fence\n"));
+
+        var shown = tools.ReadConceptTool("notes/broken");
+
+        Assert.StartsWith("Concept 'notes/broken' exists but could not be read as a concept: ", shown, StringComparison.Ordinal);
+        Assert.EndsWith("It can be rewritten with okf_write_concept.", shown, StringComparison.Ordinal);
+        Assert.DoesNotContain("not found", shown, StringComparison.Ordinal);
+        Assert.False(tools.Observations.IsAbsent(K("notes/broken.md")));
+        Assert.True(tools.Observations.TryGetFullConcept(K("notes/broken.md"), out _));
+
+        var written = tools.WriteConceptTool("notes/broken", Fm, "Repaired.\n");
+
+        Assert.StartsWith("Written", written, StringComparison.Ordinal);
+        Assert.Contains(storage.Calls, c => c == "write notes/broken.md IfMatch");
+        Assert.DoesNotContain(storage.Calls, c => c == "write notes/broken.md MustNotExist");
+        Assert.Contains("Repaired.", tools.ReadConceptTool("notes/broken"), StringComparison.Ordinal); // the loop is closed: now a concept
+    }
+
+    [Fact]
+    public void An_oversized_object_exists_without_a_version_and_nothing_authorises_its_rewrite()
+    {
+        var storage = new InMemoryBundleProvider(canWrite: true).Add("notes/big.md", "---\n" + Fm + "---\n\n" + new string('x', 600) + "\n");
+        var tools = new OkfBundleTools(new BundleHandle(storage, new BundleLoadOptions { Limits = new BundleLimits { MaxObjectBytes = 300 } }));
+
+        var shown = tools.ReadConceptTool("notes/big");
+
+        Assert.StartsWith("Concept 'notes/big' exists but could not be read as a concept: ", shown, StringComparison.Ordinal);
+        Assert.EndsWith("It cannot be rewritten through this tool.", shown, StringComparison.Ordinal);
+        Assert.DoesNotContain("not found", shown, StringComparison.Ordinal);
+        Assert.Equal(0, tools.Observations.Count); // not absent, not read: nothing recorded
+        Assert.Equal(Refusal.Replace("notes/a", "notes/big", StringComparison.Ordinal), tools.WriteConceptTool("notes/big", Fm, "Changed.\n"));
+        Assert.DoesNotContain(storage.Calls, c => c.StartsWith("write ", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_bundle_index_is_not_a_concept_and_is_not_shown_absent()
+    {
+        var (storage, tools) = ToolsOver(("notes/a.md", Doc), ("notes/index.md", "# Notes\n"));
+
+        Assert.Equal("'notes/index' is not a concept: that name is a bundle index or log file.", tools.ReadConceptTool("notes/index"));
+
+        Assert.Equal(0, tools.Observations.Count);
+        Assert.Equal(Refusal.Replace("notes/a", "notes/index", StringComparison.Ordinal), tools.WriteConceptTool("notes/index", Fm, "Changed.\n"));
+        Assert.DoesNotContain(storage.Calls, c => c.StartsWith("write ", StringComparison.Ordinal));
+    }
+
+    /// <summary>The observation survives a write the writer refused: nothing was written, and IfMatch still guards the retry.</summary>
+    [Fact]
+    public void A_write_that_answers_an_error_keeps_the_observation()
+    {
+        var (storage, tools) = ToolsOver(("notes/a.md", Doc));
+        tools.ReadConceptTool("notes/a");
+
+        var refused = tools.WriteConceptTool("notes/a", "type: Note\ntitle: A\n", "Changed.\n"); // no description: refused before any write
+
+        Assert.StartsWith("Error:", refused, StringComparison.Ordinal);
+        Assert.DoesNotContain(storage.Calls, c => c.StartsWith("write ", StringComparison.Ordinal));
+        Assert.True(tools.Observations.TryGetFullConcept(K("notes/a.md"), out _));
+        Assert.StartsWith("Written", tools.WriteConceptTool("notes/a", Fm, "Changed.\n"), StringComparison.Ordinal); // no new read needed
+    }
+
+    /// <summary>A smoke test of the lock, deterministic in what it asserts: the bound holds and nothing throws.</summary>
+    [Fact]
+    public void The_registry_stays_bounded_under_concurrent_records()
+    {
+        var registry = new ObservationRegistry(capacity: 100);
+        var version = new BundleObjectVersion("1");
+
+        Parallel.For(0, 4000, i =>
+        {
+            registry.RecordFullConcept(K($"n/c{i % 500}.md"), version);
+            registry.TryGetFullConcept(K($"n/c{(i * 7) % 500}.md"), out _);
+            registry.IsAbsent(K($"n/c{(i * 3) % 500}.md"));
+        });
+
+        Assert.Equal(100, registry.Count);
     }
 
     [Fact]
