@@ -137,6 +137,11 @@ public static class OkfBundleDiscovery
         {
             return null;
         }
+        catch (NotSupportedException)
+        {
+            // An index.md that cannot report its length (a FIFO on Unix): not an index, so unmarked.
+            return null;
+        }
     }
 
     private static bool DeclaresOkfVersion(string indexText) =>

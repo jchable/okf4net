@@ -279,9 +279,12 @@ and this project adheres to
   16 MiB bound** (#139, lot C; spec §6, §9): `OkfBundleDiscovery.ReadRootIndexOrNull`
   answers `null` — "no declared version", as for any unreadable index — for
   a larger file without reading it (`OkfBundleDiscovery.MaxRootIndexBytes`),
-  where it read the whole file before. A directory whose `index.md` is over
-  the bound is therefore not discovered as a marked bundle; name it on the
-  command line or in `OKF_BUNDLE_ROOT` instead.
+  where it read the whole file before; a file that grows while it is read is
+  bounded too, and an `index.md` that cannot report its length (a FIFO) is
+  unmarked. The 16 MiB is fixed, independent of `BundleLimits.MaxObjectBytes`
+  (256 MiB by default): a root index of that size is not a real one. A
+  directory whose `index.md` is over the bound is therefore not discovered as
+  a marked bundle; name it on the command line or in `OKF_BUNDLE_ROOT` instead.
 - **Finite default bounds on loading** (spec §6), out of reach of real
   bundles: a concept over 256 MiB is a `ParseErrors` entry instead of being
   loaded; a listing over 10 000 000 entries or holding a name deeper than

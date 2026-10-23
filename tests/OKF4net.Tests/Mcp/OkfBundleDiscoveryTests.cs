@@ -168,8 +168,10 @@ public sealed class OkfBundleDiscoveryTests
 
     /// <summary>
     /// Spec §6, §9 (lot C): the root <c>index.md</c> is read under the 16 MiB bound; past it
-    /// the index is unreadable, hence "no declared version", without reading it. The file is
-    /// a sparse one of 16 MiB + 1 bytes, created by setting its length.
+    /// the index is unreadable, hence "no declared version". The file is a sparse one of
+    /// 16 MiB + 1 bytes, created by setting its length. This pins the outcome (null where the
+    /// old reader returned the marked index), not that the length check precedes the read: a
+    /// file that grows while it is read is bounded by the counted loop, which no test races.
     /// </summary>
     [Fact]
     public void Adapter_returns_null_when_the_index_exceeds_the_bound_without_reading_it()
