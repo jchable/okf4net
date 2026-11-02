@@ -20,7 +20,9 @@ public sealed record MemoryWriteResult(bool Written, string? Error);
 /// <summary>
 /// The result of a scoped memory deletion (spec §1, §9): one <see cref="MemoryTierDeletion"/>
 /// per tier whose scope held something or was refused, in read order, and the error text
-/// when any tier failed. A tier whose scope held no key is absent from <see cref="Tiers"/>.
+/// when any tier failed. A tier whose scope held no key is absent from <see cref="Tiers"/>,
+/// unless directories left in it could not be removed. Once every object of a scope is deleted
+/// its now-empty directories are removed too (their names carry the tenant, user and session ids).
 /// </summary>
 /// <param name="Tiers">What each tier's deletion did, with the keys deleted and those that failed.</param>
 /// <param name="Error">The failures of every tier joined by <c>; </c>, or <see langword="null"/> when nothing failed.</param>

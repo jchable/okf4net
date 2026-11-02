@@ -277,7 +277,8 @@ public class MemoryServiceCollectionExtensionsTests
 
             Assert.False(write.Written);
             Assert.Equal([keep], outsideAfterWrite);
-            Assert.All(delete.Tiers, t => Assert.Empty(t.Report.Deleted));
+            var deletion = Assert.Single(delete.Tiers);
+            Assert.Empty(deletion.Report.Deleted);
         }
 
         var catalogError = Assert.IsType<CatalogException>(error);

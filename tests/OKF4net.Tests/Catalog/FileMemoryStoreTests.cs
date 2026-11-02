@@ -99,9 +99,12 @@ public class FileMemoryStoreTests
         Assert.True(deletion.Report.Succeeded);
         Assert.Null(del.Error);
 
-        // The scope's objects are gone and its directory is left in place (spec §8): empty, it
-        // holds no key, so the scope no longer exists for the store; the sibling scope is intact.
-        Assert.Empty(Directory.EnumerateFiles(MemPath(tmp.Path, MemoryTier.User, a), "*", SearchOption.AllDirectories));
+        // The scope's objects and its now-empty directory are gone (erasure leaves nothing named
+        // after the scope); the sibling scope, the tenant directory they share and the tier root
+        // are intact.
+        Assert.False(Directory.Exists(MemPath(tmp.Path, MemoryTier.User, a)));
+        Assert.True(Directory.Exists(Path.GetDirectoryName(MemPath(tmp.Path, MemoryTier.User, a))));
+        Assert.True(Directory.Exists(tmp.Path));
         Assert.True(File.Exists(MemPath(tmp.Path, MemoryTier.User, b, "2026-07-27.md")));
         Assert.Empty(await store.EnumerateAsync(a));
         Assert.Single(await store.EnumerateAsync(b));
@@ -150,10 +153,18 @@ public class FileMemoryStoreTests
         Assert.StartsWith("Memory tier 'User' subtree could not be deleted: ", partial.Error);
         Assert.True(File.Exists(heldPath));
 
+        // The failure names the key and the exception's type, never the runtime's message (it can name a host path).
+        Assert.StartsWith($"'{failure.Key}' could not be deleted (", failure.Reason);
+        Assert.DoesNotContain(tmp.Path, failure.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(tmp.Path, partial.Error, StringComparison.OrdinalIgnoreCase);
+
+        // The scope's directory stays while an object does; the rerun deletes the rest and then the directory.
+        Assert.True(Directory.Exists(MemPath(tmp.Path, MemoryTier.User, a)));
         var again = await store.DeleteScopeAsync(a, MemoryTier.User);
         Assert.True(Assert.Single(again.Tiers).Report.Succeeded);
         Assert.Null(again.Error);
         Assert.False(File.Exists(heldPath));
+        Assert.False(Directory.Exists(MemPath(tmp.Path, MemoryTier.User, a)));
     }
 
     [Fact]
@@ -338,7 +349,7 @@ public class FileMemoryStoreTests
         Assert.True(Assert.Single(del.Tiers).Report.Succeeded);
         Assert.Null(del.Error);
 
-        Assert.Empty(Directory.EnumerateFiles(MemPath(tmp.Path, MemoryTier.Session, a), "*", SearchOption.AllDirectories));
+        Assert.False(Directory.Exists(MemPath(tmp.Path, MemoryTier.Session, a)));
         Assert.True(File.Exists(MemPath(tmp.Path, MemoryTier.Session, b, "2026-07-27.md")));
     }
 
@@ -447,7 +458,7 @@ public class FileMemoryStoreTests
         Assert.True(Assert.Single(del.Tiers).Report.Succeeded);
         Assert.Null(del.Error);
 
-        Assert.Empty(Directory.EnumerateFiles(MemPath(tmp.Path, MemoryTier.Tenant, a), "*", SearchOption.AllDirectories));
+        Assert.False(Directory.Exists(MemPath(tmp.Path, MemoryTier.Tenant, a)));
         Assert.True(File.Exists(MemPath(tmp.Path, MemoryTier.Tenant, b, "2026-07-27.md")));
     }
 
@@ -558,5 +569,243 @@ public class FileMemoryStoreTests
         var delete = await store.DeleteScopeAsync(scope, MemoryTier.User);
         Assert.Equal("Memory tier 'User' path is a reparse point or could not be inspected; refusing to delete.", delete.Error);
         Assert.True(File.Exists(Path.Combine(external.Path, "2026-07-27.md")));
+    }
+
+    [SkippableFact]
+    public async Task A_write_through_a_scope_directory_that_is_a_junction_is_refused_and_creates_nothing_outside()
+    {
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        var scope = new KnowledgeAccessScope(tenantId: "acme", userId: "alice");
+        var scopeDir = Path.Combine(MemoryPath.For(MemoryTier.User, scope).Split('/'));
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir(scopeDir, external.Path), "needs a junction or a directory symlink");
+        var store = UserStore(tmp);
+
+        var write = await store.WriteAsync(scope, Entry("must not land outside"), MemoryTier.User);
+
+        Assert.False(write.Written);
+        Assert.NotNull(write.Error);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(external.Path));
+    }
+
+    [Fact]
+    public async Task Deleting_a_scope_leaves_a_sibling_scope_whose_encoded_segment_it_is_a_string_prefix_of()
+    {
+        using var tmp = new TempDir();
+        var store = UserStore(tmp);
+        var alice = new KnowledgeAccessScope(tenantId: "acme", userId: "alice");
+        var aliceSegment = MemoryPath.For(MemoryTier.User, alice).Split('/')[^1];
+
+        // A user whose raw id is alice's encoded directory name plus a letter: its own encoded
+        // segment starts with alice's whole segment.
+        var longer = new KnowledgeAccessScope(tenantId: "acme", userId: aliceSegment + "x");
+        Assert.StartsWith(aliceSegment, MemoryPath.For(MemoryTier.User, longer).Split('/')[^1], StringComparison.Ordinal);
+        await store.WriteAsync(alice, Entry("alice data"), MemoryTier.User);
+        await store.WriteAsync(longer, Entry("longer data"), MemoryTier.User);
+
+        var del = await store.DeleteScopeAsync(alice, MemoryTier.User);
+
+        Assert.True(Assert.Single(del.Tiers).Report.Succeeded);
+        Assert.False(Directory.Exists(MemPath(tmp.Path, MemoryTier.User, alice)));
+        Assert.True(File.Exists(MemPath(tmp.Path, MemoryTier.User, longer, "2026-07-27.md")));
+        Assert.Single(await store.EnumerateAsync(longer));
+    }
+
+    [Fact]
+    public async Task Deleting_a_scope_that_holds_only_empty_directories_removes_them()
+    {
+        using var tmp = new TempDir();
+        var store = UserStore(tmp);
+        var scope = new KnowledgeAccessScope(tenantId: "acme", userId: "alice");
+        var scopeDir = MemPath(tmp.Path, MemoryTier.User, scope);
+        Directory.CreateDirectory(Path.Combine(scopeDir, "left", "over"));
+        Directory.CreateDirectory(Path.Combine(scopeDir, "other"));
+
+        var del = await store.DeleteScopeAsync(scope, MemoryTier.User);
+
+        // No key was under the scope, so no tier is reported; its directories are removed all the same.
+        Assert.Empty(del.Tiers);
+        Assert.Null(del.Error);
+        Assert.False(Directory.Exists(scopeDir));
+        Assert.True(Directory.Exists(tmp.Path));
+    }
+
+    [SkippableFact]
+    public async Task A_link_inside_a_scope_is_never_followed_by_the_deletion_and_is_reported_as_a_failure()
+    {
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        var scope = new KnowledgeAccessScope(tenantId: "acme", userId: "alice");
+        external.Write("outside.md", "must survive");
+        Directory.CreateDirectory(Path.Combine(external.Path, "empty-outside"));
+        var store = UserStore(tmp);
+        await store.WriteAsync(scope, Entry("alice data"), MemoryTier.User);
+        var linkRelative = Path.Combine([.. MemoryPath.For(MemoryTier.User, scope).Split('/'), "ln"]);
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir(linkRelative, external.Path), "needs a junction or a directory symlink");
+        var linkPath = Path.Combine(tmp.Path, linkRelative);
+
+        var delete = await store.DeleteScopeAsync(scope, MemoryTier.User);
+
+        // The object is deleted; the link is left in place, so the scope's directory stays and the tier failed.
+        var deletion = Assert.Single(delete.Tiers);
+        Assert.Single(deletion.Report.Deleted);
+        var failure = Assert.Single(deletion.Report.Failed);
+        Assert.Equal(MemoryPath.For(MemoryTier.User, scope), failure.Key.ToString());
+        Assert.False(deletion.Report.Succeeded);
+        Assert.StartsWith("Memory tier 'User' subtree could not be deleted: ", delete.Error);
+        Assert.DoesNotContain(tmp.Path, delete.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(external.Path, delete.Error, StringComparison.OrdinalIgnoreCase);
+        AssertExternalUntouched(external, linkPath);
+
+        // The run can be repeated (no key is left, only the link): the same failure, still nothing outside touched.
+        var again = await store.DeleteScopeAsync(scope, MemoryTier.User);
+        Assert.False(Assert.Single(again.Tiers).Report.Succeeded);
+        Assert.Empty(Assert.Single(again.Tiers).Report.Deleted);
+        AssertExternalUntouched(external, linkPath);
+    }
+
+    private static void AssertExternalUntouched(TempDir external, string linkPath)
+    {
+        Assert.Equal("must survive", File.ReadAllText(Path.Combine(external.Path, "outside.md")));
+        Assert.True(Directory.Exists(Path.Combine(external.Path, "empty-outside")));
+        Assert.True(Directory.Exists(linkPath));
+    }
+
+    [Fact]
+    public async Task A_file_that_is_no_key_is_reported_and_keeps_the_scope_directory()
+    {
+        using var tmp = new TempDir();
+        var scope = new KnowledgeAccessScope(tenantId: "acme", userId: "alice");
+        var store = UserStore(tmp);
+        await store.WriteAsync(scope, Entry("alice data"), MemoryTier.User);
+
+        // U+0085 (next line) is no valid key character; written as a char so no escape is needed in this file.
+        var stray = MemPath(tmp.Path, MemoryTier.User, scope, "stray" + (char)0x85 + "name.md");
+        File.WriteAllText(stray, "not a key");
+
+        var delete = await store.DeleteScopeAsync(scope, MemoryTier.User);
+
+        var deletion = Assert.Single(delete.Tiers);
+        Assert.Single(deletion.Report.Deleted);
+        var failure = Assert.Single(deletion.Report.Failed);
+        Assert.Equal(MemoryPath.For(MemoryTier.User, scope), failure.Key.ToString());
+        Assert.Contains("is not a key", failure.Reason, StringComparison.Ordinal);
+        Assert.Contains("is not a key", delete.Error, StringComparison.Ordinal);
+        Assert.True(File.Exists(stray));
+        Assert.True(Directory.Exists(MemPath(tmp.Path, MemoryTier.User, scope)));
+    }
+
+    [SkippableFact]
+    public async Task A_subdirectory_that_cannot_be_listed_makes_the_scope_unavailable_as_data_never_an_exception()
+    {
+        using var tmp = new TempDir();
+        var scope = new KnowledgeAccessScope(tenantId: "acme", userId: "alice");
+        var store = UserStore(tmp);
+        await store.WriteAsync(scope, Entry("locked scope data"), MemoryTier.User);
+        var locked = MemPath(tmp.Path, MemoryTier.User, scope, "locked");
+        Directory.CreateDirectory(locked);
+        Skip.IfNot(TryDenyListing(locked, out var undo), "needs a directory whose listing this process is denied (not root)");
+        var sawLockedRead = false;
+        try
+        {
+            var read = await store.ReadAsync(scope, new KnowledgeQuery("locked"));
+            Assert.Empty(read.Passages);
+            var diagnostic = Assert.Single(read.Diagnostics);
+            Assert.Equal(KnowledgeDiagnosticCode.SourceUnavailable, diagnostic.Code);
+            Assert.Equal("Memory tier 'User' could not be loaded: UnauthorizedAccessException", diagnostic.Message);
+            sawLockedRead = true;
+
+            Assert.Empty(await store.EnumerateAsync(scope));
+
+            var delete = await store.DeleteScopeAsync(scope, MemoryTier.User);
+            var deletion = Assert.Single(delete.Tiers);
+            Assert.Empty(deletion.Report.Deleted);
+            var failure = Assert.Single(deletion.Report.Failed);
+            Assert.Equal(MemoryPath.For(MemoryTier.User, scope), failure.Key.ToString());
+            Assert.Equal("Memory tier 'User' subtree could not be deleted: the scope could not be listed (UnauthorizedAccessException); nothing was deleted", delete.Error);
+            Assert.DoesNotContain(tmp.Path, delete.Error, StringComparison.OrdinalIgnoreCase);
+            Assert.True(File.Exists(MemPath(tmp.Path, MemoryTier.User, scope, "2026-07-27.md")));
+        }
+        finally
+        {
+            undo();
+        }
+
+        Assert.True(sawLockedRead);
+
+        // Once the listing is allowed again the same store deletes the scope, directories included.
+        var after = await store.DeleteScopeAsync(scope, MemoryTier.User);
+        Assert.True(Assert.Single(after.Tiers).Report.Succeeded);
+        Assert.False(Directory.Exists(MemPath(tmp.Path, MemoryTier.User, scope)));
+    }
+
+    /// <summary>Denies listing <paramref name="directory"/> (not its parent): icacls (RD) on Windows, mode bits elsewhere. <see langword="false"/> when this process can list it anyway (root) or the change is refused; the denial is undone then.</summary>
+    private static bool TryDenyListing(string directory, out Action undo)
+    {
+        undo = () => { };
+        Action restore;
+        if (OperatingSystem.IsWindows())
+        {
+            var sid = "*" + System.Security.Principal.WindowsIdentity.GetCurrent().User!.Value;
+            if (!Icacls(directory, "/deny", sid + ":(RD)"))
+            {
+                return false;
+            }
+
+            restore = () => Icacls(directory, "/remove:d", sid);
+        }
+        else
+        {
+            try
+            {
+                var original = File.GetUnixFileMode(directory);
+                File.SetUnixFileMode(directory, UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+                restore = () =>
+                {
+                    if (!OperatingSystem.IsWindows())
+                    {
+                        File.SetUnixFileMode(directory, original);
+                    }
+                };
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+            {
+                return false;
+            }
+        }
+
+        try
+        {
+            _ = Directory.EnumerateFileSystemEntries(directory).ToList();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            undo = restore;
+            return true;
+        }
+
+        restore();
+        return false;
+    }
+
+    private static bool Icacls(params string[] arguments)
+    {
+        var info = new System.Diagnostics.ProcessStartInfo("icacls.exe")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        foreach (var argument in arguments)
+        {
+            info.ArgumentList.Add(argument);
+        }
+
+        using var process = System.Diagnostics.Process.Start(info)!;
+        process.StandardOutput.ReadToEnd();
+        process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        return process.ExitCode == 0;
     }
 }
