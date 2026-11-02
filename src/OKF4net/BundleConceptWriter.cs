@@ -331,7 +331,7 @@ public sealed class BundleConceptWriter
 
     /// <summary>The bundle root, as passed to the constructor (the filesystem provider's <see cref="FileSystemBundleProvider.Root"/>). Obsolete (spec §9, §10): a writer over another provider has no root.</summary>
     /// <exception cref="NotSupportedException">The writer was built over another provider: a path has no meaning for it (spec §9).</exception>
-    [Obsolete("BundleConceptWriter.BundleRoot has no meaning for a writer over a provider other than the filesystem: use the Root of the FileSystemBundleProvider the writer was built over, or the provider's Location. Removed with the asynchronous provider contract (#152).")]
+    [Obsolete("BundleConceptWriter.BundleRoot has no meaning for a writer over a provider other than the filesystem: the writer exposes no provider, so keep the root path you constructed it with, or construct it over a FileSystemBundleProvider you hold and use that provider's Root. Removed with the asynchronous provider contract (#152).")]
     public string BundleRoot => _fileSystem?.Root
         ?? throw new NotSupportedException("this writer is not over a filesystem provider, so it has no bundle root");
 

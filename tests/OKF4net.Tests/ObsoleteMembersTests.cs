@@ -14,14 +14,38 @@ namespace OKF4net.Tests;
 /// </summary>
 public class ObsoleteMembersTests
 {
-    private static readonly Assembly[] Assemblies = [typeof(Bundle).Assembly, typeof(OkfBundleTools).Assembly];
+    /// <summary>Every assembly the test project references: the packaged libraries and the leaf executables.</summary>
+    private static readonly Assembly[] Assemblies =
+    [
+        typeof(Bundle).Assembly,
+        typeof(OkfBundleTools).Assembly,
+        typeof(global::OKF4net.Attestation.AttestationOrchestrator).Assembly,
+        typeof(global::OKF4net.Attestation.Containers.CliContainerEngine).Assembly,
+        typeof(global::OKF4net.Catalog.CatalogManifestParser).Assembly,
+        typeof(global::OKF4net.Catalog.Hosting.KnowledgeServiceCollectionExtensions).Assembly,
+        typeof(global::OKF4net.Viewer.ViewerAssets).Assembly,
+        typeof(global::OKF4net.Cli.OkfCli).Assembly,
+        typeof(global::OKF4net.Render.OkfRenderCli).Assembly,
+        typeof(global::OKF4net.Mcp.OkfMcpConfig).Assembly,
+    ];
 
+    /// <summary>Every exported type, and every public member of one (nested types counted once, as types), carrying <see cref="ObsoleteAttribute"/>.</summary>
     private static IEnumerable<(string Member, ObsoleteAttribute Attribute)> ObsoleteMembers() =>
         Assemblies
             .SelectMany(a => a.GetExportedTypes())
             .SelectMany(t => t.GetMembers(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly)
-                .Select(m => (Member: $"{t.Name}.{m.Name}{Signature(m)}", Attribute: m.GetCustomAttribute<ObsoleteAttribute>()!)))
-            .Where(x => x.Attribute is not null);
+                .Where(m => m.MemberType != MemberTypes.NestedType && !IsRequiredMembersGuard(m))
+                .Select(m => (Member: $"{t.Name}.{m.Name}{Signature(m)}", Attribute: m.GetCustomAttribute<ObsoleteAttribute>()))
+                .Append((Member: t.Name, Attribute: t.GetCustomAttribute<ObsoleteAttribute>())))
+            .Where(x => x.Attribute is not null)
+            .Select(x => (x.Member, x.Attribute!));
+
+    /// <summary>
+    /// The compiler marks the constructors of a type with <c>required</c> members <c>[Obsolete(..., error: true)]</c>
+    /// (beside <c>CompilerFeatureRequired</c>) so that an old compiler refuses them: not an API decision, never counted.
+    /// </summary>
+    private static bool IsRequiredMembersGuard(MemberInfo member) =>
+        member is ConstructorInfo && member.GetCustomAttributes().Any(a => a.GetType().Name == "CompilerFeatureRequiredAttribute");
 
     private static string Signature(MemberInfo member) =>
         member is MethodInfo method ? $"({string.Join(", ", method.GetParameters().Select(p => p.ParameterType.Name))})" : string.Empty;
@@ -39,7 +63,7 @@ public class ObsoleteMembersTests
         "OkfBundleTools.BundleRoot",
     ];
 
-    /// <summary>Obsolete before lot D, kept as they were: listed so that the inventory below is the whole public surface.</summary>
+    /// <summary>Obsolete before lot D, kept as they were: listed so that the inventory below is the whole public surface of every assembly this project references (types and members).</summary>
     private static readonly string[] EarlierObsoleteMembers =
     [
         "OkfBundleTools.RunComputation(String, IReadOnlyDictionary`2)",
@@ -64,7 +88,7 @@ public class ObsoleteMembersTests
     }
 
     [Fact]
-    public void Diagnostics_and_audit_findings_carry_the_key_their_display_path_projects()
+    public void Diagnostics_and_audit_findings_carry_the_key_the_load_gave_the_object()
     {
         var storage = new InMemoryBundleProvider(id: "k")
             .Add("index.md", "---\nokf_version: 0.2\n---\n# Root\n\n- [a](tables/a.md)\n")
@@ -77,12 +101,17 @@ public class ObsoleteMembersTests
 
         var report = BundleValidator.Validate(bundle);
 
-        foreach (var diagnostic in report.Diagnostics)
+        // The oracle never inverts a display path: a concept's id names its key, an unparseable
+        // document's message carries its load error, and the rest is asserted by code below.
+        foreach (var diagnostic in report.Diagnostics.Where(d => d.Concept is not null))
         {
-            var expected = diagnostic.Path is { } path
-                ? KeyOf(bundle, path)
-                : diagnostic.Concept is { } id ? bundle.Get(id)?.Key : null;
-            Assert.Equal(expected, diagnostic.Key);
+            Assert.Equal(bundle.Get(diagnostic.Concept!)!.Key, diagnostic.Key);
+        }
+
+        foreach (var diagnostic in report.Diagnostics.Where(d => d.Code == DiagnosticCode.UnparseableDocument))
+        {
+            var problem = Assert.Single(bundle.ParseProblems, p => diagnostic.Message.EndsWith(p.Error, StringComparison.Ordinal));
+            Assert.Equal(problem.Key, diagnostic.Key);
         }
 
         Assert.Equal(BundleKey.Parse("tables/a.md"), Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.FrontmatterPathMissing).Key);
@@ -95,37 +124,65 @@ public class ObsoleteMembersTests
         Assert.Equal(BundleKey.Parse("tables/a.md"), broken.Key);
 
         var audit = ConceptAudit.Run(bundle, new AuditQuery { Type = "Note" }, new SystemClock());
-        var finding = Assert.Single(audit.Findings);
+        var finding = Assert.Single(audit.Findings, f => f.Id.Equals(ConceptId.Parse("tables/a")));
         Assert.Equal(BundleKey.Parse("tables/a.md"), finding.Key);
         Assert.Equal(bundle.Get(finding.Id)!.Path, finding.Path);
     }
 
-    private static BundleKey? KeyOf(Bundle bundle, string displayPath)
+    /// <summary>
+    /// A display path is not a key: on Windows the refused raw name <c>tables</c>, a backslash, <c>a.md</c>
+    /// displays exactly as the real concept <c>tables/a.md</c> does. The refused name's diagnostic keeps
+    /// a null key and the concept's findings keep the concept's key, on every platform (the precondition,
+    /// that the two display paths coincide, is asserted on Windows).
+    /// </summary>
+    [Fact]
+    public void A_refused_name_sharing_its_display_path_with_a_concept_has_no_key_and_does_not_take_the_concepts()
     {
-        foreach (var concept in bundle.Concepts)
+        var refusedName = "tables" + (char)92 + "a.md";
+        var storage = new InMemoryBundleProvider(id: "collision")
+            .Add("tables/a.md", "---\ntype: Note\n---\n")
+            .Add(refusedName, "---\ntype: Note\n---\n");
+        var bundle = Bundle.Load(storage);
+
+        var concept = Assert.Single(bundle.Concepts);
+        var problem = Assert.Single(bundle.ParseProblems);
+        Assert.Equal(refusedName, problem.RawName);
+        Assert.Null(problem.Key);
+        if (OperatingSystem.IsWindows())
         {
-            if (concept.Path == displayPath)
-            {
-                return concept.Key;
-            }
+            Assert.Equal(concept.Path, bundle.DisplayPath(problem));
         }
 
-        foreach (var key in bundle.IndexKeys.Concat(bundle.LogKeys))
-        {
-            if (BundleDisplayPath.Compose(bundle.Location, key) == displayPath)
-            {
-                return key;
-            }
-        }
+        var report = BundleValidator.Validate(bundle);
 
-        foreach (var problem in bundle.ParseProblems)
-        {
-            if (bundle.DisplayPath(problem) == displayPath)
-            {
-                return problem.Key;
-            }
-        }
+        var refused = Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.UnparseableDocument);
+        Assert.Null(refused.Key);
+        var own = report.Diagnostics.Where(d => d.Concept is not null).ToList();
+        Assert.NotEmpty(own);
+        Assert.All(own, d => Assert.Equal(BundleKey.Parse("tables/a.md"), d.Key));
+    }
 
-        return null;
+    [Fact]
+    public void A_not_portable_name_carries_its_key_whether_it_is_a_concept_or_not()
+    {
+        var doc = "---\ntype: Note\ntitle: T\ndescription: d\n---\n";
+        var storage = new InMemoryBundleProvider(BundleKeyConstraintSets.Linux)
+            .Add("con.md", doc)
+            .Add("aux/index.md", "# Aux\n");
+        var bundle = Bundle.Load(storage);
+
+        var warnings = BundleValidator.Validate(bundle).Diagnostics.Where(d => d.Code == DiagnosticCode.KeyNotPortable).ToList();
+
+        Assert.Equal(2, warnings.Count);
+        Assert.Equal(BundleKey.Parse("con.md"), Assert.Single(warnings, d => d.Concept is not null).Key);
+        Assert.Equal(BundleKey.Parse("aux/index.md"), Assert.Single(warnings, d => d.Concept is null).Key);
+    }
+
+    [Fact]
+    public void A_hand_built_audit_finding_has_no_key()
+    {
+        var finding = new AuditFinding(ConceptId.Parse("a"), "a.md", "Note", "A", TrustTier.Unverified, default, false);
+
+        Assert.Null(finding.Key);
     }
 }

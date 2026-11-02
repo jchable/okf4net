@@ -876,8 +876,7 @@ public sealed class Bundle
     /// permissive), it only reports which of the above statuses applies.
     /// Obsolete: it resolves through the OS filesystem, outside the provider
     /// seam, so it applies neither the key policy nor the exact-name rules
-    /// <see cref="TryResolveResourceKey"/> applies; no code of this repository
-    /// calls it.
+    /// <see cref="TryResolveResourceKey"/> applies; no library code calls it.
     /// </summary>
     [Obsolete("Bundle.TryResolveResource resolves a §6.2 path on the OS filesystem, outside the provider seam: use Bundle.TryResolveResourceKey, which resolves on keys under the key policy, then Bundle.ReadResourceText(BundleKey). The path-based members are removed with the asynchronous provider contract (#152).")]
     public bool TryResolveResource(Concept concept, string rawPath, out string? absolutePath, out ResourceResolutionStatus status)
@@ -1010,8 +1009,8 @@ public sealed class Bundle
     /// Resolves a §6.2 path-valued field to a key (spec §2): lexically, through
     /// <see cref="ResourceKeyResolver"/>, then <see cref="IsKeyAllowed"/>, then the provider's
     /// <see cref="IBundleProvider.Exists"/>. Never throws (§11, permissive): a provider refusal
-    /// reads as <see cref="ResourceResolutionStatus.Unsafe"/>. Always returns <see langword="true"/>,
-    /// like <see cref="TryResolveResource"/>.
+    /// reads as <see cref="ResourceResolutionStatus.Unsafe"/>. Always returns <see langword="true"/>:
+    /// resolution never fails outright, only its status varies.
     /// <para>
     /// A value that names no object is <see cref="ResourceResolutionStatus.Missing"/>, as it was
     /// when the validator resolved it on the filesystem: one that resolves to the bundle root
