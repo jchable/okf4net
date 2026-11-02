@@ -277,8 +277,8 @@ only; the failure itself stays on `Handle.LastLoadError`). Only a source whose
 first load fails is `SourceUnavailable`. A host provider should report its own
 failures with the provider contract's exceptions (`BundleProviderException` and
 its derived types) or `IOException`: the core translates provider, I/O and
-access exceptions only, so any other exception a provider throws during a
-reload escapes `SearchAsync`.
+access exceptions only, so any other exception a provider throws during any
+load or token read escapes `SearchAsync`.
 
 A source may name its storage:
 
@@ -303,8 +303,9 @@ filesystem (`IllegalMemoryProvider`).
 
 `IMemoryStore.DeleteScopeAsync` returns a `MemoryDeleteResult(Tiers, Error)`:
 one `MemoryTierDeletion` per tier whose scope held a key, was refused or could
-not be listed, with a
-`BundleWriteReport` of the keys deleted and those that failed (an object held
+not be listed, or held no key but left empty directories that could not be
+removed, with a `BundleWriteReport` of the keys deleted and those that failed
+(an object held
 open on Windows, say, is reported by its exception type and key). A failed
 deletion can be run again. Once every object is gone, the scope's now-empty
 directories are removed too (never following a link), because their names carry
@@ -329,8 +330,8 @@ until you rename it:
 mv memory-tenant/con.foo-0123456789abcdef memory-tenant/_con.foo-0123456789abcdef
 ```
 
-and the same for each such segment under `memory-user/<tenant>/` and
-`memory-session/<tenant>/<user>/`. No other identifier changes.
+and the same for every such segment, at any level (tenant, user or session),
+under `memory-user/` and `memory-session/`. No other identifier changes.
 
 ## V1 limits
 

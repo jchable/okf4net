@@ -268,7 +268,9 @@ through the key-based members). The other path-based members of `Bundle`
 (`Root`, `IndexFiles`, `LogFiles`, `ParseErrors`) and the `BundleRoot` of
 `BundleConceptWriter` and `OkfBundleTools` are obsolete in the same way;
 `Concept.Path`, `Diagnostic.Path` and `AuditFinding.Path` are not: each is the
-display path of its `Key`.
+display path of its object, set beside the `Key` the load gave it (a
+`Diagnostic` about a refused name, or a hand-built finding, has a `Path` and no
+`Key`).
 
 ### Writing through a provider
 
@@ -419,7 +421,7 @@ A catalog keeps the handles itself (spec §9): each `FileKnowledgeCatalog`
 snapshot carries one per enabled knowledge source
 (`snapshot.Handles[sourceId]`), built under the catalog's
 `KnowledgeCatalogOptions.LoadOptions` and the source's refresh policy
-(`RefreshPolicy`, `OnAccess` by default, so a source stays as fresh as when it
+(`RefreshPolicy`, `OnAccess` by default, so a source stays almost as fresh as when it
 was reloaded at every request at the cost of a token read — a weak token for a
 directory: name, length and modification time; `RefreshPolicyFor` chooses per
 source), and the resolvers search through them. A source whose later reload

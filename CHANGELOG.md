@@ -165,8 +165,8 @@ and this project adheres to
   the filesystem provider confined to the catalog root. A reload reuses a
   source's handle only when its effective configuration (provider type,
   resolved directory, settings, policy, load options) is identical; otherwise
-  it builds a new one and disposes the old one with the catalog, which only
-  ends its change subscription — a request still holding the old snapshot
+  it builds a new one and disposes the old one when the new snapshot is
+  published (a disposal only ends its change subscription) — a request still holding the old snapshot
   keeps reading its image. A rejected reload keeps every current handle and
   disposes the ones it built; a handle whose `Dispose` throws strands no other,
   and a host exception thrown inside the debounced reload (the watcher's
@@ -187,9 +187,13 @@ and this project adheres to
   objects are deleted one by one, so each tier reports the keys deleted and
   those that failed, with why. `IMemoryStore.DeleteScopeAsync` changes
   signature with it, so a host's own `IMemoryStore` must build the new result.
-  A tier whose scope held no key is absent from `Tiers`. Migration:
-  `result.TiersDeleted` becomes `result.Tiers.Count(t => t.Report.Succeeded)`
-  (a tier reported with a failure is no longer counted as deleted);
+  A tier whose scope held no key is absent from `Tiers`, unless the empty
+  directories left in it could not be removed (a failure under the scope's
+  prefix). Migration: `result.TiersDeleted` becomes
+  `result.Tiers.Count(t => t.Report.Succeeded)` — not an exact equivalent: a
+  scope directory that held no key, which `TiersDeleted` counted once it was
+  removed, is now absent from `Tiers` (its empty directories are still
+  removed);
   `result.Error` is `null` when nothing failed, as before, but its text changed
   (see Changed).
 - **`Diagnostic` and `AuditFinding` equality includes `Key`** (#139, lot D;
@@ -201,24 +205,42 @@ and this project adheres to
   `Key` to the key the load gave (`bundle.Concepts[…].Key`, an index's or a
   log's key) or compares the fields it cares about (`Path`, `Code`, `Message`)
   instead. `Diagnostic.ToString` is its own rendering and does not change.
+- **A memory scope segment whose base is a Windows reserved device name is
+  prefixed with `_`** (#139, lot D; spec §9, D4): `con.foo` encodes as
+  `_con.foo-<hash>` where it encoded as `con.foo-<hash>`, a name Windows maps
+  to a device (the extension does not lift the reservation); the hash is that
+  of the raw identifier and is unchanged, and no other identifier changes
+  (`con` alone, `console.x`, `com10.x` are not reserved). Such scopes never
+  worked on Windows. **Migration (Linux, macOS), a manual copy:** a tenant,
+  user or session identifier whose part before its first `.` is `CON`, `PRN`,
+  `AUX`, `NUL`, `COM1`–`COM9` or `LPT1`–`LPT9` (any case) has its existing
+  directory under the old name, which is no longer found: reads, enumeration
+  and `DeleteScopeAsync` address the prefixed name, and the old directory is
+  neither read, migrated nor deleted. Copy it by hand by prefixing `_`
+  (`mv memory-tenant/con.foo-0123… memory-tenant/_con.foo-0123…`, and the same
+  for every such segment, at any level, under `memory-user/` and
+  `memory-session/`).
+
+### Changed
+
 - **The path-based members are obsolete** (#139, lot D; spec §9, §10), kept
-  one version with a warning (never an error) whose message names the
-  replacement: `Bundle.Root` → `Bundle.Location`; `Bundle.IndexFiles` /
-  `LogFiles` → `IndexKeys` / `LogKeys` with
+  one version with a warning (never an error, so not a break) whose message
+  names the replacement: `Bundle.Root` → `Bundle.Location`;
+  `Bundle.IndexFiles` / `LogFiles` → `IndexKeys` / `LogKeys` with
   `BundleDisplayPath.Compose(bundle.Location, key)` for a path to print;
   `Bundle.ParseErrors` → `ParseProblems` with `bundle.DisplayPath(problem)`;
   `Bundle.TryResolveResource` → `TryResolveResourceKey`;
   `Bundle.ReadResourceText(string)` → `ReadResourceText(BundleKey)`;
-  `BundleConceptWriter.BundleRoot` and `OkfBundleTools.BundleRoot` → the
-  `FileSystemBundleProvider`'s `Root`, or the provider's `Location`. They are
-  removed with the asynchronous provider contract (#152). No code of this
-  repository reads them any more (the tests that pin their strings suppress
-  the warning); a host that does keeps their historical behaviour, warned.
-  `Concept.Path`, `Diagnostic.Path` and `AuditFinding.Path` are not obsolete:
-  they are the §8 display projection every output prints, beside `Key`.
-
-### Changed
-
+  `OkfBundleTools.BundleRoot` → `Location`, or `Handle.Provider` as a
+  `FileSystemBundleProvider` for its `Root`; `BundleConceptWriter.BundleRoot`
+  (the writer exposes neither a provider nor a location) → keep the root path
+  you constructed it with, or construct it over a `FileSystemBundleProvider`
+  you hold and use that provider's `Root`. They are removed with the
+  asynchronous provider contract (#152). No code of this repository reads them
+  any more (the tests that pin their strings suppress the warning); a host
+  that does keeps their historical behaviour, warned. `Concept.Path`,
+  `Diagnostic.Path` and `AuditFinding.Path` are not obsolete: they are the §8
+  display projection every output prints, beside `Key`.
 - **A catalog source no longer reloads its bundle at every request** (#139,
   lot D; spec §5.3, §9, §10): `GroupedKnowledgeResolver`,
   `MergedKnowledgeResolver` and `PriorityWeightedKnowledgeResolver` search
@@ -245,7 +267,7 @@ and this project adheres to
   access: a source directory replaced by a junction after the handle was
   created makes the next token read fail and the previous image is served
   stale, nothing under the junction ever read. **Known limit:** a host
-  provider that throws, during a reload, an exception that is neither a
+  provider that throws, during any load or token read, an exception that is neither a
   `BundleProviderException` nor an `IOException` nor an
   `UnauthorizedAccessException` is not translated by the core and escapes
   `SearchAsync`; a provider should wrap its own failures.
@@ -269,9 +291,9 @@ and this project adheres to
   texts are unchanged). A scope exists while it holds a key (spec §9, decision
   14): an empty or absent scope directory is read and enumerated as nothing.
   Deleting a scope deletes each object under its prefix on its own,
-  unconditionally; a `.md` the storage holds under a name that is no key
-  cannot be deleted through the provider and is reported as a failure under the
-  scope's prefix. An object that cannot be deleted (held open on Windows, say)
+  unconditionally; an object the storage holds under a name that is no key
+  (any file under the scope, not only a `.md`) cannot be deleted through the
+  provider and is reported as a failure under the scope's prefix. An object that cannot be deleted (held open on Windows, say)
   is reported by the exception's type and the key, never by the runtime's
   message, which can name a host path (#211). When every object is gone, the
   scope's now-empty directories are removed too, bottom-up with a
@@ -294,29 +316,17 @@ and this project adheres to
   failures are joined by a comma and tiers by a semicolon in `Error`. Writes already
   went through the provider (lot B); they now share the tier's provider
   instance.
-- **A memory scope segment whose base is a Windows reserved device name is
-  prefixed with `_`** (#139, lot D; spec §9, D4): `con.foo` encodes as
-  `_con.foo-<hash>` where it encoded as `con.foo-<hash>`, a name Windows maps
-  to a device (the extension does not lift the reservation); the hash is that
-  of the raw identifier and is unchanged, and no other identifier changes
-  (`con` alone, `console.x`, `com10.x` are not reserved). Such scopes never
-  worked on Windows. **Migration (Linux, macOS):** a tenant, user or session
-  identifier whose part before its first `.` is `CON`, `PRN`, `AUX`, `NUL`,
-  `COM1`–`COM9` or `LPT1`–`LPT9` (any case) has its existing directory under
-  the old name, which is no longer found: reads, enumeration and
-  `DeleteScopeAsync` address the prefixed name, and the old directory is
-  neither read, migrated nor deleted. Copy it by hand by prefixing `_`
-  (`mv memory-tenant/con.foo-0123… memory-tenant/_con.foo-0123…`, and the same
-  for each such segment under `memory-user/` and `memory-session/`).
 - **`okf info`, `okf info --json`, `okf validate` and the viewer read the keys
   and the display path** (#139, lot D; spec §8, §9) instead of the obsolete
   path-based members (`Location`, `IndexKeys`/`LogKeys`, `ParseProblems` with
-  `Bundle.DisplayPath`, `ConceptId.FromKey` for an index's location): the same
+  `Bundle.DisplayPath`, `ConceptId.FromKey` for an index's concept id): the same
   strings by construction, so no byte of `okf` or `okf-render` output changes.
   One validator behaviour does: the §8 index-entry description check derives
   the index's id from its key, so it now also runs for an index whose display
   path the old path-based derivation could not place under the location (an
-  empty `Location`, a first segment that is drive-rooted).
+  empty `Location`, a first segment that is drive-rooted); it is still skipped
+  for an index whose key is no valid concept id (a directory named `my docs`,
+  say).
 - **`okf-mcp`'s bundle discovery reads a candidate's root `index.md` under a
   16 MiB bound** (#139, lot C; spec §6, §9): `OkfBundleDiscovery.ReadRootIndexOrNull`
   answers `null` — "no declared version", as for any unreadable index — for
@@ -626,12 +636,12 @@ and this project adheres to
   does. A resource reached through a symlink or junction is therefore still
   reported as escaping the bundle (`FrontmatterPathUnsafe`), as before.
 - **The path-based members are left unchanged, and no longer read anything in
-  this repository:** `Bundle.TryResolveResource` and
+  this repository (obsolete since lot D: see Changed):** `Bundle.TryResolveResource` and
   `Bundle.ReadResourceText(string)` apply neither the key policy, nor the
   rejected-key guard, nor the exact-case and backslash rules above (they still
   resolve through the OS filesystem, so `references\a.sql` resolves on Windows
-  and a case-folded name on Windows and macOS). They remain public utilities,
-  but no code in `src/` calls them any more: `AttestationOrchestrator` and
+  and a case-folded name on Windows and macOS). They remain public, as
+  obsolete members (a warning, lot D), but no code in `src/` calls them any more: `AttestationOrchestrator` and
   `okf_get_computation` (`OkfBundleTools`) resolve on keys
   (`TryResolveResourceKey`, `ReadResourceText(BundleKey, …)`), as `okf validate`
   does, so what the tool shows is what `okf validate` accepts. A host that

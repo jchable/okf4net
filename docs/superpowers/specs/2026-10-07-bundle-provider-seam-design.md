@@ -1210,7 +1210,8 @@ sources mémoire. Désormais :
 > source dont le **premier** chargement échoue reste `SourceUnavailable`.
 > **Limite connue :** une exception qui n'est ni une `BundleProviderException`,
 > ni une `IOException`, ni une `UnauthorizedAccessException`, levée par un
-> provider hôte pendant un rechargement, n'est pas traduite par le cœur et
+> provider hôte pendant un chargement ou une lecture du jeton (le premier
+> chargement compris), n'est pas traduite par le cœur et
 > sort de `SearchAsync`.
 >
 > **Suppression d'un scope : décision 14 précisée.** Un scope existe s'il
@@ -1324,11 +1325,14 @@ l'arbitrage du 2026-10-08).
   > propriété `init` hors de la liste positionnelle, l'égalité synthétisée des
   > deux enregistrements la **compte** désormais : comparer un constat du
   > validateur ou de l'audit à un `new Diagnostic(…)` construit à la main donne
-  > `false` si `Key` diffère. Les seules ruptures effectives de ce lot sont
+  > `false` si `Key` diffère. Les ruptures effectives de ce lot sont
   > `MemoryDeleteResult` et la signature de `IMemoryStore.DeleteScopeAsync`,
-  > plus cette égalité ; `KnowledgeCatalogSource` gagne ses réglages en
-  > propriétés `init`, et `CatalogDiagnosticCode` et `KnowledgeDiagnosticCode`
-  > de nouveaux membres ajoutés à la fin, sans rupture.
+  > cette égalité, et la migration manuelle d'un dossier de scope mémoire
+  > d'avant D4 (sous Linux et macOS : un copier à la main). Les membres
+  > obsolètes ne sont pas une rupture, seulement des avertissements ;
+  > `KnowledgeCatalogSource` gagne ses réglages en propriétés `init`, et
+  > `CatalogDiagnosticCode` et `KnowledgeDiagnosticCode` de nouveaux membres
+  > ajoutés à la fin, sans rupture.
 - **Comportement, filesystem compris** :
   - bornes finies par défaut (§6). La borne d'entrées compte **toutes** les
     entrées, `.git` et `node_modules` compris (§2) : un très gros dossier peut

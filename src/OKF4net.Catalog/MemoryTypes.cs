@@ -26,7 +26,7 @@ public sealed record MemoryWriteResult(bool Written, string? Error);
 /// prefix and nothing deleted. Once every object of a scope is deleted its now-empty
 /// directories are removed too: the scope's own directory, named for its own id, does not
 /// outlive it, but its parent directories are kept and still carry the ids above it
-/// (<c>memory-session/&lt;tenant&gt;/&lt;user&gt;-&lt;hash&gt;/</c> after a user's sessions are erased,
+/// (<c>memory-session/&lt;tenant&gt;-&lt;hash&gt;/&lt;user&gt;-&lt;hash&gt;/</c> after a user's sessions are erased,
 /// <c>memory-user/&lt;tenant&gt;-&lt;hash&gt;/</c> after the last user).
 /// </summary>
 /// <param name="Tiers">What each tier's deletion did, with the keys deleted and those that failed.</param>

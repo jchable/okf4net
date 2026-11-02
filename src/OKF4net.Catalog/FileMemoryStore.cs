@@ -29,7 +29,7 @@ namespace OKF4net.Catalog;
 /// following a link (see <see cref="RemoveScopeDirectories"/>): the directory names carry the
 /// lowercased tenant, user and session ids, so the scope's OWN directory, the one named for its
 /// own id, does not outlive it. Its parent directories are kept and still carry the ids of the
-/// levels above: <c>memory-session/&lt;tenant&gt;/&lt;user&gt;-&lt;hash&gt;/</c> after a user's sessions
+/// levels above: <c>memory-session/&lt;tenant&gt;-&lt;hash&gt;/&lt;user&gt;-&lt;hash&gt;/</c> after a user's sessions
 /// are erased, <c>memory-user/&lt;tenant&gt;-&lt;hash&gt;/</c> after the last user. A directory that
 /// cannot be removed (it holds a link or a file the provider did not list) is a failure under the
 /// scope's prefix, so the tier is not reported as succeeded.</para>
