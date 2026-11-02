@@ -12,7 +12,10 @@ namespace OKF4net.Providers;
 /// <para><b>One load at a time.</b> The token comparison of <see cref="BundleRefreshMode.OnAccess"/> and <see cref="BundleRefreshMode.Interval"/> also runs serially under the load lock (on the filesystem provider it is a walk), blocking concurrent callers. Concurrent callers wait for the load in progress instead of
 /// each starting one; the image is replaced as a whole, so a call never sees two versions.</para>
 /// <para><b>Failure.</b> When a reload fails (the storage is unreachable, a bound is exceeded) the
-/// previous image stays served and <see cref="IsStale"/> says so; only the very first load throws from <see cref="Current"/> (<see cref="Refresh"/> also throws on a failed reload).</para>
+/// previous image stays served and <see cref="IsStale"/> says so; only the very first load throws from <see cref="Current"/> (<see cref="Refresh"/> also throws on a failed reload).
+/// This holds for a raw exception from a host provider too (neither a provider, an I/O nor an access exception, <see cref="InvalidOperationException"/> say), at the token comparison or in a load: it is wrapped in a
+/// <see cref="BundleLoadException"/> whose message names its type only and which keeps it as the <see cref="Exception.InnerException"/>, so <see cref="LastLoadError"/> carries it, a first load throws it wrapped, and a
+/// consumed <see cref="BundleRefreshMode.Notify"/> signal is re-armed. Only an <see cref="OutOfMemoryException"/> propagates. The handle holds no caller token, so a cancellation raised by the provider is such a failure too.</para>
 /// <para><b>The reload obligation</b> (spec §5.1): <see cref="Invalidate"/> obliges the next access
 /// to reload, whatever the policy, and the obligation is acknowledged only by a successful load
 /// started after it — a load already running when it is made, or a load that fails, leaves it
@@ -194,14 +197,20 @@ public sealed class BundleHandle : IDisposable
         return false;
     }
 
-    /// <summary>A token that cannot be read counts as changed: the reload then fails the same way, and the image is marked stale.</summary>
+    /// <summary>
+    /// A token that cannot be read counts as changed, whatever the exception (a host provider may
+    /// raise one that is neither a provider, an I/O nor an access exception): the reload then
+    /// fails the same way, and the image is marked stale. Only an <see cref="OutOfMemoryException"/>
+    /// propagates. The handle holds no caller token, so a cancellation raised by the provider is a
+    /// provider failure like the others.
+    /// </summary>
     private bool TokenChanged(Image image)
     {
         try
         {
             return Provider.GetVersion(Options.Limits) != image.Bundle.Version;
         }
-        catch (Exception e) when (e is BundleProviderException or IOException or UnauthorizedAccessException)
+        catch (Exception e) when (e is not OutOfMemoryException)
         {
             return true;
         }
@@ -220,12 +229,22 @@ public sealed class BundleHandle : IDisposable
             _lastCheck = _time.GetTimestamp();
             return image;
         }
-        catch (BundleLoadException e)
+        catch (Exception e) when (e is not OutOfMemoryException)
         {
-            Volatile.Write(ref _lastLoadError, e);
+            // A BundleLoadException is the core's own translation of a provider failure. Any other
+            // exception can only be a host provider's raw one (the core translates the provider,
+            // I/O and access exceptions): it is a load failure like the others, wrapped with a
+            // message built from its type alone (spec §7, never its text) and kept as the cause.
+            var failure = e as BundleLoadException ?? new BundleLoadException($"provider failure ({e.GetType().Name})", e);
+            Volatile.Write(ref _lastLoadError, failure);
             if (_image is not { } previous)
             {
-                throw;
+                if (ReferenceEquals(failure, e))
+                {
+                    throw;
+                }
+
+                throw failure;
             }
 
             Volatile.Write(ref _stale, true);

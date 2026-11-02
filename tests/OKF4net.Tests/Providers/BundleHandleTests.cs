@@ -365,6 +365,188 @@ public class BundleHandleTests
         Assert.Contains("LoadLocked", thrown.StackTrace, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A raw exception (neither a provider, an I/O nor an access exception) from a host provider
+    /// is a load failure like any other: the previous image is served stale with a
+    /// <see cref="BundleLoadException"/> that wraps it, and the next access after the provider
+    /// recovers reloads. The signal or the interval that the comparison consumed must not make
+    /// the outdated image current (Notify re-arms the signal; Interval waits its next slot).
+    /// </summary>
+    [Theory]
+    [InlineData("OnAccess", "version")]
+    [InlineData("OnAccess", "enumerate")]
+    [InlineData("OnAccess", "read")]
+    [InlineData("Interval", "version")]
+    [InlineData("Interval", "enumerate")]
+    [InlineData("Interval", "read")]
+    [InlineData("Notify", "version")]
+    [InlineData("Notify", "enumerate")]
+    [InlineData("Notify", "read")]
+    public void A_raw_exception_from_a_host_provider_is_a_load_failure_served_stale(string policy, string where)
+    {
+        using var rig = MakeRig(policy);
+        var first = rig.Handle.Current;
+        var raw = new InvalidOperationException("secret-host-detail");
+        rig.Storage.Add("b.md", Doc);
+        Fail(rig.Storage, where, raw);
+        rig.Signal();
+
+        Assert.Same(first, rig.Handle.Current);
+        Assert.True(rig.Handle.IsStale);
+        var error = Assert.IsType<BundleLoadException>(rig.Handle.LastLoadError);
+        Assert.Same(raw, error.InnerException);
+        Assert.DoesNotContain("secret-host-detail", error.Message, StringComparison.Ordinal);
+        Assert.Contains(nameof(InvalidOperationException), error.Message, StringComparison.Ordinal);
+
+        Fail(rig.Storage, where, null); // the provider recovers; no new signal under Notify
+        rig.Elapse();
+
+        var second = rig.Handle.Current;
+        Assert.NotSame(first, second);
+        Assert.Equal(2, second.Count);
+        Assert.False(rig.Handle.IsStale);
+        Assert.Null(rig.Handle.LastLoadError);
+    }
+
+    /// <summary>The token comparison alone: a raw exception from <see cref="IBundleProvider.GetVersion"/> there counts as "changed", so the reload (which succeeds) runs.</summary>
+    [Theory]
+    [InlineData("OnAccess")]
+    [InlineData("Interval")]
+    [InlineData("Notify")]
+    public void A_raw_exception_from_the_token_comparison_alone_counts_as_changed(string policy)
+    {
+        using var rig = MakeRig(policy);
+        var first = rig.Handle.Current;
+        rig.Storage.Add("b.md", Doc);
+        var thrown = false;
+        rig.Hooked.OnGetVersion = () =>
+        {
+            if (!thrown)
+            {
+                thrown = true;
+                throw new InvalidOperationException("secret-host-detail");
+            }
+        };
+        rig.Signal();
+
+        var second = rig.Handle.Current;
+
+        Assert.True(thrown);
+        Assert.NotSame(first, second);
+        Assert.Equal(2, second.Count);
+        Assert.False(rig.Handle.IsStale);
+        Assert.Null(rig.Handle.LastLoadError);
+    }
+
+    [Theory]
+    [InlineData("version")]
+    [InlineData("enumerate")]
+    [InlineData("read")]
+    public void A_raw_exception_at_the_first_load_throws_a_BundleLoadException(string where)
+    {
+        using var rig = MakeRig("OnAccess");
+        var raw = new InvalidOperationException("secret-host-detail");
+        Fail(rig.Storage, where, raw);
+
+        var thrown = Assert.Throws<BundleLoadException>(() => rig.Handle.Current);
+
+        Assert.Same(raw, thrown.InnerException);
+        Assert.DoesNotContain("secret-host-detail", thrown.Message, StringComparison.Ordinal);
+        Assert.Same(thrown, rig.Handle.LastLoadError);
+        Assert.False(rig.Handle.IsStale);
+
+        Fail(rig.Storage, where, null);
+        Assert.Equal(1, rig.Handle.Current.Count);
+        Assert.Null(rig.Handle.LastLoadError);
+    }
+
+    [Fact]
+    public void Refresh_wraps_a_raw_exception_and_keeps_the_previous_image_served()
+    {
+        using var rig = MakeRig("Manual");
+        var first = rig.Handle.Current;
+        var raw = new InvalidOperationException("secret-host-detail");
+        rig.Storage.FailEnumerateWith = raw;
+
+        var thrown = Assert.Throws<BundleLoadException>(() => rig.Handle.Refresh());
+
+        Assert.Same(raw, thrown.InnerException);
+        Assert.Same(first, rig.Handle.Current);
+        Assert.True(rig.Handle.IsStale);
+    }
+
+    /// <summary>An <see cref="OutOfMemoryException"/> is fatal, never a provider failure: it propagates from both the comparison and the load.</summary>
+    [Theory]
+    [InlineData("version")]
+    [InlineData("enumerate")]
+    public void An_OutOfMemoryException_still_propagates(string where)
+    {
+        using var rig = MakeRig("OnAccess");
+        _ = rig.Handle.Current;
+        rig.Storage.Add("b.md", Doc);
+        Fail(rig.Storage, where, new OutOfMemoryException());
+
+        Assert.Throws<OutOfMemoryException>(() => rig.Handle.Current);
+    }
+
+    private static void Fail(InMemoryBundleProvider storage, string where, Exception? failure)
+    {
+        switch (where)
+        {
+            case "version":
+                storage.FailVersionWith = failure;
+                break;
+            case "enumerate":
+                storage.FailEnumerateWith = failure;
+                break;
+            default:
+                storage.FailReadsWith = failure;
+                break;
+        }
+    }
+
+    /// <summary>A handle over the in-memory storage under one policy, with the gestures that make the policy compare the token.</summary>
+    private sealed class Rig(InMemoryBundleProvider storage, HookedProvider hooked, BundleHandle handle, Action signal, Action elapse) : IDisposable
+    {
+        public InMemoryBundleProvider Storage => storage;
+        public HookedProvider Hooked => hooked;
+        public BundleHandle Handle => handle;
+
+        /// <summary>What makes the policy compare at the next access: a signal under Notify, the interval elapsing under Interval, nothing under OnAccess.</summary>
+        public void Signal() => signal();
+
+        /// <summary>What a recovered provider gets with no new signal: the interval elapsing under Interval (it has no re-arm), nothing otherwise.</summary>
+        public void Elapse() => elapse();
+
+        public void Dispose() => handle.Dispose();
+    }
+
+    private static Rig MakeRig(string policy)
+    {
+        var storage = Storage();
+        var hooked = new HookedProvider(storage);
+        var time = new ManualTime();
+        switch (policy)
+        {
+            case "Notify":
+                {
+                    var notifying = new NotifyingBundleProvider(hooked);
+                    return new Rig(storage, hooked, new BundleHandle(notifying, refreshPolicy: BundleRefreshPolicy.Notify), notifying.Signal, () => { });
+                }
+
+            case "Interval":
+                {
+                    var handle = new BundleHandle(hooked, refreshPolicy: BundleRefreshPolicy.Every(TimeSpan.FromSeconds(10)), time: time);
+                    return new Rig(storage, hooked, handle, () => time.Advance(TimeSpan.FromSeconds(11)), () => time.Advance(TimeSpan.FromSeconds(11)));
+                }
+
+            case "OnAccess":
+                return new Rig(storage, hooked, new BundleHandle(hooked, refreshPolicy: BundleRefreshPolicy.OnAccess), () => { }, () => { });
+            default:
+                return new Rig(storage, hooked, new BundleHandle(hooked), () => { }, () => { });
+        }
+    }
+
     [Fact]
     public void Every_needs_a_positive_interval()
     {
@@ -389,11 +571,17 @@ public class BundleHandleTests
     {
         public Action? OnEnumerate { get; set; }
 
+        public Action? OnGetVersion { get; set; }
+
         public string Id => inner.Id;
         public string Location => inner.Location;
         public BundleProviderCapabilities Capabilities => inner.Capabilities;
         public BundleKeyConstraints NativeConstraints => inner.NativeConstraints;
-        public BundleVersion GetVersion(BundleLimits limits) => inner.GetVersion(limits);
+        public BundleVersion GetVersion(BundleLimits limits)
+        {
+            OnGetVersion?.Invoke();
+            return inner.GetVersion(limits);
+        }
 
         public IEnumerable<BundleListing> Enumerate(BundleKey? prefix, BundleLimits limits)
         {

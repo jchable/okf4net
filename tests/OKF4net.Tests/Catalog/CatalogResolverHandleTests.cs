@@ -147,7 +147,7 @@ public class CatalogResolverHandleTests
         var locationFails = new LateIdProvider(failing) { FailLocation = true };
         var result = await new OkfBundleKnowledgeSource("f", new BundleHandle(locationFails)).SearchAsync(new KnowledgeQuery("orders"));
 
-        Assert.Equal("Source 'f' bundle at '(location unavailable)' could not be loaded (InvalidOperationException).", result.Diagnostic!.Message);
+        Assert.Equal("Source 'f' bundle at '(location unavailable)' could not be loaded: provider failure (InvalidOperationException)", result.Diagnostic!.Message);
     }
 
     // The catalog refuses a provider whose Id throws when it enters; one that starts throwing later is
@@ -343,13 +343,15 @@ public class CatalogResolverHandleTests
     private static TestProviderFactory BadAndGoodFactory(InMemoryBundleProvider bad, InMemoryBundleProvider good) =>
         new("memory", s => s.Id == "bad" ? bad : good);
 
-    // A host provider's raw (non-provider) exception must not take every other source's passages
-    // with it: the source reports itself unavailable, by exception type only, and the search goes on.
+    // A host provider's raw (non-provider) exception is a load failure like any other (spec §5.2): it must not
+    // take every other source's passages with it. After a first good load the handle serves its last image stale
+    // and the source is reported SourceStale, by the type of the cause only; a first load that fails is
+    // SourceUnavailable, by the type of the cause too (the message the core builds never carries the host's text).
     [Theory]
     [InlineData(KnowledgeResolverStrategy.GroupedBySource)]
     [InlineData(KnowledgeResolverStrategy.Merged)]
     [InlineData(KnowledgeResolverStrategy.PriorityWeighted)]
-    public async Task A_raw_exception_from_a_providers_token_read_makes_only_that_source_unavailable(KnowledgeResolverStrategy strategy)
+    public async Task A_raw_exception_from_a_providers_token_read_serves_that_source_stale(KnowledgeResolverStrategy strategy)
     {
         using var root = new TempDir();
         var bad = new InMemoryBundleProvider(id: "bad").Add("a.md", Doc);
@@ -358,20 +360,23 @@ public class CatalogResolverHandleTests
         var resolver = new KnowledgeResolverRouter(catalog, strategy, null, null);
         Assert.Equal(2, (await resolver.SearchAsync(new KnowledgeQuery("orders"))).Passages.Count);
 
-        // The second search reads the bad provider's token first: the raw exception comes from the handle.
+        // The second search reads the bad provider's token first: the raw exception comes from the handle,
+        // which keeps serving the bad source's last good image.
         bad.FailVersionWith = new InvalidOperationException("s3://secret-bucket exploded");
         var context = await resolver.SearchAsync(new KnowledgeQuery("orders"));
 
-        var passage = Assert.Single(context.Passages);
-        Assert.Equal("good", passage.SourceId);
-        var unavailable = Assert.Single(context.Diagnostics, d => d.Code == KnowledgeDiagnosticCode.SourceUnavailable);
-        Assert.Equal("bad", unavailable.SourceId);
-        Assert.Equal("Source 'bad' bundle at 'memory://bad' could not be loaded (InvalidOperationException).", unavailable.Message);
-        Assert.DoesNotContain("secret", unavailable.Message);
+        Assert.Equal(["bad", "good"], context.Passages.Select(p => p.SourceId).Order(StringComparer.Ordinal));
+        var stale = Assert.Single(context.Diagnostics);
+        Assert.Equal(KnowledgeDiagnosticCode.SourceStale, stale.Code);
+        Assert.Equal("bad", stale.SourceId);
+        Assert.Equal("Source 'bad' bundle at 'memory://bad' is served from its last good image; the last reload failed (InvalidOperationException).", stale.Message);
+        Assert.DoesNotContain("secret", stale.Message);
 
         // The source recovers when the provider does.
         bad.FailVersionWith = null;
-        Assert.Equal(2, (await resolver.SearchAsync(new KnowledgeQuery("orders"))).Passages.Count);
+        var recovered = await resolver.SearchAsync(new KnowledgeQuery("orders"));
+        Assert.Equal(2, recovered.Passages.Count);
+        Assert.Empty(recovered.Diagnostics);
     }
 
     [Theory]
@@ -392,7 +397,7 @@ public class CatalogResolverHandleTests
         Assert.Equal("good", Assert.Single(context.Passages).SourceId);
         var unavailable = Assert.Single(context.Diagnostics, d => d.Code == KnowledgeDiagnosticCode.SourceUnavailable);
         Assert.Equal("bad", unavailable.SourceId);
-        Assert.Equal("Source 'bad' bundle at 'memory://bad' could not be loaded (InvalidOperationException).", unavailable.Message);
+        Assert.Equal("Source 'bad' bundle at 'memory://bad' could not be loaded: provider failure (InvalidOperationException)", unavailable.Message);
         Assert.DoesNotContain("secret", unavailable.Message);
     }
 
@@ -409,15 +414,17 @@ public class CatalogResolverHandleTests
         var resolver = new KnowledgeResolverRouter(catalog, strategy, null, null);
         await resolver.SearchAsync(new KnowledgeQuery("orders"));
 
-        // An HttpClient timeout surfaces as a TaskCanceledException while the caller's token is not cancelled.
+        // An HttpClient timeout surfaces as a TaskCanceledException while the caller's token is not cancelled:
+        // the handle holds no caller token, so it is a provider failure like any other (the last image is served stale).
         bad.FailVersionWith = new TaskCanceledException("s3://secret-bucket timed out");
         var context = await resolver.SearchAsync(new KnowledgeQuery("orders"), CancellationToken.None);
 
-        Assert.Equal("good", Assert.Single(context.Passages).SourceId);
-        var unavailable = Assert.Single(context.Diagnostics, d => d.Code == KnowledgeDiagnosticCode.SourceUnavailable);
-        Assert.Equal("bad", unavailable.SourceId);
-        Assert.Equal("Source 'bad' bundle at 'memory://bad' could not be loaded (TaskCanceledException).", unavailable.Message);
-        Assert.DoesNotContain("secret", unavailable.Message);
+        Assert.Equal(["bad", "good"], context.Passages.Select(p => p.SourceId).Order(StringComparer.Ordinal));
+        var stale = Assert.Single(context.Diagnostics);
+        Assert.Equal(KnowledgeDiagnosticCode.SourceStale, stale.Code);
+        Assert.Equal("bad", stale.SourceId);
+        Assert.Equal("Source 'bad' bundle at 'memory://bad' is served from its last good image; the last reload failed (TaskCanceledException).", stale.Message);
+        Assert.DoesNotContain("secret", stale.Message);
 
         // The caller's own cancellation is still thrown.
         using var cts = new CancellationTokenSource();

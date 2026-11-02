@@ -22,9 +22,11 @@ namespace OKF4net.Catalog;
 /// loaded once and a changed one is seen at the next search. A reload that fails keeps
 /// the previous image served (<see cref="BundleHandle.IsStale"/>, which the catalog's
 /// resolvers report as <see cref="KnowledgeDiagnosticCode.SourceStale"/>); only a bundle
-/// that never loaded is reported as <see cref="KnowledgeDiagnosticCode.SourceUnavailable"/>, and
-/// so is one whose provider throws an exception the core does not translate (neither a provider
-/// exception, an I/O error nor an access error), by its type name only.
+/// that never loaded is reported as <see cref="KnowledgeDiagnosticCode.SourceUnavailable"/>. A raw
+/// exception from a host provider (neither a provider exception, an I/O error nor an access error)
+/// is a load failure like those: the handle wraps it in a <see cref="BundleLoadException"/> that
+/// names its type only, so a source that had loaded is served stale and a first load that fails is
+/// unavailable.
 /// </para>
 /// <para>
 /// <b>The sharing is explicit.</b> The directory constructor builds a handle of its own
@@ -141,11 +143,12 @@ public sealed class OkfBundleKnowledgeSource : IKnowledgeSource
         }
         catch (Exception e) when (e is not OutOfMemoryException && !(e is OperationCanceledException && ct.IsCancellationRequested))
         {
-            // A host provider's own exception (neither a BundleProviderException nor an I/O error, so the core did
-            // not translate it): this source is unavailable, by type only -- a host's message can name a bucket or
+            // A guard, not the usual path: the handle wraps a host provider's raw exception into a BundleLoadException
+            // (caught above), so what reaches here is an exception the handle could not wrap (a host TimeProvider
+            // that throws, say). This source is unavailable, by type only -- a host's message can name a bucket or
             // a path (spec §7) -- and the sources around it are still searched. Handle.Current takes no token and
-            // ct was checked above, so a cancellation raised here is the provider's own (an HttpClient timeout, say)
-            // and is reported the same way; only a cancellation of the CALLER's token still propagates.
+            // ct was checked above, so a cancellation raised here is not the caller's and is reported the same way;
+            // only a cancellation of the CALLER's token still propagates.
             return new ValueTask<KnowledgeSearchResult>(new KnowledgeSearchResult(
                 Array.Empty<KnowledgePassage>(),
                 new KnowledgeDiagnostic(
