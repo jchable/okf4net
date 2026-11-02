@@ -266,7 +266,9 @@ public sealed record Diagnostic(Severity Severity, string? Path, ConceptId? Conc
     /// it a key (<see cref="BundleParseError.Key"/>). <see langword="null"/> for a hand-built
     /// finding, for a name the load refused (by the key policy, by a collision, or because it
     /// is no key at all: such a name can share its display path with a real concept, so the
-    /// path never decides the key), and for a finding about nothing in particular.
+    /// path never decides the key), and for a finding about nothing in particular. An
+    /// over-length <c>.md</c> name (past the key-length bound) does get a key: the genuine
+    /// parsed <see cref="Providers.BundleKey"/> the load recorded with the problem.
     /// <see cref="Path"/> is the display path of the object
     /// (<see cref="Providers.BundleDisplayPath.Compose"/> under the bundle's location), the
     /// text the <c>validate</c> snapshots pin.

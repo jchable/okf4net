@@ -41,11 +41,32 @@ public class ObsoleteMembersTests
             .Select(x => (x.Member, x.Attribute!));
 
     /// <summary>
-    /// The compiler marks the constructors of a type with <c>required</c> members <c>[Obsolete(..., error: true)]</c>
-    /// (beside <c>CompilerFeatureRequired</c>) so that an old compiler refuses them: not an API decision, never counted.
+    /// The compiler marks the constructors of a type with <c>required</c> members with the synthesised
+    /// <c>[Obsolete("Constructors of types with required members ...", error: true)]</c> (beside
+    /// <c>CompilerFeatureRequired</c>) so that an old compiler refuses them: not an API decision, never
+    /// counted. Only that synthesised guard is excluded: a user-written <c>[Obsolete]</c> constructor on such
+    /// a type carries <c>CompilerFeatureRequired</c> too, and must stay in the inventory.
     /// </summary>
     private static bool IsRequiredMembersGuard(MemberInfo member) =>
-        member is ConstructorInfo && member.GetCustomAttributes().Any(a => a.GetType().Name == "CompilerFeatureRequiredAttribute");
+        member is ConstructorInfo
+        && member.GetCustomAttribute<ObsoleteAttribute>() is { IsError: true } obsolete
+        && obsolete.Message?.StartsWith("Constructors of types with required members", StringComparison.Ordinal) == true
+        && member.GetCustomAttributes().Any(a => a.GetType().Name == "CompilerFeatureRequiredAttribute");
+
+    private sealed class RequiredMembersType
+    {
+        public required string Name { get; init; }
+    }
+
+    private sealed class RequiredMembersTypeWithObsoleteConstructor
+    {
+        [Obsolete("use the other constructor (#152)")]
+        public RequiredMembersTypeWithObsoleteConstructor()
+        {
+        }
+
+        public required string Name { get; init; }
+    }
 
     private static string Signature(MemberInfo member) =>
         member is MethodInfo method ? $"({string.Join(", ", method.GetParameters().Select(p => p.ParameterType.Name))})" : string.Empty;
@@ -85,6 +106,19 @@ public class ObsoleteMembersTests
             Assert.Contains("use ", attribute.Message, StringComparison.Ordinal);
             Assert.Contains("(#152)", attribute.Message, StringComparison.Ordinal);
         }
+    }
+
+    [Fact]
+    public void Only_the_synthesised_required_members_guard_is_excluded_from_the_inventory()
+    {
+        var synthesised = Assert.Single(typeof(RequiredMembersType).GetConstructors());
+        Assert.NotNull(synthesised.GetCustomAttribute<ObsoleteAttribute>());
+        Assert.True(IsRequiredMembersGuard(synthesised));
+
+        var userWritten = Assert.Single(typeof(RequiredMembersTypeWithObsoleteConstructor).GetConstructors());
+        Assert.Contains(userWritten.GetCustomAttributes(), a => a.GetType().Name == "CompilerFeatureRequiredAttribute");
+        Assert.Equal("use the other constructor (#152)", userWritten.GetCustomAttribute<ObsoleteAttribute>()!.Message);
+        Assert.False(IsRequiredMembersGuard(userWritten));
     }
 
     [Fact]
@@ -132,8 +166,9 @@ public class ObsoleteMembersTests
     /// <summary>
     /// A display path is not a key: on Windows the refused raw name <c>tables</c>, a backslash, <c>a.md</c>
     /// displays exactly as the real concept <c>tables/a.md</c> does. The refused name's diagnostic keeps
-    /// a null key and the concept's findings keep the concept's key, on every platform (the precondition,
-    /// that the two display paths coincide, is asserted on Windows).
+    /// a null key and the concept's findings keep the concept's key, on every platform. Only on Windows do the two
+    /// display paths actually coincide (the precondition asserted below), so only there does a display-path
+    /// inversion bite and can this test fail; elsewhere it pins the contract without the collision.
     /// </summary>
     [Fact]
     public void A_refused_name_sharing_its_display_path_with_a_concept_has_no_key_and_does_not_take_the_concepts()
