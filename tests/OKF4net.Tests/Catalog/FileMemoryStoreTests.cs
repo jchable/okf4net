@@ -93,11 +93,67 @@ public class FileMemoryStoreTests
         await store.WriteAsync(b, Entry("bob data"), MemoryTier.User);
 
         var del = await store.DeleteScopeAsync(a, MemoryTier.User);
-        Assert.Equal(1, del.TiersDeleted);
+        var deletion = Assert.Single(del.Tiers);
+        Assert.Equal(MemoryTier.User, deletion.Tier);
+        Assert.Equal([$"{MemoryPath.For(MemoryTier.User, a)}/2026-07-27.md"], deletion.Report.Deleted.Select(k => k.ToString()).ToList());
+        Assert.True(deletion.Report.Succeeded);
         Assert.Null(del.Error);
 
-        Assert.False(Directory.Exists(MemPath(tmp.Path, MemoryTier.User, a)));
-        Assert.True(Directory.Exists(MemPath(tmp.Path, MemoryTier.User, b)));
+        // The scope's objects are gone and its directory is left in place (spec §8): empty, it
+        // holds no key, so the scope no longer exists for the store; the sibling scope is intact.
+        Assert.Empty(Directory.EnumerateFiles(MemPath(tmp.Path, MemoryTier.User, a), "*", SearchOption.AllDirectories));
+        Assert.True(File.Exists(MemPath(tmp.Path, MemoryTier.User, b, "2026-07-27.md")));
+        Assert.Empty(await store.EnumerateAsync(a));
+        Assert.Single(await store.EnumerateAsync(b));
+    }
+
+    [Fact]
+    public async Task Deleting_an_absent_or_already_emptied_scope_touches_no_tier()
+    {
+        using var tmp = new TempDir();
+        var store = UserStore(tmp);
+        var a = new KnowledgeAccessScope(tenantId: "a", userId: "alice");
+
+        var absent = await store.DeleteScopeAsync(a, MemoryTier.User);
+        Assert.Empty(absent.Tiers);
+        Assert.Null(absent.Error);
+
+        await store.WriteAsync(a, Entry("alice data"), MemoryTier.User);
+        Assert.Single((await store.DeleteScopeAsync(a, MemoryTier.User)).Tiers);
+        var again = await store.DeleteScopeAsync(a, MemoryTier.User);
+        Assert.Empty(again.Tiers);
+        Assert.Null(again.Error);
+        Assert.Empty((await store.ReadAsync(a, new KnowledgeQuery("alice"))).Passages);
+    }
+
+    [SkippableFact]
+    public async Task A_object_that_cannot_be_deleted_is_reported_and_the_deletion_can_be_run_again()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "holding a file open with FileShare.None blocks its deletion on Windows only");
+        using var tmp = new TempDir();
+        var store = UserStore(tmp);
+        var a = new KnowledgeAccessScope(tenantId: "a", userId: "alice");
+        await store.WriteAsync(a, Entry("alice data"), MemoryTier.User);
+        await store.WriteAsync(a, new MemoryEntry("2026-07-28", Frontmatter, "## 10:00:00 UTC\n\nmore\n"), MemoryTier.User);
+        var heldPath = MemPath(tmp.Path, MemoryTier.User, a, "2026-07-27.md");
+
+        MemoryDeleteResult partial;
+        using (new FileStream(heldPath, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            partial = await store.DeleteScopeAsync(a, MemoryTier.User);
+        }
+
+        var deletion = Assert.Single(partial.Tiers);
+        Assert.Equal([$"{MemoryPath.For(MemoryTier.User, a)}/2026-07-28.md"], deletion.Report.Deleted.Select(k => k.ToString()).ToList());
+        var failure = Assert.Single(deletion.Report.Failed);
+        Assert.Equal($"{MemoryPath.For(MemoryTier.User, a)}/2026-07-27.md", failure.Key.ToString());
+        Assert.StartsWith("Memory tier 'User' subtree could not be deleted: ", partial.Error);
+        Assert.True(File.Exists(heldPath));
+
+        var again = await store.DeleteScopeAsync(a, MemoryTier.User);
+        Assert.True(Assert.Single(again.Tiers).Report.Succeeded);
+        Assert.Null(again.Error);
+        Assert.False(File.Exists(heldPath));
     }
 
     [Fact]
@@ -279,11 +335,11 @@ public class FileMemoryStoreTests
         await store.WriteAsync(b, Entry("session b data"), MemoryTier.Session);
 
         var del = await store.DeleteScopeAsync(a, MemoryTier.Session);
-        Assert.Equal(1, del.TiersDeleted);
+        Assert.True(Assert.Single(del.Tiers).Report.Succeeded);
         Assert.Null(del.Error);
 
-        Assert.False(Directory.Exists(MemPath(tmp.Path, MemoryTier.Session, a)));
-        Assert.True(Directory.Exists(MemPath(tmp.Path, MemoryTier.Session, b)));
+        Assert.Empty(Directory.EnumerateFiles(MemPath(tmp.Path, MemoryTier.Session, a), "*", SearchOption.AllDirectories));
+        Assert.True(File.Exists(MemPath(tmp.Path, MemoryTier.Session, b, "2026-07-27.md")));
     }
 
     [Fact]
@@ -388,11 +444,11 @@ public class FileMemoryStoreTests
         await store.WriteAsync(b, Entry("tenant b data"), MemoryTier.Tenant);
 
         var del = await store.DeleteScopeAsync(a, MemoryTier.Tenant);
-        Assert.Equal(1, del.TiersDeleted);
+        Assert.True(Assert.Single(del.Tiers).Report.Succeeded);
         Assert.Null(del.Error);
 
-        Assert.False(Directory.Exists(MemPath(tmp.Path, MemoryTier.Tenant, a)));
-        Assert.True(Directory.Exists(MemPath(tmp.Path, MemoryTier.Tenant, b)));
+        Assert.Empty(Directory.EnumerateFiles(MemPath(tmp.Path, MemoryTier.Tenant, a), "*", SearchOption.AllDirectories));
+        Assert.True(File.Exists(MemPath(tmp.Path, MemoryTier.Tenant, b, "2026-07-27.md")));
     }
 
     [Fact]
@@ -468,8 +524,39 @@ public class FileMemoryStoreTests
 
         var delete = await store.DeleteScopeAsync(scope, MemoryTier.User);
 
-        Assert.Equal(0, delete.TiersDeleted);
+        var deletion = Assert.Single(delete.Tiers);
+        Assert.Empty(deletion.Report.Deleted);
+        var failure = Assert.Single(deletion.Report.Failed);
+        Assert.Equal(MemoryPath.For(MemoryTier.User, scope), failure.Key.ToString());
         Assert.Equal("Memory tier 'User' path is a reparse point or could not be inspected; refusing to delete.", delete.Error);
+        Assert.Equal(delete.Error, failure.Reason);
         Assert.True(File.Exists(outsideFile));
+
+        // The same chain refuses a read and an enumeration, with the read's diagnostic.
+        var read = await store.ReadAsync(scope, new KnowledgeQuery("survive"));
+        Assert.Empty(read.Passages);
+        Assert.Equal("Memory tier 'User' path is a reparse point or could not be inspected; refusing to read.", Assert.Single(read.Diagnostics).Message);
+        Assert.Empty(await store.EnumerateAsync(scope));
+    }
+
+    [SkippableFact]
+    public async Task A_scope_directory_that_is_itself_a_junction_is_refused_by_every_operation()
+    {
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        var scope = new KnowledgeAccessScope(tenantId: "acme", userId: "alice");
+        external.Write("2026-07-27.md", "---\ntype: AgentMemory\ntitle: t\ndescription: d\n---\nsecret outside\n");
+        var scopeDir = Path.Combine(MemoryPath.For(MemoryTier.User, scope).Split('/'));
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir(scopeDir, external.Path), "needs a junction or a directory symlink");
+        var store = UserStore(tmp);
+
+        var read = await store.ReadAsync(scope, new KnowledgeQuery("secret"));
+        Assert.Empty(read.Passages);
+        Assert.Equal("Memory tier 'User' path is a reparse point or could not be inspected; refusing to read.", Assert.Single(read.Diagnostics).Message);
+        Assert.Empty(await store.EnumerateAsync(scope));
+
+        var delete = await store.DeleteScopeAsync(scope, MemoryTier.User);
+        Assert.Equal("Memory tier 'User' path is a reparse point or could not be inspected; refusing to delete.", delete.Error);
+        Assert.True(File.Exists(Path.Combine(external.Path, "2026-07-27.md")));
     }
 }

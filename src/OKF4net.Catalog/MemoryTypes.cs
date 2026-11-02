@@ -17,8 +17,24 @@ public sealed record MemoryReadResult(IReadOnlyList<KnowledgePassage> Passages, 
 /// <summary>The result of a scoped memory write: whether it was written, and the error text if not.</summary>
 public sealed record MemoryWriteResult(bool Written, string? Error);
 
-/// <summary>The result of a scoped memory deletion: how many tier subtrees were removed, and the error text if any.</summary>
-public sealed record MemoryDeleteResult(int TiersDeleted, string? Error);
+/// <summary>
+/// The result of a scoped memory deletion (spec §1, §9): one <see cref="MemoryTierDeletion"/>
+/// per tier whose scope held something or was refused, in read order, and the error text
+/// when any tier failed. A tier whose scope held no key is absent from <see cref="Tiers"/>.
+/// </summary>
+/// <param name="Tiers">What each tier's deletion did, with the keys deleted and those that failed.</param>
+/// <param name="Error">The failures of every tier joined by <c>; </c>, or <see langword="null"/> when nothing failed.</param>
+public sealed record MemoryDeleteResult(IReadOnlyList<MemoryTierDeletion> Tiers, string? Error);
+
+/// <summary>
+/// What deleting one tier's scope did: every object under the scope's prefix is deleted on
+/// its own, so the <see cref="OKF4net.Providers.BundleWriteReport"/> says exactly which keys
+/// were deleted and which failed, with why; a scope the provider refused (a reparse point
+/// on its path) reports one failure under the scope's prefix and nothing deleted.
+/// </summary>
+/// <param name="Tier">The tier.</param>
+/// <param name="Report">The keys deleted, in order, and the failures.</param>
+public sealed record MemoryTierDeletion(MemoryTier Tier, OKF4net.Providers.BundleWriteReport Report);
 
 /// <summary>One stored memory concept, for enumeration/audit.</summary>
 public sealed record MemoryConcept(MemoryTier Tier, string ConceptId, string? Title);
