@@ -43,7 +43,7 @@ public readonly record struct AuditQuery(
 
 /// <summary>One concept selected by an audit, with its signals already derived.</summary>
 /// <param name="Id">The concept id (§2).</param>
-/// <param name="Path">The concept's file path, as built from the bundle root.</param>
+/// <param name="Path">The concept's display path (spec §8): the bundle's location, then the key's segments with the OS separator — what <c>okf audit --json</c> prints.</param>
 /// <param name="Type">The frontmatter <c>type</c>, or null when absent.</param>
 /// <param name="Title">The frontmatter <c>title</c>, or null when absent.</param>
 /// <param name="Trust">The derived trust tier (§5.3).</param>
@@ -62,7 +62,11 @@ public readonly record struct AuditFinding(
     string? Title,
     TrustTier Trust,
     Lifecycle Lifecycle,
-    bool IsStale);
+    bool IsStale)
+{
+    /// <summary>The concept's key in its provider (spec §9); <see langword="null"/> for a finding built by hand over a concept without one.</summary>
+    public Providers.BundleKey? Key { get; init; }
+}
 
 /// <summary>
 /// The result of an audit: counts over the whole bundle, plus the concepts the
@@ -319,7 +323,10 @@ public static class ConceptAudit
                 frontmatter.Title,
                 tier,
                 lifecycle,
-                isStale));
+                isStale)
+            {
+                Key = concept.Key,
+            });
         }
 
         findings.Sort(static (a, b) => a.Id.CompareTo(b.Id));

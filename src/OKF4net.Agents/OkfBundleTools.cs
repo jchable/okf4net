@@ -244,8 +244,9 @@ public sealed class OkfBundleTools
     /// <summary>The bundle's displayable location (the root directory for the filesystem provider).</summary>
     public string Location => _handle.Location;
 
-    /// <summary>The bundle's root directory: the string a root-based constructor was given, or the filesystem provider's root.</summary>
+    /// <summary>The bundle's root directory: the string a root-based constructor was given, or the filesystem provider's root. Obsolete (spec §9, §10): a tool set over another provider has no root.</summary>
     /// <exception cref="NotSupportedException">The tool set is over another provider: a path has no meaning for it (spec §9).</exception>
+    [Obsolete("OkfBundleTools.BundleRoot has no meaning for a tool set over a provider other than the filesystem: use Location (the provider's displayable location), or Handle.Provider as a FileSystemBundleProvider for its Root. Removed with the asynchronous provider contract (#152).")]
     public string BundleRoot => _root
         ?? throw new NotSupportedException("this tool set is not over a filesystem provider, so it has no bundle root");
 

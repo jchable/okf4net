@@ -216,7 +216,7 @@ public sealed class BundleConceptWriter
     private static Dictionary<string, HeldLock>? t_heldLocks;
 
     /// <summary>
-    /// Over the filesystem provider, <see cref="BundleRoot"/> through
+    /// Over the filesystem provider, its <see cref="FileSystemBundleProvider.Root"/> through
     /// <see cref="ReparsePoints.CanonicalizeRoot"/>, with Windows namespace forms
     /// normalized, computed once: the key of <see cref="t_heldLocks"/>, and the
     /// starting point <see cref="ReparsePoints.ResolveLockKey"/> resolves from.
@@ -230,7 +230,7 @@ public sealed class BundleConceptWriter
     /// <summary>Where every byte is read and written.</summary>
     private readonly IBundleProvider _provider;
 
-    /// <summary><see cref="_provider"/> when it is the filesystem provider: its root keys the lock registry and backs <see cref="BundleRoot"/>, and its test hooks back the writer's.</summary>
+    /// <summary><see cref="_provider"/> when it is the filesystem provider: its root keys the lock registry and backs the obsolete <c>BundleRoot</c>, and its test hooks back the writer's.</summary>
     private readonly FileSystemBundleProvider? _fileSystem;
 
     /// <summary>The key policy every write is checked against: the provider's native constraints under the options' policy, exactly as a load builds it (spec §2, decision B2).</summary>
@@ -329,8 +329,9 @@ public sealed class BundleConceptWriter
             : ProviderLockPrefix + provider.Id;
     }
 
-    /// <summary>The bundle root, as passed to the constructor (the filesystem provider's <see cref="FileSystemBundleProvider.Root"/>).</summary>
+    /// <summary>The bundle root, as passed to the constructor (the filesystem provider's <see cref="FileSystemBundleProvider.Root"/>). Obsolete (spec §9, §10): a writer over another provider has no root.</summary>
     /// <exception cref="NotSupportedException">The writer was built over another provider: a path has no meaning for it (spec §9).</exception>
+    [Obsolete("BundleConceptWriter.BundleRoot has no meaning for a writer over a provider other than the filesystem: use the Root of the FileSystemBundleProvider the writer was built over, or the provider's Location. Removed with the asynchronous provider contract (#152).")]
     public string BundleRoot => _fileSystem?.Root
         ?? throw new NotSupportedException("this writer is not over a filesystem provider, so it has no bundle root");
 

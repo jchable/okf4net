@@ -15,7 +15,7 @@ namespace OKF4net;
 /// was read); or a global bound exceeded (entries, depth). The message is library-authored
 /// (spec §7); the raw cause, when there is one, is the inner exception. Per-file problems —
 /// a rejected name, an oversized or unparseable concept — are recorded in
-/// <see cref="Bundle.ParseErrors"/> instead (loading is permissive, §11).
+/// <see cref="Bundle.ParseProblems"/> instead (loading is permissive, §11).
 /// </summary>
 public sealed class BundleLoadException : OkfException
 {
@@ -86,7 +86,7 @@ public sealed record ResolvedLink(ConceptId Target, bool Exists, string Text, st
 /// <c>.md</c> file into a <see cref="Concept"/>, records the reserved
 /// <c>index.md</c> / <c>log.md</c> files, and builds the cross-link graph
 /// (§6). Loading is **permissive** by design (§11): files whose frontmatter
-/// cannot be parsed are collected into <see cref="ParseErrors"/> rather than
+/// cannot be parsed are collected into <see cref="ParseProblems"/> rather than
 /// aborting the load, and broken links are retained as edges to
 /// non-existent concepts.
 /// </summary>
@@ -148,10 +148,12 @@ public sealed class Bundle
         _index = index;
         IndexKeys = indexKeys;
         LogKeys = logKeys;
+        ParseProblems = parseProblems;
+#pragma warning disable CS0618 // the display-path projections are kept, obsolete, until their removal (spec §10)
         IndexFiles = indexKeys.Select(k => BundleDisplayPath.Compose(provider.Location, k)).ToList();
         LogFiles = logKeys.Select(k => BundleDisplayPath.Compose(provider.Location, k)).ToList();
-        ParseProblems = parseProblems;
         ParseErrors = parseProblems.Select(p => (DisplayPathOf(provider.Location, p), p.Error)).ToList();
+#pragma warning restore CS0618
         RejectedKeys = rejectedKeys;
         RejectedPrefixes = rejectedPrefixes;
         _rejectedPrefixFolds = rejectedPrefixes.Select(validator.FoldKeyText).ToHashSet(StringComparer.Ordinal);
@@ -202,7 +204,7 @@ public sealed class Bundle
     /// by the provider's STRICT guards — a directory under the root whose link status cannot be
     /// inspected aborts the load before it is listed. A symlink or junction under the root is
     /// skipped, never followed. Per-file problems — a rejected name, an oversized or
-    /// unparseable concept — are recorded in <see cref="ParseErrors"/>.
+    /// unparseable concept — are recorded in <see cref="ParseProblems"/>.
     /// </summary>
     /// <exception cref="BundleLoadException"><paramref name="root"/> does not exist or is not a directory, an I/O error occurred, a concept is not valid UTF-8, a global bound was exceeded, or the provider refused an access.</exception>
     public static Bundle Load(string root)
@@ -615,13 +617,14 @@ public sealed class Bundle
         return OkfEncodings.Strict.GetString(buffer.GetBuffer(), 0, (int)buffer.Length);
     }
 
-    /// <summary>The bundle's root: the provider's displayable location (the root directory for the filesystem).</summary>
+    /// <summary>The bundle's root: the provider's displayable location (the root directory for the filesystem). Obsolete: the same string as <see cref="Location"/>.</summary>
+    [Obsolete("Bundle.Root is the provider's displayable location: use Bundle.Location (or Bundle.Provider). The path-based members are removed with the asynchronous provider contract (#152).")]
     public string Root => Provider.Location;
 
     /// <summary>The provider this bundle was loaded from (spec §1).</summary>
     public IBundleProvider Provider { get; }
 
-    /// <summary>The provider's displayable location; <see cref="Root"/> is the same string.</summary>
+    /// <summary>The provider's displayable location; the obsolete <c>Root</c> is the same string.</summary>
     public string Location => Provider.Location;
 
     /// <summary>The options the bundle was loaded with.</summary>
@@ -630,13 +633,13 @@ public sealed class Bundle
     /// <summary>The provider's bundle token at load time (spec §5.1).</summary>
     public BundleVersion Version { get; }
 
-    /// <summary>The keys of every <c>index.md</c>, in load order; <see cref="IndexFiles"/> holds their display paths.</summary>
+    /// <summary>The keys of every <c>index.md</c>, in load order; <see cref="BundleDisplayPath.Compose"/> with <see cref="Location"/> gives their display paths (the obsolete <c>IndexFiles</c>).</summary>
     public IReadOnlyList<BundleKey> IndexKeys { get; }
 
-    /// <summary>The keys of every <c>log.md</c>, in load order; <see cref="LogFiles"/> holds their display paths.</summary>
+    /// <summary>The keys of every <c>log.md</c>, in load order; <see cref="BundleDisplayPath.Compose"/> with <see cref="Location"/> gives their display paths (the obsolete <c>LogFiles</c>).</summary>
     public IReadOnlyList<BundleKey> LogKeys { get; }
 
-    /// <summary>Every problem met while loading (spec §2): rejected <c>.md</c> names, oversized or unparseable concepts. <see cref="ParseErrors"/> is its display-path projection.</summary>
+    /// <summary>Every problem met while loading (spec §2): rejected <c>.md</c> names, oversized or unparseable concepts. <see cref="DisplayPath"/> gives each one's display path (the obsolete <c>ParseErrors</c> is that projection).</summary>
     public IReadOnlyList<BundleParseError> ParseProblems { get; }
 
     /// <summary>Keys the tree validation or a bound rejected (spec §2), whatever their extension: they stay rejected for <see cref="IsKeyAllowed"/> even though the provider may still hold them.</summary>
@@ -737,13 +740,16 @@ public sealed class Bundle
     /// <summary><c>true</c> if a concept with this id exists.</summary>
     public bool Contains(ConceptId id) => _index.ContainsKey(id);
 
-    /// <summary>Paths of all <c>index.md</c> files found (§8).</summary>
+    /// <summary>Paths of all <c>index.md</c> files found (§8). Obsolete: the display paths of <see cref="IndexKeys"/>.</summary>
+    [Obsolete("Bundle.IndexFiles projects Bundle.IndexKeys through the display rule: use IndexKeys, and BundleDisplayPath.Compose(bundle.Location, key) for a path to print. The path-based members are removed with the asynchronous provider contract (#152).")]
     public IReadOnlyList<string> IndexFiles { get; }
 
-    /// <summary>Paths of all <c>log.md</c> files found (§9).</summary>
+    /// <summary>Paths of all <c>log.md</c> files found (§9). Obsolete: the display paths of <see cref="LogKeys"/>.</summary>
+    [Obsolete("Bundle.LogFiles projects Bundle.LogKeys through the display rule: use LogKeys, and BundleDisplayPath.Compose(bundle.Location, key) for a path to print. The path-based members are removed with the asynchronous provider contract (#152).")]
     public IReadOnlyList<string> LogFiles { get; }
 
-    /// <summary>Files whose frontmatter could not be parsed during loading, as (path, error message) pairs.</summary>
+    /// <summary>Files whose frontmatter could not be parsed during loading, as (path, error message) pairs. Obsolete: <see cref="ParseProblems"/> with <see cref="DisplayPath"/>.</summary>
+    [Obsolete("Bundle.ParseErrors projects Bundle.ParseProblems through the display rule: use ParseProblems (the raw name, the key when the name is one, the error), and bundle.DisplayPath(problem) for a path to print. The path-based members are removed with the asynchronous provider contract (#152).")]
     public IReadOnlyList<(string Path, string Error)> ParseErrors { get; }
 
     /// <summary>The resolved outbound cross-links from a concept.</summary>
@@ -868,7 +874,12 @@ public sealed class Bundle
     ///
     /// Always returns <c>true</c>: resolution never fails outright (§11,
     /// permissive), it only reports which of the above statuses applies.
+    /// Obsolete: it resolves through the OS filesystem, outside the provider
+    /// seam, so it applies neither the key policy nor the exact-name rules
+    /// <see cref="TryResolveResourceKey"/> applies; no code of this repository
+    /// calls it.
     /// </summary>
+    [Obsolete("Bundle.TryResolveResource resolves a §6.2 path on the OS filesystem, outside the provider seam: use Bundle.TryResolveResourceKey, which resolves on keys under the key policy, then Bundle.ReadResourceText(BundleKey). The path-based members are removed with the asynchronous provider contract (#152).")]
     public bool TryResolveResource(Concept concept, string rawPath, out string? absolutePath, out ResourceResolutionStatus status)
     {
         var kind = FrontmatterResourceClassifier.KindOf(rawPath);
@@ -979,6 +990,7 @@ public sealed class Bundle
     /// </exception>
     /// <exception cref="IOException">The file cannot be read.</exception>
     /// <exception cref="System.Text.DecoderFallbackException">The content is not valid UTF-8.</exception>
+    [Obsolete("Bundle.ReadResourceText(string) reads a host path, outside the provider seam: use Bundle.ReadResourceText(BundleKey) on the key Bundle.TryResolveResourceKey resolved. The path-based members are removed with the asynchronous provider contract (#152).")]
     public string ReadResourceText(string absolutePath)
     {
         var fullRoot = ReparsePoints.CanonicalizeRoot(Root);

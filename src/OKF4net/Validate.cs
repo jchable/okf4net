@@ -261,6 +261,16 @@ public enum DiagnosticCode
 public sealed record Diagnostic(Severity Severity, string? Path, ConceptId? Concept, string Message, DiagnosticCode Code, string? Field = null)
 {
     /// <summary>
+    /// The key of the object the finding is about (spec §9): the concept's, the
+    /// <c>index.md</c>'s or <c>log.md</c>'s, or the unparseable document's when its name is a
+    /// key. <see langword="null"/> for a hand-built finding, for a rejected name that is no
+    /// key, and for a finding about nothing in particular. <see cref="Path"/> is that key's
+    /// display path (<see cref="Providers.BundleDisplayPath.Compose"/> under the bundle's
+    /// location), the text the <c>validate</c> snapshots pin.
+    /// </summary>
+    public Providers.BundleKey? Key { get; init; }
+
+    /// <summary>
     /// Renders as <c>[severity] path: message</c> or <c>[severity] concept:
     /// message</c> (falling back to a bare <c>[severity] message</c> if
     /// neither is set). Unaffected by <see cref="Code"/> or <see cref="Field"/>
@@ -688,7 +698,58 @@ public static class BundleValidator
                 DiagnosticCode.BrokenLink));
         }
 
-        return new ValidationReport(diagnostics);
+        return new ValidationReport(AttachKeys(bundle, diagnostics));
+    }
+
+    /// <summary>
+    /// Sets <see cref="Diagnostic.Key"/> on every finding whose <see cref="Diagnostic.Path"/>
+    /// is the display path of a key of <paramref name="bundle"/> — a concept's, an index's, a
+    /// log's, an unparseable document's — or, for a finding without a path, whose
+    /// <see cref="Diagnostic.Concept"/> names a loaded concept (spec §9). Once, after the
+    /// findings are collected, so the construction sites above keep their exact
+    /// <see cref="Diagnostic.Path"/> text, which the <c>validate</c> snapshots pin.
+    /// </summary>
+    private static List<Diagnostic> AttachKeys(Bundle bundle, List<Diagnostic> diagnostics)
+    {
+        var keys = new Dictionary<string, BundleKey>(StringComparer.Ordinal);
+        foreach (var concept in bundle.Concepts)
+        {
+            if (concept.Key is { } key)
+            {
+                keys.TryAdd(concept.Path, key);
+            }
+        }
+
+        foreach (var key in bundle.IndexKeys.Concat(bundle.LogKeys))
+        {
+            keys.TryAdd(BundleDisplayPath.Compose(bundle.Location, key), key);
+        }
+
+        foreach (var problem in bundle.ParseProblems)
+        {
+            if (problem.Key is { } key)
+            {
+                keys.TryAdd(bundle.DisplayPath(problem), key);
+            }
+        }
+
+        for (var i = 0; i < diagnostics.Count; i++)
+        {
+            var diagnostic = diagnostics[i];
+            if (diagnostic.Path is { } path)
+            {
+                if (keys.TryGetValue(path, out var key))
+                {
+                    diagnostics[i] = diagnostic with { Key = key };
+                }
+            }
+            else if (diagnostic.Concept is { } id && bundle.Get(id)?.Key is { } conceptKey)
+            {
+                diagnostics[i] = diagnostic with { Key = conceptKey };
+            }
+        }
+
+        return diagnostics;
     }
 
     /// <summary>
