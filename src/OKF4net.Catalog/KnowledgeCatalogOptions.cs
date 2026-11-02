@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using OKF4net.Providers;
+
 namespace OKF4net.Catalog;
 
 /// <summary>
@@ -49,4 +51,24 @@ public sealed class KnowledgeCatalogOptions
     /// error <see cref="FileKnowledgeCatalog"/>'s constructor refuses. Empty by default.
     /// </summary>
     public IReadOnlyList<IBundleProviderFactory> ProviderFactories { get; init; } = [];
+
+    /// <summary>
+    /// The refresh policy of every knowledge source's handle (spec §5.3): the bundle's token is
+    /// compared before each use by default (<see cref="BundleRefreshPolicy.OnAccess"/>), so a
+    /// source stays as fresh as when it was reloaded at every request, at the cost of a token
+    /// read instead of a load. <see cref="RefreshPolicyFor"/> overrides it per source.
+    /// </summary>
+    public BundleRefreshPolicy RefreshPolicy { get; init; } = BundleRefreshPolicy.OnAccess;
+
+    /// <summary>
+    /// Chooses a source's refresh policy; <see langword="null"/> (the default), or a
+    /// <see langword="null"/> answer for a source, means <see cref="RefreshPolicy"/>. A
+    /// <see cref="BundleRefreshPolicy.Notify"/> answer needs a provider that implements
+    /// <see cref="IBundleChangeNotifier"/>, else the source is rejected as
+    /// <see cref="CatalogDiagnosticCode.ProviderUnavailable"/>.
+    /// </summary>
+    public Func<KnowledgeCatalogSource, BundleRefreshPolicy?>? RefreshPolicyFor { get; init; }
+
+    /// <summary>The options every handle loads its bundle with (bounds, key policy); <see cref="BundleLoadOptions.Default"/> by default.</summary>
+    public BundleLoadOptions LoadOptions { get; init; } = BundleLoadOptions.Default;
 }

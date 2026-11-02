@@ -84,6 +84,7 @@ public static class KnowledgeServiceCollectionExtensions
             CatalogFilePath = options.CatalogFilePath!,
             CatalogRoot = options.CatalogRoot!,
             ProviderFactories = [.. options.ProviderFactories],
+            RefreshPolicy = options.RefreshPolicy ?? throw new ArgumentException("KnowledgeOptions.RefreshPolicy must not be null."),
         };
 
         services.TryAddSingleton(catalogOptions);

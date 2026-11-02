@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Text;
 using OKF4net.Internal;
+using OKF4net.Providers;
 
 namespace OKF4net.Catalog;
 
@@ -48,6 +49,22 @@ namespace OKF4net.Catalog;
 /// should call <see cref="ReloadAsync"/> explicitly rather than rely on the
 /// watcher.
 /// </para>
+/// <para>
+/// <b>The snapshot owns the handles</b> (spec §5.2, §9). Each published snapshot carries one
+/// <see cref="BundleHandle"/> per enabled knowledge source (<see cref="KnowledgeCatalogSnapshot.Handles"/>),
+/// built by the source's provider — the built-in filesystem one, confined to
+/// <see cref="KnowledgeCatalogOptions.CatalogRoot"/> and re-checked against it before every
+/// access, or the factory registered for the source's <c>provider</c> — under
+/// <see cref="KnowledgeCatalogOptions.LoadOptions"/> and the source's refresh policy
+/// (<see cref="KnowledgeCatalogOptions.RefreshPolicy"/>, <see cref="BundleRefreshPolicy.OnAccess"/>
+/// by default). A reload reuses a source's handle, image included, only when its effective
+/// configuration is identical in every point (provider type, resolved directory, settings,
+/// refresh policy, load options); any difference, a changed <c>path</c> for instance, builds
+/// a new handle and the old one is no longer served by the new snapshot. A handle that
+/// leaves the catalog is disposed (which only ends its change subscription: a request still
+/// holding the old snapshot keeps reading its image); <see cref="Dispose"/> disposes them all.
+/// A rejected reload builds nothing that outlives it and keeps every current handle.
+/// </para>
 /// </remarks>
 public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
 {
@@ -55,6 +72,9 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
     private readonly string _manifestDirectory;
     private readonly Dictionary<string, IBundleProviderFactory> _factories;
     private readonly Lock _gate = new();
+
+    /// <summary>The effective configuration each current handle was built for, by source id (guarded by <see cref="_gate"/>).</summary>
+    private Dictionary<string, HandleConfiguration> _handleConfigurations = new(StringComparer.Ordinal);
     private readonly FileSystemWatcher? _watcher;
     private readonly Timer? _debounceTimer;
 
@@ -87,12 +107,13 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
         _manifestDirectory = GetManifestDirectory(options.CatalogFilePath);
         _factories = IndexFactories(options.ProviderFactories);
 
-        if (!TryLoadSnapshot(out var snapshot, out var diagnostics))
+        if (!TryLoadSnapshot(previous: null, out var snapshot, out var configurations, out var diagnostics))
         {
             throw new CatalogException(FormatDiagnostics(diagnostics));
         }
 
         _current = snapshot! with { Generation = 1 };
+        _handleConfigurations = configurations!;
 
         if (options.WatchForChanges)
         {
@@ -167,22 +188,26 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
                 return new ValueTask<KnowledgeCatalogSnapshot>(_current);
             }
 
-            if (!TryLoadSnapshot(out var snapshot, out var diagnostics))
+            if (!TryLoadSnapshot(_current, out var snapshot, out var configurations, out var diagnostics))
             {
                 _lastReloadDiagnostics = diagnostics;
                 return new ValueTask<KnowledgeCatalogSnapshot>(_current);
             }
 
+            var previous = _current;
             _current = snapshot! with { Generation = _current.Generation + 1 };
+            _handleConfigurations = configurations!;
             _lastReloadDiagnostics = [];
+            DisposeHandlesLeft(previous, _current);
             return new ValueTask<KnowledgeCatalogSnapshot>(_current);
         }
     }
 
     /// <summary>
-    /// Stops the watcher and debounce timer (if any) and prevents any future
-    /// reload from applying. Cancellation-safe (never leaves a torn snapshot)
-    /// and idempotent -- safe to call more than once.
+    /// Stops the watcher and debounce timer (if any), disposes the current snapshot's
+    /// handles (their change subscriptions end; an image already handed out stays readable)
+    /// and prevents any future reload from applying. Cancellation-safe (never leaves a torn
+    /// snapshot) and idempotent -- safe to call more than once.
     /// </summary>
     public void Dispose()
     {
@@ -196,11 +221,123 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
             _disposed = true;
             _watcher?.Dispose();
             _debounceTimer?.Dispose();
+            foreach (var handle in _current.Handles.Values)
+            {
+                handle.Dispose();
+            }
         }
     }
 
-    private bool TryLoadSnapshot(out KnowledgeCatalogSnapshot? snapshot, out IReadOnlyList<CatalogDiagnostic> diagnostics)
+    /// <summary>
+    /// The effective configuration a source's handle was built for (spec §9): a handle is
+    /// reused across reloads only when every point is equal, so a changed <c>path</c> (its
+    /// resolved directory), setting, policy or option rebuilds it. The load options are
+    /// compared as the record they are (the catalog hands every handle its own instance).
+    /// </summary>
+    private sealed record HandleConfiguration(string ProviderType, string? ResolvedDirectory, ProviderSettings Settings, BundleRefreshPolicy RefreshPolicy, BundleLoadOptions LoadOptions);
+
+    /// <summary>Disposes the handles of <paramref name="previous"/> that <paramref name="current"/> does not serve any more.</summary>
+    private static void DisposeHandlesLeft(KnowledgeCatalogSnapshot previous, KnowledgeCatalogSnapshot current)
     {
+        foreach (var (id, handle) in previous.Handles)
+        {
+            if (!current.Handles.TryGetValue(id, out var kept) || !ReferenceEquals(kept, handle))
+            {
+                handle.Dispose();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Builds the handles of <paramref name="snapshot"/>'s enabled knowledge sources, reusing
+    /// a handle of <paramref name="previous"/> whose effective configuration is unchanged.
+    /// On failure nothing created here survives: the handles built so far are disposed and
+    /// every current handle is untouched.
+    /// </summary>
+    private bool TryBuildHandles(
+        KnowledgeCatalogSnapshot snapshot,
+        KnowledgeCatalogSnapshot? previous,
+        IReadOnlyDictionary<string, string> resolvedDirectories,
+        out IReadOnlyDictionary<string, BundleHandle>? handles,
+        out Dictionary<string, HandleConfiguration>? configurations,
+        out IReadOnlyList<CatalogDiagnostic> diagnostics)
+    {
+        var built = new Dictionary<string, BundleHandle>(StringComparer.Ordinal);
+        var created = new List<BundleHandle>();
+        var keys = new Dictionary<string, HandleConfiguration>(StringComparer.Ordinal);
+        var problems = new List<CatalogDiagnostic>();
+
+        foreach (var source in snapshot.Sources)
+        {
+            if (!source.Enabled || source.Role != SourceRole.Knowledge)
+            {
+                continue;
+            }
+
+            var policy = _options.RefreshPolicyFor?.Invoke(source) ?? _options.RefreshPolicy;
+            var configuration = new HandleConfiguration(
+                source.ProviderType,
+                source.IsFileSystem ? resolvedDirectories[source.Id] : null,
+                source.Settings,
+                policy,
+                _options.LoadOptions);
+
+            if (previous is not null
+                && previous.Handles.TryGetValue(source.Id, out var existing)
+                && _handleConfigurations.TryGetValue(source.Id, out var existingConfiguration)
+                && existingConfiguration == configuration)
+            {
+                built[source.Id] = existing;
+                keys[source.Id] = configuration;
+                continue;
+            }
+
+            try
+            {
+                var provider = source.IsFileSystem
+                    ? new FileSystemBundleProvider(resolvedDirectories[source.Id], confinementBoundary: _options.CatalogRoot)
+                    : _factories[source.ProviderType].Create(source);
+                var handle = new BundleHandle(provider, _options.LoadOptions, policy);
+                created.Add(handle);
+                built[source.Id] = handle;
+                keys[source.Id] = configuration;
+            }
+            catch (Exception e) when (e is not OutOfMemoryException)
+            {
+                // Translated (spec §7): the factory's own text may name a bucket or an endpoint,
+                // which stays with the host's log, never in a diagnostic a consumer may print.
+                problems.Add(new CatalogDiagnostic(
+                    CatalogDiagnosticCode.ProviderUnavailable,
+                    $"Source '{source.Id}' provider '{source.ProviderType}' could not be created ({e.GetType().Name})."));
+            }
+        }
+
+        if (problems.Count > 0)
+        {
+            foreach (var handle in created)
+            {
+                handle.Dispose();
+            }
+
+            handles = null;
+            configurations = null;
+            diagnostics = problems.AsReadOnly();
+            return false;
+        }
+
+        handles = new System.Collections.ObjectModel.ReadOnlyDictionary<string, BundleHandle>(built);
+        configurations = keys;
+        diagnostics = [];
+        return true;
+    }
+
+    private bool TryLoadSnapshot(
+        KnowledgeCatalogSnapshot? previous,
+        out KnowledgeCatalogSnapshot? snapshot,
+        out Dictionary<string, HandleConfiguration>? configurations,
+        out IReadOnlyList<CatalogDiagnostic> diagnostics)
+    {
+        configurations = null;
         string json;
         try
         {
@@ -268,6 +405,7 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
         }
 
         var pathDiagnostics = new List<CatalogDiagnostic>();
+        var resolvedDirectories = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var source in snapshot!.Sources)
         {
             // A filesystem source's path is checked as before (an enabled source only); another
@@ -278,9 +416,16 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
             // register it, or enable the source, later).
             if (source.IsFileSystem)
             {
-                if (source.Enabled && !CatalogPathResolver.TryResolve(_options.CatalogRoot, _manifestDirectory, source.Path, out _, out var pathDiagnostic))
+                if (source.Enabled)
                 {
-                    pathDiagnostics.Add(pathDiagnostic!);
+                    if (!CatalogPathResolver.TryResolve(_options.CatalogRoot, _manifestDirectory, source.Path, out var resolved, out var pathDiagnostic))
+                    {
+                        pathDiagnostics.Add(pathDiagnostic!);
+                    }
+                    else
+                    {
+                        resolvedDirectories[source.Id] = resolved!;
+                    }
                 }
             }
             else if (!_factories.TryGetValue(source.ProviderType, out var factory))
@@ -320,6 +465,13 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
             return false;
         }
 
+        if (!TryBuildHandles(snapshot, previous, resolvedDirectories, out var handles, out configurations, out diagnostics))
+        {
+            snapshot = null;
+            return false;
+        }
+
+        snapshot = snapshot with { Handles = handles! };
         return true;
     }
 

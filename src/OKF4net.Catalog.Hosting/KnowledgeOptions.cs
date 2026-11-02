@@ -88,6 +88,14 @@ public sealed class KnowledgeOptions
     }
 
     /// <summary>
+    /// The refresh policy of every knowledge source's handle, handed to
+    /// <see cref="KnowledgeCatalogOptions.RefreshPolicy"/>: the bundle's token is compared
+    /// before each use by default (<see cref="OKF4net.Providers.BundleRefreshPolicy.OnAccess"/>),
+    /// so a source stays as fresh as when it was reloaded at every request.
+    /// </summary>
+    public OKF4net.Providers.BundleRefreshPolicy RefreshPolicy { get; set; } = OKF4net.Providers.BundleRefreshPolicy.OnAccess;
+
+    /// <summary>
     /// The provider factories registered by <see cref="AddProviderFactory"/>, in order,
     /// handed to <see cref="KnowledgeCatalogOptions.ProviderFactories"/>.
     /// </summary>
