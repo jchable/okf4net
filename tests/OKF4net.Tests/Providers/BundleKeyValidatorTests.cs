@@ -519,4 +519,47 @@ public class BundleKeyValidatorTests
         Assert.NotNull(v.CheckKey(BundleKey.Parse("Tables/x.md")));
         Assert.Null(v.CheckKey(BundleKey.Parse("tables/x.md")));
     }
+
+    [Theory]
+    [InlineData("CON", true)]
+    [InlineData("CON.txt", true)]
+    [InlineData("Con", true)]
+    [InlineData("con.foo.bar", true)]
+    [InlineData("nul.", true)]
+    [InlineData("NUL", true)]
+    [InlineData("prn.x", true)]
+    [InlineData("Aux", true)]
+    [InlineData("com1", true)]
+    [InlineData("LPT9.log", true)]
+    [InlineData("lpt10", false)]
+    [InlineData("com0", false)]
+    [InlineData("console", false)]
+    [InlineData("console.foo", false)]
+    [InlineData("xcon", false)]
+    [InlineData("_con.foo", false)]
+    [InlineData("con-0123456789abcdef", false)]
+    [InlineData("", false)]
+    public void HasWindowsReservedBase_is_decided_on_the_part_before_the_first_dot_whatever_the_case(string segment, bool expected)
+    {
+        Assert.Equal(expected, BundleKeyValidator.HasWindowsReservedBase(segment));
+    }
+
+    [Fact]
+    public void HasWindowsReservedBase_covers_the_superscript_device_names()
+    {
+        // Built at run time from code points, so the source carries no non-ASCII character or escape.
+        var superscripts = new[] { 0x00B9, 0x00B2, 0x00B3 };
+        foreach (var cp in superscripts)
+        {
+            var sup = char.ConvertFromUtf32(cp);
+            Assert.True(BundleKeyValidator.HasWindowsReservedBase("COM" + sup));
+            Assert.True(BundleKeyValidator.HasWindowsReservedBase("lpt" + sup + ".txt"));
+        }
+    }
+
+    [Fact]
+    public void HasWindowsReservedBase_rejects_a_null_segment()
+    {
+        Assert.Throws<ArgumentNullException>(() => BundleKeyValidator.HasWindowsReservedBase(null!));
+    }
 }

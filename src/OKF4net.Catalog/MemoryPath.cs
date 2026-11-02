@@ -94,6 +94,12 @@ public static class MemoryPath
     /// hash, computed on the raw identifier, is unchanged and still makes the segment unique.
     /// No other identifier changes.
     /// </para>
+    /// <para>
+    /// <b>Migration</b>: a scope stored before D4 under the unprefixed reserved-base name
+    /// (possible on POSIX only; Windows could not create it) is no longer found. Reads,
+    /// enumeration and <c>DeleteScopeAsync</c> address the prefixed name, and the old
+    /// directory is neither read, migrated nor deleted (see the CHANGELOG's migration note).
+    /// </para>
     /// </summary>
     private static string Encode(string raw)
     {

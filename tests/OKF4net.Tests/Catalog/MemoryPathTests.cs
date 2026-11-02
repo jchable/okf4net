@@ -71,6 +71,19 @@ public class MemoryPathTests
         Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(raw)))[..16];
 
     [Fact]
+    public void A_prefixed_identifier_and_the_reserved_one_it_imitates_encode_to_different_segments()
+    {
+        var reserved = MemoryPath.For(MemoryTier.Tenant, new KnowledgeAccessScope(tenantId: "con.foo")).Split('/')[1];
+        var imitation = MemoryPath.For(MemoryTier.Tenant, new KnowledgeAccessScope(tenantId: "_con.foo")).Split('/')[1];
+
+        // The readable part alone would collide (both "_con.foo"); the hash of the raw identifier tells them apart.
+        Assert.NotEqual(reserved, imitation, StringComparer.OrdinalIgnoreCase);
+        AssertEncoded(reserved, "_con.foo");
+        AssertEncoded(imitation, "_con.foo");
+        Assert.Equal(RawHash("_con.foo"), imitation[(imitation.LastIndexOf('-') + 1)..]);
+    }
+
+    [Fact]
     public void Tenant_tier_keeps_its_literal_prefix_with_an_encoded_segment()
     {
         var segments = MemoryPath.For(MemoryTier.Tenant, new KnowledgeAccessScope(tenantId: "acme")).Split('/');
