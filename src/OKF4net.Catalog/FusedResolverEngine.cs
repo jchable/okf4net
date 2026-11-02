@@ -15,9 +15,9 @@ internal readonly record struct RankedPassage(KnowledgePassage Passage, int Prio
 
 /// <summary>
 /// The shared pipeline behind every fusing <see cref="IKnowledgeResolver"/>
-/// strategy: resolve and dedup the enabled sources, fan out, apply the
-/// query's <see cref="StalePolicy"/>, then rank with a caller-supplied
-/// comparer. <see cref="MergedKnowledgeResolver"/> and
+/// strategy: open (<see cref="CatalogSourceOpener"/>) and dedup the enabled
+/// sources, fan out, apply the query's <see cref="StalePolicy"/>, then rank
+/// with a caller-supplied comparer. <see cref="MergedKnowledgeResolver"/> and
 /// <see cref="PriorityWeightedKnowledgeResolver"/> differ ONLY in that
 /// comparer -- keeping the rest here means dedup semantics, diagnostics, and
 /// the never-throw contract cannot drift between the two.
@@ -115,50 +115,49 @@ internal static class FusedResolverEngine
 
         var diagnostics = new List<KnowledgeDiagnostic>();
 
-        // Resolve + dedup BEFORE searching. Two manifest entries pointing at
-        // the same directory are the same bundle: searching both would load
-        // and score it twice only to discard half the results. enabledSources
-        // is already in priority-then-id order, so the first entry reaching a
-        // given directory is the survivor by construction; a later duplicate
-        // is skipped and reported (see below), not just silently dropped.
-        var seenDirectories = new Dictionary<string, string>(StringComparer.FromComparison(CatalogPathResolver.PathComparison));
-        var resolved = new List<(KnowledgeCatalogSource Source, string Directory)>();
+        // Open + dedup BEFORE searching. Two manifest entries over the same
+        // storage are the same bundle: searching both would load and score it
+        // twice only to discard half the results. The identity is the
+        // provider's Id (spec §9; the canonical root for the filesystem, so
+        // the result is the one the resolved directory gave), or that
+        // directory for a source without a handle. enabledSources is already
+        // in priority-then-id order, so the first entry reaching a given
+        // storage is the survivor by construction; a later duplicate is
+        // skipped and reported (see below), not just silently dropped.
+        var seenIdentities = new Dictionary<string, string>(StringComparer.FromComparison(CatalogPathResolver.PathComparison));
+        var opened = new List<(KnowledgeCatalogSource Source, OkfBundleKnowledgeSource Bundle)>();
 
         foreach (var source in enabledSources)
         {
             ct.ThrowIfCancellationRequested();
 
-            if (!CatalogPathResolver.TryResolve(catalog.CatalogRoot, snapshot.ManifestDirectory, source.Path, out var directory, out var pathDiagnostic))
+            if (!CatalogSourceOpener.TryOpen(catalog, snapshot, source, out var bundleSource, out var identity, out var location, out var unavailable))
             {
-                diagnostics.Add(new KnowledgeDiagnostic(
-                    KnowledgeDiagnosticCode.SourceUnavailable,
-                    source.Id,
-                    $"Source '{source.Id}' path could not be re-resolved: {pathDiagnostic!.Message}"));
+                diagnostics.Add(unavailable!);
                 continue;
             }
 
-            if (seenDirectories.TryGetValue(directory!, out var survivingSourceId))
+            if (seenIdentities.TryGetValue(identity!, out var survivingSourceId))
             {
                 diagnostics.Add(new KnowledgeDiagnostic(
                     KnowledgeDiagnosticCode.DuplicateDirectory,
                     source.Id,
-                    $"Source '{source.Id}' resolves to the same directory ('{directory}') as source '{survivingSourceId}', which was already resolved; skipped to avoid searching the same bundle twice."));
+                    $"Source '{source.Id}' resolves to the same directory ('{location}') as source '{survivingSourceId}', which was already resolved; skipped to avoid searching the same bundle twice."));
                 continue;
             }
 
-            seenDirectories.Add(directory!, source.Id);
-            resolved.Add((source, directory!));
+            seenIdentities.Add(identity!, source.Id);
+            opened.Add((source, bundleSource!));
         }
 
         var ranked = new List<RankedPassage>();
         var anySourceSearchedSuccessfully = false;
         var now = clock.Now;
 
-        foreach (var (source, directory) in resolved)
+        foreach (var (source, bundleSource) in opened)
         {
             ct.ThrowIfCancellationRequested();
 
-            var bundleSource = new OkfBundleKnowledgeSource(source.Id, directory);
             var result = await bundleSource.SearchAsync(query, ct).ConfigureAwait(false);
 
             if (result.Diagnostic is not null)
