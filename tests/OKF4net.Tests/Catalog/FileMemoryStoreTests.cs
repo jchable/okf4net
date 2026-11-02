@@ -111,6 +111,27 @@ public class FileMemoryStoreTests
     }
 
     [Fact]
+    public async Task A_scope_whose_identifier_has_a_reserved_base_is_written_read_and_deleted_under_its_prefixed_segment()
+    {
+        using var tmp = new TempDir();
+        var store = UserStore(tmp);
+        var scope = new KnowledgeAccessScope(tenantId: "con.foo", userId: "alice");
+
+        var write = await store.WriteAsync(scope, Entry("reserved-base notes"), MemoryTier.User);
+        Assert.True(write.Written, write.Error);
+        Assert.StartsWith("memory-user/_con.foo-", MemoryPath.For(MemoryTier.User, scope));
+        Assert.True(File.Exists(MemPath(tmp.Path, MemoryTier.User, scope, "2026-07-27.md")));
+
+        var read = await store.ReadAsync(scope, new KnowledgeQuery("reserved-base"));
+        Assert.Single(read.Passages);
+        Assert.Single(await store.EnumerateAsync(scope));
+
+        var del = await store.DeleteScopeAsync(scope, MemoryTier.User);
+        Assert.True(Assert.Single(del.Tiers).Report.Succeeded);
+        Assert.Empty(await store.EnumerateAsync(scope));
+    }
+
+    [Fact]
     public async Task Deleting_an_absent_or_already_emptied_scope_touches_no_tier()
     {
         using var tmp = new TempDir();

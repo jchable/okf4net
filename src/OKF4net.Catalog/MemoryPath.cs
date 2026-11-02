@@ -85,11 +85,21 @@ public static class MemoryPath
     /// hex chars) truncation of the SHA-256 of the <b>case-sensitive</b> raw
     /// bytes, so two case-variant segments produce case-insensitively distinct
     /// results. See the type remarks for why (case-insensitive-FS isolation).
+    /// <para>
+    /// <b>Reserved names</b> (spec §9, D4): the encoded segment must be a key the portable
+    /// profile accepts, and the one rule it could break is a Windows reserved device name as
+    /// its base — an identifier whose part before its first <c>.</c> is one (<c>con.foo</c>
+    /// gives <c>con.foo-{hash}</c>, whose base is <c>con</c>; the extension does not lift the
+    /// reservation). Such a segment is prefixed with <c>_</c> (<c>_con.foo-{hash}</c>); the
+    /// hash, computed on the raw identifier, is unchanged and still makes the segment unique.
+    /// No other identifier changes.
+    /// </para>
     /// </summary>
     private static string Encode(string raw)
     {
         var readable = raw.ToLowerInvariant();
         var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(raw)))[..16];
-        return $"{readable}-{hash}";
+        var segment = $"{readable}-{hash}";
+        return OKF4net.Providers.BundleKeyValidator.HasWindowsReservedBase(segment) ? "_" + segment : segment;
     }
 }
