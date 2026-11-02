@@ -22,8 +22,8 @@ namespace OKF4net.Catalog;
 /// </param>
 /// <param name="Score">The core scorer's relevance score for this concept (higher is more relevant).</param>
 /// <param name="BundleRelativePath">
-/// The concept file's path relative to its bundle's root directory (the
-/// absolute <c>Concept.Path</c> relativized against <c>Bundle.Root</c>).
+/// The concept file's path relative to its bundle's root: its key
+/// (<c>Concept.Key</c>), '/'-separated on every OS.
 /// </param>
 /// <param name="TrustTier">
 /// The matching concept's derived trust tier (<c>Frontmatter.TrustTier</c>,

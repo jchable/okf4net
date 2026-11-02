@@ -1,43 +1,71 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using OKF4net;
+using OKF4net.Providers;
 
 namespace OKF4net.Catalog;
 
 /// <summary>
-/// An <see cref="IKnowledgeSource"/> over a single, already-resolved OKF
-/// bundle directory on disk.
+/// An <see cref="IKnowledgeSource"/> over one OKF bundle, served from a
+/// <see cref="BundleHandle"/> (spec §5.2, §9).
 /// </summary>
 /// <remarks>
-/// <b>Stateless by design.</b> Each <see cref="SearchAsync"/> call performs
-/// its own <see cref="Bundle.Load(string)"/> (permissive, §11) and searches
-/// via the core <see cref="ConceptSearch.Search"/> -- the same scorer
-/// <c>okf search</c>/<c>OkfBundleTools.Search</c> use, so ranking and scoring
-/// are identical by construction rather than by parallel re-implementation.
-/// Loading per call is simple and correct but not free; a bundle cache with
-/// its own invalidation policy is an explicit V2 concern and is deliberately
-/// not attempted here (mirrors <see cref="IKnowledgeCatalog.ReloadAsync"/>
-/// being "the reliable path" rather than relying on implicit caching).
+/// <para>
+/// <b>One image, refreshed under the handle's policy.</b> Each <see cref="SearchAsync"/>
+/// call reads <see cref="BundleHandle.Current"/> and searches it with the core
+/// <see cref="ConceptSearch.Search"/> -- the same scorer <c>okf search</c>/<c>OkfBundleTools.Search</c>
+/// use, so ranking and scoring are identical by construction rather than by parallel
+/// re-implementation. The handle decides when the image is reloaded: a catalog source
+/// is served from the handle its catalog keeps across requests (the snapshot's handles,
+/// <see cref="BundleRefreshPolicy.OnAccess"/> by default), so an unchanged bundle is
+/// loaded once and a changed one is seen at the next search. A reload that fails keeps
+/// the previous image served (<see cref="BundleHandle.IsStale"/>); only a bundle that
+/// never loaded is reported as <see cref="KnowledgeDiagnosticCode.SourceUnavailable"/>.
+/// </para>
+/// <para>
+/// <b>The sharing is explicit.</b> The directory constructor builds a handle of its own
+/// over a <see cref="FileSystemBundleProvider"/>, under <see cref="BundleRefreshPolicy.OnAccess"/>
+/// (the policy of a catalog source: the bundle's token is compared at every search, so an
+/// external change is still seen, where the source used to reload at every call). Two
+/// sources built that way over one directory have two images; a host that wants one image
+/// per source passes the same <see cref="BundleHandle"/> to both.
+/// </para>
 /// </remarks>
 public sealed class OkfBundleKnowledgeSource : IKnowledgeSource
 {
-    private readonly string _bundleDirectory;
-
     /// <summary>
     /// Creates a source over <paramref name="bundleDirectory"/>, an already
     /// safety-validated, resolved absolute directory (see
     /// <see cref="CatalogPathResolver.TryResolve"/>) -- this type does not
     /// itself re-derive or re-validate a path from a manifest-relative one.
+    /// The source owns a handle of its own over that directory, refreshed on
+    /// access (see the type remarks).
     /// </summary>
     /// <param name="id">The source's id, echoed onto every produced <see cref="KnowledgePassage.SourceId"/>.</param>
     /// <param name="bundleDirectory">The resolved, absolute bundle root directory to load and search.</param>
     public OkfBundleKnowledgeSource(string id, string bundleDirectory)
+        : this(id, new BundleHandle(new FileSystemBundleProvider(bundleDirectory), refreshPolicy: BundleRefreshPolicy.OnAccess))
     {
+    }
+
+    /// <summary>
+    /// Creates a source served from <paramref name="handle"/>, whose image, options and
+    /// refresh policy it shares with every other consumer of that handle.
+    /// </summary>
+    /// <param name="id">The source's id, echoed onto every produced <see cref="KnowledgePassage.SourceId"/>.</param>
+    /// <param name="handle">The handle the bundle is read from.</param>
+    public OkfBundleKnowledgeSource(string id, BundleHandle handle)
+    {
+        ArgumentNullException.ThrowIfNull(id);
+        ArgumentNullException.ThrowIfNull(handle);
         Id = id;
-        _bundleDirectory = bundleDirectory;
+        Handle = handle;
     }
 
     /// <inheritdoc/>
     public string Id { get; }
+
+    /// <summary>The handle the bundle is read from.</summary>
+    public BundleHandle Handle { get; }
 
     /// <inheritdoc/>
     /// <remarks>
@@ -70,7 +98,7 @@ public sealed class OkfBundleKnowledgeSource : IKnowledgeSource
         Bundle bundle;
         try
         {
-            bundle = Bundle.Load(_bundleDirectory);
+            bundle = Handle.Current;
         }
         catch (OkfException e)
         {
@@ -79,7 +107,7 @@ public sealed class OkfBundleKnowledgeSource : IKnowledgeSource
                 new KnowledgeDiagnostic(
                     KnowledgeDiagnosticCode.SourceUnavailable,
                     Id,
-                    $"Source '{Id}' bundle at '{_bundleDirectory}' could not be loaded: {e.Message}")));
+                    $"Source '{Id}' bundle at '{Handle.Location}' could not be loaded: {e.Message}")));
         }
 
         var scored = ConceptSearch.Search(bundle.Concepts, query.Text, query.Tag);
@@ -95,11 +123,7 @@ public sealed class OkfBundleKnowledgeSource : IKnowledgeSource
                     Title: fm.Title,
                     Excerpt: ConceptSearch.Excerpt(hit.Concept.Document.Body, query.Text) ?? string.Empty,
                     Score: hit.Score,
-                    // Normalized to '/' regardless of OS -- matches ConceptId's
-                    // '/' segment convention and travels correctly for a future
-                    // <okf-context> adapter, rather than leaking a Windows
-                    // backslash-separated path into cross-platform output.
-                    BundleRelativePath: Path.GetRelativePath(bundle.Root, hit.Concept.Path).Replace(Path.DirectorySeparatorChar, '/'),
+                    BundleRelativePath: RelativePathOf(bundle, hit.Concept),
                     TrustTier: fm.TrustTier,
                     Lifecycle: lc);
             })
@@ -112,4 +136,14 @@ public sealed class OkfBundleKnowledgeSource : IKnowledgeSource
         // passages/diagnostics; see GroupedKnowledgeResolver).
         return new ValueTask<KnowledgeSearchResult>(new KnowledgeSearchResult(passages.AsReadOnly(), null));
     }
+
+    /// <summary>
+    /// The passage's bundle-relative path: the concept's key, '/'-separated on every OS --
+    /// the same text <c>Path.GetRelativePath(root, concept.Path)</c> gave with the separator
+    /// normalised, which stays the fallback for a concept built by hand (no key).
+    /// </summary>
+    internal static string RelativePathOf(Bundle bundle, Concept concept) =>
+        concept.Key is { } key
+            ? key.ToString()
+            : Path.GetRelativePath(bundle.Location, concept.Path).Replace(Path.DirectorySeparatorChar, '/');
 }
