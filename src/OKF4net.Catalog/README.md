@@ -273,7 +273,8 @@ as before.
 
 A reload that fails does not lose a source: its last good image is served and
 the search reports `KnowledgeDiagnosticCode.SourceStale` (the exception type
-only; the failure itself stays on `Handle.LastLoadError`). Only a source whose
+of the cause, `BundleAccessRefusedException` or `DirectoryNotFoundException` for
+instance, never its message; the failure itself stays on `Handle.LastLoadError`). Only a source whose
 first load fails is `SourceUnavailable`. A host provider should report its own
 failures with the provider contract's exceptions (`BundleProviderException` and
 its derived types) or `IOException`: the core translates provider, I/O and

@@ -39,7 +39,7 @@ public enum KnowledgeDiagnosticCode
     /// A source was searched, and its passages are returned, but from its last
     /// good image: the reload its handle attempted since failed (spec §5.2 keeps
     /// the previous image served rather than losing the source). The message
-    /// names the failure by its exception type only; the failure itself stays on
+    /// names the failure by the exception type of its cause only (never its message); the failure itself stays on
     /// <see cref="Providers.BundleHandle.LastLoadError"/>. Appended after the
     /// shipped members, so their numeric values are unchanged.
     /// </summary>

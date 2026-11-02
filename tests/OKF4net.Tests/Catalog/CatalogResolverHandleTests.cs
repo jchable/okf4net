@@ -163,7 +163,11 @@ public class CatalogResolverHandleTests
         Assert.Equal("docs", stale.SourceId);
         var handle = catalog.Current.Handles["docs"];
         Assert.True(handle.IsStale);
-        Assert.Contains($"bundle at '{handle.Location}' is served from its last good image; the last reload failed ({handle.LastLoadError!.GetType().Name})", stale.Message);
+        // The cause is named, not the BundleLoadException wrapper every recorded failure is.
+        var recorded = Assert.IsType<BundleLoadException>(handle.LastLoadError);
+        Assert.Equal($"Source 'docs' bundle at '{handle.Location}' is served from its last good image; the last reload failed ({recorded.InnerException!.GetType().Name}).", stale.Message);
+        Assert.Contains("(DirectoryNotFoundException)", stale.Message);
+        Assert.DoesNotContain("BundleLoadException", stale.Message);
         Assert.DoesNotContain(context.Diagnostics, d => d.Code == KnowledgeDiagnosticCode.SourceUnavailable);
     }
 
@@ -187,6 +191,7 @@ public class CatalogResolverHandleTests
         var stale = Assert.Single(failing.Diagnostics);
         Assert.Equal(KnowledgeDiagnosticCode.SourceStale, stale.Code);
         Assert.DoesNotContain("secret", stale.Message);
+        Assert.Contains("the last reload failed (BundleAccessRefusedException).", stale.Message);
 
         storage.FailReadsWith = null;
         var recovered = await resolver.SearchAsync(new KnowledgeQuery("orders"));
@@ -336,7 +341,8 @@ public class CatalogResolverHandleTests
         var stale = Assert.Single(context.Diagnostics);
         Assert.Equal(KnowledgeDiagnosticCode.SourceStale, stale.Code);
         Assert.Equal("docs", stale.SourceId);
-        Assert.Contains("(BundleLoadException)", stale.Message);
+        Assert.Contains("(BundleAccessRefusedException)", stale.Message);
+        Assert.DoesNotContain("BundleLoadException", stale.Message);
         Assert.True(handle.IsStale);
         var failure = Assert.IsType<BundleLoadException>(handle.LastLoadError);
         Assert.IsType<BundleAccessRefusedException>(failure.InnerException);

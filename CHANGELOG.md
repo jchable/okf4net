@@ -175,7 +175,8 @@ and this project adheres to
 - **`KnowledgeDiagnosticCode.SourceStale`** (#139, lot D; spec §5.2, §7),
   appended (value 4): a source whose last reload failed and that was answered
   from its last good image — its passages are returned, and the message names
-  the exception type only.
+  the type of the failure's cause only (`BundleAccessRefusedException`,
+  `DirectoryNotFoundException`, …), never its message.
 - **`MemoryTierDeletion`** (#139, lot D; spec §1, §9): what deleting one tier's
   scope did, as a `BundleWriteReport` (see Changed (breaking)).
 

@@ -60,8 +60,11 @@ internal static class CatalogSourceOpener
     /// just been searched, or <see langword="null"/> when it was served from a current image:
     /// once an image has loaded, the handle absorbs every later failure and keeps serving the
     /// last good one (spec §5.2), so the failure is read back from the handle here. The
-    /// message names the failure by its exception type only (spec §7); a handle that is stale
-    /// only because a reload is pending, with no failure recorded, reports nothing.
+    /// message names the failure by its exception type only (spec §7), the type of the CAUSE:
+    /// the handle records a <see cref="BundleLoadException"/> whatever went wrong, so the
+    /// wrapper's own name would say nothing and its <see cref="Exception.InnerException"/> is what
+    /// is named (never its message, which can embed a root path). A handle that is stale only
+    /// because a reload is pending, with no failure recorded, reports nothing.
     /// </summary>
     internal static KnowledgeDiagnostic? StaleDiagnostic(OkfBundleKnowledgeSource source)
     {
@@ -71,9 +74,10 @@ internal static class CatalogSourceOpener
             return null;
         }
 
+        var cause = (error as BundleLoadException)?.InnerException ?? error;
         return new KnowledgeDiagnostic(
             KnowledgeDiagnosticCode.SourceStale,
             source.Id,
-            $"Source '{source.Id}' bundle at '{handle.Location}' is served from its last good image; the last reload failed ({error.GetType().Name}).");
+            $"Source '{source.Id}' bundle at '{handle.Location}' is served from its last good image; the last reload failed ({cause.GetType().Name}).");
     }
 }

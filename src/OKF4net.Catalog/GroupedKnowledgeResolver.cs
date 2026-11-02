@@ -22,8 +22,8 @@ namespace OKF4net.Catalog;
 /// diagnostic for that source alone; the remaining sources are still searched. A source
 /// that loaded once and whose later reload fails (its directory deleted, or replaced by a
 /// link, after the first search) is not unavailable: its last good image is served, with a
-/// <see cref="KnowledgeDiagnosticCode.SourceStale"/> diagnostic naming the failure by its
-/// exception type (spec §5.2, §7).
+/// <see cref="KnowledgeDiagnosticCode.SourceStale"/> diagnostic naming the failure by the
+/// exception type of its cause (spec §5.2, §7).
 /// </para>
 /// <para>
 /// A snapshot that carries no handle for a source (one built by hand, or by
