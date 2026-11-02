@@ -33,6 +33,29 @@ public sealed class BundleKeyValidator
         "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "LPT\u00b9", "LPT\u00b2", "LPT\u00b3",
     ];
 
+    /// <summary>
+    /// <see langword="true"/> when <paramref name="segment"/>'s base — the part before its
+    /// first <c>.</c>, or the whole segment — is a reserved Windows device name, whatever the
+    /// case: the one check <see cref="BundleKeyConstraints.WindowsReservedNames"/> applies,
+    /// for a caller that must avoid such a name before building a key (the memory store's
+    /// scope segments, spec §9 D4).
+    /// </summary>
+    internal static bool HasWindowsReservedBase(string segment)
+    {
+        ArgumentNullException.ThrowIfNull(segment);
+        var dot = segment.IndexOf('.');
+        var baseName = dot < 0 ? segment : segment[..dot];
+        foreach (var reserved in ReservedBases)
+        {
+            if (string.Equals(baseName, reserved, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static readonly char[] WindowsIllegal = ['<', '>', ':', '"', '|', '?', '*'];
 
     private readonly IReadOnlyList<Func<BundleKey, string?>> _extra;
@@ -405,17 +428,11 @@ public sealed class BundleKeyValidator
             return "contains a character Windows forbids (< > : \" | ? *)";
         }
 
-        if (Effective.HasFlag(BundleKeyConstraints.WindowsReservedNames))
+        if (Effective.HasFlag(BundleKeyConstraints.WindowsReservedNames) && HasWindowsReservedBase(segment))
         {
             var dot = segment.IndexOf('.');
             var baseName = dot < 0 ? segment : segment[..dot];
-            foreach (var reserved in ReservedBases)
-            {
-                if (string.Equals(baseName, reserved, StringComparison.OrdinalIgnoreCase))
-                {
-                    return $"has the reserved Windows device name '{reserved}' as its base";
-                }
-            }
+            return $"has the reserved Windows device name '{baseName.ToUpperInvariant()}' as its base";
         }
 
         if (Effective.HasFlag(BundleKeyConstraints.RequireNfc))

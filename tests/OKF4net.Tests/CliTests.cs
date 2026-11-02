@@ -472,6 +472,32 @@ public class CliTests
         Assert.True(File.Exists(Path.Combine(tmp.Path, "index.md")));
     }
 
+    /// <summary>
+    /// Spec §2 and §10 (D2) at the CLI surface: for a bundle holding an empty directory,
+    /// <c>okf index</c> prints the lines it printed before (the empty directory never had an index
+    /// of its own), but the root index no longer references it. A directory holding only a
+    /// non-<c>.md</c> file still is. On the code before the provider the root index listed
+    /// <c>empty</c>, and this test failed.
+    /// </summary>
+    [Fact]
+    public void Index_no_longer_references_an_empty_directory()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("notes/a.md", "---\ntype: Note\ntitle: A\ndescription: d\n---\n\nbody\n");
+        tmp.Write("assets/logo.png", "png");
+        Directory.CreateDirectory(Path.Combine(tmp.Path, "empty"));
+
+        var r = Run("index", tmp.Path);
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal(
+            $"wrote {Path.Combine(tmp.Path, "notes", "index.md")}\nwrote {Path.Combine(tmp.Path, "index.md")}\n\n2 index file(s) regenerated.\n",
+            r.Out);
+        Assert.Equal(
+            "# Subdirectories\n\n* [assets](assets/index.md)\n* [notes](notes/index.md) - d\n",
+            File.ReadAllText(Path.Combine(tmp.Path, "index.md")));
+    }
+
 
     /// <summary>
     /// `okf graph` without `--dot` had no test at all (issue #14): the golden
@@ -1561,10 +1587,10 @@ public class CliTests
     /// refactor — <c>bundle.Get</c> compares <c>ConceptId</c>s ordinally, and
     /// <c>Bundle.Load</c> builds them from the real directory-listing casing,
     /// so <c>METRICS/DAU</c> was never an alias for an on-disk
-    /// <c>metrics/dau.md</c>. Without <c>ExistsWithExactCase</c>,
-    /// <c>File.Exists</c> alone answers case-insensitively on Windows/macOS
-    /// and would accept it. Passes identically on a case-sensitive
-    /// filesystem too (there, <c>File.Exists</c> itself already says no).
+    /// <c>metrics/dau.md</c>. The provider matches every segment of the key
+    /// exactly, where <c>File.Exists</c> alone answers case-insensitively on
+    /// Windows/macOS and would accept it. Passes identically on a
+    /// case-sensitive filesystem too.
     /// </summary>
     [Fact]
     public void Verify_dry_run_rejects_a_case_variant_of_an_existing_concept_id()

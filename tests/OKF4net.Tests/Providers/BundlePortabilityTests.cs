@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+#pragma warning disable CS0618 // pins the obsolete path-based projections (lot D): the strings they always were, until their removal
 using OKF4net.Cli;
 using OKF4net.Providers;
 

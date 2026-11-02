@@ -25,6 +25,8 @@ public static class CatalogManifestParser
     private const string EnabledProperty = "enabled";
     private const string RoleProperty = "role";
     private const string TierProperty = "tier";
+    private const string ProviderProperty = "provider";
+    private const string SettingsProperty = "settings";
     private const string KnowledgeRoleValue = "knowledge";
     private const string MemoryRoleValue = "memory";
 
@@ -182,7 +184,7 @@ public static class CatalogManifestParser
     {
         foreach (var property in source.EnumerateObject())
         {
-            if (property.Name is not (IdProperty or PathProperty or PriorityProperty or EnabledProperty or RoleProperty or TierProperty))
+            if (property.Name is not (IdProperty or PathProperty or PriorityProperty or EnabledProperty or RoleProperty or TierProperty or ProviderProperty or SettingsProperty))
             {
                 diags.Add(new CatalogDiagnostic(
                     CatalogDiagnosticCode.UnknownSourceProperty,
@@ -191,13 +193,114 @@ public static class CatalogManifestParser
         }
 
         var id = ParseId(source, seenIds, diags);
-        var path = ParsePath(source, diags);
+        // The order of the diagnostics of a manifest without provider/settings is the shipped
+        // one (id, path, priority, enabled, role, tier): ParseProvider reports only when the
+        // field is present, the memory-provider check follows the role, and the settings come
+        // last, so none of them can reorder what an older manifest was already told.
+        var providerType = ParseProvider(source, diags);
+        var isFileSystem = string.Equals(providerType, KnowledgeCatalogSource.FileSystemProviderType, StringComparison.Ordinal);
+        var path = ParsePath(source, isFileSystem, diags);
         var priority = ParsePriority(source, diags);
         var enabled = ParseEnabled(source, diags);
         var (role, roleWasValid) = ParseRole(source, diags);
+        CheckMemoryProvider(role, providerType, diags);
         var tier = ParseTier(source, role, roleWasValid, diags);
+        var settings = ParseSettings(source, isFileSystem, diags);
 
-        return new KnowledgeCatalogSource(id, path, priority, enabled, role, tier);
+        return new KnowledgeCatalogSource(id, path, priority, enabled, role, tier) { ProviderType = providerType, Settings = settings };
+    }
+
+    /// <summary>
+    /// Parses the source's <c>provider</c> (spec §9): absent is the built-in
+    /// <see cref="KnowledgeCatalogSource.FileSystemProviderType"/>; present, it must be a
+    /// non-empty string. Whether a named type has a factory is the catalog's check,
+    /// not the parser's, which knows no factory.
+    /// </summary>
+    private static string ParseProvider(JsonElement source, List<CatalogDiagnostic> diags)
+    {
+        if (!source.TryGetProperty(ProviderProperty, out var providerProperty))
+        {
+            return KnowledgeCatalogSource.FileSystemProviderType;
+        }
+
+        var value = providerProperty.ValueKind == JsonValueKind.String ? providerProperty.GetString() : null;
+        if (string.IsNullOrEmpty(value))
+        {
+            diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.MalformedProvider, "Source 'provider' must be a non-empty string."));
+            return KnowledgeCatalogSource.FileSystemProviderType;
+        }
+
+        return value;
+    }
+
+    /// <summary>
+    /// A <c>role:"memory"</c> source may only name the filesystem provider (memory stays
+    /// local, spec §9). <paramref name="role"/> is <see cref="SourceRole.Memory"/> only when
+    /// the manifest's role was valid, so an illegal role adds no second diagnostic here.
+    /// </summary>
+    private static void CheckMemoryProvider(SourceRole role, string providerType, List<CatalogDiagnostic> diags)
+    {
+        if (role == SourceRole.Memory && !string.Equals(providerType, KnowledgeCatalogSource.FileSystemProviderType, StringComparison.Ordinal))
+        {
+            diags.Add(new CatalogDiagnostic(
+                CatalogDiagnosticCode.IllegalMemoryProvider,
+                $"A role:\"memory\" source must use the \"{KnowledgeCatalogSource.FileSystemProviderType}\" provider, not '{providerType}': memory stays on the local filesystem."));
+        }
+    }
+
+    /// <summary>
+    /// Parses the source's <c>settings</c>: absent is <see cref="ProviderSettings.Empty"/>;
+    /// present, it must be an object whose values are all strings, each name once. The
+    /// built-in filesystem provider accepts none (its storage is named by <c>path</c>); which
+    /// names another provider accepts is its factory's declaration, checked by the catalog.
+    /// </summary>
+    private static ProviderSettings ParseSettings(JsonElement source, bool isFileSystem, List<CatalogDiagnostic> diags)
+    {
+        if (!source.TryGetProperty(SettingsProperty, out var settingsProperty))
+        {
+            return ProviderSettings.Empty;
+        }
+
+        if (settingsProperty.ValueKind != JsonValueKind.Object)
+        {
+            diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.MalformedSettings, "Source 'settings' must be a JSON object of string values."));
+            return ProviderSettings.Empty;
+        }
+
+        var pairs = new List<KeyValuePair<string, string>>();
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var setting in settingsProperty.EnumerateObject())
+        {
+            if (setting.Value.ValueKind != JsonValueKind.String)
+            {
+                diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.MalformedSettings, $"Source setting '{setting.Name}' must be a string."));
+                return ProviderSettings.Empty;
+            }
+
+            if (setting.Name.Length == 0)
+            {
+                diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.MalformedSettings, "A source setting has an empty name."));
+                return ProviderSettings.Empty;
+            }
+
+            if (!names.Add(setting.Name))
+            {
+                diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.MalformedSettings, $"Source setting '{setting.Name}' appears twice."));
+                return ProviderSettings.Empty;
+            }
+
+            pairs.Add(new KeyValuePair<string, string>(setting.Name, setting.Value.GetString() ?? string.Empty));
+        }
+
+        if (isFileSystem && pairs.Count > 0)
+        {
+            diags.Add(new CatalogDiagnostic(
+                CatalogDiagnosticCode.IllegalSetting,
+                $"The \"{KnowledgeCatalogSource.FileSystemProviderType}\" provider accepts no setting ('{pairs[0].Key}'); its bundle is named by 'path'."));
+            return ProviderSettings.Empty;
+        }
+
+        return ProviderSettings.From(pairs);
     }
 
     private static string ParseId(JsonElement source, HashSet<string> seenIds, List<CatalogDiagnostic> diags)
@@ -225,10 +328,27 @@ public static class CatalogManifestParser
         return id;
     }
 
-    private static string ParsePath(JsonElement source, List<CatalogDiagnostic> diags)
+    /// <summary>
+    /// Parses the source's <c>path</c>: required, non-empty, for a filesystem source; refused
+    /// on any other provider type, whose storage is named by <c>settings</c> (spec §9: the
+    /// path "ne vaut plus que pour le type filesystem").
+    /// </summary>
+    private static string ParsePath(JsonElement source, bool isFileSystem, List<CatalogDiagnostic> diags)
     {
-        if (source.TryGetProperty(PathProperty, out var pathProperty) &&
-            pathProperty.ValueKind == JsonValueKind.String)
+        var hasPath = source.TryGetProperty(PathProperty, out var pathProperty);
+        if (!isFileSystem)
+        {
+            if (hasPath)
+            {
+                diags.Add(new CatalogDiagnostic(
+                    CatalogDiagnosticCode.IllegalPath,
+                    $"Source 'path' is only valid on a \"{KnowledgeCatalogSource.FileSystemProviderType}\" source; a provider's storage is named by its 'settings'."));
+            }
+
+            return string.Empty;
+        }
+
+        if (hasPath && pathProperty.ValueKind == JsonValueKind.String)
         {
             var path = pathProperty.GetString() ?? string.Empty;
             if (path.Length > 0)

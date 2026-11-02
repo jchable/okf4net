@@ -172,9 +172,7 @@ public class OkfContextProviderTests
         var tools = NewToolsOverFixtureCopy(tmp);
         var provider = new OkfContextProvider(tools);
 
-        // Load once so the failure happens on a RELOAD, then take the root away.
-        tools.GetBundle();
-        tools.InvalidateBundle();
+        // Never loaded: the first load fails, and the failure is reported by category.
         Directory.Delete(tmp.Path, recursive: true);
 
         var result = await provider.ProvideForTest(BuildInvokingContext("orders"), CancellationToken.None);
@@ -185,13 +183,43 @@ public class OkfContextProviderTests
     }
 
     /// <summary>
+    /// The first load failing is reported once to the host, with the failure the handle
+    /// threw: its own message names no host path, its inner exception is the raw cause,
+    /// path included. The model reads only the category.
+    /// </summary>
+    [Fact]
+    public async Task A_failed_first_load_is_reported_once_to_the_host_and_the_model_reads_bundle_unavailable()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        var seen = new List<Exception>();
+        var provider = new OkfContextProvider(tools, new OkfContextProviderOptions { OnInternalError = seen.Add });
+
+        Directory.Delete(tmp.Path, recursive: true);
+
+        var result = await provider.ProvideForTest(BuildInvokingContext("orders"), CancellationToken.None);
+
+        var text = Assert.Single(result.Messages!).Text;
+        Assert.StartsWith("bundle unavailable: ", text, StringComparison.Ordinal);
+        Assert.DoesNotContain(tmp.Path, text, StringComparison.Ordinal);
+        var reported = Assert.Single(seen);
+        Assert.DoesNotContain(tmp.Path, reported.Message, StringComparison.Ordinal);
+        Assert.Contains(tmp.Path, reported.InnerException!.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// Sanitizing the model-facing message must not leave the HOST blind: the
     /// injected context was the only place that detail ever surfaced, so
     /// removing it there without a replacement channel would trade a leak for
-    /// an undiagnosable failure.
+    /// an undiagnosable failure. For a reload that fails after a successful load
+    /// the previous image stays served (spec §5.2, lot C): the model reads its
+    /// context as usual, <see cref="BundleHandle.IsStale"/> says so,
+    /// <see cref="BundleHandle.LastLoadError"/> carries the failure (path in its
+    /// inner exception), and the host's <c>OnInternalError</c> receives that
+    /// same exception, once per assembly while the failure lasts.
     /// </summary>
     [Fact]
-    public async Task A_failed_load_reports_the_real_exception_to_the_host()
+    public async Task A_failed_reload_keeps_the_previous_image_and_reports_the_real_exception_to_the_host()
     {
         using var tmp = new TempDir();
         var tools = NewToolsOverFixtureCopy(tmp);
@@ -202,10 +230,28 @@ public class OkfContextProviderTests
         tools.InvalidateBundle();
         Directory.Delete(tmp.Path, recursive: true);
 
-        await provider.ProvideForTest(BuildInvokingContext("orders"), CancellationToken.None);
+        var result = await provider.ProvideForTest(BuildInvokingContext("orders"), CancellationToken.None);
 
+        var text = Assert.Single(result.Messages!).Text;
+        Assert.StartsWith("<okf-context", text, StringComparison.Ordinal);
+        Assert.DoesNotContain(tmp.Path, text, StringComparison.Ordinal);
+        Assert.True(tools.Handle.IsStale);
+        // The library-authored message names no host path (spec §7); the raw cause does.
+        Assert.StartsWith("I/O error while listing the bundle", tools.Handle.LastLoadError!.Message, StringComparison.Ordinal);
+        Assert.Contains(tmp.Path, tools.Handle.LastLoadError.InnerException!.Message, StringComparison.Ordinal);
+
+        // The host heard of it: the handle's failure (the obligation stays pending, so each
+        // later read of the same assembly tries again and replaces LastLoadError by an
+        // equal failure -- the report is the one the assembly's first read met), once.
         var reported = Assert.Single(seen);
-        Assert.Contains(tmp.Path, reported.Message, StringComparison.Ordinal);
+        var failure = Assert.IsType<BundleLoadException>(reported);
+        Assert.Equal(tools.Handle.LastLoadError!.Message, failure.Message);
+        Assert.Contains(tmp.Path, failure.InnerException!.Message, StringComparison.Ordinal);
+
+        // And again at the next assembly while the bundle stays unreachable.
+        await provider.ProvideForTest(BuildInvokingContext("orders"), CancellationToken.None);
+        Assert.Equal(2, seen.Count);
+        Assert.IsType<BundleLoadException>(seen[1]);
     }
 
     /// <summary>
@@ -426,6 +472,9 @@ public class OkfContextProviderTests
         // call -- after Browse's own identical failed attempt was silently
         // absorbed -- would escape ProvideAIContextAsync as an unhandled
         // exception.
+        // Since lot C (spec §5.2) a reload that fails keeps the previous image served,
+        // marked stale, so the injection below is built from it; this test keeps its
+        // one purpose: nothing escapes ProvideAIContextAsync.
         tools.GetBundle();
         Directory.Delete(tmp.Path, recursive: true);
         tools.InvalidateBundle();
@@ -433,8 +482,8 @@ public class OkfContextProviderTests
         var result = await provider.ProvideForTest(BuildInvokingContext("orders"), CancellationToken.None);
 
         var text = Assert.Single(result.Messages!).Text;
-        Assert.StartsWith("bundle unavailable: ", text, StringComparison.Ordinal);
-        Assert.DoesNotContain("<okf-context", text, StringComparison.Ordinal);
+        Assert.StartsWith("<okf-context", text, StringComparison.Ordinal);
+        Assert.True(tools.Handle.IsStale);
     }
 
     [Fact]

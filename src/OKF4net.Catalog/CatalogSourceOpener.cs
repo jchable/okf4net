@@ -1,0 +1,103 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+namespace OKF4net.Catalog;
+
+/// <summary>
+/// How every resolver opens a knowledge source of a snapshot (spec §9, "Catalog : qui crée
+/// et conserve les handles"): from the handle the catalog keeps for it, so that the image
+/// survives from one request to the next and is refreshed under the source's policy; or,
+/// for a snapshot that carries no handle for the source (one the parser or a test built by
+/// hand), by resolving its path at this request and loading at each search, as every
+/// resolver did before the seam.
+/// </summary>
+internal static class CatalogSourceOpener
+{
+    /// <summary>
+    /// Opens <paramref name="source"/>. On success <paramref name="identity"/> is what two
+    /// sources over one storage share — the provider's <see cref="Providers.IBundleProvider.Id"/>
+    /// (the canonical root for the filesystem), or the resolved directory for a source
+    /// without a handle — and <paramref name="location"/> is the displayable location; on
+    /// failure <paramref name="diagnostic"/> says why the source is unavailable.
+    /// </summary>
+    internal static bool TryOpen(
+        IKnowledgeCatalog catalog,
+        KnowledgeCatalogSnapshot snapshot,
+        KnowledgeCatalogSource source,
+        out OkfBundleKnowledgeSource? bundleSource,
+        out string? identity,
+        out string? location,
+        out KnowledgeDiagnostic? diagnostic)
+    {
+        if (snapshot.Handles.TryGetValue(source.Id, out var handle))
+        {
+            // Both are host getters read at every search (the catalog checked the id once, when the provider
+            // entered): one that starts throwing costs this source only, reported by type name (spec §7).
+            try
+            {
+                identity = handle.Provider.Id;
+                location = handle.Location;
+            }
+            catch (Exception e) when (e is not OutOfMemoryException)
+            {
+                // No token here: a cancellation raised by a getter is the provider's own, reported like any other.
+                bundleSource = null;
+                identity = null;
+                location = null;
+                diagnostic = new KnowledgeDiagnostic(
+                    KnowledgeDiagnosticCode.SourceUnavailable,
+                    source.Id,
+                    $"Source '{source.Id}' storage could not be identified ({e.GetType().Name}).");
+                return false;
+            }
+
+            bundleSource = new OkfBundleKnowledgeSource(source.Id, handle);
+            diagnostic = null;
+            return true;
+        }
+
+        if (!CatalogPathResolver.TryResolve(catalog.CatalogRoot, snapshot.ManifestDirectory, source.Path, out var directory, out var pathDiagnostic))
+        {
+            bundleSource = null;
+            identity = null;
+            location = null;
+            diagnostic = new KnowledgeDiagnostic(
+                KnowledgeDiagnosticCode.SourceUnavailable,
+                source.Id,
+                $"Source '{source.Id}' path could not be re-resolved: {pathDiagnostic!.Message}");
+            return false;
+        }
+
+        bundleSource = new OkfBundleKnowledgeSource(source.Id, directory!);
+        identity = directory;
+        location = directory;
+        diagnostic = null;
+        return true;
+    }
+
+    /// <summary>
+    /// The <see cref="KnowledgeDiagnosticCode.SourceStale"/> diagnostic for a source that has
+    /// just been searched, or <see langword="null"/> when it was served from a current image:
+    /// once an image has loaded, the handle absorbs every later failure and keeps serving the
+    /// last good one (spec §5.2), so the failure is read back from the handle here. The
+    /// message names the failure by its exception type only (spec §7), the type of the CAUSE:
+    /// the handle records a <see cref="BundleLoadException"/> whatever went wrong, so the
+    /// wrapper's own name would say nothing and its <see cref="Exception.InnerException"/> is what
+    /// is named (never its message, which can embed a root path). A handle that is stale only
+    /// because a reload is pending, with no failure recorded, reports nothing.
+    /// </summary>
+    internal static KnowledgeDiagnostic? StaleDiagnostic(OkfBundleKnowledgeSource source)
+    {
+        // Read after the search, not during it: a reload by another request in between can label a current
+        // image stale or a stale one current. That is inherent to the per-search cadence; do not "fix" it with a lock.
+        var handle = source.Handle;
+        if (!handle.IsStale || handle.LastLoadError is not { } error)
+        {
+            return null;
+        }
+
+        var cause = (error as BundleLoadException)?.InnerException ?? error;
+        return new KnowledgeDiagnostic(
+            KnowledgeDiagnosticCode.SourceStale,
+            source.Id,
+            $"Source '{source.Id}' bundle at '{source.LocationForDiagnostic}' is served from its last good image; the last reload failed ({cause.GetType().Name}).");
+    }
+}

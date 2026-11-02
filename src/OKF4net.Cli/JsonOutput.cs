@@ -161,16 +161,16 @@ internal static class JsonOutput
             totalLinks += bundle.LinksFrom(c.Id).Count;
         }
 
-        var parseErrors = bundle.ParseErrors
-            .Select(pe => new ParseErrorJson(pe.Path, pe.Error))
+        var parseErrors = bundle.ParseProblems
+            .Select(p => new ParseErrorJson(bundle.DisplayPath(p), p.Error))
             .ToList();
 
         var result = new InfoJsonResult(
             bundlePath,
             bundle.OkfVersion,
             bundle.Count,
-            bundle.IndexFiles.Count,
-            bundle.LogFiles.Count,
+            bundle.IndexKeys.Count,
+            bundle.LogKeys.Count,
             byType,
             totalLinks,
             bundle.BrokenLinks().Count,

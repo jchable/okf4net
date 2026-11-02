@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-using System.Diagnostics.CodeAnalysis;
+using OKF4net.Providers;
 
 namespace OKF4net.Attestation;
 
@@ -55,49 +55,250 @@ public sealed class AttestationOrchestrator
     /// </para>
     ///
     /// <para>
-    /// The body reads as the numbered §10.5 steps, in order. Two of them —
-    /// resolving the computation and attesting — live in
-    /// <see cref="TryResolveComputation"/> and <see cref="AttestAsync"/>
-    /// because they branch several ways with I/O of their own, and inlining
-    /// them buried the pipeline they are steps of. Everything else is here on
-    /// purpose: the sequence IS the specification, and hiding it behind
-    /// helpers would cost more than it saved.
+    /// The body reads as the numbered §10.5 steps, in order: step 1 here, step 2 in
+    /// <see cref="Capture"/> (the one step that reads sanctioned code, pinned to the
+    /// image), steps 3 to 10 in <see cref="RunCapturedAsync"/>, with attestation in
+    /// <see cref="AttestAsync"/>. Everything else is inline on purpose: the sequence IS
+    /// the specification, and hiding it behind helpers would cost more than it saved.
     /// </para>
-    /// <para><b>Fail-closed on an unresolvable <c>attester.resource</c>.</b> When a
-    /// concept declares one, it is resolved (§6.2) and read <i>before</i> binding or
-    /// execution, and a value that does not resolve — missing file, or a path that
-    /// would escape the bundle — ends the run with a non-displayable outcome. Nothing
-    /// executes. This is deliberate: an attester the bundle names but the host cannot
-    /// read is an attestation that was specified and then not performed, and §10.6 is
-    /// about not displaying a figure whose check did not happen.
-    ///
-    /// It is also a behaviour change for hosts that predate
-    /// <see cref="AttestationContext.AttesterSourceText"/>, which is to say all of
-    /// them: such a host's <see cref="IAttester"/> supplies its own implementation and
-    /// never wanted the bundle's source, yet a declared-but-broken
-    /// <c>attester.resource</c> now stops its run. The cheapest workaround is deleting
-    /// the <c>attester:</c> block from the bundle, which silently removes attestation
-    /// altogether — so fix the path instead, or point it at a resource the host can
-    /// read.</para>
+    /// <para><b>Fail-closed on the <c>attester.resource</c>.</b> The attester's source is
+    /// read <i>before</i> binding or execution, pinned to the version the image was loaded
+    /// with, and a concept whose attester does not resolve — missing file, a path that
+    /// would escape the bundle, a resource that changed since the load — ends the run with
+    /// a non-displayable outcome. Nothing executes. So does a concept that declares no
+    /// <c>attester.resource</c>, or declares a URL (D6, spec §5.1): there is nothing to pin,
+    /// so the run is refused before the runtime is called, and the host's
+    /// <see cref="IAttester"/> never receives a <see langword="null"/>
+    /// <see cref="AttestationContext.AttesterSourceText"/>. This is deliberate: an attester
+    /// the bundle names but the host cannot read is an attestation that was specified and
+    /// then not performed, and §10.6 is about not displaying a figure whose check did not
+    /// happen. A host whose <see cref="IAttester"/> attested without a source in the bundle
+    /// sees its computations refused until the bundle declares a file attester
+    /// (docs/spec-conformance, S10.5-1).</para>
+    /// <para>This method is not <c>async</c>: a <see langword="null"/> <paramref name="bundle"/>
+    /// (<see cref="ArgumentNullException"/>) and an unexpected exception from <see cref="Capture"/>
+    /// (anything other than the I/O and decoding failures it turns into a refusal) are thrown
+    /// synchronously instead of faulting the returned <see cref="ValueTask{TResult}"/>; a stage
+    /// failure after the capture is still an outcome (errors-as-data).</para>
     /// </summary>
     /// <param name="bundle">The bundle to load the concept from.</param>
     /// <param name="conceptId">The attested-computation concept to run.</param>
     /// <param name="parameterValues">The parameter values supplied for this run (§10.3: values only, never computation code).</param>
     /// <param name="policy">The staleness gating policy for this run; defaults to the constructor's <c>defaultPolicy</c>.</param>
     /// <param name="cancellationToken">A token to cancel binding/execution/attestation.</param>
-    public async ValueTask<AttestationOutcome> RunAsync(
+    public ValueTask<AttestationOutcome> RunAsync(
         Bundle bundle,
         ConceptId conceptId,
         IReadOnlyDictionary<string, object?> parameterValues,
         StalePolicy? policy = null,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(bundle);
+
+        // Step 1: load the concept; it must exist and be an Attested Computation.
+        var concept = bundle.Get(conceptId);
+        if (concept is null || !concept.Document.Frontmatter.IsAttestedComputation)
+        {
+            return ValueTask.FromResult(Fail($"concept '{conceptId}' was not found or is not an attested computation"));
+        }
+
+        // Step 2: capture the sanctioned code — the computation (inline fence, or the file read
+        // through the provider) and the attester's source, pinned to the image (spec §5.4).
+        var captured = Capture(bundle, concept);
+        return captured.Capture is null
+            ? ValueTask.FromResult(captured.Failure!)
+            : RunCapturedAsync(bundle, conceptId, parameterValues, captured.Capture, policy, cancellationToken);
+    }
+
+    /// <summary>
+    /// Captures, once and before any runtime is called, everything a run executes (spec §5.4):
+    /// the sanctioned computation — the inline <c># Computation</c> fence, or the
+    /// <c>computation:</c> file read through the provider (the key the load surveyed,
+    /// <see cref="Bundle.ReadResourceText(BundleKey, BundleObjectVersion?, out BundleObjectVersion)"/>),
+    /// pinned to the version the image was loaded with (<see cref="Bundle.ExecutableResources"/>)
+    /// — and the attester's source, pinned the same way. Each resource's surveyed state must be
+    /// <see cref="ExecutableResourceState.Pinned"/> (spec §5.1), and it is read at that version
+    /// only: a file replaced after the load is refused, never run at its new bytes. A version
+    /// the caller observed (<paramref name="expectedComputationFileVersion"/>) must equal the
+    /// image's, or the capture is refused as outdated.
+    /// <para><b>D6 (spec §5.1, §10).</b> A concept that declares no <c>attester.resource</c>, or
+    /// declares a URL, is refused here: there is nothing to pin, so nothing the host or the model
+    /// could hold for the attestation code that ran. The host's <see cref="IAttester"/> is never
+    /// called with a <see langword="null"/> source. This narrows §10.5 for this implementation
+    /// (docs/spec-conformance, S10.5-1).</para>
+    /// <para>A refusal is an <see cref="AttestationOutcome"/>; only an unexpected exception
+    /// (not I/O, decoding or an object over the bound) escapes.
+    /// <see cref="AttestationCaptureResult.ImageOutdated"/> says whether the failure is one the
+    /// image may be behind on — a resource missing, unreadable, refused, over the bound, or whose
+    /// version changed — in which case a caller holding a <see cref="BundleHandle"/> invalidates
+    /// it so that the next attempt starts from a fresh survey (spec §5.1); an undeclared or URL
+    /// attester is not such a failure, since only a change of the concept can alter it.</para>
+    /// </summary>
+    /// <param name="bundle">The image the concept was loaded from.</param>
+    /// <param name="concept">The attested-computation concept, from that image.</param>
+    /// <param name="expectedComputationFileVersion">The version of the <c>computation</c> file the caller observed, which must equal the version the image pinned; <see langword="null"/> uses the image's version alone.</param>
+    public static AttestationCaptureResult Capture(Bundle bundle, Concept concept, BundleObjectVersion? expectedComputationFileVersion = null)
+    {
+        ArgumentNullException.ThrowIfNull(bundle);
+        ArgumentNullException.ThrowIfNull(concept);
+
+        // The image's own survey of this concept (spec §5.1): what the load found and pinned.
+        // The concept must be the one this image holds, not a namesake from another image.
+        if (!ReferenceEquals(bundle.Get(concept.Id), concept)
+            || !bundle.ExecutableResources.TryGetValue(concept.Id, out var survey))
+        {
+            return Refused($"concept '{concept.Id}' is not part of the bundle image it was given with", imageOutdated: false);
+        }
+
+        SanctionedComputation resolved;
+        var computation = concept.Document.Computation();
+        switch (computation.Source)
+        {
+            case ComputationSource.Inline when !string.IsNullOrEmpty(computation.InlineCode):
+                resolved = computation;
+                break;
+
+            case ComputationSource.File when !string.IsNullOrEmpty(computation.Path):
+                // Sanctioned code is pinned to the image (spec §5.1, §5.4): only a Pinned file
+                // is executable, and it is read at the version the load pinned. A version the
+                // caller observed must be that same version: if the file moved on after the
+                // observation, or the image is behind the observation, nothing runs.
+                var file = survey.Computation;
+                if (file.State != ExecutableResourceState.Pinned || file.Key is null || file.Version is null)
+                {
+                    return file.State switch
+                    {
+                        ExecutableResourceState.Unreadable or ExecutableResourceState.TooLarge
+                            => Refused($"computation file '{computation.Path}' could not be read ({file.State})", imageOutdated: true),
+                        // A URL (or an undeclared path) creates no reload obligation (spec §5.1): only a change of the concept alters it.
+                        ExecutableResourceState.Url or ExecutableResourceState.Undeclared
+                            => Refused($"computation file '{computation.Path}' could not be resolved ({file.State})", imageOutdated: false),
+                        _ => Refused($"computation file '{computation.Path}' could not be resolved ({file.State})", imageOutdated: true),
+                    };
+                }
+
+                if (expectedComputationFileVersion is { } observed && observed != file.Version)
+                {
+                    return Refused($"computation file '{computation.Path}' changed since it was shown; read it again with okf_get_computation before running it", imageOutdated: true);
+                }
+
+                string text;
+                try
+                {
+                    text = bundle.ReadResourceText(file.Key, file.Version, out _);
+                }
+                catch (BundleVersionMismatchException)
+                {
+                    return Refused(
+                        expectedComputationFileVersion is null
+                            ? $"computation file '{computation.Path}' changed since the bundle was loaded"
+                            : $"computation file '{computation.Path}' changed since it was shown; read it again with okf_get_computation before running it",
+                        imageOutdated: true);
+                }
+                catch (BundleObjectTooLargeException)
+                {
+                    // Pinned at the load, replaced since by an object over the bound (spec §6).
+                    return Refused($"computation file '{computation.Path}' could not be read ({ExecutableResourceState.TooLarge})", imageOutdated: true);
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
+                {
+                    // The exception TYPE, as for the stage failures: this reason string is
+                    // rendered into a model's context, and a raw I/O message can carry a host
+                    // path. computation.Path is bundle-relative and safe to name.
+                    return Refused($"computation file '{computation.Path}' could not be read: {e.GetType().Name}", imageOutdated: true);
+                }
+
+                resolved = new SanctionedComputation(ComputationSource.File, text, computation.Path);
+                break;
+
+            default:
+                return Refused("attested computation has no computation (neither an inline `# Computation` fence nor a `computation:` path)", imageOutdated: false);
+        }
+
+        // A positive check: anything that is not a fully pinned resource refuses, so that a
+        // state this code does not name can never reach an unpinned read.
+        var attester = survey.Attester;
+        if (attester.State != ExecutableResourceState.Pinned || attester.Key is null || attester.Version is null)
+        {
+            switch (attester.State)
+            {
+                case ExecutableResourceState.Undeclared:
+                    return Refused("no attester.resource is declared, so the computation cannot be attested and is not run", imageOutdated: false);
+                case ExecutableResourceState.Url:
+                    return Refused($"attester resource '{attester.RawPath}' is a URL, which is never read, so the computation cannot be attested and is not run", imageOutdated: false);
+                case ExecutableResourceState.Unreadable:
+                case ExecutableResourceState.TooLarge:
+                    return Refused($"attester resource '{attester.RawPath}' could not be read ({attester.State})", imageOutdated: true);
+                default:
+                    return Refused($"attester resource '{attester.RawPath}' could not be resolved ({attester.State})", imageOutdated: true);
+            }
+        }
+
+        string attesterSourceText;
+        try
+        {
+            attesterSourceText = bundle.ReadResourceText(attester.Key, attester.Version, out _);
+        }
+        catch (BundleVersionMismatchException)
+        {
+            return Refused($"attester resource '{attester.RawPath}' changed since the bundle was loaded", imageOutdated: true);
+        }
+        catch (BundleObjectTooLargeException)
+        {
+            return Refused($"attester resource '{attester.RawPath}' could not be read ({ExecutableResourceState.TooLarge})", imageOutdated: true);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
+        {
+            return Refused($"attester resource '{attester.RawPath}' could not be read: {e.GetType().Name}", imageOutdated: true);
+        }
+
+        return new AttestationCaptureResult(new AttestationCapture(concept.Id, bundle, resolved, attesterSourceText), null, false);
+    }
+
+    private static AttestationCaptureResult Refused(string reason, bool imageOutdated) => new(null, Fail(reason), imageOutdated);
+
+    /// <summary>
+    /// Runs the §10.5 workflow from step 3 on what <paramref name="capture"/> holds — the
+    /// computation and the attester's source, captured once by <see cref="Capture"/> — so that
+    /// nothing is read from the bundle after the capture (spec §5.4). <see cref="RunAsync"/>
+    /// captures and calls this; <c>okf_run_computation</c> captures itself, pinned to what its
+    /// session observed, then calls this.
+    /// </summary>
+    /// <param name="bundle">The image the concept was loaded from.</param>
+    /// <param name="conceptId">The attested-computation concept to run.</param>
+    /// <param name="parameterValues">The parameter values supplied for this run (§10.3: values only, never computation code).</param>
+    /// <param name="capture">What the run executes.</param>
+    /// <param name="policy">The staleness gating policy for this run; defaults to the constructor's <c>defaultPolicy</c>.</param>
+    /// <param name="cancellationToken">A token to cancel binding/execution/attestation.</param>
+    public async ValueTask<AttestationOutcome> RunCapturedAsync(
+        Bundle bundle,
+        ConceptId conceptId,
+        IReadOnlyDictionary<string, object?> parameterValues,
+        AttestationCapture capture,
+        StalePolicy? policy = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(bundle);
+        ArgumentNullException.ThrowIfNull(capture);
+
         // Errors-as-data (see class remarks) extends to the parameters argument
         // itself: a caller passing null must get the normal "missing required
         // parameter" outcome below, never a NullReferenceException.
         parameterValues ??= new Dictionary<string, object?>();
 
-        // Step 1: load the concept; it must exist and be an Attested Computation.
+        if (!capture.ConceptId.Equals(conceptId))
+        {
+            return Fail($"the capture was taken for concept '{capture.ConceptId}', not '{conceptId}', and is not run");
+        }
+
+        // One capture, one image: the code it holds was read at the versions that image pinned,
+        // while the contract (runtime, parameters, policy) is read below from the image given to
+        // this run. On another image (a reload) the two would not describe the same concept.
+        if (!ReferenceEquals(bundle, capture.Image))
+        {
+            return Fail($"the capture of concept '{conceptId}' was taken on another image of the bundle than the one it is run on, and is not run");
+        }
+
         var concept = bundle.Get(conceptId);
         if (concept is null || !concept.Document.Frontmatter.IsAttestedComputation)
         {
@@ -106,18 +307,8 @@ public sealed class AttestationOrchestrator
 
         var frontmatter = concept.Document.Frontmatter;
         var contract = frontmatter.ComputationContract;
-
-        // Step 2: resolve the sanctioned computation (inline fence, or file via §6.2 path-safe resolution).
-        if (!TryResolveComputation(bundle, concept, out var resolved, out var resolutionFailure))
-        {
-            return resolutionFailure;
-        }
-
-        // Step 2b: resolve the attester's own source, the same way (§6.2).
-        if (!TryResolveAttesterSource(bundle, concept, contract, out var attesterSourceText, out var attesterResolutionFailure))
-        {
-            return attesterResolutionFailure;
-        }
+        var resolved = capture.Computation;
+        var attesterSourceText = capture.AttesterSourceText;
 
         // Step 3: resolve the runtime.
         if (string.IsNullOrEmpty(contract.Runtime) || !_runtimes.TryGet(contract.Runtime, out var runtime) || runtime is null)
@@ -420,129 +611,6 @@ public sealed class AttestationOrchestrator
         // catch clauses.
         cancellationToken.ThrowIfCancellationRequested();
         return result;
-    }
-
-    /// <summary>
-    /// §10.5 step 2: resolves the concept's sanctioned computation — the inline
-    /// <c># Computation</c> fence, or the <c>computation:</c> file read through
-    /// §6.2 path-safe resolution.
-    ///
-    /// Extracted from <see cref="RunAsync"/> purely to keep that method
-    /// readable: it is one linear pipeline, and this was the one step that
-    /// branched three ways with I/O of its own inside. Behaviour is unchanged,
-    /// including which failures are reported and their exact wording.
-    /// </summary>
-    /// <param name="bundle">The bundle the concept was loaded from.</param>
-    /// <param name="concept">The attested-computation concept.</param>
-    /// <param name="resolved">The resolved computation, when this returns <see langword="true"/>.</param>
-    /// <param name="failure">The non-displayable outcome to return, when this returns <see langword="false"/>.</param>
-    private static bool TryResolveComputation(
-        Bundle bundle,
-        Concept concept,
-        out SanctionedComputation resolved,
-        [NotNullWhen(false)] out AttestationOutcome? failure)
-    {
-        var computation = concept.Document.Computation();
-        failure = null;
-
-        switch (computation.Source)
-        {
-            case ComputationSource.Inline when !string.IsNullOrEmpty(computation.InlineCode):
-                resolved = computation;
-                return true;
-
-            case ComputationSource.File when !string.IsNullOrEmpty(computation.Path):
-                resolved = default;
-                if (!bundle.TryResolveResource(concept, computation.Path, out var absolutePath, out var status)
-                    || status != ResourceResolutionStatus.Resolved)
-                {
-                    failure = Fail($"computation file '{computation.Path}' could not be resolved ({status})");
-                    return false;
-                }
-
-                string text;
-                try
-                {
-                    text = bundle.ReadResourceText(absolutePath!);
-                }
-                catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
-                {
-                    // The exception TYPE, for the same reason as the stage
-                    // failures above: this reason string is rendered into a
-                    // model's context, and an IOException's own message carries
-                    // the absolute host path. computation.Path is bundle-
-                    // relative and safe to name; e.Message is not.
-                    failure = Fail($"computation file '{computation.Path}' could not be read: {e.GetType().Name}");
-                    return false;
-                }
-
-                resolved = new SanctionedComputation(ComputationSource.File, text, computation.Path);
-                return true;
-
-            default:
-                resolved = default;
-                failure = Fail("attested computation has no computation (neither an inline `# Computation` fence nor a `computation:` path)");
-                return false;
-        }
-    }
-
-    /// <summary>
-    /// Resolves the concept's <c>attester.resource</c> the same way
-    /// <see cref="TryResolveComputation"/> resolves <c>computation</c>, so no
-    /// <see cref="IAttester"/> implementation ever needs a <see cref="Bundle"/>
-    /// itself. Absent, empty, or URL-valued <c>attester.resource</c> is not a
-    /// failure — §11 leaves the attester optional (a validator warning, not
-    /// an error, flags an empty resource) — it simply yields a
-    /// <see langword="null"/> source. A declared resource that cannot
-    /// actually be resolved or read on disk IS an early failure, same as a
-    /// broken computation file.
-    /// </summary>
-    /// <param name="bundle">The bundle the concept was loaded from.</param>
-    /// <param name="concept">The attested-computation concept.</param>
-    /// <param name="contract">The concept's §10.2 contract.</param>
-    /// <param name="attesterSourceText">The resolved source text, or <see langword="null"/> when there is nothing to resolve.</param>
-    /// <param name="failure">The non-displayable outcome to return, when this returns <see langword="false"/>.</param>
-    private static bool TryResolveAttesterSource(
-        Bundle bundle,
-        Concept concept,
-        AttestedComputationContract contract,
-        out string? attesterSourceText,
-        [NotNullWhen(false)] out AttestationOutcome? failure)
-    {
-        attesterSourceText = null;
-        failure = null;
-
-        var resource = contract.Attester?.Resource;
-        if (string.IsNullOrEmpty(resource))
-        {
-            return true;
-        }
-
-        if (!bundle.TryResolveResource(concept, resource, out var absolutePath, out var status) || status == ResourceResolutionStatus.Url)
-        {
-            // URLs are never resolved on disk (§6.2); nothing to read. (The
-            // `!TryResolveResource(...)` half never actually triggers --
-            // resolution always returns true -- kept only for the same
-            // defensive symmetry TryResolveComputation above already uses.)
-            return true;
-        }
-
-        if (status != ResourceResolutionStatus.Resolved)
-        {
-            failure = Fail($"attester resource '{resource}' could not be resolved ({status})");
-            return false;
-        }
-
-        try
-        {
-            attesterSourceText = bundle.ReadResourceText(absolutePath!);
-            return true;
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
-        {
-            failure = Fail($"attester resource '{resource}' could not be read: {e.GetType().Name}");
-            return false;
-        }
     }
 
     /// <summary>

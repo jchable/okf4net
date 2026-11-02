@@ -198,9 +198,17 @@ public sealed class OkfContextProvider : AIContextProvider
     /// <remarks>
     /// Throws only for cancellation: <see cref="OkfContextProviderOptions.TokenBudget"/>
     /// <c>&lt;= 0</c> yields an empty <see cref="AIContext"/> (all three
-    /// properties <see langword="null"/>); a bundle that fails to (re)load
+    /// properties <see langword="null"/>); a bundle whose FIRST load fails
     /// yields a context whose message is a plain <c>bundle unavailable: &lt;reason&gt;</c>
-    /// note instead. See the type-level remarks for the assembly algorithm.
+    /// note instead, and the failure goes to
+    /// <see cref="OkfContextProviderOptions.OnInternalError"/>. A RELOAD that
+    /// fails after a successful load keeps the previous image served
+    /// (spec §5.2): the context is built from that image, not from a
+    /// <c>bundle unavailable</c> note, and the failure is handed to
+    /// <see cref="OkfContextProviderOptions.OnInternalError"/> on every
+    /// assembly while it lasts (see <see cref="OKF4net.Providers.BundleHandle.IsStale"/> and
+    /// <see cref="OKF4net.Providers.BundleHandle.LastLoadError"/>). See the type-level remarks
+    /// for the assembly algorithm.
     ///
     /// A cancelled <paramref name="cancellationToken"/> raises an
     /// <see cref="OperationCanceledException"/> — deliberately, since a caller
@@ -252,6 +260,15 @@ public sealed class OkfContextProvider : AIContextProvider
             // note even in the no-query path below, where ScoreConceptsFor
             // is never called at all and so could never surface it.
             _tools!.GetBundle();
+
+            // A reload that failed keeps the previous image served (spec §5.2), so
+            // the model is told nothing; the host still hears of it, as it did when
+            // a failed reload surfaced here as an exception: every assembly while
+            // the handle holds the failure. The model-facing text is unchanged.
+            if (_tools.Handle.LastLoadError is { } reloadFailure && _tools.Handle.IsStale)
+            {
+                ReportInternalError(reloadFailure);
+            }
 
             var query = ExtractLastUserMessageText(context);
             var remaining = totalBudget;
@@ -709,7 +726,7 @@ public sealed class OkfContextProvider : AIContextProvider
     /// <para>
     /// Never throws: any failure -- I/O, a validation/lock/reparse-point
     /// rejection surfaced as the tool's own <c>"Error: ..."</c> text, or a
-    /// bundle that fails to (re)load -- is recorded in the
+    /// bundle whose first load fails -- is recorded in the
     /// <see langword="internal"/> <see cref="LastMemoryError"/> (reset to
     /// <see langword="null"/> at the start of every call) instead of
     /// propagating or being reported to the invocation pipeline.

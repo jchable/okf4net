@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Collections.ObjectModel;
 using OKF4net.Internal;
 using OKF4net.Providers;
 
@@ -14,7 +15,7 @@ namespace OKF4net;
 /// was read); or a global bound exceeded (entries, depth). The message is library-authored
 /// (spec §7); the raw cause, when there is one, is the inner exception. Per-file problems —
 /// a rejected name, an oversized or unparseable concept — are recorded in
-/// <see cref="Bundle.ParseErrors"/> instead (loading is permissive, §11).
+/// <see cref="Bundle.ParseProblems"/> instead (loading is permissive, §11).
 /// </summary>
 public sealed class BundleLoadException : OkfException
 {
@@ -85,7 +86,7 @@ public sealed record ResolvedLink(ConceptId Target, bool Exists, string Text, st
 /// <c>.md</c> file into a <see cref="Concept"/>, records the reserved
 /// <c>index.md</c> / <c>log.md</c> files, and builds the cross-link graph
 /// (§6). Loading is **permissive** by design (§11): files whose frontmatter
-/// cannot be parsed are collected into <see cref="ParseErrors"/> rather than
+/// cannot be parsed are collected into <see cref="ParseProblems"/> rather than
 /// aborting the load, and broken links are retained as edges to
 /// non-existent concepts.
 /// </summary>
@@ -147,10 +148,12 @@ public sealed class Bundle
         _index = index;
         IndexKeys = indexKeys;
         LogKeys = logKeys;
+        ParseProblems = parseProblems;
+#pragma warning disable CS0618 // the display-path projections are kept, obsolete, until their removal (spec §10)
         IndexFiles = indexKeys.Select(k => BundleDisplayPath.Compose(provider.Location, k)).ToList();
         LogFiles = logKeys.Select(k => BundleDisplayPath.Compose(provider.Location, k)).ToList();
-        ParseProblems = parseProblems;
         ParseErrors = parseProblems.Select(p => (DisplayPathOf(provider.Location, p), p.Error)).ToList();
+#pragma warning restore CS0618
         RejectedKeys = rejectedKeys;
         RejectedPrefixes = rejectedPrefixes;
         _rejectedPrefixFolds = rejectedPrefixes.Select(validator.FoldKeyText).ToHashSet(StringComparer.Ordinal);
@@ -178,6 +181,21 @@ public sealed class Bundle
     }
 
     /// <summary>
+    /// The display path of one of this bundle's <see cref="ParseProblems"/> (spec §8): the
+    /// <see cref="Location"/>, then the key's segments joined by the OS separator when the name
+    /// is a key, else the raw name as listed with <c>/</c> turned into the OS separator — the
+    /// same string the loader printed for an unparseable file before the provider seam. The one
+    /// text every output (the CLI, its JSON, the viewer's index page) prints for a problem; it
+    /// escapes nothing, that is each output's own job.
+    /// </summary>
+    /// <param name="problem">One of <see cref="ParseProblems"/> (or any problem to display under this bundle's location).</param>
+    public string DisplayPath(BundleParseError problem)
+    {
+        ArgumentNullException.ThrowIfNull(problem);
+        return DisplayPathOf(Location, problem);
+    }
+
+    /// <summary>
     /// Loads a bundle from a directory tree through the default
     /// <see cref="FileSystemBundleProvider"/> (spec §8).
     ///
@@ -186,7 +204,7 @@ public sealed class Bundle
     /// by the provider's STRICT guards — a directory under the root whose link status cannot be
     /// inspected aborts the load before it is listed. A symlink or junction under the root is
     /// skipped, never followed. Per-file problems — a rejected name, an oversized or
-    /// unparseable concept — are recorded in <see cref="ParseErrors"/>.
+    /// unparseable concept — are recorded in <see cref="ParseProblems"/>.
     /// </summary>
     /// <exception cref="BundleLoadException"><paramref name="root"/> does not exist or is not a directory, an I/O error occurred, a concept is not valid UTF-8, a global bound was exceeded, or the provider refused an access.</exception>
     public static Bundle Load(string root)
@@ -220,53 +238,11 @@ public sealed class Bundle
         // this call (FileSystemBundleProvider's BeginScope says what is and is not reused).
         using var scope = ProviderScopes.Begin(provider);
 
-        // The listing is consumed under the core's own bounds, whatever the provider does:
-        // entries while consuming; depth and key length on every name that parses, before the
-        // tree validation, so a too-deep key rejected for another reason still aborts.
-        var treeInput = new List<string>();
-        // Names refused for their length are still physically there: the tree validation counts
-        // their ancestors as prefixes, so `x.md` beside an over-long `x.md/…` is a conflict.
-        var overLength = new List<string>();
-        var parseProblems = new List<BundleParseError>();
-        var rejectedKeys = new HashSet<BundleKey>();
+        List<string> treeInput;
+        List<string> overLength;
         try
         {
-            var count = 0;
-            foreach (var listing in provider.Enumerate(null, limits))
-            {
-                if (++count > limits.MaxEntries)
-                {
-                    throw new BundleLimitExceededException(BundleBound.Entries, limits.MaxEntries);
-                }
-
-                // Depth and key length are measured on the RAW name, before any parsing: a
-                // name that also breaks a base rule must not bypass a global bound (the third
-                // review slipped `bad\name/a/b.md` past MaxDepth = 1 this way).
-                var raw = listing.RawName;
-                if (raw.Split('/').Length > limits.MaxDepth)
-                {
-                    throw new BundleLimitExceededException(BundleBound.Depth, limits.MaxDepth);
-                }
-
-                if (System.Text.Encoding.UTF8.GetByteCount(raw) > limits.MaxKeyBytes)
-                {
-                    BundleKey.TryParse(raw, out var longKey, out _);
-                    if (longKey is not null)
-                    {
-                        rejectedKeys.Add(longKey);
-                    }
-
-                    if (MarkdownPaths.HasMarkdownExtension(raw))
-                    {
-                        parseProblems.Add(new BundleParseError(raw, longKey, $"key is longer than the {limits.MaxKeyBytes}-byte bound"));
-                    }
-
-                    overLength.Add(raw);
-                    continue;
-                }
-
-                treeInput.Add(raw);
-            }
+            (treeInput, overLength) = ListNames(provider, limits);
         }
         catch (BundleProviderException e)
         {
@@ -275,6 +251,22 @@ public sealed class Bundle
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             throw new BundleLoadException($"I/O error while listing the bundle ({e.GetType().Name})", e);
+        }
+
+        var parseProblems = new List<BundleParseError>();
+        var rejectedKeys = new HashSet<BundleKey>();
+        foreach (var raw in overLength)
+        {
+            BundleKey.TryParse(raw, out var longKey, out _);
+            if (longKey is not null)
+            {
+                rejectedKeys.Add(longKey);
+            }
+
+            if (MarkdownPaths.HasMarkdownExtension(raw))
+            {
+                parseProblems.Add(new BundleParseError(raw, longKey, $"key is longer than the {limits.MaxKeyBytes}-byte bound"));
+            }
         }
 
         BundleVersion version;
@@ -394,7 +386,100 @@ public sealed class Bundle
         // names that compare equal (`a\b.md` and `a/b.md`) keep the order they were found in.
         parseProblems = [.. parseProblems.OrderBy(p => p.RawName, Comparer<string>.Create(PathOrdering.CompareComponentWise))];
 
-        return new Bundle(provider, options, validator, version, okfVersion, concepts, index, indexKeys, logKeys, parseProblems, rejectedKeys, tree.RejectedPrefixes.ToList(), portabilityIssues, objectVersions, outbound, backlinks);
+        var bundle = new Bundle(provider, options, validator, version, okfVersion, concepts, index, indexKeys, logKeys, parseProblems, rejectedKeys, tree.RejectedPrefixes.ToList(), portabilityIssues, objectVersions, outbound, backlinks);
+
+        // The executable resources of every §10 concept are read and hashed now (spec §5.1),
+        // inside the load's scope, so that an execution can later be pinned to the version
+        // this image was loaded with. A resource's own problem is a state, never a load failure.
+        bundle.SurveyExecutableResources(chunk);
+        return bundle;
+    }
+
+    /// <summary>
+    /// Surveys the <c>computation</c> file and the <c>attester.resource</c> of every Attested
+    /// Computation concept (spec §5.1): each is resolved like any §6.2 value
+    /// (<see cref="TryResolveResourceKey"/>) and, when it resolves, read through the one bounded
+    /// reader so that its version is known. The rule is local: a missing, unreadable, oversized
+    /// or refused resource is a state of that resource; a global failure (a bound of spec §6, a
+    /// provider refusal that is not the resource's own path) still fails the load, as it would
+    /// without the survey (spec §5.1, revision 6).
+    /// </summary>
+    private void SurveyExecutableResources(byte[] chunk)
+    {
+        // One read per KEY per load (design decision 17): N concepts sharing one file cost one read.
+        var readKeys = new Dictionary<BundleKey, (ExecutableResourceState State, BundleObjectVersion? Version)>();
+        foreach (var concept in Concepts)
+        {
+            var frontmatter = concept.Document.Frontmatter;
+            if (!frontmatter.IsAttestedComputation)
+            {
+                continue;
+            }
+
+            var contract = frontmatter.ComputationContract;
+            _executableResources[concept.Id] = new ExecutableResourceSurvey(
+                SurveyResource(concept, "computation", contract.ComputationPath, chunk, readKeys),
+                SurveyResource(concept, "attester.resource", contract.Attester?.Resource, chunk, readKeys));
+        }
+
+        ExecutableResources = new ReadOnlyDictionary<ConceptId, ExecutableResourceSurvey>(_executableResources);
+    }
+
+    private ExecutableResource SurveyResource(Concept concept, string field, string? rawPath, byte[] chunk, Dictionary<BundleKey, (ExecutableResourceState State, BundleObjectVersion? Version)> readKeys)
+    {
+        if (string.IsNullOrEmpty(rawPath))
+        {
+            return new ExecutableResource(field, null, ExecutableResourceState.Undeclared, null, null);
+        }
+
+        TryResolveResourceKey(concept, rawPath, out var key, out var status);
+        switch (status)
+        {
+            case ResourceResolutionStatus.Url:
+                return new ExecutableResource(field, rawPath, ExecutableResourceState.Url, null, null);
+            case ResourceResolutionStatus.Unsafe:
+                return new ExecutableResource(field, rawPath, ExecutableResourceState.Unsafe, null, null);
+            case ResourceResolutionStatus.Missing:
+                return new ExecutableResource(field, rawPath, ExecutableResourceState.Missing, null, null);
+        }
+
+        if (readKeys.TryGetValue(key!, out var known))
+        {
+            return new ExecutableResource(field, rawPath, known.State, key, known.Version);
+        }
+
+        var result = ReadForSurvey(key!, chunk);
+        readKeys[key!] = (result.State, result.Version);
+        return new ExecutableResource(field, rawPath, result.State, key, result.Version);
+    }
+
+    private (ExecutableResourceState State, BundleObjectVersion? Version) ReadForSurvey(BundleKey key, byte[] chunk)
+    {
+        try
+        {
+            ReadTextAt(Provider, key, Options.Limits, chunk, null, out var version);
+            return (ExecutableResourceState.Pinned, version);
+        }
+        catch (BundleObjectTooLargeException)
+        {
+            return (ExecutableResourceState.TooLarge, null);
+        }
+        catch (BundleObjectNotFoundException)
+        {
+            return (ExecutableResourceState.Missing, null);
+        }
+        catch (BundleAccessRefusedException)
+        {
+            return (ExecutableResourceState.Unsafe, null);
+        }
+        catch (BundleProviderException e)
+        {
+            throw Translate(e, key); // a bound or a global refusal: the load fails, as without the survey
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
+        {
+            return (ExecutableResourceState.Unreadable, null);
+        }
     }
 
     /// <summary>
@@ -452,19 +537,66 @@ public sealed class Bundle
         _ => new BundleLoadException(key is null ? $"provider failure ({e.GetType().Name})" : $"provider failure reading '{key}' ({e.GetType().Name})", e),
     };
 
+    /// <summary>
+    /// Consumes <paramref name="provider"/>'s listing of the whole bundle under the core's own
+    /// bounds, whatever the provider does (spec §6): entries while consuming; depth and key
+    /// length on every RAW name, before any parsing, so a name that also breaks a base rule
+    /// cannot bypass a global bound (the third review slipped <c>bad\name/a/b.md</c> past
+    /// <c>MaxDepth = 1</c> that way). Returns the names to validate as a tree and, apart, the
+    /// names refused for their length — still physically there: the tree validation counts their
+    /// ancestors as prefixes, so <c>x.md</c> beside an over-long <c>x.md/…</c> is a conflict.
+    /// Provider exceptions and the bounds' <see cref="BundleLimitExceededException"/> propagate.
+    /// The one listing of the whole bundle that applies every bound (entries, depth, key length) for a load or a regeneration: <see cref="Load(IBundleProvider, BundleLoadOptions?)"/>
+    /// and <see cref="IndexGenerator"/> both list through it.
+    /// </summary>
+    internal static (List<string> TreeInput, List<string> OverLength) ListNames(IBundleProvider provider, BundleLimits limits)
+    {
+        var treeInput = new List<string>();
+        var overLength = new List<string>();
+        var count = 0;
+        foreach (var listing in provider.Enumerate(null, limits))
+        {
+            if (++count > limits.MaxEntries)
+            {
+                throw new BundleLimitExceededException(BundleBound.Entries, limits.MaxEntries);
+            }
+
+            var raw = listing.RawName;
+            if (raw.Split('/').Length > limits.MaxDepth)
+            {
+                throw new BundleLimitExceededException(BundleBound.Depth, limits.MaxDepth);
+            }
+
+            if (System.Text.Encoding.UTF8.GetByteCount(raw) > limits.MaxKeyBytes)
+            {
+                overLength.Add(raw);
+                continue;
+            }
+
+            treeInput.Add(raw);
+        }
+
+        return (treeInput, overLength);
+    }
+
     /// <summary>The size of the copy buffer <see cref="ReadText"/> reads through.</summary>
-    private const int ReadChunkBytes = 81920;
+    internal const int ReadChunkBytes = 81920;
 
     /// <summary>
     /// Reads one object as strict UTF-8, counting bytes against the bound (spec §6) whatever the
     /// provider says. <paramref name="chunk"/> is the caller's copy buffer, reused across the
     /// objects of one load. The destination is pre-sized from <see cref="BundleObject.Length"/>
     /// when the provider declares one within the bound — a hint only: the bytes are still
-    /// counted and an overrun still throws, whatever the declared length.
+    /// counted and an overrun still throws, whatever the declared length. The one bounded reader
+    /// of the core: <see cref="BundleConceptWriter"/> reads the objects it rewrites through it.
     /// </summary>
-    private static string ReadText(IBundleProvider provider, BundleKey key, BundleLimits limits, byte[] chunk, out BundleObjectVersion version)
+    internal static string ReadText(IBundleProvider provider, BundleKey key, BundleLimits limits, byte[] chunk, out BundleObjectVersion version) =>
+        ReadTextAt(provider, key, limits, chunk, null, out version);
+
+    /// <summary>As <see cref="ReadText"/>, pinned: with <paramref name="expected"/>, the provider reads only the object at that version (spec §5.4) and throws <see cref="BundleVersionMismatchException"/> otherwise.</summary>
+    internal static string ReadTextAt(IBundleProvider provider, BundleKey key, BundleLimits limits, byte[] chunk, BundleObjectVersion? expected, out BundleObjectVersion version)
     {
-        using var obj = provider.Read(key);
+        using var obj = provider.Read(key, expected);
         version = obj.Version;
         using var buffer = obj.Length is { } declared && declared >= 0 && declared <= limits.MaxObjectBytes && declared <= Array.MaxLength
             ? new MemoryStream((int)declared)
@@ -485,13 +617,14 @@ public sealed class Bundle
         return OkfEncodings.Strict.GetString(buffer.GetBuffer(), 0, (int)buffer.Length);
     }
 
-    /// <summary>The bundle's root: the provider's displayable location (the root directory for the filesystem).</summary>
+    /// <summary>The bundle's root: the provider's displayable location (the root directory for the filesystem). Obsolete: the same string as <see cref="Location"/>.</summary>
+    [Obsolete("Bundle.Root is the provider's displayable location: use Bundle.Location (or Bundle.Provider). The path-based members are removed with the asynchronous provider contract (#152).")]
     public string Root => Provider.Location;
 
     /// <summary>The provider this bundle was loaded from (spec §1).</summary>
     public IBundleProvider Provider { get; }
 
-    /// <summary>The provider's displayable location; <see cref="Root"/> is the same string.</summary>
+    /// <summary>The provider's displayable location; the obsolete <c>Root</c> is the same string.</summary>
     public string Location => Provider.Location;
 
     /// <summary>The options the bundle was loaded with.</summary>
@@ -500,13 +633,13 @@ public sealed class Bundle
     /// <summary>The provider's bundle token at load time (spec §5.1).</summary>
     public BundleVersion Version { get; }
 
-    /// <summary>The keys of every <c>index.md</c>, in load order; <see cref="IndexFiles"/> holds their display paths.</summary>
+    /// <summary>The keys of every <c>index.md</c>, in load order; <see cref="BundleDisplayPath.Compose"/> with <see cref="Location"/> gives their display paths (the obsolete <c>IndexFiles</c>).</summary>
     public IReadOnlyList<BundleKey> IndexKeys { get; }
 
-    /// <summary>The keys of every <c>log.md</c>, in load order; <see cref="LogFiles"/> holds their display paths.</summary>
+    /// <summary>The keys of every <c>log.md</c>, in load order; <see cref="BundleDisplayPath.Compose"/> with <see cref="Location"/> gives their display paths (the obsolete <c>LogFiles</c>).</summary>
     public IReadOnlyList<BundleKey> LogKeys { get; }
 
-    /// <summary>Every problem met while loading (spec §2): rejected <c>.md</c> names, oversized or unparseable concepts. <see cref="ParseErrors"/> is its display-path projection.</summary>
+    /// <summary>Every problem met while loading (spec §2): rejected <c>.md</c> names, oversized or unparseable concepts. <see cref="DisplayPath"/> gives each one's display path (the obsolete <c>ParseErrors</c> is that projection).</summary>
     public IReadOnlyList<BundleParseError> ParseProblems { get; }
 
     /// <summary>Keys the tree validation or a bound rejected (spec §2), whatever their extension: they stay rejected for <see cref="IsKeyAllowed"/> even though the provider may still hold them.</summary>
@@ -527,6 +660,18 @@ public sealed class Bundle
 
     /// <summary>The version of every concept object read at load time (spec §5.1).</summary>
     public IReadOnlyDictionary<BundleKey, BundleObjectVersion> ObjectVersions { get; }
+
+    private readonly Dictionary<ConceptId, ExecutableResourceSurvey> _executableResources = [];
+
+    /// <summary>
+    /// The executable resources of every Attested Computation concept of this image — its
+    /// <c>computation</c> file and its <c>attester.resource</c> — with the state each was found
+    /// in at the load (spec §5.1): <see cref="ExecutableResourceState.Pinned"/> with its version,
+    /// or why it cannot be executed. One entry per concept whose frontmatter
+    /// <see cref="Frontmatter.IsAttestedComputation"/>; a concept with a problem is still in
+    /// <see cref="Concepts"/>, readable, validated and audited.
+    /// </summary>
+    public IReadOnlyDictionary<ConceptId, ExecutableResourceSurvey> ExecutableResources { get; private set; } = new ReadOnlyDictionary<ConceptId, ExecutableResourceSurvey>(new Dictionary<ConceptId, ExecutableResourceSurvey>());
 
     private readonly BundleKeyValidator _validator;
     private readonly HashSet<string> _rejectedPrefixFolds;
@@ -595,13 +740,16 @@ public sealed class Bundle
     /// <summary><c>true</c> if a concept with this id exists.</summary>
     public bool Contains(ConceptId id) => _index.ContainsKey(id);
 
-    /// <summary>Paths of all <c>index.md</c> files found (§8).</summary>
+    /// <summary>Paths of all <c>index.md</c> files found (§8). Obsolete: the display paths of <see cref="IndexKeys"/>.</summary>
+    [Obsolete("Bundle.IndexFiles projects Bundle.IndexKeys through the display rule: use IndexKeys, and BundleDisplayPath.Compose(bundle.Location, key) for a path to print. The path-based members are removed with the asynchronous provider contract (#152).")]
     public IReadOnlyList<string> IndexFiles { get; }
 
-    /// <summary>Paths of all <c>log.md</c> files found (§9).</summary>
+    /// <summary>Paths of all <c>log.md</c> files found (§9). Obsolete: the display paths of <see cref="LogKeys"/>.</summary>
+    [Obsolete("Bundle.LogFiles projects Bundle.LogKeys through the display rule: use LogKeys, and BundleDisplayPath.Compose(bundle.Location, key) for a path to print. The path-based members are removed with the asynchronous provider contract (#152).")]
     public IReadOnlyList<string> LogFiles { get; }
 
-    /// <summary>Files whose frontmatter could not be parsed during loading, as (path, error message) pairs.</summary>
+    /// <summary>Files whose frontmatter could not be parsed during loading, as (path, error message) pairs. Obsolete: <see cref="ParseProblems"/> with <see cref="DisplayPath"/>.</summary>
+    [Obsolete("Bundle.ParseErrors projects Bundle.ParseProblems through the display rule: use ParseProblems (the raw name, the key when the name is one, the error), and bundle.DisplayPath(problem) for a path to print. The path-based members are removed with the asynchronous provider contract (#152).")]
     public IReadOnlyList<(string Path, string Error)> ParseErrors { get; }
 
     /// <summary>The resolved outbound cross-links from a concept.</summary>
@@ -726,7 +874,11 @@ public sealed class Bundle
     ///
     /// Always returns <c>true</c>: resolution never fails outright (§11,
     /// permissive), it only reports which of the above statuses applies.
+    /// Obsolete: it resolves through the OS filesystem, outside the provider
+    /// seam, so it applies neither the key policy nor the exact-name rules
+    /// <see cref="TryResolveResourceKey"/> applies; no library code calls it.
     /// </summary>
+    [Obsolete("Bundle.TryResolveResource resolves a §6.2 path on the OS filesystem, outside the provider seam: use Bundle.TryResolveResourceKey, which resolves on keys under the key policy, then Bundle.ReadResourceText(BundleKey). The path-based members are removed with the asynchronous provider contract (#152).")]
     public bool TryResolveResource(Concept concept, string rawPath, out string? absolutePath, out ResourceResolutionStatus status)
     {
         var kind = FrontmatterResourceClassifier.KindOf(rawPath);
@@ -837,6 +989,7 @@ public sealed class Bundle
     /// </exception>
     /// <exception cref="IOException">The file cannot be read.</exception>
     /// <exception cref="System.Text.DecoderFallbackException">The content is not valid UTF-8.</exception>
+    [Obsolete("Bundle.ReadResourceText(string) reads a host path, outside the provider seam: use Bundle.ReadResourceText(BundleKey) on the key Bundle.TryResolveResourceKey resolved. The path-based members are removed with the asynchronous provider contract (#152).")]
     public string ReadResourceText(string absolutePath)
     {
         var fullRoot = ReparsePoints.CanonicalizeRoot(Root);
@@ -856,8 +1009,8 @@ public sealed class Bundle
     /// Resolves a §6.2 path-valued field to a key (spec §2): lexically, through
     /// <see cref="ResourceKeyResolver"/>, then <see cref="IsKeyAllowed"/>, then the provider's
     /// <see cref="IBundleProvider.Exists"/>. Never throws (§11, permissive): a provider refusal
-    /// reads as <see cref="ResourceResolutionStatus.Unsafe"/>. Always returns <see langword="true"/>,
-    /// like <see cref="TryResolveResource"/>.
+    /// reads as <see cref="ResourceResolutionStatus.Unsafe"/>. Always returns <see langword="true"/>:
+    /// resolution never fails outright, only its status varies.
     /// <para>
     /// A value that names no object is <see cref="ResourceResolutionStatus.Missing"/>, as it was
     /// when the validator resolved it on the filesystem: one that resolves to the bundle root
@@ -939,7 +1092,22 @@ public sealed class Bundle
     /// <exception cref="UnauthorizedAccessException">The key is not allowed, or the provider refused the access.</exception>
     /// <exception cref="IOException">The object is missing, too large, or cannot be read.</exception>
     /// <exception cref="System.Text.DecoderFallbackException">The content is not valid UTF-8.</exception>
-    public string ReadResourceText(BundleKey key)
+    public string ReadResourceText(BundleKey key) => ReadResourceText(key, null, out _);
+
+    /// <summary>
+    /// As <see cref="ReadResourceText(BundleKey)"/>, reporting the object's
+    /// <paramref name="version"/> and, with <paramref name="expected"/>, pinned to it (spec §5.4):
+    /// the provider reads only the object at that version, so sanctioned code that changed since
+    /// it was observed or surveyed is never handed to a runtime.
+    /// </summary>
+    /// <param name="key">The resolved key.</param>
+    /// <param name="expected">The version the read is pinned to, or <see langword="null"/> for the current object.</param>
+    /// <param name="version">The version of the object read.</param>
+    /// <exception cref="BundleVersionMismatchException">The object's version is not <paramref name="expected"/>; nothing is returned.</exception>
+    /// <exception cref="UnauthorizedAccessException">The key is not allowed, or the provider refused the access.</exception>
+    /// <exception cref="IOException">The object is missing, too large, or cannot be read.</exception>
+    /// <exception cref="System.Text.DecoderFallbackException">The content is not valid UTF-8.</exception>
+    public string ReadResourceText(BundleKey key, BundleObjectVersion? expected, out BundleObjectVersion version)
     {
         ArgumentNullException.ThrowIfNull(key);
         if (!IsKeyAllowed(key, out var reason))
@@ -949,7 +1117,11 @@ public sealed class Bundle
 
         try
         {
-            return ReadText(Provider, key, Options.Limits, new byte[ReadChunkBytes], out _);
+            return ReadTextAt(Provider, key, Options.Limits, new byte[ReadChunkBytes], expected, out version);
+        }
+        catch (BundleVersionMismatchException)
+        {
+            throw;
         }
         catch (BundleAccessRefusedException e)
         {

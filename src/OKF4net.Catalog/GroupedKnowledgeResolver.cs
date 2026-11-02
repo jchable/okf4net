@@ -13,23 +13,25 @@ namespace OKF4net.Catalog;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Each enabled <see cref="KnowledgeCatalogSource"/> only ever carries a
-/// manifest-relative <see cref="KnowledgeCatalogSource.Path"/> (see Task 4);
-/// this resolver re-derives each source's resolved, absolute bundle
-/// directory itself, on every search, via <see cref="CatalogPathResolver.TryResolve"/>
-/// using <see cref="IKnowledgeCatalog.CatalogRoot"/> and the current
-/// snapshot's <see cref="KnowledgeCatalogSnapshot.ManifestDirectory"/> --
-/// the same containment check <see cref="FileKnowledgeCatalog"/> already
-/// applies to every enabled source at load/reload time. A source that fails
-/// that re-resolution (e.g. its directory was deleted after the catalog last
-/// loaded) yields a <see cref="KnowledgeDiagnosticCode.SourceUnavailable"/>
-/// diagnostic for that source alone; the remaining sources are still
-/// searched.
+/// Each enabled source is searched through the <see cref="Providers.BundleHandle"/> the
+/// catalog keeps for it (<see cref="KnowledgeCatalogSnapshot.Handles"/>, spec §9): the
+/// image survives from one search to the next and is refreshed under the source's policy
+/// (<see cref="KnowledgeCatalogOptions.RefreshPolicy"/>), and the catalog root's confinement
+/// is re-checked by the provider before every access. A source whose bundle never loaded
+/// (its first load failed) yields a <see cref="KnowledgeDiagnosticCode.SourceUnavailable"/>
+/// diagnostic for that source alone; the remaining sources are still searched. A source
+/// that loaded once and whose later reload fails (its directory deleted, or replaced by a
+/// link, after the first search) is not unavailable: its last good image is served, with a
+/// <see cref="KnowledgeDiagnosticCode.SourceStale"/> diagnostic naming the failure by the
+/// exception type of its cause (spec §5.2, §7).
 /// </para>
 /// <para>
-/// A fresh, stateless <see cref="OkfBundleKnowledgeSource"/> is constructed
-/// per enabled source per search -- consistent with that type's own
-/// per-call <see cref="Bundle.Load(string)"/> design; see its remarks.
+/// A snapshot that carries no handle for a source (one built by hand, or by
+/// <see cref="CatalogManifestParser.TryParse"/>) is served as before the seam: the source's
+/// manifest-relative <see cref="KnowledgeCatalogSource.Path"/> is re-resolved at every
+/// search via <see cref="CatalogPathResolver.TryResolve"/>, with the same containment check,
+/// and a fresh <see cref="OkfBundleKnowledgeSource"/> loads the bundle for that search
+/// (<see cref="CatalogSourceOpener"/>).
 /// </para>
 /// </remarks>
 public sealed class GroupedKnowledgeResolver : IKnowledgeResolver
@@ -133,17 +135,13 @@ public sealed class GroupedKnowledgeResolver : IKnowledgeResolver
         {
             ct.ThrowIfCancellationRequested();
 
-            if (!CatalogPathResolver.TryResolve(_catalog.CatalogRoot, snapshot.ManifestDirectory, source.Path, out var resolvedDirectory, out var pathDiagnostic))
+            if (!CatalogSourceOpener.TryOpen(_catalog, snapshot, source, out var bundleSource, out _, out _, out var unavailable))
             {
-                diagnostics.Add(new KnowledgeDiagnostic(
-                    KnowledgeDiagnosticCode.SourceUnavailable,
-                    source.Id,
-                    $"Source '{source.Id}' path could not be re-resolved: {pathDiagnostic!.Message}"));
+                diagnostics.Add(unavailable!);
                 continue;
             }
 
-            var bundleSource = new OkfBundleKnowledgeSource(source.Id, resolvedDirectory!);
-            var result = await bundleSource.SearchAsync(query, ct).ConfigureAwait(false);
+            var result = await bundleSource!.SearchAsync(query, ct).ConfigureAwait(false);
 
             if (result.Diagnostic is not null)
             {
@@ -152,6 +150,11 @@ public sealed class GroupedKnowledgeResolver : IKnowledgeResolver
             }
 
             anySourceSearchedSuccessfully = true;
+            if (CatalogSourceOpener.StaleDiagnostic(bundleSource) is { } stale)
+            {
+                diagnostics.Add(stale);
+            }
+
             passages.AddRange(result.Passages);
         }
 

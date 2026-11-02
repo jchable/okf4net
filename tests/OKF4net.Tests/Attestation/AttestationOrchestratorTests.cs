@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using OKF4net;
 using OKF4net.Attestation;
+using OKF4net.Providers;
 using Xunit;
 
 namespace OKF4net.Tests.Attestation;
@@ -27,7 +28,8 @@ public class AttestationOrchestratorTests
         tmp.Write("c/rev.md",
             "---\ntype: Attested Computation\nruntime: bigquery\n" +
             "parameters:\n  - { name: year, type: integer, required: true }\n" +
-            "executor: { receipt: [job_id, result] }\n---\n# Computation\n\n```sql\nSELECT @year\n```\n");
+            "executor: { receipt: [job_id, result] }\nattester: { resource: att.py }\n---\n# Computation\n\n```sql\nSELECT @year\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         return (Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"));
     }
 
@@ -495,7 +497,8 @@ public class AttestationOrchestratorTests
     {
         using var tmp = new TempDir();
         tmp.Write("c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nstale_after: 2025-01-01\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nstale_after: 2025-01-01\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
         var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
         var outcome = await orch.RunAsync(bundle: Bundle.Load(tmp.Path), conceptId: ConceptId.Parse("c/rev"),
@@ -511,7 +514,8 @@ public class AttestationOrchestratorTests
     {
         using var tmp = new TempDir();
         tmp.Write("c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nstale_after: 2099-01-01\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nstale_after: 2099-01-01\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
         var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
         var outcome = await orch.RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"),
@@ -537,7 +541,8 @@ public class AttestationOrchestratorTests
     {
         using var tmp = new TempDir();
         tmp.Write("c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\nstale_after: 2025-06-30T14:00:00Z\n---\n# Computation\n\n```\nX\n```\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\nstale_after: 2025-06-30T14:00:00Z\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
         var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
         var outcome = await orch.RunAsync(bundle: Bundle.Load(tmp.Path), conceptId: ConceptId.Parse("c/rev"),
@@ -586,7 +591,8 @@ public class AttestationOrchestratorTests
         using var tmp = new TempDir();
         var staleAfter = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
         tmp.Write("c/rev.md",
-            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\n---\n# Computation\n\n```\nX\n```\n");
+            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\nattester: {{ resource: att.py }}\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var clock = new SteppingClock(staleAfter - TimeSpan.FromSeconds(1));
         var runtime = FakeRuntime.Passing();
         runtime.AttestFunc = (_, _) =>
@@ -623,7 +629,8 @@ public class AttestationOrchestratorTests
         using var tmp = new TempDir();
         var staleAfter = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
         tmp.Write("c/rev.md",
-            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\n---\n# Computation\n\n```\nX\n```\n");
+            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\nattester: {{ resource: att.py }}\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var clock = new SteppingClock(staleAfter - TimeSpan.FromSeconds(1));
         var runtime = FakeRuntime.Passing();
         var callerThreadId = Environment.CurrentManagedThreadId;
@@ -660,7 +667,8 @@ public class AttestationOrchestratorTests
         using var tmp = new TempDir();
         var staleAfter = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
         tmp.Write("c/rev.md",
-            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\n---\n# Computation\n\n```\nX\n```\n");
+            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\nattester: {{ resource: att.py }}\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var clock = new SteppingClock(staleAfter - TimeSpan.FromSeconds(1));
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
         var orch = new AttestationOrchestrator(reg, clock: clock);
@@ -683,7 +691,8 @@ public class AttestationOrchestratorTests
         using var tmp = new TempDir();
         var staleAfter = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
         tmp.Write("c/rev.md",
-            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\n---\n# Computation\n\n```\nX\n```\n");
+            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\nattester: {{ resource: att.py }}\n---\n# Computation\n\n```\nX\n```\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var clock = new SteppingClock(staleAfter - TimeSpan.FromSeconds(1));
         var runtime = new FakeRuntime();
         runtime.ExecuteFunc = (_, _, _) =>
@@ -757,7 +766,8 @@ public class AttestationOrchestratorTests
         using var tmp = new TempDir();
         tmp.Write("c/rev.md",
             "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: references/revenue.sql\n" +
-            "executor: { resource: references/run.md, receipt: [job_id] }\n---\n");
+            "executor: { resource: references/run.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         // Laid out as Appendix A does: the concept sits in a subdirectory and its
         // bare `computation` path resolves from the BUNDLE ROOT, not from "c/".
         tmp.Write("references/revenue.sql", "SELECT revenue FROM t;\n");
@@ -779,7 +789,8 @@ public class AttestationOrchestratorTests
     {
         using var tmp = new TempDir();
         tmp.Write("c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: references/missing.sql\n---\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: references/missing.sql\nattester: { resource: att.py }\n---\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
         var outcome = await new AttestationOrchestrator(reg).RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"), new Dictionary<string, object?>());
         Assert.False(outcome.Displayable);
@@ -797,7 +808,8 @@ public class AttestationOrchestratorTests
     {
         using var tmp = new TempDir();
         tmp.Write("c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: references/revenue.sql\n---\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: references/revenue.sql\nattester: { resource: att.py }\n---\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         // At the BUNDLE ROOT, because a bare `computation` path resolves from
         // there (§6.2) -- same layout as File_based_computation_resolved_and_read,
         // so the only thing that differs between the two is the file's BYTES,
@@ -817,7 +829,9 @@ public class AttestationOrchestratorTests
         // "could not be resolved (Missing)", so the old substring assertion
         // stayed green when the file stopped resolving and the decoder was
         // never reached.
-        Assert.Contains(outcome.Reasons, r => r.Contains("could not be read: DecoderFallbackException", StringComparison.Ordinal));
+        // Since lot C the load surveys the file (strict decoder: invalid UTF-8 is `Unreadable`) and
+        // a run refuses it by state; the decoder exception is no longer reached at the run.
+        Assert.Contains(outcome.Reasons, r => r.Contains("could not be read (Unreadable)", StringComparison.Ordinal));
         Assert.DoesNotContain(outcome.Reasons, r => r.Contains("could not be resolved", StringComparison.Ordinal));
     }
 
@@ -844,7 +858,8 @@ public class AttestationOrchestratorTests
     {
         using var tmp = new TempDir();
         tmp.Write("c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: references/revenue.sql\n---\n");
+            "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: references/revenue.sql\nattester: { resource: att.py }\n---\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         // At the BUNDLE ROOT: a bare `computation` path resolves from there (§6.2).
         var sqlPath = System.IO.Path.Combine(tmp.Path, "references", "revenue.sql");
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(sqlPath)!);
@@ -857,7 +872,9 @@ public class AttestationOrchestratorTests
         // assertion has to name the decoder failure. `Displayable == false`
         // plus a shared "revenue.sql" substring is satisfied by a file that
         // never resolved, which proves nothing about BOM sniffing.
-        Assert.Contains(outcome.Reasons, r => r.Contains("could not be read: DecoderFallbackException", StringComparison.Ordinal));
+        // Since lot C the load surveys the file (strict decoder: invalid UTF-8 is `Unreadable`) and
+        // a run refuses it by state; the decoder exception is no longer reached at the run.
+        Assert.Contains(outcome.Reasons, r => r.Contains("could not be read (Unreadable)", StringComparison.Ordinal));
         Assert.DoesNotContain(outcome.Reasons, r => r.Contains("could not be resolved", StringComparison.Ordinal));
     }
 
@@ -874,8 +891,9 @@ public class AttestationOrchestratorTests
     {
         using var tmp = new TempDir();
         tmp.Write("c/rev.md",
-            "---\ntype: Attested Computation\nruntime: bigquery\n---\n" +
+            "---\ntype: Attested Computation\nruntime: bigquery\nattester: { resource: att.py }\n---\n" +
             "Just prose -- no `# Computation` fence and no `computation:` path.\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
         var outcome = await new AttestationOrchestrator(reg).RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"), new Dictionary<string, object?>());
         Assert.False(outcome.Displayable);
@@ -1032,22 +1050,36 @@ public class AttestationOrchestratorTests
         Assert.False(attested, "the attester ran despite its own resource being unresolvable");
     }
 
-    [Fact]
-    public async Task Absent_attester_declaration_yields_null_source_text_not_a_failure()
+    /// <summary>
+    /// D6 (spec §5.1, §10; docs/spec-conformance S10.5-1): a computation that declares no
+    /// <c>attester.resource</c>, or declares a URL, is refused before any stage runs. Until lot C
+    /// this test was <c>Absent_attester_declaration_yields_null_source_text_not_a_failure</c>:
+    /// the host's attester ran with a null source. There is nothing to pin in either case, so
+    /// nothing the host or the model could hold for the attestation code that ran.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("attester: { resource: https://example.com/att.py }\n")]
+    public async Task An_undeclared_or_URL_attester_is_refused_before_the_runtime_is_called(string attesterLine)
     {
         using var tmp = new TempDir();
         tmp.Write("c/rev.md",
             "---\ntype: Attested Computation\nruntime: bigquery\n" +
             "parameters:\n  - { name: year, type: integer, required: true }\n" +
-            "executor: { receipt: [job_id, result] }\n---\n# Computation\n\n```sql\nSELECT @year\n```\n");
+            "executor: { receipt: [job_id, result] }\n" + attesterLine + "---\n# Computation\n\n```sql\nSELECT @year\n```\n");
         var bundle = Bundle.Load(tmp.Path);
         var id = ConceptId.Parse("c/rev");
 
-        AttestationContext? captured = null;
+        var stages = 0;
         var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
-        runtime.AttestFunc = (ctx, _) =>
+        runtime.BindFunc = (contract, computation, values, _) =>
         {
-            captured = ctx;
+            stages++;
+            return ValueTask.FromResult(new BoundComputation("bigquery", computation.InlineCode, null, values));
+        };
+        runtime.AttestFunc = (_, _) =>
+        {
+            stages++;
             return ValueTask.FromResult(new AttestationVerdict(true, null));
         };
 
@@ -1055,8 +1087,90 @@ public class AttestationOrchestratorTests
         var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
         var outcome = await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 });
 
-        Assert.True(outcome.Displayable);
-        Assert.Null(captured!.AttesterSourceText);
+        Assert.False(outcome.Displayable);
+        Assert.Equal(0, stages);
+        Assert.Null(outcome.Receipt);
+        var reason = Assert.Single(outcome.Reasons);
+        Assert.Contains(attesterLine.Length == 0 ? "no attester.resource is declared" : "is a URL, which is never read", reason, StringComparison.Ordinal);
+        Assert.Contains("is not run", reason, StringComparison.Ordinal);
+
+        var captured = AttestationOrchestrator.Capture(bundle, bundle.Get(id)!);
+        Assert.Null(captured.Capture);
+        Assert.False(captured.ImageOutdated);
+        Assert.Equal(outcome.Reasons, captured.Failure!.Reasons);
+    }
+
+    /// <summary>
+    /// The pin (spec §5.4, point 17): the attester's source is read at the version the image
+    /// was loaded with. A script replaced after the load — same length, same second, which the
+    /// filesystem's weak bundle token cannot see — is refused, the attester never called, and
+    /// the capture says the image is outdated so that a handle reloads it.
+    /// </summary>
+    [Fact]
+    public async Task The_attester_is_pinned_to_the_version_the_image_was_loaded_with()
+    {
+        using var tmp = new TempDir();
+        var (bundle, id) = InlineComputationWithAttesterFile(tmp, "def attest(**_):\n    return {}  # v1\n");
+        var attested = false;
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
+        runtime.AttestFunc = (_, _) =>
+        {
+            attested = true;
+            return ValueTask.FromResult(new AttestationVerdict(true, null));
+        };
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+
+        var path = Path.Combine(tmp.Path, "att.py");
+        var stamp = File.GetLastWriteTimeUtc(path);
+        File.WriteAllText(path, "def attest(**_):\n    return {}  # v2\n");
+        File.SetLastWriteTimeUtc(path, stamp);
+
+        var outcome = await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 });
+
+        Assert.False(outcome.Displayable);
+        Assert.False(attested);
+        Assert.Contains(outcome.Reasons, r => r == "attester resource 'att.py' changed since the bundle was loaded");
+        var captured = AttestationOrchestrator.Capture(bundle, bundle.Get(id)!);
+        Assert.Null(captured.Capture);
+        Assert.True(captured.ImageOutdated);
+
+        var reloaded = Bundle.Load(tmp.Path);
+        var fresh = await orch.RunAsync(reloaded, id, new Dictionary<string, object?> { ["year"] = 2026 });
+        Assert.True(fresh.Displayable);
+        Assert.True(attested);
+    }
+
+    /// <summary>A computation file pinned to the version a caller observed (spec §5.4, point 2) is refused when it changed; unpinned, it is still pinned to the image's version.</summary>
+    [Fact]
+    public void A_computation_file_pinned_to_an_observed_version_is_refused_when_it_changed()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("references/revenue.sql", "SELECT 1\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
+        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: references/revenue.sql\nattester: { resource: att.py }\n---\n");
+        var bundle = Bundle.Load(tmp.Path);
+        var concept = bundle.Get(ConceptId.Parse("c/rev"))!;
+        var observed = bundle.ExecutableResources[concept.Id].Computation.Version;
+
+        var pinned = AttestationOrchestrator.Capture(bundle, concept, observed);
+        Assert.NotNull(pinned.Capture);
+        Assert.Equal("SELECT 1\n", pinned.Capture!.Computation.InlineCode);
+        Assert.Equal("def attest(**_):\n    return {}\n", pinned.Capture.AttesterSourceText);
+
+        File.WriteAllText(Path.Combine(tmp.Path, "references", "revenue.sql"), "SELECT 2\n");
+
+        var refused = AttestationOrchestrator.Capture(bundle, concept, observed);
+        Assert.Null(refused.Capture);
+        Assert.True(refused.ImageOutdated);
+        Assert.Contains(refused.Failure!.Reasons, r => r.StartsWith("computation file 'references/revenue.sql' changed since it was shown", StringComparison.Ordinal));
+
+        // Pinned to the image (spec §5.1, §5.4): without an observation the file is still read at
+        // the version the load pinned, never at its new bytes.
+        var unpinned = AttestationOrchestrator.Capture(bundle, concept);
+        Assert.Null(unpinned.Capture);
+        Assert.True(unpinned.ImageOutdated);
+        Assert.Equal("computation file 'references/revenue.sql' changed since the bundle was loaded", Assert.Single(unpinned.Failure!.Reasons));
     }
 
     /// <summary>
@@ -1074,7 +1188,8 @@ public class AttestationOrchestratorTests
         using var tmp = new TempDir();
         tmp.Write("c/rev.md",
             "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: x/y/secret.sql\n" +
-            "executor: { resource: references/run.md, receipt: [job_id] }\n---\n");
+            "executor: { resource: references/run.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n");
+        tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         System.IO.Directory.CreateDirectory(System.IO.Path.Combine(tmp.Path, "x"));
         var bundle = Bundle.Load(tmp.Path);
         using var external = new TempDir();
@@ -1094,7 +1209,11 @@ public class AttestationOrchestratorTests
 
         Assert.False(outcome.Displayable);
         Assert.Null(capturedText);
-        Assert.Contains(outcome.Reasons, r => r.Contains("computation file 'x/y/secret.sql' could not be read: UnauthorizedAccessException", StringComparison.Ordinal));
+        // The refusal moved from the read to the survey (lot C): the provider's exact-name
+        // lookup cannot list "x" once the junction denies it, so the load surveys it Missing
+        // ("could not be resolved"); a pinned read that fails says "could not be read". The
+        // prefix tolerates both: what this test pins is that nothing outside the bundle reaches the binder.
+        Assert.Contains(outcome.Reasons, r => r.StartsWith("computation file 'x/y/secret.sql' could not be re", StringComparison.Ordinal));
     }
 
     /// <summary>
@@ -1130,6 +1249,281 @@ public class AttestationOrchestratorTests
 
         Assert.False(outcome.Displayable);
         Assert.Null(captured);
-        Assert.Contains(outcome.Reasons, r => r.Contains("attester resource 'x/y/att.py' could not be read: UnauthorizedAccessException", StringComparison.Ordinal));
+        // As for the computation file above: refused at the resolution (the survey finds it
+        // Missing once "x" denies listing), or at the pinned read — never attested.
+        Assert.Contains(outcome.Reasons, r => r.StartsWith("attester resource 'x/y/att.py' could not be re", StringComparison.Ordinal));
+    }
+
+    private const string PinnedAttester = "def attest(**_):\n    return {}\n";
+
+    private static string AttestedConcept(string? computationFile, string? attesterResource, bool inlineFence = true) =>
+        "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { receipt: [job_id] }\n"
+        + (computationFile is null ? string.Empty : $"computation: {computationFile}\n")
+        + (attesterResource is null ? string.Empty : $"attester: {{ resource: {attesterResource} }}\n")
+        + "---\n"
+        + (inlineFence ? "# Computation\n\n```sql\nSELECT 1\n```\n" : string.Empty);
+
+    private static AttestationOrchestrator OrchestratorWith(FakeRuntime runtime) =>
+        new(new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime }),
+            clock: new FixedClock(new DateOnly(2026, 1, 1)));
+
+    /// <summary>
+    /// Sanctioned code is pinned to the image (spec §5.1, §5.4): a <c>computation:</c> file replaced
+    /// after the load, same length and timestamp, is refused and never reaches the runtime, exactly
+    /// as the attester is; it does not run at its new bytes.
+    /// </summary>
+    [Fact]
+    public async Task A_computation_file_replaced_after_the_load_is_refused_and_never_executed()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("references/q.sql", "SELECT 1\n");
+        tmp.Write("att.py", PinnedAttester);
+        tmp.Write("c/rev.md", AttestedConcept("references/q.sql", "att.py", inlineFence: false));
+        var bundle = Bundle.Load(tmp.Path);
+        var id = ConceptId.Parse("c/rev");
+
+        var stages = 0;
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
+        runtime.BindFunc = (_, computation, values, _) =>
+        {
+            stages++;
+            return ValueTask.FromResult(new BoundComputation("bigquery", computation.InlineCode, null, values));
+        };
+
+        var path = Path.Combine(tmp.Path, "references", "q.sql");
+        var stamp = File.GetLastWriteTimeUtc(path);
+        File.WriteAllText(path, "SELECT 2\n");
+        File.SetLastWriteTimeUtc(path, stamp);
+
+        var outcome = await OrchestratorWith(runtime).RunAsync(bundle, id, new Dictionary<string, object?>());
+
+        Assert.False(outcome.Displayable);
+        Assert.Equal(0, stages);
+        Assert.Contains(outcome.Reasons, r => r == "computation file 'references/q.sql' changed since the bundle was loaded");
+        var captured = AttestationOrchestrator.Capture(bundle, bundle.Get(id)!);
+        Assert.Null(captured.Capture);
+        Assert.True(captured.ImageOutdated);
+
+        // A version the caller observed that is not the image's: refused as well, image outdated.
+        var observed = AttestationOrchestrator.Capture(bundle, bundle.Get(id)!, new BundleObjectVersion("not-the-image-version"));
+        Assert.Null(observed.Capture);
+        Assert.True(observed.ImageOutdated);
+        Assert.StartsWith("computation file 'references/q.sql' changed since it was shown", Assert.Single(observed.Failure!.Reasons), StringComparison.Ordinal);
+    }
+
+    /// <summary>A computation file the survey found Missing or TooLarge is not executable, even when a file is there at the capture.</summary>
+    [Theory]
+    [InlineData("missing", "could not be resolved (Missing)")]
+    [InlineData("toolarge", "could not be read (TooLarge)")]
+    public void A_computation_file_surveyed_missing_or_too_large_is_refused_even_if_present_now(string kind, string expectedText)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("att.py", PinnedAttester);
+        tmp.Write("c/rev.md", AttestedConcept("references/q.sql", "att.py", inlineFence: false));
+        BundleLoadOptions? options = null;
+        if (kind == "toolarge")
+        {
+            tmp.Write("references/q.sql", new string('-', 400) + "\n");
+            options = new BundleLoadOptions { Limits = new BundleLimits { MaxObjectBytes = 300 } };
+        }
+
+        var bundle = options is null ? Bundle.Load(tmp.Path) : Bundle.Load(new FileSystemBundleProvider(tmp.Path), options);
+        if (kind == "missing")
+        {
+            tmp.Write("references/q.sql", "SELECT 1\n");
+        }
+
+        if (kind == "toolarge")
+        {
+            // Shrunk after the load: an unpinned read would now succeed, so only the surveyed state refuses.
+            File.WriteAllText(Path.Combine(tmp.Path, "references", "q.sql"), "SELECT 1\n");
+        }
+
+        var captured = AttestationOrchestrator.Capture(bundle, bundle.Get(ConceptId.Parse("c/rev"))!);
+
+        Assert.Null(captured.Capture);
+        Assert.True(captured.ImageOutdated);
+        Assert.Equal($"computation file 'references/q.sql' {expectedText}", Assert.Single(captured.Failure!.Reasons));
+    }
+
+    /// <summary>Every negative state of the attester refuses with the resource and its state; only an undeclared or URL attester leaves the image alone.</summary>
+    [Theory]
+    [InlineData("../../att.py", "could not be resolved (Unsafe)", true)]
+    [InlineData("nope.py", "could not be resolved (Missing)", true)]
+    [InlineData("unreadable.py", "could not be read (Unreadable)", true)]
+    [InlineData("big.py", "could not be read (TooLarge)", true)]
+    public void A_negative_attester_state_is_refused_with_its_state_and_marks_the_image_outdated(string resource, string expectedText, bool imageOutdated)
+    {
+        var storage = new Providers.InMemoryBundleProvider()
+            .Add("c/rev.md", AttestedConcept(null, resource))
+            .Add("unreadable.py", PinnedAttester)
+            .Add("big.py", new string('#', 400) + "\n")
+            .FailReadOf("unreadable.py", new IOException("disk"));
+        var bundle = Bundle.Load(storage, new BundleLoadOptions { Limits = new BundleLimits { MaxObjectBytes = 300 } });
+
+        var captured = AttestationOrchestrator.Capture(bundle, bundle.Get(ConceptId.Parse("c/rev"))!);
+
+        Assert.Null(captured.Capture);
+        Assert.Equal(imageOutdated, captured.ImageOutdated);
+        Assert.Equal($"attester resource '{resource}' {expectedText}", Assert.Single(captured.Failure!.Reasons));
+    }
+
+    /// <summary>A concept with neither an inline fence nor a computation file has nothing to run; the image cannot be behind on that.</summary>
+    [Fact]
+    public void A_concept_without_a_computation_is_refused_and_does_not_mark_the_image_outdated()
+    {
+        var storage = new Providers.InMemoryBundleProvider().Add("c/rev.md", AttestedConcept(null, "att.py", inlineFence: false)).Add("att.py", PinnedAttester);
+        var bundle = Bundle.Load(storage);
+
+        var captured = AttestationOrchestrator.Capture(bundle, bundle.Get(ConceptId.Parse("c/rev"))!);
+
+        Assert.Null(captured.Capture);
+        Assert.False(captured.ImageOutdated);
+        Assert.StartsWith("attested computation has no computation", Assert.Single(captured.Failure!.Reasons), StringComparison.Ordinal);
+    }
+
+    /// <summary>A concept object that is not the one this image holds (a namesake from another image) is not captured.</summary>
+    [Fact]
+    public void A_concept_from_another_image_is_refused_as_not_part_of_the_bundle_image()
+    {
+        var one = Bundle.Load(new Providers.InMemoryBundleProvider().Add("c/rev.md", AttestedConcept(null, "att.py")).Add("att.py", PinnedAttester));
+        var other = Bundle.Load(new Providers.InMemoryBundleProvider().Add("c/rev.md", AttestedConcept(null, "att.py")).Add("att.py", PinnedAttester));
+
+        var captured = AttestationOrchestrator.Capture(one, other.Get(ConceptId.Parse("c/rev"))!);
+
+        Assert.Null(captured.Capture);
+        Assert.False(captured.ImageOutdated);
+        Assert.Contains("is not part of the bundle image", Assert.Single(captured.Failure!.Reasons), StringComparison.Ordinal);
+    }
+
+    /// <summary>A capture belongs to the concept it was taken for: run under another id it is refused and no stage is called.</summary>
+    [Fact]
+    public async Task A_capture_taken_for_another_concept_is_not_run()
+    {
+        var bundle = Bundle.Load(new Providers.InMemoryBundleProvider().Add("c/rev.md", AttestedConcept(null, "att.py")).Add("att.py", PinnedAttester));
+        var captured = AttestationOrchestrator.Capture(bundle, bundle.Get(ConceptId.Parse("c/rev"))!);
+        Assert.NotNull(captured.Capture);
+        Assert.Equal(ConceptId.Parse("c/rev"), captured.Capture!.ConceptId);
+
+        var stages = 0;
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
+        runtime.BindFunc = (_, computation, values, _) =>
+        {
+            stages++;
+            return ValueTask.FromResult(new BoundComputation("bigquery", computation.InlineCode, null, values));
+        };
+
+        var outcome = await OrchestratorWith(runtime).RunCapturedAsync(bundle, ConceptId.Parse("c/other"), new Dictionary<string, object?>(), captured.Capture);
+
+        Assert.False(outcome.Displayable);
+        Assert.Equal(0, stages);
+        Assert.Contains("the capture was taken for concept 'c/rev', not 'c/other'", Assert.Single(outcome.Reasons), StringComparison.Ordinal);
+    }
+
+    /// <summary>A capture belongs to the image it was taken on: run on another image of the same bundle (a reload) it is refused and no stage is called.</summary>
+    [Fact]
+    public async Task A_capture_taken_on_another_image_is_not_run()
+    {
+        var imageA = Bundle.Load(new Providers.InMemoryBundleProvider().Add("c/rev.md", AttestedConcept(null, "att.py")).Add("att.py", PinnedAttester));
+        var imageB = Bundle.Load(new Providers.InMemoryBundleProvider().Add("c/rev.md", AttestedConcept(null, "att.py")).Add("att.py", PinnedAttester));
+        var captured = AttestationOrchestrator.Capture(imageA, imageA.Get(ConceptId.Parse("c/rev"))!);
+        Assert.NotNull(captured.Capture);
+        Assert.Same(imageA, captured.Capture!.Image);
+
+        var stages = 0;
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
+        runtime.BindFunc = (_, computation, values, _) =>
+        {
+            stages++;
+            return ValueTask.FromResult(new BoundComputation("bigquery", computation.InlineCode, null, values));
+        };
+
+        var outcome = await OrchestratorWith(runtime).RunCapturedAsync(imageB, ConceptId.Parse("c/rev"), new Dictionary<string, object?>(), captured.Capture);
+
+        Assert.False(outcome.Displayable);
+        Assert.Equal(0, stages);
+        Assert.Contains("was taken on another image of the bundle", Assert.Single(outcome.Reasons), StringComparison.Ordinal);
+    }
+
+    /// <summary><see cref="AttestationOrchestrator.RunAsync"/> is not <c>async</c>: a null bundle throws at the call instead of faulting the returned task.</summary>
+    [Fact]
+    public void RunAsync_throws_synchronously_for_a_null_bundle()
+    {
+        var orch = OrchestratorWith(FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?>())));
+
+        Assert.Throws<ArgumentNullException>(() => orch.RunAsync(null!, ConceptId.Parse("c/rev"), new Dictionary<string, object?>()));
+    }
+
+    /// <summary>
+    /// A resource pinned at the load whose read then fails with the over-the-bound exception (a
+    /// provider whose version did not move but whose object grew) is a refusal naming the state
+    /// ("could not be read (TooLarge)", image outdated), not an exception out of Capture or
+    /// RunAsync, and not the exception type's name. (<c>BundleObjectTooLargeException</c> is an
+    /// <see cref="IOException"/>, so the generic filter would also have caught it, with a wording
+    /// that names the type.)
+    /// </summary>
+    [Theory]
+    [InlineData("references/q.sql", "computation file")]
+    [InlineData("att.py", "attester resource")]
+    public async Task A_resource_found_too_large_at_the_run_is_refused_with_its_state_not_thrown(string grown, string what)
+    {
+        var storage = new Providers.InMemoryBundleProvider()
+            .Add("references/q.sql", "SELECT 1\n")
+            .Add("att.py", PinnedAttester)
+            .Add("c/rev.md", AttestedConcept("references/q.sql", "att.py", inlineFence: false));
+        var bundle = Bundle.Load(storage);
+        var id = ConceptId.Parse("c/rev");
+        Assert.All(new[] { bundle.ExecutableResources[id].Computation, bundle.ExecutableResources[id].Attester }, r => Assert.Equal(ExecutableResourceState.Pinned, r.State));
+
+        storage.FailReadOf(grown, new BundleObjectTooLargeException(BundleKey.Parse(grown), 400, 300));
+
+        var captured = AttestationOrchestrator.Capture(bundle, bundle.Get(id)!);
+        Assert.Null(captured.Capture);
+        Assert.True(captured.ImageOutdated);
+        Assert.Equal($"{what} '{grown}' could not be read (TooLarge)", Assert.Single(captured.Failure!.Reasons));
+
+        var outcome = await OrchestratorWith(FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" })))
+            .RunAsync(bundle, id, new Dictionary<string, object?>());
+        Assert.False(outcome.Displayable);
+        Assert.Equal(captured.Failure.Reasons, outcome.Reasons);
+    }
+
+    /// <summary>A version the caller observed that is not the image's is refused up front, though the file is unchanged, and nothing runs.</summary>
+    [Fact]
+    public async Task An_observed_version_that_is_not_the_images_is_refused_though_the_file_is_unchanged()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("references/q.sql", "SELECT 1\n");
+        tmp.Write("att.py", PinnedAttester);
+        tmp.Write("c/rev.md", AttestedConcept("references/q.sql", "att.py", inlineFence: false));
+        var bundle = Bundle.Load(tmp.Path);
+        var id = ConceptId.Parse("c/rev");
+
+        var captured = AttestationOrchestrator.Capture(bundle, bundle.Get(id)!, new BundleObjectVersion("x"));
+
+        Assert.Null(captured.Capture);
+        Assert.True(captured.ImageOutdated);
+        Assert.StartsWith("computation file 'references/q.sql' changed since it was shown", Assert.Single(captured.Failure!.Reasons), StringComparison.Ordinal);
+
+        // The same observation equal to the image's version is accepted.
+        var ok = AttestationOrchestrator.Capture(bundle, bundle.Get(id)!, bundle.ExecutableResources[id].Computation.Version);
+        Assert.NotNull(ok.Capture);
+        await Task.CompletedTask;
+    }
+
+    /// <summary>A URL computation is refused without marking the image outdated: only a change of the concept can alter it (spec §5.1).</summary>
+    [Fact]
+    public void A_URL_computation_is_refused_and_does_not_mark_the_image_outdated()
+    {
+        var storage = new Providers.InMemoryBundleProvider()
+            .Add("c/rev.md", AttestedConcept("https://example.com/q.sql", "att.py", inlineFence: false))
+            .Add("att.py", PinnedAttester);
+        var bundle = Bundle.Load(storage);
+
+        var captured = AttestationOrchestrator.Capture(bundle, bundle.Get(ConceptId.Parse("c/rev"))!);
+
+        Assert.Null(captured.Capture);
+        Assert.False(captured.ImageOutdated);
+        Assert.Equal("computation file 'https://example.com/q.sql' could not be resolved (Url)", Assert.Single(captured.Failure!.Reasons));
     }
 }

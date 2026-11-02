@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+#pragma warning disable CS0618 // pins the obsolete path-based projections (lot D): the strings they always were, until their removal
 using OKF4net.Cli;
 
 namespace OKF4net.Tests;
@@ -49,6 +50,43 @@ public class CliDisplayPathTests
         Assert.Equal(0, audit.Code);
         var jsonEscaped = expectedOrders.Replace("\\", "\\\\");
         Assert.Contains("\"path\":\"" + jsonEscaped + "\"", audit.Out);
+    }
+
+    /// <summary>
+    /// The readers that moved from the path-based members to the keys (lot D): <c>okf info</c>
+    /// and <c>info --json</c> count <c>IndexKeys</c>/<c>LogKeys</c> and print each load problem
+    /// under <see cref="Bundle.DisplayPath"/>; <c>validate</c> prints an <c>index.md</c> and a
+    /// <c>log.md</c> finding under the §8 display path composed from the key. All unnormalised:
+    /// the OS separator, byte for byte what the path-based members projected.
+    /// </summary>
+    [Fact]
+    public void Info_json_and_the_reserved_file_findings_print_the_display_path_composed_from_the_key()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("index.md", "# Index\n\n- [sub](sub/index.md)\n");
+        tmp.Write("sub/index.md", "---\nokf_version: 0.2\n---\n# Sub\n");
+        tmp.Write("sub/log.md", "## not-a-date\n\n- x\n");
+        tmp.Write("sub/broken.md", "---\ntype: Note\nk: *a\n---\nbody\n");
+        tmp.Write("sub/a.md", "---\ntype: Note\ntitle: A\ndescription: d\n---\nA.\n");
+        var expectedIndex = Path.Combine(tmp.Path, "sub", "index.md");
+        var expectedLog = Path.Combine(tmp.Path, "sub", "log.md");
+        var expectedBroken = Path.Combine(tmp.Path, "sub", "broken.md");
+
+        var validate = Run("validate", tmp.Path);
+        Assert.Contains("[error] " + expectedIndex + ": index.md must not contain frontmatter (§8)", validate.Out);
+        Assert.Contains("[error] " + expectedLog + ": log date heading is not ISO-8601", validate.Out);
+        Assert.Contains("[error] " + expectedBroken + ": unparseable concept document:", validate.Out);
+
+        var info = Run("info", tmp.Path);
+        Assert.Contains("index.md:   2\n", info.Out);
+        Assert.Contains("log.md:     1\n", info.Out);
+        Assert.Contains("unparseable files:\n  " + expectedBroken + ": ", info.Out);
+
+        var json = Run("info", tmp.Path, "--json");
+        Assert.Equal(0, json.Code);
+        Assert.Contains("\"indexFileCount\":2", json.Out);
+        Assert.Contains("\"logFileCount\":1", json.Out);
+        Assert.Contains("\"path\":\"" + expectedBroken.Replace("\\", "\\\\") + "\"", json.Out);
     }
 
     /// <summary>

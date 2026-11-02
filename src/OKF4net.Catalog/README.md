@@ -1,6 +1,6 @@
 # OKF4net.Catalog
 
-A catalog of local [Open Knowledge Format (OKF) v0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
+A catalog of [Open Knowledge Format (OKF) v0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
 knowledge bundles for .NET: a hot-reloadable `catalog.json` manifest naming
 one or more bundles as *sources*, and a resolver that searches every enabled
 source and returns results grouped by source.
@@ -43,7 +43,8 @@ runtime dependencies.
     score only within a priority tier.
 
   Both merged strategies also collapse two manifest entries that resolve to
-  the same directory (searching that bundle once, not twice) and accept an
+  the same storage (the provider's id: the same directory for the filesystem,
+  trailing separator aside; searching that bundle once, not twice) and accept an
   optional fairness quota that interleaves sources so one prolific source
   cannot crowd out the rest of a budget-truncated result.
 
@@ -107,7 +108,7 @@ from one resolved path and therefore satisfies this requirement automatically.
 
 `KnowledgeContext` is deliberately never a bare string: `Passages` (grouped by
 source, in source-priority then per-source descending-score order) and
-`Diagnostics` (e.g. `NoEnabledSources`, `SourceUnavailable`, `NoMatches`) let a
+`Diagnostics` (e.g. `NoEnabledSources`, `SourceUnavailable`, `SourceStale`, `NoMatches`) let a
 caller distinguish "no results" from "a source failed" from "no source is
 enabled" without parsing text.
 
@@ -252,10 +253,96 @@ only) -- a `SourceVisibilityPolicy` function should compare `TenantId`/
 `UserId`/`SessionId` individually, not compare two `KnowledgeAccessScope`
 instances with `==`/`Equals`.
 
+## Bundle providers and handles
+
+Each `FileKnowledgeCatalog` snapshot owns one `BundleHandle` per enabled
+knowledge source (`snapshot.Handles[sourceId]`), and every resolver searches
+through them: an unchanged source is loaded once across requests, and a
+change in its storage is seen at the next request under the default
+`OnAccess` policy (`KnowledgeCatalogOptions.RefreshPolicy`, overridable per
+source with `RefreshPolicyFor`; `LoadOptions` sets the bounds and key policy
+of every load). For a directory the version token is weak (names, lengths and
+modification times): two edits of the same size within one modification-time
+tick can be missed until the next change, and `Handle.Refresh()` or
+`Handle.Invalidate()` forces a re-read. A reload keeps a source's handle while
+its effective configuration is unchanged and rebuilds it otherwise; a handle
+that leaves the catalog is disposed, which only ends its change subscription.
+A snapshot built by hand, or by `CatalogManifestParser.TryParse`, carries no
+handle: a resolver then resolves the source's path and loads at each request,
+as before.
+
+A reload that fails does not lose a source: its last good image is served and
+the search reports `KnowledgeDiagnosticCode.SourceStale` (the exception type
+of the cause, `BundleAccessRefusedException` or `DirectoryNotFoundException` for
+instance, never its message; the failure itself stays on `Handle.LastLoadError`). Only a source whose
+first load fails is `SourceUnavailable`. A host provider should report its own
+failures with the provider contract's exceptions (`BundleProviderException` and
+its derived types) or `IOException`: the core translates provider, I/O and
+access exceptions only. Any other exception a provider throws during a load or
+a token read is reported by `SearchAsync` as `SourceUnavailable` for that
+source alone, by the exception's type name (never its message) and without
+passages; the other sources are still searched, and a cancellation of the
+caller's token still propagates (one a provider raises itself, a timeout for
+instance, is reported the same way, by type name).
+
+A source may name its storage:
+
+```json
+{ "id": "remote", "provider": "s3", "settings": { "bucket": "docs", "prefix": "okf/" } }
+```
+
+`provider` defaults to `filesystem` (the only type shipped here, named by
+`path` under the catalog root and confined to it on every access). Any other
+type needs an `IBundleProviderFactory` the host registers
+(`KnowledgeOptions.AddProviderFactory(factory)` or
+`KnowledgeCatalogOptions.ProviderFactories`); the factory declares the
+settings it accepts, and the whole reload is rejected for a source that
+carries any other setting (`IllegalSetting`), an unregistered type on an
+enabled source (`UnknownProvider`), a `path` on a non-filesystem type
+(`IllegalPath`), or a factory that throws (`ProviderUnavailable`, naming the
+exception type only). Credentials never travel through the manifest: the host
+gives them to the factory. A `role:"memory"` source must stay on the
+filesystem (`IllegalMemoryProvider`).
+
+### Deleting a memory scope
+
+`IMemoryStore.DeleteScopeAsync` returns a `MemoryDeleteResult(Tiers, Error)`:
+one `MemoryTierDeletion` per tier whose scope held a key, was refused or could
+not be listed, or held no key but left empty directories that could not be
+removed, with a `BundleWriteReport` of the keys deleted and those that failed
+(an object held
+open on Windows, say, is reported by its exception type and key). A failed
+deletion can be run again. Once every object is gone, the scope's now-empty
+directories are removed too (never following a link), because their names carry
+the lowercased tenant, user and session ids. This does **not** erase an id
+completely: the parent directories of the scope are kept and still carry the ids
+above it (`memory-session/<tenant>-<hash>/<user>-<hash>/` after that user's
+sessions are deleted, `memory-user/<tenant>-<hash>/` after the last user), so do
+not describe it to a data subject as a complete erasure of their identifier.
+
+### Migration: memory scope names with a reserved base
+
+A tenant, user or session identifier whose part before its first `.` is a
+Windows reserved device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`,
+`LPT1`–`LPT9`, any case — `con.foo`, `aux.a.b`) now encodes with a leading
+`_` (`_con.foo-<hash>`), the hash unchanged. Such scopes never worked on
+Windows; on Linux and macOS their existing directories keep the old name and
+are no longer found — reads, enumeration and `DeleteScopeAsync` address the
+prefixed name, and the old directory is neither read, migrated nor deleted
+until you rename it:
+
+```sh
+mv memory-tenant/con.foo-0123456789abcdef memory-tenant/_con.foo-0123456789abcdef
+```
+
+and the same for every such segment, at any level (tenant, user or session),
+under `memory-user/` and `memory-session/`. No other identifier changes.
+
 ## V1 limits
 
-- Local filesystem bundles only — no remote/HTTP sources, no external
-  connectors.
+- Bundles under the catalog root unless the host registers a provider
+  factory (see above); no provider but the filesystem ships with this
+  package, and memory sources are always on the filesystem.
 - One shared catalog per `FileKnowledgeCatalog` instance.
 - No semantic/fuzzy deduplication — two concepts with similar content in
   genuinely different bundles are both returned. Only under the two merged

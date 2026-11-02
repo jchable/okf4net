@@ -261,6 +261,21 @@ public enum DiagnosticCode
 public sealed record Diagnostic(Severity Severity, string? Path, ConceptId? Concept, string Message, DiagnosticCode Code, string? Field = null)
 {
     /// <summary>
+    /// The key of the object the finding is about (spec §9): the concept's, the
+    /// <c>index.md</c>'s or <c>log.md</c>'s, or the unparseable document's when the load gave
+    /// it a key (<see cref="BundleParseError.Key"/>). <see langword="null"/> for a hand-built
+    /// finding, for a name the load refused (by the key policy, by a collision, or because it
+    /// is no key at all: such a name can share its display path with a real concept, so the
+    /// path never decides the key), and for a finding about nothing in particular. An
+    /// over-length <c>.md</c> name (past the key-length bound) does get a key: the genuine
+    /// parsed <see cref="Providers.BundleKey"/> the load recorded with the problem.
+    /// <see cref="Path"/> is the display path of the object
+    /// (<see cref="Providers.BundleDisplayPath.Compose"/> under the bundle's location), the
+    /// text the <c>validate</c> snapshots pin.
+    /// </summary>
+    public Providers.BundleKey? Key { get; init; }
+
+    /// <summary>
     /// Renders as <c>[severity] path: message</c> or <c>[severity] concept:
     /// message</c> (falling back to a bare <c>[severity] message</c> if
     /// neither is set). Unaffected by <see cref="Code"/> or <see cref="Field"/>
@@ -345,14 +360,19 @@ public static class BundleValidator
         var diagnostics = new List<Diagnostic>();
 
         // (1) Files whose frontmatter could not be parsed are conformance errors.
-        foreach (var (path, error) in bundle.ParseErrors)
+        foreach (var problem in bundle.ParseProblems)
         {
             diagnostics.Add(new Diagnostic(
                 Severity.Error,
-                path,
+                bundle.DisplayPath(problem),
                 null,
-                $"unparseable concept document: {error}",
-                DiagnosticCode.UnparseableDocument));
+                $"unparseable concept document: {problem.Error}",
+                DiagnosticCode.UnparseableDocument)
+            {
+                // The key the load gave the name, if it did: never recovered from the display
+                // path, which a refused name can share with a real concept (spec §9).
+                Key = problem.Key,
+            });
         }
 
         // (1b) Names the load accepted but the portable profile would refuse (spec §2,
@@ -377,7 +397,10 @@ public static class BundleValidator
                         BundleDisplayPath.Compose(bundle.Location, issue.Key),
                         null,
                         $"the name is not portable: {issue.Reason}",
-                        DiagnosticCode.KeyNotPortable));
+                        DiagnosticCode.KeyNotPortable)
+                    {
+                        Key = issue.Key,
+                    });
                 }
             }
         }
@@ -386,6 +409,9 @@ public static class BundleValidator
         // soft guidance.
         foreach (var concept in bundle.Concepts)
         {
+            // Every finding added below is about this concept, under its own path: its key
+            // is stamped once, at the end of the iteration (no display path is inverted).
+            var firstOfConcept = diagnostics.Count;
             var fm = concept.Document.Frontmatter;
             if (!HasConformantType(concept.Document))
             {
@@ -672,6 +698,8 @@ public static class BundleValidator
                     diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"frontmatter path '{resource.Field}' → '{resource.RawPath}' escapes the bundle", DiagnosticCode.FrontmatterPathUnsafe, resource.Field));
                 }
             }
+
+            StampKey(diagnostics, firstOfConcept, concept.Key);
         }
 
         // (3) Reserved files must follow their structure when present.
@@ -685,10 +713,35 @@ public static class BundleValidator
                 null,
                 source,
                 $"link target does not resolve to a concept in the bundle: {raw}",
-                DiagnosticCode.BrokenLink));
+                DiagnosticCode.BrokenLink)
+            {
+                // The source concept's key: a concept id is unique in the bundle.
+                Key = bundle.Get(source)?.Key,
+            });
         }
 
         return new ValidationReport(diagnostics);
+    }
+
+    /// <summary>
+    /// Sets <see cref="Diagnostic.Key"/> to <paramref name="key"/> on every finding from index
+    /// <paramref name="first"/> on: the findings one concept, one <c>index.md</c> or one
+    /// <c>log.md</c> iteration just added, all about that one object (spec §9). The key is
+    /// the one the load gave the object, never recovered from a display path, which two
+    /// distinct names can share. <see cref="Diagnostic.Path"/> is left as built, since the
+    /// <c>validate</c> snapshots pin its text.
+    /// </summary>
+    private static void StampKey(List<Diagnostic> diagnostics, int first, BundleKey? key)
+    {
+        if (key is not { } stamped)
+        {
+            return;
+        }
+
+        for (var i = first; i < diagnostics.Count; i++)
+        {
+            diagnostics[i] = diagnostics[i] with { Key = stamped };
+        }
     }
 
     /// <summary>
@@ -835,14 +888,15 @@ public static class BundleValidator
     /// so a relative entry resolves from the index's directory and a <c>/</c> entry
     /// from the bundle root — no second implementation of link resolution.
     /// </summary>
-    private static void CheckIndexEntryDescriptions(Bundle bundle, string indexPath, string body, List<Diagnostic> diagnostics)
+    private static void CheckIndexEntryDescriptions(Bundle bundle, BundleKey indexKey, string indexPath, string body, List<Diagnostic> diagnostics)
     {
         ConceptId source;
         try
         {
             // `metrics/index.md` becomes `metrics/index`, whose parent is `metrics` --
-            // the directory a relative entry resolves against.
-            source = ConceptId.FromPath(bundle.Root, indexPath);
+            // the directory a relative entry resolves against. From the key, as the
+            // display path was derived from it (spec §8): the same segments, validated the same way.
+            source = ConceptId.FromKey(indexKey);
         }
         catch (ConceptIdException)
         {
@@ -873,110 +927,126 @@ public static class BundleValidator
     /// <summary>Checks that reserved files (index.md and log.md) follow their structural rules when present (§8/§9).</summary>
     private static void ValidateReserved(Bundle bundle, List<Diagnostic> diagnostics)
     {
-        for (var i = 0; i < bundle.IndexKeys.Count; i++)
+        // One object per call: its findings carry the key the load gave it (spec §9), set
+        // once here and never recovered from a display path.
+        foreach (var key in bundle.IndexKeys)
         {
-            var key = bundle.IndexKeys[i];
-            var path = bundle.IndexFiles[i];
-            string text;
-            try
-            {
-                text = bundle.ReadResourceText(key);
-            }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
-            {
-                diagnostics.Add(new Diagnostic(Severity.Error, path, null, $"index.md could not be read: {e.Message}", DiagnosticCode.UnparseableIndex));
-                continue;
-            }
-
-            OkfDocument doc;
-            try
-            {
-                doc = OkfDocument.Parse(text);
-            }
-            catch (DocumentParseException e)
-            {
-                diagnostics.Add(new Diagnostic(Severity.Error, path, null, $"unparseable index.md: {e.Message}", DiagnosticCode.UnparseableIndex));
-                continue;
-            }
-
-            // Entries are checked for EVERY index, before the frontmatter early-return
-            // below. That early-return used to be the first thing after parsing, and a
-            // well-formed index has no frontmatter at all -- so the body of every
-            // conformant index was skipped, and an entry could omit its description
-            // with nothing to say so.
-            CheckIndexEntryDescriptions(bundle, path, doc.Body, diagnostics);
-            CheckIndexEntriesAreLinks(path, doc.Body, diagnostics);
-
-            if (doc.Frontmatter.IsEmpty)
-            {
-                continue;
-            }
-
-            // Frontmatter is only permitted in the bundle-root index.md, and only
-            // to declare `okf_version` (§12).
-            var isRoot = key.Segments.Count == 1;
-            if (!isRoot)
-            {
-                diagnostics.Add(new Diagnostic(
-                    Severity.Error,
-                    path,
-                    null,
-                    "index.md must not contain frontmatter (§8)",
-                    DiagnosticCode.IndexHasFrontmatter));
-            }
-            else
-            {
-                var onlyVersion = doc.Frontmatter.AsMapping().Keys.All(k => k == "okf_version");
-                if (!onlyVersion)
-                {
-                    diagnostics.Add(new Diagnostic(
-                        Severity.Error,
-                        path,
-                        null,
-                        "root index.md frontmatter must declare only `okf_version` (§12)",
-                        DiagnosticCode.RootIndexExtraFrontmatter,
-                        "okf_version"));
-                }
-
-                var declaredVersion = doc.Frontmatter.Get("okf_version")?.AsDisplayString();
-                if (declaredVersion is not null && !string.Equals(declaredVersion, OkfSpec.Version, StringComparison.Ordinal))
-                {
-                    diagnostics.Add(new Diagnostic(
-                        Severity.Warning,
-                        path,
-                        null,
-                        $"declared okf_version {DebugQuote.Quote(declaredVersion)} is not supported; consuming best-effort as v{OkfSpec.Version}",
-                        DiagnosticCode.UnsupportedOkfVersion,
-                        "okf_version"));
-                }
-            }
+            var first = diagnostics.Count;
+            ValidateIndex(bundle, key, diagnostics);
+            StampKey(diagnostics, first, key);
         }
 
-        for (var i = 0; i < bundle.LogKeys.Count; i++)
+        foreach (var key in bundle.LogKeys)
         {
-            var key = bundle.LogKeys[i];
-            var path = bundle.LogFiles[i];
-            string text;
-            try
-            {
-                text = bundle.ReadResourceText(key);
-            }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
-            {
-                diagnostics.Add(new Diagnostic(Severity.Error, path, null, $"log.md could not be read: {e.Message}", DiagnosticCode.UnparseableLog));
-                continue;
-            }
+            var first = diagnostics.Count;
+            ValidateLog(bundle, key, diagnostics);
+            StampKey(diagnostics, first, key);
+        }
+    }
 
-            var log = ChangeLog.Parse(text);
-            foreach (var bad in log.InvalidDates())
+    /// <summary>Checks one <c>index.md</c> (§8, §12).</summary>
+    private static void ValidateIndex(Bundle bundle, BundleKey key, List<Diagnostic> diagnostics)
+    {
+        var path = BundleDisplayPath.Compose(bundle.Location, key);
+        string text;
+        try
+        {
+            text = bundle.ReadResourceText(key);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
+        {
+            diagnostics.Add(new Diagnostic(Severity.Error, path, null, $"index.md could not be read: {e.Message}", DiagnosticCode.UnparseableIndex));
+            return;
+        }
+
+        OkfDocument doc;
+        try
+        {
+            doc = OkfDocument.Parse(text);
+        }
+        catch (DocumentParseException e)
+        {
+            diagnostics.Add(new Diagnostic(Severity.Error, path, null, $"unparseable index.md: {e.Message}", DiagnosticCode.UnparseableIndex));
+            return;
+        }
+
+        // Entries are checked for EVERY index, before the frontmatter early-return
+        // below. That early-return used to be the first thing after parsing, and a
+        // well-formed index has no frontmatter at all -- so the body of every
+        // conformant index was skipped, and an entry could omit its description
+        // with nothing to say so.
+        CheckIndexEntryDescriptions(bundle, key, path, doc.Body, diagnostics);
+        CheckIndexEntriesAreLinks(path, doc.Body, diagnostics);
+
+        if (doc.Frontmatter.IsEmpty)
+        {
+            return;
+        }
+
+        // Frontmatter is only permitted in the bundle-root index.md, and only
+        // to declare `okf_version` (§12).
+        var isRoot = key.Segments.Count == 1;
+        if (!isRoot)
+        {
+            diagnostics.Add(new Diagnostic(
+                Severity.Error,
+                path,
+                null,
+                "index.md must not contain frontmatter (§8)",
+                DiagnosticCode.IndexHasFrontmatter));
+        }
+        else
+        {
+            var onlyVersion = doc.Frontmatter.AsMapping().Keys.All(k => k == "okf_version");
+            if (!onlyVersion)
             {
                 diagnostics.Add(new Diagnostic(
                     Severity.Error,
                     path,
                     null,
-                    $"log date heading is not ISO-8601 `YYYY-MM-DD`: {DebugQuote.Quote(bad)}",
-                    DiagnosticCode.LogDateInvalid));
+                    "root index.md frontmatter must declare only `okf_version` (§12)",
+                    DiagnosticCode.RootIndexExtraFrontmatter,
+                    "okf_version"));
             }
+
+            var declaredVersion = doc.Frontmatter.Get("okf_version")?.AsDisplayString();
+            if (declaredVersion is not null && !string.Equals(declaredVersion, OkfSpec.Version, StringComparison.Ordinal))
+            {
+                diagnostics.Add(new Diagnostic(
+                    Severity.Warning,
+                    path,
+                    null,
+                    $"declared okf_version {DebugQuote.Quote(declaredVersion)} is not supported; consuming best-effort as v{OkfSpec.Version}",
+                    DiagnosticCode.UnsupportedOkfVersion,
+                    "okf_version"));
+            }
+        }
+    }
+
+    /// <summary>Checks one <c>log.md</c> (§9).</summary>
+    private static void ValidateLog(Bundle bundle, BundleKey key, List<Diagnostic> diagnostics)
+    {
+        var path = BundleDisplayPath.Compose(bundle.Location, key);
+        string text;
+        try
+        {
+            text = bundle.ReadResourceText(key);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
+        {
+            diagnostics.Add(new Diagnostic(Severity.Error, path, null, $"log.md could not be read: {e.Message}", DiagnosticCode.UnparseableLog));
+            return;
+        }
+
+        var log = ChangeLog.Parse(text);
+        foreach (var bad in log.InvalidDates())
+        {
+            diagnostics.Add(new Diagnostic(
+                Severity.Error,
+                path,
+                null,
+                $"log date heading is not ISO-8601 `YYYY-MM-DD`: {DebugQuote.Quote(bad)}",
+                DiagnosticCode.LogDateInvalid));
         }
     }
 

@@ -26,7 +26,7 @@ namespace OKF4net.Agents.Internal;
 /// dictionary, one entry per name. The tool the model calls rejects it before that,
 /// in <see cref="TopLevelDuplicateParameterGuard"/>, with
 /// <see cref="DuplicatePropertyError"/>; a direct C# caller of
-/// <see cref="OkfBundleTools.RunComputationAsync"/> passes a dictionary, which cannot
+/// <see cref="OkfBundleTools.RunComputationAsync"/> (the public, ungated method) passes a dictionary, which cannot
 /// carry one.
 /// </remarks>
 internal static class ParameterValues

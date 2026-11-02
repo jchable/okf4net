@@ -1,8 +1,9 @@
 # OKF4net.Catalog.Hosting
 
 `Microsoft.Extensions.DependencyInjection` integration for the
-[OKF4net.Catalog](https://www.nuget.org/packages/OKF4net.Catalog) local
-knowledge catalog: one extension method, `services.AddKnowledge(...)`, wires
+[OKF4net.Catalog](https://www.nuget.org/packages/OKF4net.Catalog)
+knowledge catalog (local directories, or any storage behind an
+`IBundleProvider` the host registers): one extension method, `services.AddKnowledge(...)`, wires
 a `catalog.json` manifest into your host's `IServiceCollection`.
 
 This package depends on `Microsoft.Extensions.DependencyInjection.Abstractions`
@@ -54,6 +55,16 @@ missing or duplicate `AddCatalogFile` call surfaces right away), but the
 `IKnowledgeCatalog` (or `IKnowledgeResolver`) is actually resolved from the
 container — an invalid manifest surfaces as `CatalogException` from that
 first resolve, not from `AddKnowledge`.
+
+Two more options are handed to the catalog: `KnowledgeOptions.AddProviderFactory(factory)`
+registers the `IBundleProviderFactory` of a `provider` type a `catalog.json`
+source may name (see "Bundle providers and handles" in the
+[OKF4net.Catalog README](https://www.nuget.org/packages/OKF4net.Catalog)), and
+`KnowledgeOptions.RefreshPolicy` sets the refresh policy of every source's
+`BundleHandle` (default `OnAccess`). Both are validated at registration: a
+null policy, or a factory with an empty type, the built-in `filesystem` type or
+a type another factory already claims, throws `ArgumentException` from
+`AddKnowledge`.
 
 ## V1 limits
 

@@ -567,6 +567,85 @@ comme n'importe quelle autre.
   - `MustNotExist`, ou création : `File.Move(temp, dest, overwrite: false)`,
     qui échoue de façon atomique si la destination est apparue entre-temps.
     Cet échec est rendu comme un conflit.
+
+  > **Note du 2026-10-19 (lot B, plan d'implémentation, B17 à B22) :** chaque
+  > primitive a été mesurée avant d'être employée (sondes du plan). Sous Unix,
+  > `File.Move` sans écrasement est un `lstat` puis un `rename` : un autre
+  > **processus** qui crée le nom entre les deux est remplacé ; dans un processus,
+  > le verrou de commit ferme la fenêtre (B20, #178). Sous Windows,
+  > `File.Replace` est atomique pour l'état stocké, pas pour les lecteurs :
+  > pendant le remplacement, un lecteur concurrent peut ne trouver aucun objet
+  > sous le nom ou rencontrer une violation de partage, jamais un objet tronqué
+  > (B17). Le temporaire d'un remplacement est créé en 0600 et prend le mode de
+  > la cible par son handle ; celui d'une création garde le mode par défaut,
+  > faute d'API pour lire l'umask (B18). Un nom que le volume confondrait avec
+  > une entrée stockée est refusé d'après le volume lui-même, pas d'après un
+  > repli de casse (B19) ; une cible que le processus ne peut pas écrire est
+  > refusée comme avant (B22) ; un échec du commit est classé d'après le disque,
+  > et une issue inconnue garde le temporaire (B21).
+
+  > **Note du 2026-10-20 (lot B, revues externes exécutées, B42 à B48) :**
+  > `ReplaceFile` peut aussi échouer **sans effet** (erreur 1175, mesurée deux
+  > fois en 1 500 commits, lecteurs ouverts) : le commit est refait, au plus
+  > trois fois en tout, depuis la re-vérification de la condition sur les octets stockés,
+  > puis échoue avec `BundleWriteNotCommittedException`, la cible intacte (B43).
+  > Une lecture réessaie la fenêtre de `ReplaceFile` (violation de partage, ou
+  > entrée listée un instant plus tôt puis introuvable), sous Windows seulement,
+  > ce qui la rétrécit sans la fermer (B45). Le classement d'un commit échoué
+  > renouvelle la frontière et les gardes STRICT avant toute lecture (B44). Une
+  > écriture inconditionnelle n'exige que le droit d'écrire la cible, comme
+  > `File.WriteAllText` ; seul `IfMatch` la lit (B42). Une notification
+  > `onWriteCommitted` qui échoue après le commit ne fait pas passer l'écriture
+  > pour un échec (B46) : elle s'exécute une seule fois, l'écriture devenue
+  > définitive, hors de toute nouvelle tentative, et rien de ce qu'elle lève
+  > n'est pris pour un refus de l'écriture (B48). La politique de clés couvre
+  > aussi les clés `index.md` que produit `IndexGenerator` (B47).
+
+  > **Note du 2026-10-22 (lot B, revue complète, vague de correctifs) :**
+  > corrige ce que les notes précédentes affirmaient. (1) Une écriture n'exige
+  > pas seulement le droit d'écrire la cible (B42, note du 2026-10-20) : son
+  > temporaire `.okf-write-*.tmp` est créé à côté de la cible et le commit est
+  > un renommage, il faut donc le droit de créer des fichiers dans le dossier de
+  > la cible et d'y renommer ; `File.WriteAllText` n'exigeait que le droit
+  > d'écrire la cible. Mesuré (Linux, utilisateur non privilégié, base contre
+  > tête) : `okf verify B t/orders` avec `t` en 0555 et un fichier inscriptible
+  > sortait 0, sort maintenant 1 avec `error: Access to the path
+  > '…/t/.okf-write-<hex>.tmp' is denied.`, fichier inchangé ; même chose pour
+  > `okf index`, `WriteConcept`, `AppendToConceptAtomic` et `AppendLog` ; sous
+  > Windows, un dossier dont l'ACL refuse à l'utilisateur la création de
+  > fichiers refuse de même ; sous Unix, dans un dossier collant partagé (comme
+  > `/tmp`), un fichier appartenant à un autre utilisateur ne peut pas non plus
+  > être remplacé. Décision du mainteneur : pas de repli en place, qui
+  > rouvrirait les écritures tronquées de #157 ; un bundle dans un dossier non
+  > inscriptible ou collant partagé n'est pas un déploiement supporté pour
+  > l'écriture. (2) La condition d'une écriture n'est vérifiée atomiquement avec
+  > le remplacement qu'**à l'intérieur d'un processus** : le verrou de commit est
+  > un verrou en processus (B20 ne fermait la fenêtre que pour un processus), et
+  > un autre processus peut écrire le même objet entre la dernière vérification
+  > et le commit (#178). Mesuré par la revue, avec deux processus faisant chacun
+  > 150 `AppendLog` / `AppendToConceptAtomic` sur un bundle : sous Linux jusqu'à
+  > 100 ajouts sur 297 déclarés validés étaient perdus ; sous Windows 17 entrées
+  > déclarées validées étaient perdues, avec des erreurs `ReplaceFile`
+  > 1176/1177 (issue inconnue), un log absent un instant et des temporaires
+  > `.okf-write-*.tmp` laissés par une simple contention, pas seulement par un
+  > crash (l'ancien écrivain en place perdait plus d'entrées dans le même test
+  > mais ne laissait jamais de temporaire). Décision du mainteneur : pas de
+  > fichier verrou dans cette branche ; #178 reste le suivi, sans promesse.
+  > (3) Une écriture `IfMatch` dont la racine ou un dossier parent n'existe pas
+  > ne peut pas tenir : elle est refusée en conflit avant de créer quoi que ce
+  > soit ; un objet qui disparaît entre sa résolution et le commit est, sous
+  > `IfMatch`, un conflit, et sous `None` une nouvelle préparation (bornée par
+  > les trois préparations) ou une création, jamais un « introuvable » brut ;
+  > un commit échoué dont le temporaire est encore en place, avec un répertoire
+  > ou une entrée dont on ne peut montrer qu'elle est la version lue (illisible,
+  > par exemple) sous la clé, est un conflit et son temporaire est retiré, pour
+  > une écriture conditionnelle ou une création (un remplacement inconditionnel
+  > garde l'erreur brute) ; `Delete` sous une racine absente
+  > est sans effet quand la condition tient ; les outils de `OkfBundleTools`
+  > oublient leur bundle en cache dès qu'une écriture se termine en `Error:`,
+  > car la notification de commit ne s'exécute pas pour une issue inconnue (B46,
+  > B48).
+
 - **Version d'objet sur le filesystem : SHA-256 du contenu**, pas la date de
   modification, dont la résolution est d'1 à 2 s sur certains systèmes de
   fichiers.
@@ -588,6 +667,13 @@ problème des observations, ci-dessous, que ce design règle.
 
 - API : `WriteConcept` accepte une version attendue **optionnelle** ; sans elle,
   l'écriture est inconditionnelle, comme aujourd'hui.
+
+  > **Note du 2026-10-19 (lot B, B29) :** la version attendue est une
+  > `BundleWriteCondition` (`IfMatch(v)`, `MustNotExist` ou `None`), pas une
+  > `BundleObjectVersion?` : l'observation « absent » (`MustNotExist`) doit
+  > pouvoir atteindre le writer. Les surcharges à trois arguments restent
+  > inconditionnelles.
+
 - Outils agents (D1) : l'écriture est conditionnée à ce que **cette session** a
   observé, d'après son registre (§5.4), et non à l'image courante du handle
   partagé, qu'un autre appel a pu rafraîchir entre-temps. Seule une observation
@@ -784,6 +870,33 @@ changement). Le cœur implémente une fois pour tous les providers :
   comparaison de jeton, jamais un rechargement aveugle (`FileSystemWatcher`
   perd des événements).
 - Aucun outil de rafraîchissement n'est exposé au modèle.
+
+> **Note du 2026-11-02 (lot C, minors m5 et m7, arbitrage du mainteneur : on
+> garde le comportement et on le documente).**
+> **m5 : `Interval(N)` ne réessaie qu'au créneau suivant.** Le tableau ci-dessus
+> dit « au plus toutes les N secondes ». La comparaison qui précède un
+> rechargement compte pour le créneau en cours (`_lastCheck` est posé avant la
+> comparaison) : si le rechargement échoue, l'image précédente est servie
+> périmée (`IsStale`, `LastLoadError`) et la nouvelle tentative n'a lieu qu'à
+> l'accès qui suit l'écoulement de N secondes. `Notify`, lui, réarme son signal
+> après un échec, et réessaie donc à l'accès suivant. Les deux comportements
+> sont voulus et documentés sur `BundleRefreshPolicy.Every`.
+> **m7 : un fichier qui existe sans être un concept est une observation
+> complète.** Le tableau du §5.4 n'enregistre une observation « concept
+> complet » que lorsque `okf_read_concept` rend le concept entier, et « absent »
+> quand il répond « introuvable ». Pour un objet qui existe mais ne s'est pas
+> chargé en concept (frontmatter non fermé, YAML invalide), l'outil le décrit (« existe mais ne peut pas être lu
+> comme concept ») et, quand l'image en connaît la version, l'enregistre comme
+> lu en entier à cette version : la réparation est alors une réécriture
+> `IfMatch`. L'enregistrer « absent » rendrait la création `MustNotExist`
+> refusée par le stockage, pour toujours. Un objet sans version dans l'image
+> (trop gros) n'enregistre rien et n'est pas réécrivable par l'outil ; un
+> `index.md` ou un journal n'enregistre rien non plus. C'est un écart assumé
+> avec la lettre du tableau, pas avec la spec OKF : il se consigne ici, non
+> dans `docs/spec-conformance/`.
+> **Exception brute d'un provider hôte.** Voir la note du 2026-11-02 du §9 : le
+> handle la range dans une `BundleLoadException` ; l'image précédente est
+> servie périmée, et `Notify` réarme son signal.
 
 **5.4 Observations et épinglage du code exécuté** (D1 : « n'agir que sur ce
 qu'on a vu » ; D5).
@@ -1019,6 +1132,24 @@ la source l'est. `catalog.json` est de la configuration d'opérateur.
 | `okf-mcp` | reste filesystem (`OKF_BUNDLE_ROOT`). Sa découverte de bundle (`OkfBundleDiscovery.ReadRootIndexOrNull`) lit l'`index.md` racine **avec la borne de 16 Mio** : au-delà, l'index est traité comme illisible, donc « aucune version déclarée », comme aujourd'hui pour une erreur de lecture |
 | `producers/` | une recherche n'y trouve aucun usage des membres qui changent, mais une recherche ne prouve rien : la vérification est la compilation et les tests de `producers/OkfProducer.sln` en local |
 
+> **Note du 2026-10-19 (lot B, plan d'implémentation) :** `BundleConceptWriter`
+> rend tout refus d'un chemin par le provider avec le message de son ancienne
+> garde de point de reparse : ses deux messages (le chemin, l'entrée cible)
+> n'en font plus qu'un, puisque le provider ne les distingue pas (B32), et ses
+> essais lire-modifier-écrire tournent sous son verrou (B30). `IndexGenerator`
+> référence un sous-dossier dès qu'un objet, de n'importe quelle extension, se
+> trouve sous lui (§11) ; la création d'un `index.md` passe le contrôle
+> d'arborescence comme toute création du cœur ; la surcharge `string` saute en
+> silence un `index.md` que le provider refuse (un lien sur son chemin) et un
+> `index.md` racine illisible, et lève toute autre erreur, dont
+> `BundleWriteConflictException` (`NameUnavailable`) pour un nom que le
+> stockage ne peut pas porter : un dossier nommé `index.md` qui contient des
+> fichiers et, sur un volume qui plie la casse, un fichier dont le nom ne
+> diffère de `index.md` que par la casse (décision du mainteneur, 2026-10-21 :
+> échec fermé, ce fichier n'est jamais écrit à travers ; une omission
+> silencieuse laisserait l'`index.md` du dossier non écrit sans signal). Les
+> remarques « Failures » de `RegenerateIndexesWith` donnent le reste.
+
 **`BundleRoot` d'`OkfBundleTools` et de `BundleConceptWriter`.** Ces propriétés
 publiques renvoient une chaîne de chemin, ce qui n'a pas de sens pour un provider
 distant.
@@ -1068,6 +1199,81 @@ sources mémoire. Désormais :
 - **Les sources mémoire** restent de type `filesystem` et sont résolues comme
   aujourd'hui. Une source mémoire d'un autre type est rejetée avec un
   diagnostic, puisque la mémoire distante est hors périmètre.
+
+> **Note du 2026-11-02 (lot D, plan d'implémentation, décisions L1 à L14).**
+> Les handles vivent sur l'instantané (`KnowledgeCatalogSnapshot.Handles`,
+> vide pour un instantané construit à la main ou par le parseur : les
+> resolvers retombent alors sur la résolution du chemin à chaque requête,
+> comme avant). La configuration effective comparée pour réutiliser un handle
+> est (type de provider, répertoire résolu, `settings`, politique de
+> rafraîchissement, `BundleLoadOptions`) ; la frontière de confinement est
+> toujours la racine du catalogue, donc hors de la clé. Les fabriques sont
+> `IBundleProviderFactory` (`ProviderType`, `AcceptedSettings`, `Create`),
+> enregistrées dans `KnowledgeCatalogOptions.ProviderFactories` ; `filesystem`
+> ne peut pas l'être, et une fabrique mal enregistrée (type vide, `filesystem`,
+> deux fabriques pour un type) est refusée à l'enregistrement. Un
+> `KnowledgeCatalogSource` gagne `ProviderType` et `Settings` en propriétés
+> `init` (pas de rupture) ; son `Path` est vide, et refusé s'il est présent
+> (`IllegalPath`), hors `filesystem`. Les sept nouveaux codes de
+> `CatalogDiagnosticCode` sont **ajoutés à la fin** : les valeurs livrées
+> (0 à 18) ne bougent pas, ce n'est pas une rupture, et l'ordre des
+> diagnostics d'un manifeste sans `provider` ni `settings` est celui d'avant.
+> Un provider dont l'`Id` est vide, ou dont la fabrique, la politique de la
+> source ou le handle lèvent, rejette le chargement en `ProviderUnavailable`,
+> par le nom du type de l'exception seul. Le constructeur
+> `OkfBundleKnowledgeSource(string, string)` crée son propre handle en
+> `OnAccess` (une source de catalogue par nature : le rechargement à chaque
+> appel devient une comparaison de jeton, faible pour un répertoire), et
+> lève dès la construction pour un identifiant nul ou un répertoire nul ou
+> vide. La déduplication par `IBundleProvider.Id` fusionne aussi deux graphies
+> qui ne diffèrent que par un séparateur final (pas les variantes de casse ni
+> les noms 8.3). Le §11 « refusée au prochain accès » pour une racine
+> remplacée par une jonction est appliqué selon le §5.2 : la lecture du jeton
+> est refusée, le rechargement échoue, l'image précédente est servie périmée
+> (`IsStale`, `LastLoadError` enveloppant `BundleAccessRefusedException`) et
+> rien sous la jonction n'est lu. Cette source est alors signalée par un
+> nouveau `KnowledgeDiagnosticCode.SourceStale` (ajouté à la fin, valeur 4),
+> avec ses passages, le message nommant le type de l'exception seul ; seule une
+> source dont le **premier** chargement échoue reste `SourceUnavailable`.
+> Une exception qui n'est ni une `BundleProviderException`, ni une
+> `IOException`, ni une `UnauthorizedAccessException`, levée par un provider
+> hôte pendant un chargement ou une lecture du jeton (le premier chargement
+> compris), est un échec de chargement comme les autres : `BundleHandle` la
+> range dans une `BundleLoadException` dont le message ne nomme que son type
+> (correctif du 2026-11-02 ; la première version de ce lot la laissait sortir
+> du handle, et un signal `Notify` ou un créneau `Interval` déjà consommé
+> laissait ensuite servir l'image périmée comme courante). Une source déjà
+> chargée est donc servie périmée et signalée `SourceStale`, une source dont
+> le premier chargement échoue est `SourceUnavailable`, toujours par le nom du
+> type de l'exception seul, et les autres sources sont cherchées ;
+> l'annulation du jeton de l'appelant se propage toujours (celle que lève le
+> provider lui-même, un délai dépassé par exemple, est un échec de provider
+> comme les autres : le handle ne tient aucun jeton). Seule
+> `OutOfMemoryException` traverse le handle.
+>
+> **Suppression d'un scope : décision 14 précisée.** Un scope existe s'il
+> contient une clé, et la suppression retire chaque objet par le provider,
+> sans condition. Mais « les dossiers vides laissés n'ont aucun effet » ne
+> vaut que pour l'existence : les noms de dossiers portent les identifiants
+> de tenant, d'utilisateur et de session en minuscules, et
+> `DeleteScopeAsync` est le chemin d'effacement documenté. Une fois tous les
+> objets supprimés, `FileMemoryStore` retire donc les dossiers du scope devenus
+> vides, du bas vers le haut, par un `Directory.Delete` non récursif, la garde
+> STRICT étant rejouée sur le dossier et chacun de ses ancêtres juste avant
+> chaque listage et chaque suppression, sur 64 niveaux au plus sous le dossier
+> du scope. Un dossier qui ne peut pas l'être (un lien, un fichier que le
+> provider n'a pas listé, un arbre plus profond) est un échec sous le préfixe
+> du scope et le tier n'est pas `Succeeded`. C'est **la seule suppression
+> directe qui reste** dans `OKF4net.Catalog` : la couture n'a pas de
+> suppression de dossier (§8), et une suppression de dossier au niveau du
+> provider la ferait disparaître. Les dossiers **parents** du scope supprimé
+> restent et portent encore les identifiants des niveaux supérieurs
+> (`memory-session/<tenant>-<hash>/<user>-<hash>/` après les sessions d'un
+> utilisateur, `memory-user/<tenant>-<hash>/` après le dernier) : on ne promet
+> pas l'effacement complet d'un identifiant. Un scope dont le listage échoue
+> est rapporté comme donnée (un diagnostic en lecture, rien en énumération,
+> un échec en suppression sans rien supprimer), par le nom du type de
+> l'exception seul : le texte du runtime peut nommer un chemin de l'hôte (#211).
 
 **Catalog : nommer un provider dans `catalog.json`.** Une source peut porter
 `"provider": "<type>"` et un objet `"settings"`. Le type `filesystem` reste le
@@ -1138,6 +1344,32 @@ l'arbitrage du 2026-10-08).
     seulement enrichi.
 
   La migration asynchrone (#152) sera un second changement cassant, accepté.
+
+  > **Note du 2026-11-02 (lot D).** Les membres fondés sur les chemins ne sont
+  > pas retirés dans ce lot mais marqués `[Obsolete]` (avertissement, jamais
+  > erreur, message nommant le remplaçant), comme `BundleRoot` : `Bundle.Root`,
+  > `IndexFiles`, `LogFiles`, `ParseErrors`, `TryResolveResource`,
+  > `ReadResourceText(string)` et les deux `BundleRoot` ; leur retrait va avec
+  > #152. `Concept.Path`, `Diagnostic.Path` et `AuditFinding.Path` restent, à
+  > côté d'une `Key` ajoutée (`Diagnostic.Key`, `AuditFinding.Key`) : ce sont
+  > la projection d'affichage du §8 que chaque sortie imprime. La décision 12
+  > est donc révisée : `Path` ne devient pas `Key`, les deux coexistent. La
+  > `Key` est posée là où chaque constat est construit, jamais retrouvée à
+  > partir du chemin affiché, que deux noms distincts peuvent partager ; elle
+  > est `null` pour un constat construit à la main et pour un nom que le
+  > chargement a refusé (politique de clés, collision) ou qui n'est pas une
+  > clé, mais un nom `.md` trop long reçoit la sienne. Comme `Key` est une
+  > propriété `init` hors de la liste positionnelle, l'égalité synthétisée des
+  > deux enregistrements la **compte** désormais : comparer un constat du
+  > validateur ou de l'audit à un `new Diagnostic(…)` construit à la main donne
+  > `false` si `Key` diffère. Les ruptures effectives de ce lot sont
+  > `MemoryDeleteResult` et la signature de `IMemoryStore.DeleteScopeAsync`,
+  > cette égalité, et la migration manuelle d'un dossier de scope mémoire
+  > d'avant D4 (sous Linux et macOS : un copier à la main). Les membres
+  > obsolètes ne sont pas une rupture, seulement des avertissements ;
+  > `KnowledgeCatalogSource` gagne ses réglages en propriétés `init`, et
+  > `CatalogDiagnosticCode` et `KnowledgeDiagnosticCode` de nouveaux membres
+  > ajoutés à la fin, sans rupture.
 - **Comportement, filesystem compris** :
   - bornes finies par défaut (§6). La borne d'entrées compte **toutes** les
     entrées, `.git` et `node_modules` compris (§2) : un très gros dossier peut
@@ -1195,6 +1427,23 @@ l'arbitrage du 2026-10-08).
 - **Inchangé** :
   - les octets de sortie de `okf` et `okf-render`, hors dossiers vides dans un
     index régénéré ;
+
+    > **Note du 2026-10-19 (lot B, complétée le 2026-10-21) :** et hors les
+    > autres cas consignés au CHANGELOG, dont : un dossier dont les seules
+    > entrées sont des liens symboliques ou des jonctions n'est plus référencé
+    > non plus (aucun listing ne suit un lien) ; un dossier nommé `index.md` qui
+    > contient des fichiers fait échouer `okf index` avec
+    > `BundleWriteConflictException` au lieu de `UnauthorizedAccessException`
+    > (message d'erreur différent, même code de sortie) ; et, sur un volume qui
+    > plie la casse (NTFS, le volume macOS par défaut), un fichier dont le nom ne
+    > diffère de `index.md` que par la casse (`Index.md` à la racine ou dans un
+    > sous-dossier) le fait échouer de la même façon, code de sortie 1, là où
+    > l'ancienne écriture réussissait en l'écrasant (après l'avoir listé comme
+    > document dans son propre index). C'est voulu : échec fermé, ce fichier
+    > n'est jamais écrit à travers. Les remarques « Failures » de
+    > `RegenerateIndexesWith` donnent le reste de ce que lève la surcharge
+    > `string`.
+
   - aucun nom de fichier de `tests/fixtures/` ni de `bundles/` n'est écarté par
     `Strict` (vérifié le 2026-10-06 sur 146 entrées, soit 99 fichiers et 47
     répertoires : ni `:`, ni `.` ou espace final, ni nom réservé, ni caractère

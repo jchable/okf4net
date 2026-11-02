@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Text;
 using OKF4net.Internal;
+using OKF4net.Providers;
 
 namespace OKF4net.Catalog;
 
@@ -48,12 +49,32 @@ namespace OKF4net.Catalog;
 /// should call <see cref="ReloadAsync"/> explicitly rather than rely on the
 /// watcher.
 /// </para>
+/// <para>
+/// <b>The snapshot owns the handles</b> (spec §5.2, §9). Each published snapshot carries one
+/// <see cref="BundleHandle"/> per enabled knowledge source (<see cref="KnowledgeCatalogSnapshot.Handles"/>),
+/// built by the source's provider — the built-in filesystem one, confined to
+/// <see cref="KnowledgeCatalogOptions.CatalogRoot"/> and re-checked against it before every
+/// access, or the factory registered for the source's <c>provider</c> — under
+/// <see cref="KnowledgeCatalogOptions.LoadOptions"/> and the source's refresh policy
+/// (<see cref="KnowledgeCatalogOptions.RefreshPolicy"/>, <see cref="BundleRefreshPolicy.OnAccess"/>
+/// by default). A reload reuses a source's handle, image included, only when its effective
+/// configuration is identical in every point (provider type, resolved directory, settings,
+/// refresh policy, load options); any difference, a changed <c>path</c> for instance, builds
+/// a new handle and the old one is no longer served by the new snapshot. A handle that
+/// leaves the catalog is disposed (which only ends its change subscription: a request still
+/// holding the old snapshot keeps reading its image); <see cref="Dispose"/> disposes them all.
+/// A rejected reload builds nothing that outlives it and keeps every current handle.
+/// </para>
 /// </remarks>
 public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
 {
     private readonly KnowledgeCatalogOptions _options;
     private readonly string _manifestDirectory;
+    private readonly Dictionary<string, IBundleProviderFactory> _factories;
     private readonly Lock _gate = new();
+
+    /// <summary>The effective configuration each current handle was built for, by source id (guarded by <see cref="_gate"/>).</summary>
+    private Dictionary<string, HandleConfiguration> _handleConfigurations = new(StringComparer.Ordinal);
     private readonly FileSystemWatcher? _watcher;
     private readonly Timer? _debounceTimer;
 
@@ -74,17 +95,25 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
     /// not be read, parsed, or path-validated. The exception message
     /// aggregates every underlying <see cref="CatalogDiagnostic"/>.
     /// </exception>
+    /// <exception cref="ArgumentException">
+    /// <see cref="KnowledgeCatalogOptions.ProviderFactories"/> holds two factories for one
+    /// provider type, or one for the built-in <c>filesystem</c> type: a host configuration
+    /// error, refused before any manifest is read.
+    /// </exception>
     public FileKnowledgeCatalog(KnowledgeCatalogOptions options)
     {
+        ArgumentNullException.ThrowIfNull(options);
         _options = options;
         _manifestDirectory = GetManifestDirectory(options.CatalogFilePath);
+        _factories = IndexFactories(options.ProviderFactories);
 
-        if (!TryLoadSnapshot(out var snapshot, out var diagnostics))
+        if (!TryLoadSnapshot(previous: null, out var snapshot, out var configurations, out var diagnostics))
         {
             throw new CatalogException(FormatDiagnostics(diagnostics));
         }
 
         _current = snapshot! with { Generation = 1 };
+        _handleConfigurations = configurations!;
 
         if (options.WatchForChanges)
         {
@@ -103,6 +132,15 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
             catch
             {
                 _debounceTimer.Dispose();
+
+                // The handles of the snapshot just built are the constructor's own: a caller
+                // never receives an instance to dispose, so a Notify handle's change
+                // subscription would outlive the failed construction.
+                foreach (var handle in _current.Handles.Values)
+                {
+                    DisposeQuietly(handle);
+                }
+
                 throw;
             }
         }
@@ -159,22 +197,26 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
                 return new ValueTask<KnowledgeCatalogSnapshot>(_current);
             }
 
-            if (!TryLoadSnapshot(out var snapshot, out var diagnostics))
+            if (!TryLoadSnapshot(_current, out var snapshot, out var configurations, out var diagnostics))
             {
                 _lastReloadDiagnostics = diagnostics;
                 return new ValueTask<KnowledgeCatalogSnapshot>(_current);
             }
 
+            var previous = _current;
             _current = snapshot! with { Generation = _current.Generation + 1 };
+            _handleConfigurations = configurations!;
             _lastReloadDiagnostics = [];
+            DisposeHandlesLeft(previous, _current);
             return new ValueTask<KnowledgeCatalogSnapshot>(_current);
         }
     }
 
     /// <summary>
-    /// Stops the watcher and debounce timer (if any) and prevents any future
-    /// reload from applying. Cancellation-safe (never leaves a torn snapshot)
-    /// and idempotent -- safe to call more than once.
+    /// Stops the watcher and debounce timer (if any), disposes the current snapshot's
+    /// handles (their change subscriptions end; an image already handed out stays readable)
+    /// and prevents any future reload from applying. Cancellation-safe (never leaves a torn
+    /// snapshot) and idempotent -- safe to call more than once.
     /// </summary>
     public void Dispose()
     {
@@ -188,11 +230,167 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
             _disposed = true;
             _watcher?.Dispose();
             _debounceTimer?.Dispose();
+            foreach (var handle in _current.Handles.Values)
+            {
+                DisposeQuietly(handle);
+            }
         }
     }
 
-    private bool TryLoadSnapshot(out KnowledgeCatalogSnapshot? snapshot, out IReadOnlyList<CatalogDiagnostic> diagnostics)
+    /// <summary>
+    /// Disposes a handle, swallowing a non-fatal failure: a provider's subscription may throw
+    /// from its own dispose, and one such failure must neither leave the other handles
+    /// subscribed nor turn an already published reload, or a disposal, into a failure.
+    /// </summary>
+    private static void DisposeQuietly(BundleHandle handle)
     {
+        try
+        {
+            handle.Dispose();
+        }
+        catch (Exception e) when (e is not OutOfMemoryException)
+        {
+            // Swallowed intentionally: see the summary.
+        }
+    }
+
+    /// <summary>
+    /// The effective configuration a source's handle was built for (spec §9): a handle is
+    /// reused across reloads only when every point is equal, so a changed <c>path</c> (its
+    /// resolved directory), setting, policy or option rebuilds it. Every handle is built with
+    /// the catalog's one <see cref="KnowledgeCatalogOptions.LoadOptions"/> instance, which is
+    /// why comparing the record is stable from one reload to the next.
+    /// </summary>
+    private sealed record HandleConfiguration(string ProviderType, string? ResolvedDirectory, ProviderSettings Settings, BundleRefreshPolicy RefreshPolicy, BundleLoadOptions LoadOptions);
+
+    /// <summary>Disposes the handles of <paramref name="previous"/> that <paramref name="current"/> does not serve any more.</summary>
+    private static void DisposeHandlesLeft(KnowledgeCatalogSnapshot previous, KnowledgeCatalogSnapshot current)
+    {
+        foreach (var (id, handle) in previous.Handles)
+        {
+            if (!current.Handles.TryGetValue(id, out var kept) || !ReferenceEquals(kept, handle))
+            {
+                DisposeQuietly(handle);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Builds the handles of <paramref name="snapshot"/>'s enabled knowledge sources, reusing
+    /// a handle of <paramref name="previous"/> whose effective configuration is unchanged.
+    /// On failure nothing created here survives: the handles built so far are disposed and
+    /// every current handle is untouched.
+    /// </summary>
+    private bool TryBuildHandles(
+        KnowledgeCatalogSnapshot snapshot,
+        KnowledgeCatalogSnapshot? previous,
+        IReadOnlyDictionary<string, string> resolvedDirectories,
+        out IReadOnlyDictionary<string, BundleHandle>? handles,
+        out Dictionary<string, HandleConfiguration>? configurations,
+        out IReadOnlyList<CatalogDiagnostic> diagnostics)
+    {
+        var built = new Dictionary<string, BundleHandle>(StringComparer.Ordinal);
+        var created = new List<BundleHandle>();
+        var keys = new Dictionary<string, HandleConfiguration>(StringComparer.Ordinal);
+        var problems = new List<CatalogDiagnostic>();
+
+        foreach (var source in snapshot.Sources)
+        {
+            if (!source.Enabled || source.Role != SourceRole.Knowledge)
+            {
+                continue;
+            }
+
+            BundleRefreshPolicy policy;
+            try
+            {
+                policy = _options.RefreshPolicyFor?.Invoke(source) ?? _options.RefreshPolicy;
+            }
+            catch (Exception e) when (e is not OutOfMemoryException)
+            {
+                // Host code (the per-source policy callback): translated like a factory's
+                // failure, by type name only (spec §7).
+                problems.Add(new CatalogDiagnostic(
+                    CatalogDiagnosticCode.ProviderUnavailable,
+                    $"Source '{source.Id}' provider '{source.ProviderType}' could not be created ({e.GetType().Name})."));
+                continue;
+            }
+
+            var configuration = new HandleConfiguration(
+                source.ProviderType,
+                source.IsFileSystem ? resolvedDirectories[source.Id] : null,
+                source.Settings,
+                policy,
+                _options.LoadOptions);
+
+            if (previous is not null
+                && previous.Handles.TryGetValue(source.Id, out var existing)
+                && _handleConfigurations.TryGetValue(source.Id, out var existingConfiguration)
+                && existingConfiguration == configuration)
+            {
+                built[source.Id] = existing;
+                keys[source.Id] = configuration;
+                continue;
+            }
+
+            try
+            {
+                var provider = source.IsFileSystem
+                    ? new FileSystemBundleProvider(resolvedDirectories[source.Id], confinementBoundary: _options.CatalogRoot)
+                    : _factories[source.ProviderType].Create(source);
+
+                // The resolvers dedup on this id: a host provider's null or blank one is
+                // refused here, at the one place a provider enters the catalog, so no search
+                // ever throws on it. A getter that throws is translated below, by type name.
+                if (string.IsNullOrWhiteSpace(provider.Id))
+                {
+                    problems.Add(new CatalogDiagnostic(
+                        CatalogDiagnosticCode.ProviderUnavailable,
+                        $"Source '{source.Id}' provider '{source.ProviderType}' could not be created (the provider reports an empty id)."));
+                    continue;
+                }
+
+                var handle = new BundleHandle(provider, _options.LoadOptions, policy);
+                created.Add(handle);
+                built[source.Id] = handle;
+                keys[source.Id] = configuration;
+            }
+            catch (Exception e) when (e is not OutOfMemoryException)
+            {
+                // Translated (spec §7): the factory's own text may name a bucket or an endpoint,
+                // which stays with the host's log, never in a diagnostic a consumer may print.
+                problems.Add(new CatalogDiagnostic(
+                    CatalogDiagnosticCode.ProviderUnavailable,
+                    $"Source '{source.Id}' provider '{source.ProviderType}' could not be created ({e.GetType().Name})."));
+            }
+        }
+
+        if (problems.Count > 0)
+        {
+            foreach (var handle in created)
+            {
+                DisposeQuietly(handle);
+            }
+
+            handles = null;
+            configurations = null;
+            diagnostics = problems.AsReadOnly();
+            return false;
+        }
+
+        handles = new System.Collections.ObjectModel.ReadOnlyDictionary<string, BundleHandle>(built);
+        configurations = keys;
+        diagnostics = [];
+        return true;
+    }
+
+    private bool TryLoadSnapshot(
+        KnowledgeCatalogSnapshot? previous,
+        out KnowledgeCatalogSnapshot? snapshot,
+        out Dictionary<string, HandleConfiguration>? configurations,
+        out IReadOnlyList<CatalogDiagnostic> diagnostics)
+    {
+        configurations = null;
         string json;
         try
         {
@@ -260,16 +458,49 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
         }
 
         var pathDiagnostics = new List<CatalogDiagnostic>();
+        var resolvedDirectories = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var source in snapshot!.Sources)
         {
-            if (!source.Enabled)
+            // A filesystem source's path is checked as before (an enabled source only); another
+            // provider type needs a registered factory that accepts every setting the source
+            // carries (spec §9). The settings allowlist depends on host configuration only, so
+            // it is checked for a disabled source too whenever a factory exists for its type; a
+            // disabled source naming a type with no factory stays accepted (the host may
+            // register it, or enable the source, later).
+            if (source.IsFileSystem)
             {
-                continue;
+                if (source.Enabled)
+                {
+                    if (!CatalogPathResolver.TryResolve(_options.CatalogRoot, _manifestDirectory, source.Path, out var resolved, out var pathDiagnostic))
+                    {
+                        pathDiagnostics.Add(pathDiagnostic!);
+                    }
+                    else
+                    {
+                        resolvedDirectories[source.Id] = resolved!;
+                    }
+                }
             }
-
-            if (!CatalogPathResolver.TryResolve(_options.CatalogRoot, _manifestDirectory, source.Path, out _, out var pathDiagnostic))
+            else if (!_factories.TryGetValue(source.ProviderType, out var factory))
             {
-                pathDiagnostics.Add(pathDiagnostic!);
+                if (source.Enabled)
+                {
+                    pathDiagnostics.Add(new CatalogDiagnostic(
+                        CatalogDiagnosticCode.UnknownProvider,
+                        $"Source '{source.Id}' names the provider '{source.ProviderType}', for which no factory is registered (KnowledgeCatalogOptions.ProviderFactories)."));
+                }
+            }
+            else
+            {
+                foreach (var name in source.Settings.Keys)
+                {
+                    if (!factory.AcceptedSettings.Contains(name))
+                    {
+                        pathDiagnostics.Add(new CatalogDiagnostic(
+                            CatalogDiagnosticCode.IllegalSetting,
+                            $"Source '{source.Id}' carries the setting '{name}', which the '{source.ProviderType}' provider does not accept."));
+                    }
+                }
             }
         }
 
@@ -287,6 +518,13 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
             return false;
         }
 
+        if (!TryBuildHandles(snapshot, previous, resolvedDirectories, out var handles, out configurations, out diagnostics))
+        {
+            snapshot = null;
+            return false;
+        }
+
+        snapshot = snapshot with { Handles = handles! };
         return true;
     }
 
@@ -353,12 +591,53 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
         }
     }
 
-    private void FireDebouncedReload(object? state) => _ = ReloadAsync();
+    private void FireDebouncedReload(object? state)
+    {
+        // Runs on a timer thread with no caller to observe an exception: one thrown by host
+        // code (a policy callback, a factory) must not terminate the process, exactly as in
+        // OnCatalogFileEvent. A rejected load reaches LastReloadDiagnostics (ReloadAsync records
+        // it); an exception thrown by host code is swallowed here, silently.
+        try
+        {
+            _ = ReloadAsync();
+        }
+        catch (Exception e) when (e is not OutOfMemoryException)
+        {
+            // Swallowed intentionally: see above.
+        }
+    }
 
     private static string GetManifestDirectory(string catalogFilePath)
     {
         var full = Path.GetFullPath(catalogFilePath);
         return Path.GetDirectoryName(full) ?? full;
+    }
+
+    /// <summary>The factories by provider type; a duplicate type or the built-in <c>filesystem</c> type is a configuration error.</summary>
+    private static Dictionary<string, IBundleProviderFactory> IndexFactories(IReadOnlyList<IBundleProviderFactory> factories)
+    {
+        ArgumentNullException.ThrowIfNull(factories);
+        var indexed = new Dictionary<string, IBundleProviderFactory>(StringComparer.Ordinal);
+        foreach (var factory in factories)
+        {
+            ArgumentNullException.ThrowIfNull(factory, nameof(factories));
+            if (string.IsNullOrEmpty(factory.ProviderType))
+            {
+                throw new ArgumentException("a provider factory needs a non-empty ProviderType", nameof(factories));
+            }
+
+            if (string.Equals(factory.ProviderType, KnowledgeCatalogSource.FileSystemProviderType, StringComparison.Ordinal))
+            {
+                throw new ArgumentException($"the provider type '{KnowledgeCatalogSource.FileSystemProviderType}' is built in and cannot be registered", nameof(factories));
+            }
+
+            if (!indexed.TryAdd(factory.ProviderType, factory))
+            {
+                throw new ArgumentException($"two provider factories claim the type '{factory.ProviderType}'", nameof(factories));
+            }
+        }
+
+        return indexed;
     }
 
     private static string FormatDiagnostics(IReadOnlyList<CatalogDiagnostic> diagnostics) =>

@@ -35,7 +35,7 @@ public sealed record GenerateOptions
     /// That parting is not an oversight, it is §4.3 applied twice with different inputs. A
     /// repo-relative path names a file in the <i>repository</i>, not in the <i>bundle</i>: the
     /// validator resolves a bare relative <c>resource</c> from the bundle root
-    /// (<c>Bundle.TryResolveResource</c>, §6.2), so <c>src/Links.cs</c> carried by
+    /// (<c>Bundle.TryResolveResourceKey</c>, §6.2), so <c>src/Links.cs</c> carried by
     /// <c>code/csharp/okf4net/link-scanner/scan.md</c> is looked for under
     /// <c>&lt;bundle&gt;/src/Links.cs</c> -- a miss, and one
     /// <c>FrontmatterPathMissing</c> warning apiece. Omitting the field costs exactly the same number

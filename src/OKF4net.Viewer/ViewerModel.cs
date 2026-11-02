@@ -67,7 +67,7 @@ public sealed record ViewerPageHead(
 public sealed record ViewerLink(string RawTarget, string Href, bool Exists);
 
 /// <summary>One unparseable file, surfaced on the generated index page.</summary>
-/// <param name="Path">The offending file's path.</param>
+/// <param name="Path">The offending file's display path (<see cref="Bundle.DisplayPath"/>: the location, then the name with the OS separator).</param>
 /// <param name="Error">The parse error reported by <see cref="Bundle"/>.</param>
 public sealed record ViewerParseError(string Path, string Error);
 
@@ -100,7 +100,7 @@ public sealed record ViewerPage(
 }
 
 /// <summary>The whole generated site, as a pure model.</summary>
-/// <param name="BundleRoot">The source bundle's root directory.</param>
+/// <param name="BundleRoot">The source bundle's displayable location (<c>Bundle.Location</c>: the root directory of a filesystem bundle, as given).</param>
 /// <param name="Pages">One entry per concept.</param>
 /// <param name="IndexMarkdown">The index page's markdown, rendered by the same client-side path as concept bodies.</param>
 /// <param name="ParseErrors">Files the bundle could not parse.</param>

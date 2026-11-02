@@ -384,7 +384,10 @@ public class OkfBundleToolsTests
         var result = tools.GetComputation("c/rev");
 
         Assert.DoesNotContain("OUTSIDE-THE-BUNDLE", result, StringComparison.Ordinal);
-        Assert.Contains("Error: computation file 'x/y/secret.sql' could not be read: ", result, StringComparison.Ordinal);
+        // Refused at the resolution since lot C (the provider cannot list "x" once the
+        // junction denies it, so the key is Missing) or at the read: either way nothing
+        // outside the bundle is shown.
+        Assert.Contains("Error: computation file 'x/y/secret.sql' could not be re", result, StringComparison.Ordinal);
     }
 
     [SkippableFact]
@@ -392,9 +395,14 @@ public class OkfBundleToolsTests
     {
         // H1 fix round (M1): "log.md" is a junction named like the log, whose
         // attributes cannot be read (the bundle root denies listing). Only the
-        // early check on log.md itself refuses it with this message. (Not an
-        // escape: without it the late strict check, or the OS refusing to write
-        // a file over a directory, still refuses.)
+        // early check on log.md itself refuses it. (Not an escape: without it
+        // the late strict check, or the OS refusing to write a file over a
+        // directory, still refuses.) Since log.md is written by
+        // BundleConceptWriter.AppendLog through the provider (lot B), that early
+        // check is the provider's STRICT check of the whole path, and every
+        // refused path is one BundleAccessRefusedException, translated into the
+        // writer's one reparse-point message (decision B15): the former "is a
+        // reparse point ... refusing to write through it" wording is gone.
         using var tmp = new TempDir();
         using var external = new TempDir();
         var tools = new OkfBundleTools(tmp.Path);
@@ -403,7 +411,7 @@ public class OkfBundleToolsTests
 
         var result = tools.AppendLog("Update", "entry");
 
-        Assert.Equal("Error: log.md is a reparse point (symlink/junction) or could not be inspected, not a regular file -- refusing to write through it.", result);
+        Assert.Equal("Error: log.md resolves through a reparse point (symlink/junction), or an entry that could not be inspected, inside the bundle, which is not allowed.", result);
         Assert.Empty(Directory.EnumerateFileSystemEntries(external.Path));
     }
 
@@ -494,7 +502,9 @@ public class OkfBundleToolsTests
     {
         using var tmp = new TempDir();
         var dir = "sub" + LineSeparator + "FORGED";
-        Directory.CreateDirectory(Path.Combine(tmp.Path, dir));
+        // A concept inside: a directory is a prefix of the key space, which exists while an
+        // object lies under it (spec §2, D2) -- an empty one is "not found" since lot C.
+        tmp.Write(dir + "/a.md", "---\ntype: Note\ntitle: A\ndescription: a.\n---\n\nA.\n");
 
         var rendered = new OkfBundleTools(tmp.Path).Browse(dir);
 

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Collections.Concurrent;
+using System.Globalization;
 using OKF4net.Internal;
+using OKF4net.Providers;
 using OKF4net.Yaml;
 
 namespace OKF4net;
@@ -28,35 +30,61 @@ public readonly record struct VerificationRecord(string ConceptId, string At, st
 /// false while <see cref="Records"/> lists the concepts whose write returned
 /// successfully, and <see cref="Message"/> names them.
 ///
-/// <b>The precise scope of that list.</b> An entry means "this file's write
-/// call completed", which is stronger than "was validated" (the reason
-/// <c>Records</c> is built in the write loop, not the prepare loop) and
-/// weaker than "the file on disk is now exactly one of these two versions".
-/// The underlying primitive is <see cref="File.WriteAllText(string, string?, System.Text.Encoding)"/>,
-/// which truncates and writes IN PLACE, so a failure part-way through one
-/// file — a full disk, a device error — can leave that file truncated or
-/// half-written while <c>Records</c> omits it, having never returned. That is
-/// a property of the write primitive shared by EVERY write path in this class,
-/// not something verification introduced; closing it needs write-then-rename,
-/// which has to be designed against the reparse-point guard and the bundle
-/// lock it sits between (issue #157). Until then, the honest reading of a
-/// failed batch is: the concepts listed are stamped, the ones after them were
-/// not written, and the one it stopped on is unknown — re-run it, or check
-/// that file.
+/// <b>The precise scope of that list.</b> An entry means "this concept's write
+/// was committed", which is stronger than "was validated" (the reason
+/// <c>Records</c> is built in the write loop, not the prepare loop). Each
+/// write is atomic per object (<see cref="Providers.IBundleProvider.Write"/>,
+/// issue #157): the concept the batch stopped on holds its whole previous
+/// content, unless the provider reported an outcome it could not establish
+/// (<see cref="Providers.BundleWriteOutcomeUnknownException"/>), which the
+/// message then says. The honest reading of a failed batch is: the concepts
+/// listed are stamped, the one it stopped on is named in the message, and the
+/// ones after it were not attempted — re-run the batch, which is safe: a stamp
+/// already there is replaced, never duplicated.
+///
+/// <b>A write notification that fails</b> (the <c>onWriteCommitted</c> callback
+/// throwing an exception the writer converts: an I/O error, an <see cref="OkfException"/>,
+/// a conflict raised by another operation included) is not a failed write: the
+/// concept is on disk, so it is in <see cref="Records"/>, and the batch goes on.
+/// <see cref="Recorded"/> stays true when every stamp is on disk; <see cref="Message"/>
+/// is then the confirmation followed by <c>; the write notification failed: …</c>.
+/// An exception the writer does not convert (an <see cref="OperationCanceledException"/>,
+/// for one) propagates once that concept is on disk, and the batch ends there.
 /// </summary>
-/// <param name="Recorded">Whether the whole batch was written.</param>
-/// <param name="Message">A confirmation, or what went wrong and how far it got.</param>
+/// <param name="Recorded">Whether every stamp of the batch is on disk.</param>
+/// <param name="Message">A confirmation (saying so when a write notification failed), or what went wrong and how far it got.</param>
 /// <param name="Records">One entry per concept actually stamped, in the order given.</param>
-public readonly record struct VerificationOutcome(bool Recorded, string Message, IReadOnlyList<VerificationRecord> Records);
+public readonly record struct VerificationOutcome(bool Recorded, string Message, IReadOnlyList<VerificationRecord> Records)
+{
+    private readonly BundleWriteReport? _report;
+
+    /// <summary>
+    /// What the batch wrote, object by object (spec §1, §4): the keys of the concepts whose write
+    /// was committed, in order — the concepts of <see cref="Records"/>, a concept whose write
+    /// notification then failed included — and, when a write failed,
+    /// that concept's key with the reason (<see cref="Message"/> without its <c>Error: </c> prefix
+    /// and without the <c>— already written: …</c> suffix; for a typed provider refusal a library
+    /// sentence naming keys and types, for a raw I/O failure the runtime's own message, which can
+    /// name a host path, until issue #211). Empty for a batch refused before its
+    /// first write; the concepts after a failed one were not attempted and are in neither list.
+    /// Never <see langword="null"/>, <see langword="default"/> included.
+    /// </summary>
+    public BundleWriteReport Report
+    {
+        get => _report ?? BundleWriteReport.Empty;
+        init => _report = value;
+    }
+}
 
 /// <summary>
 /// What is wrong with one id passed to <see cref="BundleConceptWriter.CheckVerificationTargets"/>.
 /// </summary>
 internal enum VerificationTargetProblemKind
 {
-    /// <summary><see cref="ConceptId.TryParse(string, out ConceptId?)"/> rejects it, it resolves outside the
-    /// bundle root, it is the reserved <c>index</c>/<c>log</c> name, or it resolves through/to a reparse
-    /// point -- see <see cref="BundleConceptWriter"/>'s private <c>ValidateConceptTarget</c>.</summary>
+    /// <summary><see cref="ConceptId.TryParse(string, out ConceptId?)"/> rejects it, it is the reserved
+    /// <c>index</c>/<c>log</c> name, the writer's key policy refuses its key -- see
+    /// <see cref="BundleConceptWriter"/>'s private <c>ValidateConceptTarget</c> -- or the provider refuses
+    /// its path (a reparse point, an entry that could not be inspected).</summary>
     InvalidId,
 
     /// <summary>The id resolves to a well-formed path, but no file exists there with that EXACT
@@ -91,7 +119,7 @@ internal enum VerificationTargetProblemKind
 /// <param name="ConceptId">The offending id, exactly as given by the caller (not normalized).</param>
 /// <param name="Detail">
 /// The specific reason, for kinds whose wording varies by cause: <c>BundleConceptWriter</c>'s
-/// private <c>ValidateConceptTarget</c>'s own message for <see cref="VerificationTargetProblemKind.InvalidId"/>, or the underlying
+/// private <c>ValidateConceptTarget</c>'s own message, or its message for a path the provider refuses, for <see cref="VerificationTargetProblemKind.InvalidId"/>, or the underlying
 /// exception's message for <see cref="VerificationTargetProblemKind.ParseFailure"/> and
 /// <see cref="VerificationTargetProblemKind.Unreadable"/>. Captured once, here, rather than
 /// re-derived by a renderer — re-running a disk check a second time to recover a string it already
@@ -122,17 +150,29 @@ internal readonly record struct VerificationTargetProblem(VerificationTargetProb
 
 /// <summary>
 /// The core, thread-safe write primitive for OKF bundles: producer-validated,
-/// reparse-guarded, atomically-serialized create/update of a concept and an
-/// atomic read-modify-write append-to-concept, over a single bundle root.
-/// Promoted verbatim from <c>OKF4net.Agents.OkfBundleTools</c> so both that
-/// type and <c>OKF4net.Catalog.FileMemoryStore</c> share one write path and one
+/// serialized create/update of a concept and an atomic read-modify-write
+/// append-to-concept, over one bundle provider (spec §3, §4, §9). Every byte it
+/// writes goes through <see cref="IBundleProvider.Write"/>, which commits each
+/// object atomically under its own path guards; the writer validates every key
+/// under the same policy as a load (spec §2), refuses a creation that would make
+/// the tree invalid, and checks <see cref="BundleProviderCapabilities.CanWrite"/>
+/// before anything else. Both <c>OKF4net.Agents.OkfBundleTools</c> and
+/// <c>OKF4net.Catalog.FileMemoryStore</c> share this one write path and one
 /// process-wide per-bundle lock registry (no duplicate lock registry, no divergent
 /// second write path). Never throws for an expected error — I/O, YAML,
-/// validation, and reparse-point rejections are returned as an
-/// <c>Error: ...</c> result string.
+/// validation, provider refusals and conflicts are returned as an
+/// <c>Error: ...</c> result string; a provider that cannot write is a host
+/// mistake and throws <see cref="BundleReadOnlyException"/>.
 /// </summary>
 public sealed class BundleConceptWriter
 {
+    /// <summary>
+    /// The prefix of the lock key of a writer over any provider but the filesystem one
+    /// (decision B11): the key is this prefix and <see cref="IBundleProvider.Id"/>, which no
+    /// canonical root path can equal (those are absolute).
+    /// </summary>
+    private const string ProviderLockPrefix = "provider:";
+
     /// <summary>
     /// One monitor per resolved bundle root, shared across writers and aliases.
     /// Resolution happens at each outermost acquisition, through
@@ -176,14 +216,30 @@ public sealed class BundleConceptWriter
     private static Dictionary<string, HeldLock>? t_heldLocks;
 
     /// <summary>
-    /// <see cref="BundleRoot"/> through <see cref="ReparsePoints.CanonicalizeRoot"/>,
-    /// with Windows namespace forms normalized, computed once: the key of
-    /// <see cref="t_heldLocks"/>, and the starting
-    /// point <see cref="ReparsePoints.ResolveLockKey"/> resolves from.
+    /// Over the filesystem provider, its <see cref="FileSystemBundleProvider.Root"/> through
+    /// <see cref="ReparsePoints.CanonicalizeRoot"/>, with Windows namespace forms
+    /// normalized, computed once: the key of <see cref="t_heldLocks"/>, and the
+    /// starting point <see cref="ReparsePoints.ResolveLockKey"/> resolves from.
+    /// Over any other provider, <see cref="ProviderLockPrefix"/> and its
+    /// <see cref="IBundleProvider.Id"/>, used as it is (nothing to resolve).
     /// </summary>
     private readonly string _lexicalRoot;
 
     private readonly Action? _onWriteCommitted;
+
+    /// <summary>Where every byte is read and written.</summary>
+    private readonly IBundleProvider _provider;
+
+    /// <summary><see cref="_provider"/> when it is the filesystem provider: its root keys the lock registry and backs the obsolete <c>BundleRoot</c>, and its test hooks back the writer's.</summary>
+    private readonly FileSystemBundleProvider? _fileSystem;
+
+    /// <summary>The key policy every write is checked against: the provider's native constraints under the options' policy, exactly as a load builds it (spec §2, decision B2).</summary>
+    private readonly BundleKeyValidator _validator;
+
+    /// <summary>The bounds of every read and listing the writer makes (spec §6).</summary>
+    private readonly BundleLimits _limits;
+
+    private Action? _beforeLateReparseCheckForTest;
 
     /// <summary>When true, <see cref="WriteConcept(string, string, string)"/> stamps a <c>generated</c> block (§5.2) if the caller omitted one. Off by default so only opt-in producer paths (the Agents write tool) auto-stamp.</summary>
     internal bool AutoStampGenerated { get; set; }
@@ -208,19 +264,57 @@ public sealed class BundleConceptWriter
     /// <summary>The §7 actor recorded as <c>generated.by</c> when auto-stamping.</summary>
     internal string ProducerActor { get; set; } = DefaultProducerActor;
 
-    /// <summary>Creates a writer rooted at <paramref name="bundleRoot"/>.</summary>
+    /// <summary>Creates a writer over the directory <paramref name="bundleRoot"/>, through a <see cref="FileSystemBundleProvider"/> built over it.</summary>
     /// <param name="bundleRoot">The bundle's root directory.</param>
     /// <param name="onWriteCommitted">
-    /// Optional callback invoked inside the write lock immediately after a
-    /// successful file write, before the lock is released — the seam
+    /// Optional callback invoked inside the write lock once after each
+    /// successful write, before the lock is released — the seam
     /// <c>OkfBundleTools</c> uses to invalidate its bundle cache atomically with
     /// the write. <see langword="null"/> (the default) for callers with no cache.
+    /// It runs once the write is final, after any retry, and never causes one:
+    /// an exception it throws that the writer converts (an I/O error, an
+    /// <see cref="OkfException"/>, a provider conflict included) is reported as
+    /// each write method says, the write committed; any other (an
+    /// <see cref="OperationCanceledException"/>, for one) propagates to the
+    /// caller unchanged, the write committed.
     /// </param>
     public BundleConceptWriter(string bundleRoot, Action? onWriteCommitted = null)
+        : this(new FileSystemBundleProvider(bundleRoot ?? throw new ArgumentNullException(nameof(bundleRoot))), onWriteCommitted)
     {
-        ArgumentNullException.ThrowIfNull(bundleRoot);
-        BundleRoot = bundleRoot;
+    }
+
+    /// <summary>
+    /// Creates a writer over the provider and options of <paramref name="handle"/> (spec §5.2,
+    /// §9): every committed write first invalidates the handle (its next use reloads the image;
+    /// a refused or failed write does not), then runs <paramref name="onWriteCommitted"/>.
+    /// </summary>
+    /// <param name="handle">The handle whose provider is written and whose image is invalidated after each committed write.</param>
+    /// <param name="onWriteCommitted">As for <see cref="BundleConceptWriter(string, Action?)"/>, run after the handle's invalidation.</param>
+    public BundleConceptWriter(BundleHandle handle, Action? onWriteCommitted = null)
+        : this(
+            (handle ?? throw new ArgumentNullException(nameof(handle))).Provider,
+            onWriteCommitted is null ? handle.Invalidate : () =>
+            {
+                handle.Invalidate();
+                onWriteCommitted();
+            },
+            handle.Options)
+    {
+    }
+
+    /// <summary>Creates a writer over <paramref name="provider"/> (spec §9).</summary>
+    /// <param name="provider">Where the bundle is read and written. A provider whose <see cref="BundleProviderCapabilities.CanWrite"/> is <see langword="false"/> makes every write method throw <see cref="BundleReadOnlyException"/>. The in-process write lock is keyed by the provider's <see cref="IBundleProvider.Id"/> unless it is a <see cref="FileSystemBundleProvider"/> itself (keyed by its root): a decorator around a <see cref="FileSystemBundleProvider"/> therefore does not share the directory's lock with a writer built from the root string, and two such writers are serialised only by the provider's own commit lock and the write conditions (decision B11).</param>
+    /// <param name="onWriteCommitted">As for <see cref="BundleConceptWriter(string, Action?)"/>.</param>
+    /// <param name="options">The key policy, extra key validators and bounds the writer applies — the same as a load of this bundle should use, so that the writer never creates a key the load would discard. <see langword="null"/>: <see cref="BundleLoadOptions.Default"/>.</param>
+    public BundleConceptWriter(IBundleProvider provider, Action? onWriteCommitted = null, BundleLoadOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        _provider = provider;
+        _fileSystem = provider as FileSystemBundleProvider;
         _onWriteCommitted = onWriteCommitted;
+        options ??= BundleLoadOptions.Default;
+        _validator = new BundleKeyValidator(provider.NativeConstraints, options.KeyPolicy, options.ExtraKeyValidators);
+        _limits = options.Limits;
 
         // Only the LEXICAL form is computed here (and an invalid path still
         // throws here, as before). The write lock's registry key is NOT: it
@@ -228,12 +322,18 @@ public sealed class BundleConceptWriter
         // lock (EnterWriteLock), because the topology can change after
         // construction -- a writer built over `later/bundle` while `later` did
         // not exist must still meet a writer over the junction target once
-        // `later` becomes a junction (#86).
-        _lexicalRoot = ReparsePoints.NormalizeNamespaceForLockKey(ReparsePoints.CanonicalizeRoot(bundleRoot));
+        // `later` becomes a junction (#86). Any other provider is keyed by its
+        // Id, which nothing resolves (decision B11).
+        _lexicalRoot = _fileSystem is not null
+            ? ReparsePoints.NormalizeNamespaceForLockKey(ReparsePoints.CanonicalizeRoot(_fileSystem.Root))
+            : ProviderLockPrefix + provider.Id;
     }
 
-    /// <summary>The bundle root, as passed to the constructor.</summary>
-    public string BundleRoot { get; }
+    /// <summary>The bundle root, as passed to the constructor (the filesystem provider's <see cref="FileSystemBundleProvider.Root"/>). Obsolete (spec §9, §10): a writer over another provider has no root.</summary>
+    /// <exception cref="NotSupportedException">The writer was built over another provider: a path has no meaning for it (spec §9).</exception>
+    [Obsolete("BundleConceptWriter.BundleRoot has no meaning for a writer over a provider other than the filesystem: the writer exposes no provider, so keep the root path you constructed it with, or construct it over a FileSystemBundleProvider you hold and use that provider's Root. Removed with the asynchronous provider contract (#152).")]
+    public string BundleRoot => _fileSystem?.Root
+        ?? throw new NotSupportedException("this writer is not over a filesystem provider, so it has no bundle root");
 
     /// <summary>
     /// Enters this bundle's write lock and returns a scope whose
@@ -441,7 +541,7 @@ public sealed class BundleConceptWriter
     internal object LexicalGateForTest() => LexicalLocks.GetOrAdd(_lexicalRoot, static _ => new object());
 
     private object ResolveLockObject() =>
-        BundleLocks.GetOrAdd(ReparsePoints.ResolveLockKey(_lexicalRoot), static _ => new object());
+        BundleLocks.GetOrAdd(_fileSystem is not null ? ReparsePoints.ResolveLockKey(_lexicalRoot) : _lexicalRoot, static _ => new object());
 
     /// <summary>
     /// One entry of <see cref="t_heldLocks"/>: the objects held and how many
@@ -512,17 +612,34 @@ public sealed class BundleConceptWriter
 
     /// <summary>
     /// Test-only hook, invoked (if set) immediately before the late
-    /// reparse-point re-check in <see cref="WriteValidatedContentLocked"/>
-    /// (after its own <see cref="Directory.CreateDirectory(string)"/> call).
-    /// Lets a test deterministically simulate a filesystem substitution
-    /// racing the final write -- e.g. deleting the just-created parent
-    /// directory and replacing it with a junction to an external directory --
-    /// at exactly the point such a race would need to land, instead of
-    /// relying on real (flaky, unreliable) thread timing.
-    /// <see langword="internal"/>, always <see langword="null"/> outside
-    /// tests, so it has zero effect on production behavior.
+    /// reparse-point re-check of a write. Over a <see cref="FileSystemBundleProvider"/>
+    /// it is that provider's <c>ParentsResolvedForTest</c>: it fires inside
+    /// <see cref="IBundleProvider.Write"/> once the object's parent directories
+    /// exist (found, or just created), before the provider's STRICT re-check of
+    /// the whole path and before its temporary is created — exactly where the
+    /// writer's own <see cref="Directory.CreateDirectory(string)"/> and late
+    /// re-check sat before the write moved behind the provider. Lets a test
+    /// deterministically simulate a filesystem substitution racing the final
+    /// write -- e.g. deleting the just-created parent directory and replacing
+    /// it with a junction to an external directory -- at exactly the point
+    /// such a race would need to land, instead of relying on real (flaky,
+    /// unreliable) thread timing. Over any other provider it has no effect
+    /// (script that provider instead). <see langword="internal"/>, always
+    /// <see langword="null"/> outside tests, so it has zero effect on
+    /// production behavior.
     /// </summary>
-    internal Action? BeforeLateReparseCheckForTest { get; set; }
+    internal Action? BeforeLateReparseCheckForTest
+    {
+        get => _beforeLateReparseCheckForTest;
+        set
+        {
+            _beforeLateReparseCheckForTest = value;
+            if (_fileSystem is not null)
+            {
+                _fileSystem.ParentsResolvedForTest = value is null ? null : _ => value();
+            }
+        }
+    }
 
     /// <summary>
     /// Creates or updates one concept document. Producer-grade validation
@@ -536,8 +653,27 @@ public sealed class BundleConceptWriter
     /// <param name="conceptId">The concept id (path without <c>.md</c>), e.g. <c>tables/refunds</c>.</param>
     /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines (the same YAML subset used inside a document's frontmatter block, without the <c>---</c> delimiters).</param>
     /// <param name="body">The markdown body.</param>
-    public string WriteConcept(string conceptId, string frontmatterYaml, string body)
+    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
+    public string WriteConcept(string conceptId, string frontmatterYaml, string body) =>
+        WriteConcept(conceptId, frontmatterYaml, body, BundleWriteCondition.None);
+
+    /// <summary>
+    /// Like <see cref="WriteConcept(string, string, string)"/>, under a condition the provider checks
+    /// atomically with the write (spec §4): <see cref="BundleWriteCondition.IfMatch"/> with the version a
+    /// read returned replaces the concept only if it has not changed since;
+    /// <see cref="BundleWriteCondition.MustNotExist"/> creates it only if it does not exist yet;
+    /// <see cref="BundleWriteCondition.None"/> is the unconditional write of the three-argument overload.
+    /// A condition that does not hold writes nothing and returns an <c>Error: …</c> that tells the caller
+    /// to read the concept (again). Never retried: a retry would overwrite what the caller has not seen.
+    /// </summary>
+    /// <param name="conceptId">The concept id (path without <c>.md</c>), e.g. <c>tables/refunds</c>.</param>
+    /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines (the same YAML subset used inside a document's frontmatter block, without the <c>---</c> delimiters).</param>
+    /// <param name="body">The markdown body.</param>
+    /// <param name="condition">The condition on the concept's current version.</param>
+    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
+    public string WriteConcept(string conceptId, string frontmatterYaml, string body, BundleWriteCondition condition)
     {
+        GuardWritable();
         if (string.IsNullOrWhiteSpace(conceptId))
         {
             return "Error: invalid concept id — it must not be empty.";
@@ -568,33 +704,37 @@ public sealed class BundleConceptWriter
             return "Error: invalid body — it must not contain a null character.";
         }
 
-        return RunTool(() =>
-        {
-            var targetError = ValidateConceptTarget(conceptId, out var target);
-            if (targetError is not null)
+        string? subject = null;
+        return RunTool(
+            () =>
             {
-                return targetError;
-            }
+                var targetError = ValidateConceptTarget(conceptId, out var target);
+                if (targetError is not null)
+                {
+                    return targetError;
+                }
 
-            var (content, buildError) = BuildValidatedContent(ParseFrontmatterAndMaybeStamp(frontmatterYaml), body);
-            if (buildError is not null)
-            {
-                return buildError;
-            }
+                subject = $"'{target.Id}'";
+                var (content, buildError) = BuildValidatedContent(ParseFrontmatterAndMaybeStamp(frontmatterYaml), body);
+                if (buildError is not null)
+                {
+                    return buildError;
+                }
 
-            // Serialized under the bundle's write lock (shared with
-            // AppendToConceptAtomic and, since EnterWriteLock takes it from
-            // the process-wide BundleLocks registry under the root's resolved
-            // key, with every OTHER BundleConceptWriter instance whose root
-            // resolves to this same directory, not just this instance) so
-            // concurrent writers can't interleave an
-            // existence check with another writer's write, and so the
-            // committed callback below is atomic with the write it follows.
-            using (EnterWriteLock())
-            {
-                return WriteValidatedContentLocked(target.Id, target.TargetPath, content!);
-            }
-        });
+                // Serialized under the bundle's write lock (shared with
+                // AppendToConceptAtomic and, since EnterWriteLock takes it from
+                // the process-wide BundleLocks registry under the root's resolved
+                // key, with every OTHER BundleConceptWriter instance whose root
+                // resolves to this same directory, not just this instance) so
+                // concurrent writers can't interleave an
+                // existence check with another writer's write, and so the
+                // committed callback below is atomic with the write it follows.
+                using (EnterWriteLock())
+                {
+                    return WriteThenNotify(committed => WriteConditionedLocked(target, content!, condition, committed));
+                }
+            },
+            () => subject);
     }
 
     /// <summary>
@@ -614,8 +754,22 @@ public sealed class BundleConceptWriter
     /// <param name="conceptId">The concept id (path without <c>.md</c>), e.g. <c>tables/refunds</c>.</param>
     /// <param name="frontmatter">The frontmatter to write. Not mutated by this call.</param>
     /// <param name="body">The markdown body.</param>
-    public string WriteConcept(string conceptId, Frontmatter frontmatter, string body)
+    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
+    public string WriteConcept(string conceptId, Frontmatter frontmatter, string body) =>
+        WriteConcept(conceptId, frontmatter, body, BundleWriteCondition.None);
+
+    /// <summary>
+    /// Like <see cref="WriteConcept(string, Frontmatter, string)"/>, under a condition the provider checks
+    /// atomically with the write — see <see cref="WriteConcept(string, string, string, BundleWriteCondition)"/>.
+    /// </summary>
+    /// <param name="conceptId">The concept id (path without <c>.md</c>), e.g. <c>tables/refunds</c>.</param>
+    /// <param name="frontmatter">The frontmatter to write. Not mutated by this call.</param>
+    /// <param name="body">The markdown body.</param>
+    /// <param name="condition">The condition on the concept's current version.</param>
+    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
+    public string WriteConcept(string conceptId, Frontmatter frontmatter, string body, BundleWriteCondition condition)
     {
+        GuardWritable();
         if (string.IsNullOrWhiteSpace(conceptId))
         {
             return "Error: invalid concept id — it must not be empty.";
@@ -638,28 +792,32 @@ public sealed class BundleConceptWriter
             return "Error: invalid body — it must not contain a null character.";
         }
 
-        return RunTool(() =>
-        {
-            var targetError = ValidateConceptTarget(conceptId, out var target);
-            if (targetError is not null)
+        string? subject = null;
+        return RunTool(
+            () =>
             {
-                return targetError;
-            }
+                var targetError = ValidateConceptTarget(conceptId, out var target);
+                if (targetError is not null)
+                {
+                    return targetError;
+                }
 
-            var mapping = ShallowCopy(frontmatter.AsMapping());
-            MaybeStampGenerated(mapping);
+                subject = $"'{target.Id}'";
+                var mapping = ShallowCopy(frontmatter.AsMapping());
+                MaybeStampGenerated(mapping);
 
-            var (content, buildError) = BuildValidatedContent(mapping, body);
-            if (buildError is not null)
-            {
-                return buildError;
-            }
+                var (content, buildError) = BuildValidatedContent(mapping, body);
+                if (buildError is not null)
+                {
+                    return buildError;
+                }
 
-            using (EnterWriteLock())
-            {
-                return WriteValidatedContentLocked(target.Id, target.TargetPath, content!);
-            }
-        });
+                using (EnterWriteLock())
+                {
+                    return WriteThenNotify(committed => WriteConditionedLocked(target, content!, condition, committed));
+                }
+            },
+            () => subject);
     }
 
     /// <summary>
@@ -706,14 +864,25 @@ public sealed class BundleConceptWriter
     /// instance AND for two concurrent calls on two SEPARATE instances
     /// whose roots resolve to the same directory, a junction or symlink to it
     /// included -- but only within one process:
-    /// it does not serialize a second process writing the same bundle path,
-    /// and a C# lock cannot stop a concurrent external actor from mutating
-    /// the target file/its ancestor directories on disk out from under this
-    /// method (see <see cref="ValidateConceptTarget"/>'s remarks for that
-    /// separate, residual check-then-write limitation, which this lock does
-    /// not close). Reuses the exact same target validation (<see cref="ValidateConceptTarget"/>),
+    /// it does not serialize a second process writing the same bundle path.
+    /// The write is therefore conditioned on the version read
+    /// (<see cref="BundleWriteCondition.IfMatch"/>, or
+    /// <see cref="BundleWriteCondition.MustNotExist"/> for a creation): a
+    /// change another writer committed in between, in this process, is not
+    /// overwritten. Another process is not excluded: the filesystem provider
+    /// checks the condition atomically with the replacement only within one
+    /// process, so a write that lands between its last check and its commit
+    /// can still be overwritten by this call although that write reported
+    /// success (and this call's own entry can be lost the same way; issue #178; measured with two processes each appending 150
+    /// entries to one bundle: on Linux up to 100 of 297 reported-committed
+    /// appends were lost; on Windows 17 were lost, with unknown outcomes
+    /// reported and temporaries left behind). On a conflict, the
+    /// whole read-transform-write is tried again on what is there now —
+    /// at most <see cref="MaxAttempts"/> attempts, with a short random delay
+    /// between them (spec §4) — and after the last one the conflict is
+    /// returned as an <c>Error: ...</c> message. Reuses the exact same target validation (<see cref="ValidateConceptTarget"/>),
     /// producer-grade validation and serialization (<see cref="BuildValidatedContent(string, string)"/>),
-    /// and write/callback (<see cref="WriteValidatedContentLocked"/>)
+    /// and write (<see cref="WriteValidatedContentLocked"/>) and notification (<see cref="WriteThenNotify"/>)
     /// steps <see cref="WriteConcept(string, string, string)"/> itself uses — this is a locked
     /// read-modify-write wrapped AROUND that same core, not a divergent
     /// second write path.
@@ -728,20 +897,24 @@ public sealed class BundleConceptWriter
     /// </param>
     /// <param name="buildBody">
     /// Given the concept's current body (<see langword="null"/> if it does
-    /// not yet exist), returns the full new body to write. Invoked exactly
-    /// once, inside the lock, against the freshly re-read current body —
-    /// never a caller's own stale, pre-lock snapshot.
+    /// not yet exist), returns the full new body to write. Invoked once per
+    /// attempt — at most <see cref="MaxAttempts"/> times — inside the lock,
+    /// each time against the freshly re-read current body, never a caller's
+    /// own stale, pre-lock snapshot. It must therefore be a pure function of
+    /// the body it receives: no side effect, nothing counted per call.
     /// </param>
     /// <returns>
     /// The same style of result text as <see cref="WriteConcept(string, string, string)"/> (a
     /// <c>Written ...</c> confirmation) or an <c>Error: ...</c> message;
-    /// never throws.
+    /// never throws (except as below, or what <paramref name="buildBody"/> itself throws).
     /// </returns>
+    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
     public string AppendToConceptAtomic(
         string conceptId,
         string frontmatterYamlIfCreating,
         Func<string?, string> buildBody)
     {
+        GuardWritable();
         if (string.IsNullOrWhiteSpace(conceptId))
         {
             return "Error: invalid concept id — it must not be empty.";
@@ -762,68 +935,82 @@ public sealed class BundleConceptWriter
             return "Error: invalid frontmatter — it must not contain a null character.";
         }
 
-        return RunTool(() =>
-        {
-            var targetError = ValidateConceptTarget(conceptId, out var target);
-            if (targetError is not null)
+        string? subject = null;
+        return RunTool(
+            () =>
             {
-                return targetError;
-            }
-
-            // The read of the current body, the caller's transform, and the
-            // validated write all happen inside this ONE lock acquisition —
-            // never released and reacquired in between — which is what makes
-            // the whole read-modify-write atomic against a concurrent
-            // WriteConcept/AppendToConceptAtomic call for the same concept.
-            using (EnterWriteLock())
-            {
-                string frontmatterYaml;
-                string? currentBody;
-                var existedBefore = File.Exists(target.TargetPath);
-                if (existedBefore)
+                var targetError = ValidateConceptTarget(conceptId, out var target);
+                if (targetError is not null)
                 {
-                    // Strict UTF-8: a non-UTF-8 concept file throws
-                    // DecoderFallbackException (caught by RunTool below)
-                    // rather than being silently re-decoded and rewritten.
-                    var text = OkfEncodings.Strict.GetString(File.ReadAllBytes(target.TargetPath));
-                    // Fail-closed: if the existing concept has malformed
-                    // frontmatter (hand-edited, or a prior partial/crashed
-                    // write), OkfDocument.Parse throws DocumentParseException
-                    // (caught by RunTool -> Error text) so this append is
-                    // dropped rather than overwriting a possibly important
-                    // file. This is stricter than a permissive bundle-load
-                    // path, which would treat an unparseable file as absent
-                    // and silently recreate it.
-                    var existingDoc = OkfDocument.Parse(text);
-                    frontmatterYaml = existingDoc.Frontmatter.AsMapping().ToYamlString();
-                    currentBody = existingDoc.Body;
-                }
-                else
-                {
-                    frontmatterYaml = frontmatterYamlIfCreating;
-                    currentBody = null;
+                    return targetError;
                 }
 
-                var newBody = buildBody(currentBody);
-                if (newBody is null)
-                {
-                    return "Error: body must not be null.";
-                }
+                subject = $"'{target.Id}'";
 
-                if (newBody.Contains('\0'))
+                // The read of the current body, the caller's transform, and the
+                // validated write all happen inside this ONE lock acquisition —
+                // never released and reacquired in between — which is what makes
+                // the whole read-modify-write atomic against a concurrent
+                // WriteConcept/AppendToConceptAtomic call for the same concept.
+                // The write is conditioned on the version read, so a writer
+                // outside this lock but in this process (another provider
+                // instance) is not overwritten; its conflict re-reads and runs
+                // buildBody again (WithRetries). Another process is excluded
+                // only up to the provider's last check: the window before the
+                // commit is open (issue #178).
+                using (EnterWriteLock())
                 {
-                    return "Error: invalid body — it must not contain a null character.";
-                }
+                    return WriteThenNotify(committed => WithRetries(subject, () =>
+                    {
+                        string frontmatterYaml;
+                        string? currentBody;
 
-                var (content, buildError) = BuildValidatedContent(frontmatterYaml, newBody);
-                if (buildError is not null)
-                {
-                    return buildError;
-                }
+                        // Strict UTF-8: a non-UTF-8 concept file throws
+                        // DecoderFallbackException (caught by RunTool below)
+                        // rather than being silently re-decoded and rewritten.
+                        var current = ReadCurrent(target.Key);
+                        if (current is { } existing)
+                        {
+                            // Fail-closed: if the existing concept has malformed
+                            // frontmatter (hand-edited, or a prior partial/crashed
+                            // write), OkfDocument.Parse throws DocumentParseException
+                            // (caught by RunTool -> Error text) so this append is
+                            // dropped rather than overwriting a possibly important
+                            // file. This is stricter than a permissive bundle-load
+                            // path, which would treat an unparseable file as absent
+                            // and silently recreate it.
+                            var existingDoc = OkfDocument.Parse(existing.Text);
+                            frontmatterYaml = existingDoc.Frontmatter.AsMapping().ToYamlString();
+                            currentBody = existingDoc.Body;
+                        }
+                        else
+                        {
+                            frontmatterYaml = frontmatterYamlIfCreating;
+                            currentBody = null;
+                        }
 
-                return WriteValidatedContentLocked(target.Id, target.TargetPath, content!, existedBefore);
-            }
-        });
+                        var newBody = buildBody(currentBody);
+                        if (newBody is null)
+                        {
+                            return "Error: body must not be null.";
+                        }
+
+                        if (newBody.Contains('\0'))
+                        {
+                            return "Error: invalid body — it must not contain a null character.";
+                        }
+
+                        var (content, buildError) = BuildValidatedContent(frontmatterYaml, newBody);
+                        if (buildError is not null)
+                        {
+                            return buildError;
+                        }
+
+                        return WriteValidatedContentLocked(target, content!, ConditionFor(current), committed, existedBefore: current is not null);
+                    }));
+                }
+            },
+            () => subject);
     }
 
     /// <summary>
@@ -848,7 +1035,7 @@ public sealed class BundleConceptWriter
     /// from the value it comments on.
     ///
     /// Fully validated before the first write: inside one hold of the bundle
-    /// lock, every concept id is checked and resolved to a target path, then
+    /// lock, every concept id is checked and resolved to its bundle key, then
     /// each target is read, edited and validated, all before a single byte is
     /// written. The pre-checks read the files too, so they cannot run before
     /// the lock is taken: a concurrent writer of the same concept would make
@@ -856,17 +1043,19 @@ public sealed class BundleConceptWriter
     /// unknown id, a malformed actor or a non-conformant document writes
     /// nothing.
     ///
-    /// It is NOT a transaction. Writing several files cannot be atomic in
-    /// .NET, so a failure during the write phase (I/O, permissions, a reparse
-    /// point appearing after the late re-check) leaves the concepts already
-    /// written stamped. That case reports <c>Recorded = false</c> with
-    /// <c>Records</c> listing the concepts whose write returned — which is not
-    /// quite the same as "the file on disk is intact", since the write
-    /// primitive truncates in place; <see cref="VerificationOutcome"/> states
+    /// It is NOT a transaction (spec §4: no multi-object transaction). Each
+    /// concept is written atomically, conditioned on the version it was
+    /// prepared from, but a failure during the write phase (I/O, permissions,
+    /// a path the provider refuses at its late re-check, a conflict with a
+    /// writer outside this lock) leaves the concepts already written stamped.
+    /// That case reports <c>Recorded = false</c> with <c>Records</c> listing
+    /// the concepts whose write was committed, and a message ending
+    /// <c>— already written: …</c>; <see cref="VerificationOutcome"/> states
     /// exactly what the list does and does not promise.
     /// The lock is also in-process, so an external actor mutating the bundle
-    /// mid-batch is not stopped: the same documented limit as this class's
-    /// reparse-point guard.
+    /// mid-batch is not stopped: the version condition refuses to overwrite a
+    /// change that landed before the provider's last check; one landing between that check
+    /// and the commit is overwritten (issue #178).
     ///
     /// A stamp is a dated declaration, not an authentication result: this
     /// method cannot and does not check that the caller is who
@@ -879,8 +1068,10 @@ public sealed class BundleConceptWriter
     /// Timestamp in the library's own UTC shape (<c>yyyy-MM-ddTHH:mm:ssZ</c>);
     /// null uses <see cref="UtcNow"/>.
     /// </param>
+    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
     public VerificationOutcome RecordVerifications(IReadOnlyList<string> conceptIds, string by, string? at = null)
     {
+        GuardWritable();
         if (conceptIds is null || conceptIds.Count == 0)
         {
             return Failed("Error: no concept id given.");
@@ -955,6 +1146,9 @@ public sealed class BundleConceptWriter
         }
 
         var records = new List<VerificationRecord>(conceptIds.Count);
+        var written = new List<BundleKey>(conceptIds.Count);
+        BundleWriteFailure? failure = null;
+        string? subject = null;
         var message = RunTool(() =>
         {
             // Target validation also reads the files. Keep it in the same
@@ -1028,155 +1222,537 @@ public sealed class BundleConceptWriter
                 // unreadable, or non-conformant concept later in the list
                 // rejects the WHOLE batch, even though earlier concepts in it
                 // already built successfully.
-                var prepared = new List<(ConceptTarget Target, string Content, string ConceptId, string? ReplacedAt)>(targets.Count);
+                var prepared = new List<PreparedStamp>(targets.Count);
                 for (var i = 0; i < targets.Count; i++)
                 {
-                    var target = targets[i];
-                    if (!File.Exists(target.TargetPath))
+                    subject = $"'{targets[i].Id}'";
+                    var prepareError = PrepareStamp(targets[i], conceptIds[i], by, stampedAt, out var stamp);
+                    if (prepareError is not null)
                     {
-                        return $"Error: concept {DebugQuote.Quote(conceptIds[i])} does not exist.";
+                        return prepareError;
                     }
 
-                    var text = OkfEncodings.Strict.GetString(File.ReadAllBytes(target.TargetPath));
-                    var document = OkfDocument.Parse(text);
-                    var map = document.Frontmatter.AsMapping();
-
-                    var upserted = UpsertStamp(map.Get("verified"), by, stampedAt, out var replacedAt);
-
-                    // LOAD-BEARING, not just "kept for replacedAt" (replacedAt
-                    // is UpsertStamp's own out-parameter, unaffected by this
-                    // call): `map` is the LIVE mapping `document.Frontmatter`
-                    // wraps (Frontmatter.AsMapping returns the instance
-                    // itself, no defensive copy -- see its own doc comment),
-                    // so this mutates `document` in place into exactly the
-                    // structure the edit below is SUPPOSED to produce. The
-                    // equality check further down compares the edit's actual
-                    // re-parsed result against THIS object -- without this
-                    // call, `document` would still hold the OLD `verified`
-                    // value and the equality check would fail on every
-                    // legitimate stamp.
-                    map.Insert("verified", upserted);
-
-                    // Surgical, not a re-emit: only the `verified:` block is
-                    // touched in the RAW text, so every other frontmatter key
-                    // -- comments, CRLF endings, folded/flow scalar spellings,
-                    // key order -- survives byte for byte. This is what
-                    // RecordVerifications's own doc comment already promises
-                    // ("preserving every other frontmatter key and the body")
-                    // and a full-frontmatter re-emit through YamlEmitter did
-                    // not deliver: YamlEmitter normalizes CRLF to LF, drops
-                    // comments, and reflows folded/flow scalars (see
-                    // FrontmatterBlockEdit's own doc comment). Deliberately
-                    // does NOT go through MaybeStampGenerated: this path
-                    // stamps `verified` only, never `generated`.
-                    var one = new YamlMapping();
-                    one.Insert("verified", upserted);
-                    var stampBlock = YamlEmitter.Emit(one);
-                    var content = FrontmatterBlockEdit.ReplaceTopLevelKey(text, "verified", stampBlock);
-
-                    // The edit is textual (FrontmatterBlockEdit does not
-                    // itself validate YAML), so re-parsing and checking FULL
-                    // STRUCTURAL EQUALITY against `document` -- which already
-                    // holds the exact intended result, per the load-bearing
-                    // `map.Insert` above -- is the proof that nothing else
-                    // moved: same frontmatter (key set, order, and every
-                    // OTHER value) and the same body, ordinally
-                    // (OkfDocument.Equals). A weaker check (e.g. only
-                    // counting `verified` entries) can pass on a genuinely
-                    // corrupted edit -- a mis-located key spelling that
-                    // inserted a shadowed duplicate elsewhere still re-parses
-                    // to the same COUNT while leaving a stale value in the
-                    // file (finding #C7-1). ValidateConformance (§11) runs
-                    // first since equality alone would not refuse a document
-                    // that was already missing `type` before this edit ran.
-                    var reparsed = OkfDocument.Parse(content);
-
-                    // Attributed here, at the SAME point this check has
-                    // always run (deliberately not moved earlier -- see the
-                    // early CheckVerificationTargets call above, which
-                    // excludes NotConformant for exactly this reason): a
-                    // bare DocumentValidationException naming no concept at
-                    // all is what CmdVerify and okf_verify used to work
-                    // around with a pre-loop of their own.
-                    try
-                    {
-                        reparsed.ValidateConformance();
-                    }
-                    catch (DocumentValidationException)
-                    {
-                        return FormatVerificationTargetProblem(
-                            new VerificationTargetProblem(VerificationTargetProblemKind.NotConformant, conceptIds[i]));
-                    }
-
-                    if (!reparsed.Equals(document))
-                    {
-                        // Diagnosable, not just "no": a bare "could not be
-                        // edited in place" gives a reader no way to tell a
-                        // real corruption apart from the one KNOWN false
-                        // positive this check has -- a NaN float anywhere in
-                        // the frontmatter never compares equal to itself
-                        // (YamlValue's float equality is IEEE-754 `==`), so a
-                        // concept with, say, `threshold: .nan` fails this
-                        // check on every verify, even a perfectly clean edit.
-                        // Not fixed here (changing YamlValue's equality is out
-                        // of scope for this method); named explicitly instead,
-                        // alongside the other diagnosable cases below. The
-                        // body case is checked first since this edit never
-                        // touches the body on purpose, so a body difference
-                        // is worth calling out distinctly from any
-                        // frontmatter-shaped explanation.
-                        var detail = !string.Equals(reparsed.Body, document.Body, StringComparison.Ordinal)
-                            ? "the body changed, which this edit never does on purpose"
-                            : ContainsNaN(document.Frontmatter.AsMapping())
-                                ? "the frontmatter contains a NaN value, which never compares equal to "
-                                    + "itself, so this check cannot confirm the edit either way -- inspect "
-                                    + "the file by hand"
-                                : DescribeFrontmatterDivergence(document.Frontmatter.AsMapping(), reparsed.Frontmatter.AsMapping());
-                        return $"Error: concept {DebugQuote.Quote(conceptIds[i])}: the verified block could not be edited in place ({detail}).";
-                    }
-
-                    prepared.Add((target, content, conceptIds[i], replacedAt));
+                    prepared.Add(stamp);
                 }
 
-                // Writing N files cannot be atomic, so a failure here — I/O,
-                // permissions, a reparse point appearing between the late
-                // re-check and the write — leaves the earlier concepts
-                // stamped. `records` is built HERE, one entry per successful
+                // Writing N objects cannot be atomic: the provider commits each
+                // one atomically, but a failure here — I/O, permissions, a
+                // refusal of the provider's late path guard, a conflict with a
+                // writer outside this lock — leaves the earlier concepts
+                // stamped. `records` is built HERE, one entry per committed
                 // write, deliberately NOT in the prepare loop above: that is
-                // what makes it mean "landed on disk", not "was validated". A
+                // what makes it mean "landed", not "was validated". A
                 // batch rejected during PREPARE never reaches this loop, so
                 // `records` stays empty; a batch that fails partway through
                 // WRITE leaves `records` holding exactly the prefix that
-                // actually made it to disk — no separate trim/rollback step
+                // actually landed — no separate trim/rollback step
                 // to keep in sync, and no way for a future early return in
                 // this loop to under- or over-report what landed.
+                string? notificationFailure = null;
                 for (var i = 0; i < prepared.Count; i++)
                 {
-                    var (target, content, conceptId, replacedAt) = prepared[i];
-                    var writeResult = WriteValidatedContentLocked(target.Id, target.TargetPath, content, existedBefore: true);
-                    if (writeResult.StartsWith("Error:", StringComparison.Ordinal))
+                    var stamp = prepared[i];
+                    var name = $"'{stamp.Target.Id}'";
+                    subject = name;
+                    var committed = false;
+                    string writeResult;
+                    try
                     {
-                        return records.Count == 0
-                            ? writeResult
-                            : $"{writeResult} — already written: {string.Join(", ", records.Select(r => r.ConceptId))}";
+                        // Conditioned on the version the stamp was prepared
+                        // from. A conflict (a writer outside this lock) prepares
+                        // THIS concept again from what is there now and retries;
+                        // the concepts already written stay written.
+                        var attempt = 0;
+                        writeResult = WithRetries(name, () =>
+                        {
+                            if (++attempt > 1)
+                            {
+                                var prepareError = PrepareStamp(stamp.Target, stamp.ConceptId, by, stampedAt, out var fresh);
+                                if (prepareError is not null)
+                                {
+                                    return prepareError;
+                                }
+
+                                stamp = fresh;
+                            }
+
+                            return WriteValidatedContentLocked(stamp.Target, stamp.Content, BundleWriteCondition.IfMatch(stamp.Version), () => committed = true, existedBefore: true);
+                        });
+                    }
+                    catch (Exception ex) when (IsExpectedFailure(ex))
+                    {
+                        writeResult = Translate(ex, subject);
                     }
 
-                    records.Add(new VerificationRecord(conceptId, stampedAt, replacedAt));
+                    if (committed)
+                    {
+                        // On disk: recorded, and the batch goes on. The notification runs
+                        // now that the write is final, outside the catch above (B48), so
+                        // nothing it throws is taken for a failure of the write; a failed
+                        // one is said once the batch ends.
+                        records.Add(new VerificationRecord(stamp.ConceptId, stampedAt, stamp.ReplacedAt));
+                        written.Add(stamp.Target.Key);
+                        if (NotifyCommitted() is { } notificationError)
+                        {
+                            notificationFailure ??= notificationError["Error: ".Length..];
+                        }
+
+                        continue;
+                    }
+
+                    // The reason is the message without its prefix; an exception with an
+                    // empty message leaves nothing, and a failure needs a reason (the
+                    // constructor would throw, and RunTool would swallow the whole outcome).
+                    var reason = writeResult.StartsWith("Error: ", StringComparison.Ordinal)
+                        ? writeResult["Error: ".Length..]
+                        : writeResult;
+                    failure = new BundleWriteFailure(
+                        stamp.Target.Key,
+                        string.IsNullOrWhiteSpace(reason) ? "the write failed without giving a reason." : reason);
+                    return records.Count == 0
+                        ? writeResult
+                        : $"{writeResult} — already written: {string.Join(", ", records.Select(r => r.ConceptId))}";
                 }
 
-                return $"Recorded {prepared.Count} verification(s) by {by} at {stampedAt}.";
+                return notificationFailure is null
+                    ? $"Recorded {prepared.Count} verification(s) by {by} at {stampedAt}."
+                    : $"Recorded {prepared.Count} verification(s) by {by} at {stampedAt}; the write notification failed: {notificationFailure}";
             }
-        });
+        }, () => subject);
 
         // On failure, Records is NOT emptied: it carries whatever reached disk
         // before the failure, so a caller can tell "nothing happened" from
         // "three of five were stamped and then it broke".
+        var report = written.Count == 0 && failure is null
+            ? BundleWriteReport.Empty
+            : new BundleWriteReport(written, [], failure is null ? [] : [failure]);
         return message.StartsWith("Error:", StringComparison.Ordinal)
-            ? new VerificationOutcome(false, message, records)
-            : new VerificationOutcome(true, message, records);
+            ? new VerificationOutcome(false, message, records) { Report = report }
+            : new VerificationOutcome(true, message, records) { Report = report };
 
-        static VerificationOutcome Failed(string message) => new(false, message, []);
+        static VerificationOutcome Failed(string message) => new(false, message, []) { Report = BundleWriteReport.Empty };
     }
+
+    /// <summary>A concept <see cref="PrepareStamp"/> read, stamped and checked, ready to be written: its new content and the version that content was built from.</summary>
+    private readonly record struct PreparedStamp(ConceptTarget Target, string ConceptId, string Content, BundleObjectVersion Version, string? ReplacedAt);
+
+    /// <summary>
+    /// Reads <paramref name="target"/>'s current text through the provider, upserts
+    /// <paramref name="by"/>'s stamp into its <c>verified</c> block in place and checks the
+    /// result, exactly as <see cref="RecordVerifications"/> describes: <see langword="null"/> and
+    /// <paramref name="prepared"/>, or the <c>Error: ...</c> refusal. Writes nothing. CALLER
+    /// MUST hold the write lock.
+    /// </summary>
+    private string? PrepareStamp(ConceptTarget target, string conceptId, string by, string stampedAt, out PreparedStamp prepared)
+    {
+        prepared = default;
+        if (ReadCurrent(target.Key) is not { } current)
+        {
+            return $"Error: concept {DebugQuote.Quote(conceptId)} does not exist.";
+        }
+
+        var text = current.Text;
+        var document = OkfDocument.Parse(text);
+        var map = document.Frontmatter.AsMapping();
+
+        var upserted = UpsertStamp(map.Get("verified"), by, stampedAt, out var replacedAt);
+
+        // LOAD-BEARING, not just "kept for replacedAt" (replacedAt
+        // is UpsertStamp's own out-parameter, unaffected by this
+        // call): `map` is the LIVE mapping `document.Frontmatter`
+        // wraps (Frontmatter.AsMapping returns the instance
+        // itself, no defensive copy -- see its own doc comment),
+        // so this mutates `document` in place into exactly the
+        // structure the edit below is SUPPOSED to produce. The
+        // equality check further down compares the edit's actual
+        // re-parsed result against THIS object -- without this
+        // call, `document` would still hold the OLD `verified`
+        // value and the equality check would fail on every
+        // legitimate stamp.
+        map.Insert("verified", upserted);
+
+        // Surgical, not a re-emit: only the `verified:` block is
+        // touched in the RAW text, so every other frontmatter key
+        // -- comments, CRLF endings, folded/flow scalar spellings,
+        // key order -- survives byte for byte. This is what
+        // RecordVerifications's own doc comment already promises
+        // ("preserving every other frontmatter key and the body")
+        // and a full-frontmatter re-emit through YamlEmitter did
+        // not deliver: YamlEmitter normalizes CRLF to LF, drops
+        // comments, and reflows folded/flow scalars (see
+        // FrontmatterBlockEdit's own doc comment). Deliberately
+        // does NOT go through MaybeStampGenerated: this path
+        // stamps `verified` only, never `generated`.
+        var one = new YamlMapping();
+        one.Insert("verified", upserted);
+        var stampBlock = YamlEmitter.Emit(one);
+        var content = FrontmatterBlockEdit.ReplaceTopLevelKey(text, "verified", stampBlock);
+
+        // The edit is textual (FrontmatterBlockEdit does not
+        // itself validate YAML), so re-parsing and checking FULL
+        // STRUCTURAL EQUALITY against `document` -- which already
+        // holds the exact intended result, per the load-bearing
+        // `map.Insert` above -- is the proof that nothing else
+        // moved: same frontmatter (key set, order, and every
+        // OTHER value) and the same body, ordinally
+        // (OkfDocument.Equals). A weaker check (e.g. only
+        // counting `verified` entries) can pass on a genuinely
+        // corrupted edit -- a mis-located key spelling that
+        // inserted a shadowed duplicate elsewhere still re-parses
+        // to the same COUNT while leaving a stale value in the
+        // file (finding #C7-1). ValidateConformance (§11) runs
+        // first since equality alone would not refuse a document
+        // that was already missing `type` before this edit ran.
+        var reparsed = OkfDocument.Parse(content);
+
+        // Attributed here, at the SAME point this check has
+        // always run (deliberately not moved earlier -- see the
+        // early CheckVerificationTargets call above, which
+        // excludes NotConformant for exactly this reason): a
+        // bare DocumentValidationException naming no concept at
+        // all is what CmdVerify and okf_verify used to work
+        // around with a pre-loop of their own.
+        try
+        {
+            reparsed.ValidateConformance();
+        }
+        catch (DocumentValidationException)
+        {
+            return FormatVerificationTargetProblem(
+                new VerificationTargetProblem(VerificationTargetProblemKind.NotConformant, conceptId));
+        }
+
+        if (!reparsed.Equals(document))
+        {
+            // Diagnosable, not just "no": a bare "could not be
+            // edited in place" gives a reader no way to tell a
+            // real corruption apart from the one KNOWN false
+            // positive this check has -- a NaN float anywhere in
+            // the frontmatter never compares equal to itself
+            // (YamlValue's float equality is IEEE-754 `==`), so a
+            // concept with, say, `threshold: .nan` fails this
+            // check on every verify, even a perfectly clean edit.
+            // Not fixed here (changing YamlValue's equality is out
+            // of scope for this method); named explicitly instead,
+            // alongside the other diagnosable cases below. The
+            // body case is checked first since this edit never
+            // touches the body on purpose, so a body difference
+            // is worth calling out distinctly from any
+            // frontmatter-shaped explanation.
+            var detail = !string.Equals(reparsed.Body, document.Body, StringComparison.Ordinal)
+                ? "the body changed, which this edit never does on purpose"
+                : ContainsNaN(document.Frontmatter.AsMapping())
+                    ? "the frontmatter contains a NaN value, which never compares equal to "
+                        + "itself, so this check cannot confirm the edit either way -- inspect "
+                        + "the file by hand"
+                    : DescribeFrontmatterDivergence(document.Frontmatter.AsMapping(), reparsed.Frontmatter.AsMapping());
+            return $"Error: concept {DebugQuote.Quote(conceptId)}: the verified block could not be edited in place ({detail}).";
+        }
+
+        prepared = new PreparedStamp(target, conceptId, content, current.Version, replacedAt);
+        return null;
+    }
+
+    /// <summary>The key of the bundle root's change log (spec §9).</summary>
+    internal const string LogKey = "log.md";
+
+    /// <summary>
+    /// Appends one entry to the bundle root's <c>log.md</c> (spec §9) under
+    /// <paramref name="date"/> (today, UTC, by default), creating the file if it
+    /// does not yet exist. If a heading for that date already exists, the entry
+    /// is appended to the end of that day's entries (days are newest-first by
+    /// convention, but entries within a day stay chronological). The single
+    /// write path of <c>log.md</c> (spec §3): the read-modify-write runs under
+    /// this writer's lock, is written through the provider conditioned on the
+    /// version read (<see cref="BundleWriteCondition.IfMatch"/>, or
+    /// <see cref="BundleWriteCondition.MustNotExist"/> for a new log), and is
+    /// retried on a conflict like <see cref="AppendToConceptAtomic"/>. The
+    /// existing file, if any, is read as strict UTF-8, then re-rendered through
+    /// <see cref="ChangeLog.ToMarkdown"/> — the strict §9 model — so any
+    /// non-conforming prose or comments in a hand-authored <c>log.md</c> are not
+    /// preserved. Never throws for expected errors (a <paramref name="kind"/> or
+    /// <paramref name="text"/> that <see cref="GuardLogField"/> refuses — empty,
+    /// or carrying a line break, a control character or a bidirectional control
+    /// character — a <c>log.md</c> that fails strict UTF-8 decoding, a path the
+    /// provider refuses): those are reported as a plain-text message instead.
+    /// A write notification (<c>onWriteCommitted</c>) runs once the entry is committed,
+    /// after the attempt that committed it; an exception it throws that the writer
+    /// converts (a conflict raised by another operation included) is reported the same
+    /// way, <c>Error: {message}</c>, although the entry is in <c>log.md</c>, appended
+    /// once: it is never retried (decision B48).
+    /// </summary>
+    /// <param name="kind">Entry kind, e.g. <c>Update</c> or <c>Creation</c>.</param>
+    /// <param name="text">The entry text.</param>
+    /// <param name="date">The day the entry goes under; <see langword="null"/>: the UTC date of <see cref="UtcNow"/>.</param>
+    /// <returns><c>Appended a '{kind}' entry under {date} in log.md.</c>, with the folded kind, or an <c>Error: ...</c> message.</returns>
+    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
+    public string AppendLog(string kind, string text, DateOnly? date = null)
+    {
+        GuardWritable();
+        if (GuardLogField(kind, "kind") is { } kindError)
+        {
+            return kindError;
+        }
+
+        if (GuardLogField(text, "text") is { } textError)
+        {
+            return textError;
+        }
+
+        var day = (date ?? DateOnly.FromDateTime(UtcNow())).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var foldedKind = FoldLogField(kind);
+        var entry = new LogEntry(foldedKind, FoldLogField(text));
+        var key = BundleKey.Parse(LogKey);
+        return RunTool(
+            () =>
+            {
+                if (_validator.CheckKey(key) is { } refused)
+                {
+                    return $"Error: log.md cannot be written under the bundle's key policy: {refused}.";
+                }
+
+                // Serialized under the bundle write lock (shared with every
+                // other write of this writer): without it, two concurrent
+                // AppendLog calls could both read the same "before" text, each
+                // append their own entry to it, and the second write would
+                // silently clobber the first (a lost update). A writer outside
+                // the lock in this process is met by the version condition; another
+                // process only up to the provider's last check (issue #178).
+                using (EnterWriteLock())
+                {
+                    return WriteThenNotify(committed => WithRetries(LogKey, () =>
+                    {
+                        // Strict UTF-8, matching ChangesSince: a non-UTF-8
+                        // log.md throws DecoderFallbackException (caught by
+                        // RunTool) instead of being silently re-decoded with
+                        // U+FFFD replacement characters and rewritten that way.
+                        var current = ReadCurrent(key);
+
+                        // ChangeLog.Parse is permissive (never throws); used here
+                        // only to locate the day (if any) among the existing entries.
+                        var changeLog = ChangeLog.Parse(current?.Text ?? string.Empty);
+                        var days = changeLog.Days.ToList();
+                        var dayIndex = days.FindIndex(d => string.Equals(d.Date, day, StringComparison.Ordinal));
+                        if (dayIndex >= 0)
+                        {
+                            var existing = days[dayIndex];
+                            days[dayIndex] = existing with { Entries = [.. existing.Entries, entry] };
+                        }
+                        else
+                        {
+                            // New LogDay at the head: days are newest-first (§9).
+                            days.Insert(0, new LogDay(day, [entry]));
+                        }
+
+                        if (current is null && BundleTreeCheck.CheckCreation(_provider, _validator, key, _limits) is { } conflict)
+                        {
+                            return $"Error: {conflict}.";
+                        }
+
+                        // Not WriteValidatedContentLocked, the primitive of concept
+                        // writes and verification stamps: log.md is written by this
+                        // conditioned Write of its own. Its commit is reported to
+                        // WriteThenNotify, as AppendToConceptAtomic's is, so the
+                        // notification runs once, after the retries (decision B48).
+                        _provider.Write(key, OkfEncodings.NoBom.GetBytes(new ChangeLog(changeLog.Title, days).ToMarkdown()), ConditionFor(current));
+                        committed();
+
+                        // The FOLDED kind, not the raw argument: this message is
+                        // itself a line-structured result, and echoing the
+                        // argument verbatim would put back the separator the
+                        // write just removed.
+                        return $"Appended a '{foldedKind}' entry under {day} in log.md.";
+                    }));
+                }
+            },
+            () => LogKey);
+    }
+
+    /// <summary>
+    /// Validates one <see cref="AppendLog"/> argument, returning the rejection
+    /// message or <see langword="null"/> when it is acceptable.
+    ///
+    /// Both of that method's arguments get the identical checks, so they share
+    /// one validator rather than two copies that could drift.
+    ///
+    /// <para><b>Three treatments, one boundary.</b> A caller-supplied field is
+    /// written into the user's repository AND echoed into a tool result, so
+    /// every character that survives does so for a stated reason:</para>
+    ///
+    /// <list type="bullet">
+    /// <item><c>\n</c> and <c>\r</c> — <b>REJECTED</b>. They split
+    /// <c>log.md</c> on re-read: a newline lets an entry forge a fabricated
+    /// <c>## &lt;date&gt;</c> heading or <c>* entry</c> bullet that a later
+    /// <c>ChangeLog.Parse</c> reads back as genuine audit-trail history (§9).
+    /// Rejected rather than stripped, so the caller learns the write did not
+    /// happen.</item>
+    /// <item>U+000C, U+0085, U+2028 and U+2029 — <b>FOLDED</b> to a space at
+    /// the write (<see cref="FoldLogField"/>), not rejected. They cannot forge
+    /// a §9 line, they only split a downstream renderer, and most callers
+    /// cannot see them, so failing a call over one would cost more than it
+    /// buys.</item>
+    /// <item>Every other control character — <b>REJECTED</b>: ESC, backspace,
+    /// BEL, VT, DEL and the rest of C0/C1. None has a legitimate use in a log
+    /// entry, and each forges what a HUMAN reading the audit trail sees rather
+    /// than what it says: <c>ESC[2K ESC[1A</c> rewrites the terminal line
+    /// <c>cat log.md</c> just printed, backspace erases it. Folding them would
+    /// silently rewrite the caller's words, and persisting them writes a
+    /// rendering attack into the repository.</item>
+    /// <item>Every bidirectional CONTROL character — <b>REJECTED</b>: U+061C,
+    /// U+200E, U+200F, U+202A–U+202E and U+2066–U+2069
+    /// (<see cref="IsBidiControl"/>). Each reorders the text a reader is shown
+    /// without changing the bytes stored, so the <c>log.md</c> a human reads
+    /// and the <c>log.md</c> a tool reads disagree. Ordinary right-to-left
+    /// TEXT is NOT affected: Arabic and Hebrew letters carry their own strong
+    /// direction and need none of these.</item>
+    /// <item><c>\t</c> — <b>ACCEPTED, verbatim in the interior of the field.</b>
+    /// The one control character a log message may legitimately carry. Not
+    /// folded to a space the way the four soft separators are: this guard
+    /// rewrites a caller's words only when the character would otherwise
+    /// break structure, and an interior tab cannot — <c>ChangeLog.Parse</c>
+    /// splits on LF, a tab is not a terminator, and it can never reach the
+    /// START of a line (the renderer always emits <c>* </c> first), the only
+    /// position where markdown would read it as an indented code block. A
+    /// LEADING or TRAILING tab does not survive, though: <see cref="FoldLogField"/>
+    /// trims the field before this guard or the writer ever sees it, exactly
+    /// as it has always trimmed a leading/trailing space — so <c>"\tUpdate\t"</c>
+    /// is written (and echoed) as <c>Update</c>, not <c>&lt;TAB&gt;Update&lt;TAB&gt;</c>.</item>
+    /// </list>
+    ///
+    /// <para>The control-character half reuses
+    /// <see cref="LineSafeText.ContainsControlCharacter"/> — the repo's shared
+    /// predicate, already used at <c>okf_verify</c>'s <c>by</c> — rather than a
+    /// second character list here, which is exactly the drift that predicate's
+    /// own doc comment exists to prevent. Two adjustments are made to the value
+    /// it sees, not to the predicate: it runs over the FOLDED text (by then the
+    /// four soft separators are spaces, and the predicate would otherwise
+    /// refuse U+2028/U+2029 and undo the fold), and over a probe in which tabs
+    /// are spaces (the exemption above). The value WRITTEN keeps its tabs.</para>
+    /// </summary>
+    /// <param name="value">The argument's value.</param>
+    /// <param name="fieldName">The argument's name, as it appears in the message.</param>
+    internal static string? GuardLogField(string value, string fieldName)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return $"Error: invalid {fieldName} — it must not be empty.";
+        }
+
+        if (value.Contains('\0'))
+        {
+            return $"Error: invalid {fieldName} — it must not contain a null character.";
+        }
+
+        if (value.Contains('\n') || value.Contains('\r'))
+        {
+            return $"Error: invalid {fieldName} — it must not contain a line break (this would let it "
+                + "forge fake '## date' or '* entry' lines in log.md).";
+        }
+
+        var folded = FoldLogField(value);
+        var probe = folded.Replace('\t', ' ');
+
+        if (LineSafeText.ContainsControlCharacter(probe))
+        {
+            return $"Error: invalid {fieldName} — it must not contain a control character other than a "
+                + "tab (ESC, backspace and BEL forge what a human reading log.md sees).";
+        }
+
+        if (ContainsBidiControl(folded))
+        {
+            return $"Error: invalid {fieldName} — it must not contain a bidirectional control character "
+                + "(U+061C, U+200E, U+200F, U+202A-U+202E, U+2066-U+2069 reorder the stored text on "
+                + "display; ordinary right-to-left text needs none of them).";
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// True when the value carries any Unicode bidirectional CONTROL
+    /// character — see <see cref="IsBidiControl"/> for the list and for why
+    /// the whole class is refused rather than the two overrides alone.
+    ///
+    /// Local to the log.md write path rather than added to
+    /// <see cref="LineSafeText.ContainsControlCharacter"/>: none of these code
+    /// points is a <see cref="char.IsControl(char)"/> character, so putting
+    /// them there would widen the shared cross-assembly predicate that also
+    /// gates §7 actors and <c>at</c> timestamps — a decision for those call
+    /// sites, not one this write path may take on their behalf.
+    /// </summary>
+    /// <param name="value">The guarded argument's value.</param>
+    private static bool ContainsBidiControl(string value)
+    {
+        foreach (var c in value)
+        {
+            if (IsBidiControl(c))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The twelve Unicode bidirectional control characters: the marks U+061C
+    /// (ALM), U+200E (LRM) and U+200F (RLM); the embeddings and overrides
+    /// U+202A (LRE), U+202B (RLE), U+202C (PDF), U+202D (LRO) and U+202E
+    /// (RLO); and the isolates U+2066 (LRI), U+2067 (RLI), U+2068 (FSI) and
+    /// U+2069 (PDI).
+    ///
+    /// <para>The WHOLE class, not just the two overrides: an embedding or an
+    /// isolate reorders a rendered line as effectively as U+202E, a
+    /// terminator can unbalance one an author opened, and a mark reorders a
+    /// neutral run. A rule that stopped at "override" would refuse
+    /// <c>RLO</c> and pass <c>RLE</c>, which is not a distinction any reader
+    /// of a rendered <c>log.md</c> can see.</para>
+    ///
+    /// <para><b>One list, two call sites</b> — <see cref="ContainsBidiControl"/>
+    /// (the write guard) and <c>OkfBundleTools.NeedsVisibleEscape</c> (the read
+    /// rendering). They must agree: a character the write refuses is exactly a
+    /// character the read has to make visible when an older build, another
+    /// producer or a human already put it in the file.</para>
+    /// </summary>
+    /// <param name="c">The character to classify.</param>
+    internal static bool IsBidiControl(char c) =>
+        // Numeric constants on purpose: every one of these is invisible in
+        // source, in a diff and in a review (the convention
+        // Internal/LineSafeText.cs sets).
+        c is (char)0x061C or (char)0x200E or (char)0x200F
+            or (char)0x202A or (char)0x202B or (char)0x202C or (char)0x202D or (char)0x202E
+            or (char)0x2066 or (char)0x2067 or (char)0x2068 or (char)0x2069;
+
+    /// <summary>
+    /// The four separators <see cref="GuardLogField"/> deliberately does NOT
+    /// reject, folded to a single space before the value is written. Leading
+    /// and trailing whitespace, tabs included, is removed first by the
+    /// <see cref="string.Trim()"/> this method also does — the same trimming
+    /// an ordinary leading/trailing space has always had, and the reason a
+    /// tab is "verbatim" only in the interior of a field (see the <c>\t</c>
+    /// item on <see cref="GuardLogField"/>).
+    ///
+    /// <para><b>Why the asymmetry.</b> <c>\n</c> and <c>\r</c> are REFUSED
+    /// (<see cref="GuardLogField"/>): <c>ChangeLog.Parse</c> is LF-line-based,
+    /// so those two are the characters that would make a later read back a
+    /// forged <c>## date</c> heading or <c>* entry</c> bullet as genuine
+    /// audit-trail history (§9), and a caller who sent one needs to learn the
+    /// write did not happen. U+000C, U+0085, U+2028 and U+2029 cannot do that —
+    /// the §9 parser does not split on them — but they DO split a downstream
+    /// markdown or JavaScript renderer of the same file, and they were
+    /// persisted verbatim into the user's repository, where every other
+    /// consumer inherits them. Refusing them too would fail a call over a
+    /// character most callers cannot see, so they are folded and the call
+    /// succeeds. Same rule as the read side (<c>OkfBundleTools.OneLine</c>): nothing
+    /// downstream can start a new line.</para>
+    ///
+    /// <para><see cref="string.ReplaceLineEndings(string)"/> rather than a
+    /// hand-rolled set: it is the same helper the rendering side uses, and by
+    /// the time this runs <see cref="GuardLogField"/> has already refused the
+    /// only two terminators it folds that we do not want folded silently.</para>
+    /// </summary>
+    /// <param name="value">The guarded argument's value.</param>
+    internal static string FoldLogField(string value) => value.Trim().ReplaceLineEndings(" ");
 
     /// <summary>
     /// Returns the <c>verified</c> sequence with <paramref name="by"/>'s stamp
@@ -1320,46 +1896,32 @@ public sealed class BundleConceptWriter
             string.Equals(entry.Key.AsString(), "verified", StringComparison.Ordinal);
     }
 
-    /// <summary>A validated concept id and the absolute path it resolves to, produced by <see cref="ValidateConceptTarget"/>.</summary>
-    private readonly record struct ConceptTarget(ConceptId Id, string TargetPath);
+    /// <summary>A validated concept id and the bundle key of its document, produced by <see cref="ValidateConceptTarget"/>.</summary>
+    private readonly record struct ConceptTarget(ConceptId Id, BundleKey Key);
 
     /// <summary>
-    /// Validates <paramref name="conceptId"/> (parseable, not the reserved
-    /// <c>index</c>/<c>log</c> name) and the filesystem path it resolves to
-    /// (within the bundle root; no reparse point, nor any entry whose link
-    /// status cannot be inspected, among its parent directories or at the
-    /// target itself) — shared by <see cref="WriteConcept(string, string, string)"/>
-    /// and <see cref="AppendToConceptAtomic"/> so the two can never diverge
-    /// on what counts as a valid write target. Pure: performs no I/O beyond
-    /// the reparse-point/existence checks themselves, and does not take the
-    /// write lock (<see cref="EnterWriteLock"/>).
+    /// Validates <paramref name="conceptId"/> — parseable, not the reserved
+    /// <c>index</c>/<c>log</c> name — and the bundle key of its document
+    /// (<c>{id}.md</c>) under the writer's key policy (spec §2, decision B2):
+    /// the provider's native constraints under the options' policy, plus any
+    /// extra validator, exactly as a load checks the same key. Shared by every
+    /// write method so they can never diverge on what counts as a valid write
+    /// target. Pure: no I/O, no lock.
     /// </summary>
     /// <remarks>
-    /// <b>Scope of the reparse-point guarantee (read this before assuming
-    /// "no reparse point" holds for the whole write, not just this check):</b>
-    /// this method is a point-in-time check, not an ongoing guarantee — it
-    /// rejects a reparse point that is PRESENT AT THE MOMENT THIS METHOD
-    /// RUNS. The actual write happens later, in <see cref="WriteValidatedContentLocked"/>
-    /// (after YAML parsing and producer validation in between), so this is a
-    /// classic check-then-write (TOCTOU): a concurrent local actor able to
-    /// replace a path component with a symlink/junction between this check
-    /// and that later write is not stopped by this method, and the write lock
-    /// (<see cref="EnterWriteLock"/>) this class otherwise relies on for atomicity is a C# in-process lock —
-    /// it has no effect on what a separate, unsynchronized filesystem
-    /// mutation can do to the same paths. <see cref="WriteValidatedContentLocked"/>
-    /// re-runs the same two checks immediately before its actual
-    /// <see cref="File.WriteAllText(string, string)"/> call, still inside the
-    /// same lock hold, which narrows this window considerably but — since
-    /// .NET has no portable "open/write only if not a symlink, atomically" —
-    /// cannot close it completely; a substitution racing that final,
-    /// immediately-preceding check is a residual, documented limitation, not
-    /// something this design claims to eliminate. The threat model this
-    /// guard IS effective against: an actor who does not already have write
-    /// access to the bundle tree planting a reparse point ahead of time (or
-    /// a stale one left over from a previous, unrelated operation) — since an
-    /// actor who DOES already have concurrent write access to the bundle
-    /// tree could corrupt its content directly and has no need to race this
-    /// check at all.
+    /// <b>Path guards live behind the provider.</b> Whether the key's path goes
+    /// through a symlink or a junction, or an entry that cannot be inspected,
+    /// whether it stays inside the bundle root, and whether the volume would
+    /// confuse the name with another, is the provider's to decide at the moment
+    /// of the write (<see cref="FileSystemBundleProvider"/>: a STRICT check of
+    /// the whole path before anything is listed, again after the parent
+    /// directories exist, and again under its commit lock just before the
+    /// commit). Its refusals come back as exceptions, which <see cref="Translate"/>
+    /// turns into this class's own messages. The checks and the commit are still
+    /// separate system calls, so a substitution by another local actor racing
+    /// the last of them is a residual, documented limitation (issue #178); the
+    /// threat model is unchanged — an actor without write access to the bundle
+    /// tree planting a reparse point ahead of time, or a stale one left over.
     /// </remarks>
     /// <returns>
     /// <see langword="null"/> and a populated <paramref name="target"/> on
@@ -1384,45 +1946,17 @@ public sealed class BundleConceptWriter
                 + "index.md/log.md files on case-insensitive filesystems).";
         }
 
-        var targetPath = id.ToPath(BundleRoot);
-
-        // Belt and braces alongside ConceptId's own segment validation
-        // (which already forbids '..' and '/' inside a segment): the same
-        // defense-in-depth check the reparse helpers below use before
-        // touching disk.
-        if (!ReparsePoints.IsWithinBundleRoot(BundleRoot, targetPath))
+        if (!BundleKey.TryParse(id + ".md", out var key, out var reason))
         {
-            return $"Error: '{id}' resolves outside the bundle root.";
+            return $"Error: '{id}' cannot be a bundle key: {reason}.";
         }
 
-        // Reject a reparse point (symlink/junction) anywhere between the
-        // bundle root and the target's parent directory: the lexical check
-        // above would happily accept "tables/refunds" even if "tables" is a
-        // junction pointing outside the bundle -- the OS follows it when
-        // Directory.CreateDirectory/File.WriteAllText actually touch disk.
-        // The STRICT walk: a directory whose link status cannot be read is
-        // refused like a link (this is a guard, and a guard fails closed --
-        // see ReparsePoints.IsReparsePointOrUninspectable); a directory that
-        // does not exist yet is not, so new subdirectories are still allowed.
-        var targetParentDir = Path.GetDirectoryName(targetPath);
-        if (!string.IsNullOrEmpty(targetParentDir) && ReparsePoints.HasReparsePointOrUninspectableAncestor(BundleRoot, targetParentDir))
+        if (_validator.CheckKey(key) is { } refused)
         {
-            return $"Error: '{id}' resolves through a reparse point (symlink/junction), or an entry that could not be inspected, inside the bundle, which is not allowed.";
+            return $"Error: '{id}' cannot be written under the bundle's key policy: {refused}.";
         }
 
-        // Also reject the target FILE node itself being a reparse point (a
-        // planted file symlink at e.g. tables/x.md pointing at an external
-        // file): the ancestor walk above only covers directory
-        // ANCESTORS of targetPath, it never inspects targetPath itself, so
-        // an existing symlinked concept file would otherwise sail through
-        // both checks and a later read/write would follow the link. Strict
-        // for the same reason as the walk above.
-        if (ReparsePoints.IsReparsePointOrUninspectable(targetPath))
-        {
-            return $"Error: '{id}' is a reparse point (symlink/junction) or could not be inspected, not a regular file -- refusing to overwrite it.";
-        }
-
-        target = new ConceptTarget(id, targetPath);
+        target = new ConceptTarget(id, key);
         return null;
     }
 
@@ -1435,10 +1969,11 @@ public sealed class BundleConceptWriter
     /// conformance loop of their own purely to phrase a nicer message than <see cref="RecordVerifications"/>'s
     /// own (then-unattributed) refusal — three spellings of the same §11 floor. This is the one.
     ///
-    /// Reads only the <c>k</c> concept files named in <paramref name="conceptIds"/> (via
-    /// <see cref="ValidateConceptTarget"/> and a direct <see cref="File.Exists(string)"/>/parse of
-    /// each target path) — never <see cref="Bundle.Load(string)"/> — so answering a k-id question
-    /// costs O(k) file reads, not a full bundle parse.
+    /// Reads only the <c>k</c> concept documents named in <paramref name="conceptIds"/>, through the
+    /// provider (<see cref="IBundleProvider.Exists"/> and <see cref="IBundleProvider.Read"/>, whose
+    /// names match exactly) — never <see cref="Bundle.Load(string)"/> — so answering a k-id question
+    /// costs O(k) reads, not a full bundle parse. Read-only: it is not guarded by
+    /// <see cref="BundleProviderCapabilities.CanWrite"/>.
     /// </summary>
     /// <returns>
     /// <see langword="null"/> if every id is a valid, existing, parseable, conformant concept with
@@ -1506,10 +2041,10 @@ public sealed class BundleConceptWriter
         // that copy is gone now that this method runs first and applies the
         // identical rule to the whole batch before the prepare loop's targets
         // list is even built, making the old copy unreachable dead code.
-        var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seenKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (var i = 0; i < targets.Count; i++)
         {
-            if (!seenPaths.Add(targets[i].TargetPath))
+            if (!seenKeys.Add(targets[i].Key.ToString()))
             {
                 return new VerificationTargetProblem(VerificationTargetProblemKind.DuplicateName, conceptIds[i]);
             }
@@ -1518,28 +2053,32 @@ public sealed class BundleConceptWriter
         for (var i = 0; i < targets.Count; i++)
         {
             var target = targets[i];
-
-            // File.Exists alone answers case-INSENSITIVELY on Windows/macOS,
-            // so an id like "METRICS/DAU" would otherwise read as "found" for
-            // an on-disk metrics/dau.md — a different, wrong answer than
-            // Bundle.Load gives: it builds each concept's id from the REAL
-            // on-disk casing its directory walk returns, and ConceptId
-            // equality is ordinal, so bundle.Get("METRICS/DAU") has always
-            // returned null (a genuinely different, nonexistent id) rather
-            // than resolving to the lowercase file. ExistsWithExactCase
-            // mirrors that by checking the real directory entries.
-            if (!File.Exists(target.TargetPath) || !ExistsWithExactCase(BundleRoot, target.Id))
-            {
-                return new VerificationTargetProblem(VerificationTargetProblemKind.NotFound, conceptIds[i]);
-            }
-
             try
             {
-                var text = OkfEncodings.Strict.GetString(File.ReadAllBytes(target.TargetPath));
+                // The provider matches every segment of the key EXACTLY
+                // (spec §2): an id like "METRICS/DAU" is not found for an
+                // on-disk metrics/dau.md on any OS or volume, the same answer
+                // Bundle.Load gives — it builds each concept's id from the
+                // stored names, and ConceptId equality is ordinal.
+                if (!_provider.Exists(target.Key))
+                {
+                    return new VerificationTargetProblem(VerificationTargetProblemKind.NotFound, conceptIds[i]);
+                }
 
                 // One spelling of §11 conformance (OkfDocument.ValidateConformance
                 // itself), not a second hand-rolled `Get("type")` check beside it.
-                OkfDocument.Parse(text).ValidateConformance();
+                OkfDocument.Parse(Bundle.ReadText(_provider, target.Key, _limits, new byte[Bundle.ReadChunkBytes], out _)).ValidateConformance();
+            }
+            catch (BundleAccessRefusedException ex)
+            {
+                // A path the provider refuses (a reparse point, an entry that
+                // cannot be inspected) is an invalid target, as when the
+                // writer checked the path itself; same message as a write.
+                return new VerificationTargetProblem(VerificationTargetProblemKind.InvalidId, conceptIds[i], Translate(ex, $"'{target.Id}'"));
+            }
+            catch (BundleObjectNotFoundException)
+            {
+                return new VerificationTargetProblem(VerificationTargetProblemKind.NotFound, conceptIds[i]);
             }
             catch (DocumentValidationException)
             {
@@ -1565,51 +2104,6 @@ public sealed class BundleConceptWriter
     }
 
     /// <summary>
-    /// Whether <paramref name="id"/> names a file that exists under <paramref name="bundleRoot"/>
-    /// with EXACTLY this case for every path segment — not merely a case-insensitive match, the way
-    /// <see cref="File.Exists(string)"/> answers on Windows/macOS. Walks the real directory entries
-    /// segment by segment (mirroring what <see cref="Bundle.Load(string)"/>'s own enumeration would
-    /// find: it builds each concept's <see cref="ConceptId"/> from the REAL on-disk casing the OS
-    /// returns, and <see cref="ConceptId"/> equality is ordinal) rather than trusting the
-    /// case-insensitive path <paramref name="id"/> resolves to.
-    /// </summary>
-    private static bool ExistsWithExactCase(string bundleRoot, ConceptId id)
-    {
-        var dir = bundleRoot;
-        for (var i = 0; i < id.Segments.Count; i++)
-        {
-            var isLastSegment = i == id.Segments.Count - 1;
-            var wantName = isLastSegment ? id.Segments[i] + ".md" : id.Segments[i];
-
-            string[] entries;
-            try
-            {
-                entries = isLastSegment ? Directory.GetFiles(dir) : Directory.GetDirectories(dir);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                // File.Exists already answered true for the case-insensitively
-                // resolved path, so a listing failure here is an edge case
-                // (e.g. a permissions change racing this call) rather than
-                // the common case -- treated as "not found" rather than
-                // surfacing a second, differently-shaped error for what is
-                // fundamentally the same existence question.
-                return false;
-            }
-
-            var match = entries.FirstOrDefault(entry => string.Equals(Path.GetFileName(entry), wantName, StringComparison.Ordinal));
-            if (match is null)
-            {
-                return false;
-            }
-
-            dir = isLastSegment ? dir : match;
-        }
-
-        return true;
-    }
-
-    /// <summary>
     /// Renders a <see cref="VerificationTargetProblem"/> in the wording <see cref="RecordVerifications"/>
     /// and the <c>okf_verify</c> tool already read for <see cref="VerificationTargetProblemKind.NotFound"/>
     /// and <see cref="VerificationTargetProblemKind.DuplicateName"/> — an <c>Error: </c>-prefixed,
@@ -1624,9 +2118,9 @@ public sealed class BundleConceptWriter
     /// carried the parser's own detail). <see cref="VerificationTargetProblemKind.InvalidId"/>
     /// returns <see cref="VerificationTargetProblem.Detail"/> as captured by
     /// <see cref="CheckVerificationTargets"/> from <see cref="ValidateConceptTarget"/>'s own return
-    /// value — not re-derived here, since <see cref="ValidateConceptTarget"/> also probes the
-    /// filesystem for a reparse point, and re-running it a second time is both wasted I/O and a
-    /// second window for that answer to change underneath it.
+    /// value, or from the provider's refusal of the path — not re-derived here, since asking the
+    /// provider a second time is both wasted I/O and a second window for that answer to change
+    /// underneath it.
     /// </summary>
     private static string FormatVerificationTargetProblem(VerificationTargetProblem problem) => problem.Kind switch
     {
@@ -1736,132 +2230,260 @@ public sealed class BundleConceptWriter
     }
 
     /// <summary>
-    /// Late, best-effort reparse-point re-check used by
-    /// <see cref="WriteValidatedContentLocked"/> immediately before its
-    /// <see cref="File.WriteAllText(string, string, System.Text.Encoding)"/>
-    /// call, still inside the caller's hold of the write lock.
-    /// Re-runs the same two checks <see cref="ValidateConceptTarget"/>
-    /// already ran earlier: a reparse point among <paramref name="targetPath"/>'s
-    /// directory ancestors (up to <see cref="BundleRoot"/>), or at
-    /// <paramref name="targetPath"/> itself -- see
-    /// <see cref="ValidateConceptTarget"/>'s remarks for the full threat model
-    /// this narrows (not closes).
+    /// Writes already-validated <paramref name="content"/> as <paramref name="target"/>'s
+    /// document through the provider, under <paramref name="condition"/>, and reports the
+    /// commit through <paramref name="committed"/>. CALLER MUST already hold the write lock
+    /// (<see cref="EnterWriteLock"/>) — this method does not acquire it itself, so that
+    /// <see cref="AppendToConceptAtomic"/> and <see cref="RecordVerifications"/> can enclose
+    /// their own preceding read-and-transform in the SAME lock acquisition as this write.
+    /// The write primitive of concept writes and verification stamps: every overload of
+    /// <see cref="WriteConcept(string, string, string)"/>, <see cref="AppendToConceptAtomic"/> and
+    /// <see cref="RecordVerifications"/> write through here.
     /// </summary>
-    /// <param name="subject">
-    /// Human-readable identifier for the returned error message, e.g.
-    /// <c>"'tables/x'"</c>.
+    /// <remarks>
+    /// <para>A creation — the key absent at the provider — is first checked against the tree
+    /// it would produce (<see cref="BundleTreeCheck"/>, spec §2, decision B10): a case or
+    /// Unicode-form twin under a policy that folds names, an object on a proper prefix, or
+    /// objects under the key, is refused here with a message naming the conflicting name,
+    /// before anything is written. An update skips it.</para>
+    /// <para>Provider exceptions propagate (the caller's <see cref="RunTool(Func{string}, Func{string?}?)"/>
+    /// translates them, or the caller retries a conflict): nothing has then been written
+    /// and <paramref name="committed"/> is not called, except for an outcome the
+    /// provider could not establish (<see cref="BundleWriteOutcomeUnknownException"/>).</para>
+    /// <para>Once <see cref="IBundleProvider.Write"/> has returned, the write is final: this
+    /// method calls <paramref name="committed"/> and returns its confirmation, and nothing it
+    /// does after the commit can throw. It never invokes <see cref="_onWriteCommitted"/>: the
+    /// caller does, once its whole write operation — every attempt of a read-modify-write
+    /// included — has returned (<see cref="WriteThenNotify"/>, <see cref="NotifyCommitted"/>), so
+    /// that nothing the notification throws can be taken for a failure of the storage
+    /// operation (decision B48).</para>
+    /// </remarks>
+    /// <param name="target">The concept being written.</param>
+    /// <param name="content">The fully serialized, already-validated document content to write.</param>
+    /// <param name="condition">The provider condition: <see cref="BundleWriteCondition.None"/> for an unconditional write.</param>
+    /// <param name="existedBefore">
+    /// Whether the object already existed, if the caller already knows it from a read made
+    /// under the same write-lock hold. <see langword="null"/> means "not checked yet": this
+    /// method asks the provider (<see cref="IBundleProvider.Exists"/>).
     /// </param>
-    /// <param name="parentDir"><paramref name="targetPath"/>'s parent directory.</param>
-    /// <param name="targetPath">The file about to be written.</param>
-    /// <returns>
-    /// An <c>Error: ...</c> message if a reparse point is detected; otherwise
-    /// <see langword="null"/>.
-    /// </returns>
-    private string? LateReparseGuard(string subject, string? parentDir, string targetPath)
+    /// <param name="committed">Called once the provider has committed the write: the caller then notifies (<see cref="NotifyCommitted"/>).</param>
+    private string WriteValidatedContentLocked(ConceptTarget target, string content, BundleWriteCondition condition, Action committed, bool? existedBefore = null)
     {
-        if ((!string.IsNullOrEmpty(parentDir) && ReparsePoints.HasReparsePointOrUninspectableAncestor(BundleRoot, parentDir))
-            || ReparsePoints.IsReparsePointOrUninspectable(targetPath))
+        var existed = existedBefore ?? _provider.Exists(target.Key);
+        if (!existed
+            && condition.Kind != BundleWriteConditionKind.IfMatch // never a creation
+            && BundleTreeCheck.CheckCreation(_provider, _validator, target.Key, _limits) is { } conflict)
         {
-            return $"Error: {subject} resolves through a reparse point (symlink/junction), or an entry that could not be inspected, inside the bundle, which is not allowed.";
+            return $"Error: {conflict}.";
         }
 
-        return null;
+        var bytes = OkfEncodings.NoBom.GetBytes(content);
+        _provider.Write(target.Key, bytes, condition);
+        committed();
+
+        var status = existed ? "updated" : "new";
+        return $"Written {target.Id} ({status}, {bytes.Length} bytes). Remember to run okf_regenerate_indexes.";
     }
 
     /// <summary>
-    /// Writes already-validated <paramref name="content"/> to <paramref name="targetPath"/>
-    /// and invokes <see cref="_onWriteCommitted"/>. CALLER MUST already hold
-    /// the write lock (<see cref="EnterWriteLock"/>) — this method does not acquire it itself,
-    /// so that <see cref="AppendToConceptAtomic"/> can enclose its own
-    /// preceding read-and-transform in the SAME lock acquisition as this
-    /// write (a nested/second acquisition here would either reintroduce the
-    /// exact gap this seam exists to close, or -- if the write lock
-    /// were ever changed to a non-reentrant primitive -- deadlock). Shared
-    /// verbatim by <see cref="WriteConcept(string, string, string)"/> (which wraps a single call to
-    /// this in its own <c>using (EnterWriteLock())</c>) and
-    /// <see cref="AppendToConceptAtomic"/>.
+    /// Runs one write operation of a <c>string</c> entry point — a single write, or every attempt
+    /// of a read-modify-write — and, if it committed, invokes the write notification once that
+    /// operation has returned (<see cref="NotifyCommitted"/>). CALLER MUST hold the write lock:
+    /// the notification runs under it, atomically with the write it follows (#131).
     /// </summary>
-    /// <remarks>
-    /// Defense-in-depth against the check-then-write gap documented on
-    /// <see cref="ValidateConceptTarget"/>: immediately before the actual
-    /// <see cref="File.WriteAllText(string, string, System.Text.Encoding)"/> call below,
-    /// this method re-runs the SAME two reparse-point checks
-    /// <see cref="ValidateConceptTarget"/> already ran earlier (a reparse
-    /// point among <paramref name="targetPath"/>'s parent directories, or at
-    /// <paramref name="targetPath"/> itself), still inside the caller's hold
-    /// of the write lock. This narrows the window a concurrent
-    /// local filesystem substitution would need to land in — from "anywhere
-    /// between validation and the write" down to "between this re-check and
-    /// the write two lines later" — but does NOT close it: .NET has no
-    /// portable API to open/write a file "only if not currently a symlink"
-    /// atomically, so a substitution racing this exact re-check is still
-    /// possible in principle. Best-effort, not a guarantee; see
-    /// <see cref="ValidateConceptTarget"/>'s remarks for the full threat
-    /// model this is (and is not) meant to defend against.
-    /// </remarks>
-    /// <param name="id">The concept id being written, used only for the returned confirmation message.</param>
-    /// <param name="targetPath">The absolute path to write <paramref name="content"/> to.</param>
-    /// <param name="content">The fully serialized, already-validated document content to write.</param>
-    /// <param name="existedBefore">
-    /// Whether <paramref name="targetPath"/> already existed, if the caller
-    /// already knows this from a check performed earlier under the same
-    /// write-lock hold (<see cref="AppendToConceptAtomic"/>
-    /// passes its own earlier <see cref="File.Exists(string)"/> result here
-    /// to avoid a redundant second stat of the same path). <see langword="null"/>
-    /// (the default, used by <see cref="WriteConcept(string, string, string)"/>'s single-call site)
-    /// means "no such check has happened yet" -- this method then performs
-    /// it itself, exactly as before.
-    /// </param>
-    private string WriteValidatedContentLocked(ConceptId id, string targetPath, string content, bool? existedBefore = null)
+    /// <param name="write">The operation; it calls the action it is given once the provider has committed.</param>
+    /// <returns>What <paramref name="write"/> returned, or the <c>Error: …</c> text of a notification that failed.</returns>
+    private string WriteThenNotify(Func<Action, string> write)
     {
-        var existed = existedBefore ?? File.Exists(targetPath);
+        var committed = false;
+        var result = write(() => committed = true);
+        return committed && NotifyCommitted() is { } failure ? failure : result;
+    }
 
-        var parentDir = Path.GetDirectoryName(targetPath);
-        if (!string.IsNullOrEmpty(parentDir))
+    /// <summary>
+    /// Invokes <see cref="_onWriteCommitted"/> once, after a committed write, outside every retry
+    /// and every catch of a conflict (decision B48): the write is final, so nothing the
+    /// notification throws is a failure of the write — it is never retried, never read as a
+    /// refused condition. An exception the writer converts (<see cref="IsExpectedFailure"/>: an
+    /// I/O error, an <see cref="OkfException"/>, a conflict raised by another operation included)
+    /// is returned as the writer's <c>Error: …</c> text; any other — an
+    /// <see cref="OperationCanceledException"/>, a host's bug — propagates to the caller unchanged,
+    /// the write committed. CALLER MUST hold the write lock.
+    /// </summary>
+    /// <returns><see langword="null"/>, or the <c>Error: …</c> text of the notification's failure.</returns>
+    private string? NotifyCommitted()
+    {
+        try
         {
-            Directory.CreateDirectory(parentDir);
+            _onWriteCommitted?.Invoke();
+            return null;
         }
-
-        BeforeLateReparseCheckForTest?.Invoke();
-
-        // Late, best-effort re-check -- see this method's <remarks> and
-        // ValidateConceptTarget's <remarks> for exactly what this does and
-        // does not close.
-        var lateError = LateReparseGuard($"'{id}'", parentDir, targetPath);
-        if (lateError is not null)
+        catch (Exception ex) when (IsExpectedFailure(ex))
         {
-            return lateError;
+            // The exception's own message, byte for byte (B46): the write committed, so
+            // Translate's provider-refusal texts would describe a failure that did not happen.
+            return $"Error: {ex.Message}";
         }
+    }
 
-        File.WriteAllText(targetPath, content, OkfEncodings.NoBom);
-        _onWriteCommitted?.Invoke();
+    /// <summary>
+    /// The current text and version of <paramref name="key"/>, read through the provider as
+    /// strict UTF-8 within the writer's bounds (<see cref="Bundle.ReadText"/>, the core's one
+    /// bounded reader), or <see langword="null"/> when no object exists under it. A non-UTF-8
+    /// object throws <see cref="System.Text.DecoderFallbackException"/> rather than being
+    /// silently re-decoded and rewritten.
+    /// </summary>
+    private (string Text, BundleObjectVersion Version)? ReadCurrent(BundleKey key)
+    {
+        try
+        {
+            var text = Bundle.ReadText(_provider, key, _limits, new byte[Bundle.ReadChunkBytes], out var version);
+            return (text, version);
+        }
+        catch (BundleObjectNotFoundException)
+        {
+            return null;
+        }
+    }
 
-        var byteCount = OkfEncodings.NoBom.GetByteCount(content);
-        var status = existed ? "updated" : "new";
-        return $"Written {id} ({status}, {byteCount} bytes). Remember to run okf_regenerate_indexes.";
+    /// <summary>The condition of a read-modify-write: the version read, or no object at all.</summary>
+    private static BundleWriteCondition ConditionFor((string Text, BundleObjectVersion Version)? current) =>
+        current is { } c ? BundleWriteCondition.IfMatch(c.Version) : BundleWriteCondition.MustNotExist;
+
+    /// <summary>
+    /// A write under a caller's condition (<see cref="WriteConcept(string, string, string, BundleWriteCondition)"/>):
+    /// never retried, and a condition that does not hold becomes the writer's own message. CALLER
+    /// MUST hold the write lock. The conflict caught here can only be the provider's refusal of the
+    /// write: the notification runs after this method has returned (<see cref="WriteThenNotify"/>,
+    /// decision B48).
+    /// </summary>
+    private string WriteConditionedLocked(ConceptTarget target, string content, BundleWriteCondition condition, Action committed)
+    {
+        try
+        {
+            return WriteValidatedContentLocked(target, content, condition, committed);
+        }
+        catch (BundleWriteConflictException e) when (e.Reason == BundleWriteConflictReason.ConditionFailed && condition.Kind != BundleWriteConditionKind.None)
+        {
+            return condition.Kind == BundleWriteConditionKind.MustNotExist
+                ? $"Error: '{target.Id}' already exists; the write was refused. Read it before writing it."
+                : $"Error: '{target.Id}' changed since it was read, or no longer exists; the write was refused. Read it again before writing it.";
+        }
+    }
+
+    /// <summary>How many times a read-modify-write is attempted before a conflict is returned (spec §4, decision B5).</summary>
+    internal const int MaxAttempts = 3;
+
+    /// <summary>
+    /// How a read-modify-write waits before its next attempt; <see cref="Thread.Sleep(TimeSpan)"/>,
+    /// on the caller's thread, while the contract is synchronous (issue #152). A test replaces it
+    /// to record the delays instead of sleeping.
+    /// </summary>
+    internal Action<TimeSpan> Sleep { get; set; } = Thread.Sleep;
+
+    /// <summary>The random, growing delay after failed attempt <paramref name="attempt"/>: 10–40 ms after the first, 30–120 ms after the second (decision B5).</summary>
+    internal static TimeSpan RetryDelay(int attempt) =>
+        TimeSpan.FromMilliseconds(attempt == 1 ? Random.Shared.Next(10, 41) : Random.Shared.Next(30, 121));
+
+    /// <summary>
+    /// Runs one read-modify-write <paramref name="attempt"/> (called with 1, 2, 3) until it does not
+    /// meet a <see cref="BundleWriteConflictReason.ConditionFailed"/> conflict, waiting
+    /// <see cref="RetryDelay"/> between attempts. Each attempt must re-read the current state. After
+    /// <see cref="MaxAttempts"/> conflicting attempts, returns the writer's message for
+    /// <paramref name="subject"/>. CALLER MUST hold the write lock: the conflicts come from writers
+    /// outside it (a writer over another provider instance with another lock, or another process
+    /// whose write landed before the provider's last check; the window after it is issue #178).
+    /// An attempt holds the storage operation only — never the write notification, which its
+    /// caller invokes once this method has returned (decision B48) — so a conflict caught here is
+    /// always a refused write, never something that happened after a commit.
+    /// </summary>
+    private string WithRetries(string subject, Func<string> attempt)
+    {
+        for (var n = 1; ; n++)
+        {
+            try
+            {
+                return attempt();
+            }
+            catch (BundleWriteConflictException e) when (e.Reason == BundleWriteConflictReason.ConditionFailed)
+            {
+                if (n == MaxAttempts)
+                {
+                    return KeptChanging(subject);
+                }
+
+                Sleep(RetryDelay(n));
+            }
+        }
+    }
+
+    /// <summary>The writer's message once every attempt of a read-modify-write met a conflict.</summary>
+    private static string KeptChanging(string subject) =>
+        $"Error: {subject} kept changing while it was being written; the write was refused after {MaxAttempts} attempts.";
+
+    /// <summary>
+    /// The capability guard of every write method (spec §3, decision B3): checked first,
+    /// before any argument, read, lock or listing, so a refused call has no effect at all.
+    /// A read-only provider is a host mistake, not a content error: the exception is thrown,
+    /// never returned as an <c>Error:</c> string.
+    /// </summary>
+    private void GuardWritable()
+    {
+        if (!_provider.Capabilities.CanWrite)
+        {
+            throw new BundleReadOnlyException(_provider.Id);
+        }
     }
 
     /// <summary>
     /// Runs a write-method body, converting any exception that a well-formed
     /// but unlucky input could still trigger — a producer-validation failure
     /// (<see cref="OkfException"/>, e.g. <see cref="DocumentValidationException"/>),
+    /// a provider refusal or conflict (<see cref="BundleProviderException"/>),
     /// a rejected argument surfaced late by a BCL API (<see cref="ArgumentException"/>),
-    /// a filesystem read/write failure (<see cref="IOException"/>,
+    /// a storage read/write failure (<see cref="IOException"/>,
     /// <see cref="UnauthorizedAccessException"/>), or a strict-UTF-8 decode
-    /// failure reading an existing concept file directly
-    /// (<see cref="System.Text.DecoderFallbackException"/>) — into a
-    /// plain-text message. This is the single enforcement point for the
-    /// "never throw for an expected error" rule.
+    /// failure reading an existing document (<see cref="System.Text.DecoderFallbackException"/>)
+    /// — into a plain-text message (<see cref="Translate"/>). This is the single
+    /// enforcement point for the "never throw for an expected error" rule.
+    /// <see cref="BundleReadOnlyException"/> is not converted: it is a host mistake.
     /// </summary>
-    private static string RunTool(Func<string> body)
+    /// <param name="body">The method body.</param>
+    /// <param name="subject">How the message names the object being written, read when an exception is converted (<c>'tables/x'</c>, <c>log.md</c>); <see langword="null"/>, or returning <see langword="null"/>, before the body knows it.</param>
+    private static string RunTool(Func<string> body, Func<string?>? subject = null)
     {
         try
         {
             return body();
         }
-        catch (Exception ex) when (ex is OkfException or ArgumentException or IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
+        catch (Exception ex) when (IsExpectedFailure(ex))
         {
-            return $"Error: {ex.Message}";
+            return subject?.Invoke() is { } s ? Translate(ex, s) : $"Error: {ex.Message}";
         }
     }
+
+    /// <summary>The exceptions <see cref="RunTool"/> converts into an <c>Error:</c> string.</summary>
+    private static bool IsExpectedFailure(Exception ex) =>
+        ex is not BundleReadOnlyException
+        && ex is OkfException or ArgumentException or IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException;
+
+    /// <summary>
+    /// The writer's message for a failure while writing <paramref name="subject"/> (spec §7: for the
+    /// typed provider exceptions, built from the exception's type and fields, never from the
+    /// provider's own text). A path the provider refuses keeps the message the writer gave its own
+    /// reparse-point guard before the write moved behind the provider (decision B15); a name the
+    /// storage cannot hold gets a library-authored one. Anything else is the exception's message
+    /// unchanged — including a raw <see cref="IOException"/> or
+    /// <see cref="UnauthorizedAccessException"/>, whose .NET message may name a host path, exactly
+    /// as the writer reported a <see cref="File.WriteAllText(string, string)"/> failure before
+    /// (issue #211 tracks path-free I/O texts).
+    /// </summary>
+    private static string Translate(Exception ex, string subject) => ex switch
+    {
+        BundleAccessRefusedException { Key: not null } =>
+            $"Error: {subject} resolves through a reparse point (symlink/junction), or an entry that could not be inspected, inside the bundle, which is not allowed.",
+        BundleWriteConflictException { Reason: BundleWriteConflictReason.NameUnavailable } =>
+            $"Error: {subject} cannot be stored under that name: the bundle holds an entry it would confuse with it (a directory, or a name differing only in case or Unicode form), or cannot hold the name.",
+        _ => $"Error: {ex.Message}",
+    };
 }

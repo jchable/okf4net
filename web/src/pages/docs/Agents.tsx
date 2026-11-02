@@ -65,6 +65,12 @@ export default function Agents() {
             References only <code>OKF4net</code> and <code>Microsoft.Agents.AI</code> — the only project in the
             repo that depends on the Agent Framework.
           </p>
+          <p>
+            <code>new OkfBundleTools(root)</code> serves a directory; <code>new OkfBundleTools(handle)</code> serves
+            the image of a <code>BundleHandle</code> over any <code>IBundleProvider</code> and shares it with every
+            other consumer of that handle (<code>tools.Handle</code>, <code>tools.Location</code>). Two tool sets built
+            from a root string have two handles and two images. The path-based <code>BundleRoot</code> is obsolete.
+          </p>
         </Chapter>
 
         <Chapter id="tools" title="The twelve (or thirteen) tools" refText="OkfBundleTools.GetTools()">

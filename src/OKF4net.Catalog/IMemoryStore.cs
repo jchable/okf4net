@@ -30,7 +30,7 @@ public interface IMemoryStore
     /// <summary>Writes <paramref name="entry"/> into the scope's <paramref name="tier"/> memory (create-or-append, atomic).</summary>
     ValueTask<MemoryWriteResult> WriteAsync(KnowledgeAccessScope scope, MemoryEntry entry, MemoryTier tier, CancellationToken ct = default);
 
-    /// <summary>Deletes a scope's memory subtree for one tier, or (when <paramref name="tier"/> is null) every applicable configured tier.</summary>
+    /// <summary>Deletes a scope's memory for one tier, or (when <paramref name="tier"/> is null) every applicable configured tier: each object under the scope on its own, with a report per tier of what was deleted and what failed (spec §1, §9).</summary>
     ValueTask<MemoryDeleteResult> DeleteScopeAsync(KnowledgeAccessScope scope, MemoryTier? tier = null, CancellationToken ct = default);
 
     /// <summary>Lists the concepts stored for a scope across its applicable configured tiers (audit / DSAR).</summary>

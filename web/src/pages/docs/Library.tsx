@@ -63,7 +63,9 @@ export default function Library() {
         <Chapter id="bundle" title="Bundle" refText="§3 — a directory of concepts">
           <p>
             <code>Bundle.Load</code> walks the tree, parses every concept, and builds the cross-link graph. It is{' '}
-            <strong>permissive</strong>: a bad file lands in <code>ParseErrors</code> and never aborts the load.
+            <strong>permissive</strong>: a bad file lands in <code>ParseProblems</code> and never aborts the load. The
+            tree is read through a storage provider — a directory by default, any <code>IBundleProvider</code> if the
+            host supplies one (see <a href="#providers">Providers &amp; handles</a>).
           </p>
           <MapTable
             head={['Member', 'Description']}
@@ -75,7 +77,20 @@ export default function Library() {
                   itself is unreadable.
                 </>,
               ],
-              ['Root → string', "The bundle's root path."],
+              [
+                'Load(IBundleProvider, BundleLoadOptions?) → Bundle',
+                <>
+                  Load through any provider, under the <code>Limits</code> and <code>KeyPolicy</code> of the options.{' '}
+                  <code>Load(string)</code> is the same call over a <code>FileSystemBundleProvider</code>.
+                </>,
+              ],
+              [
+                'Provider · Location · Version',
+                <>
+                  The storage the image was read from, its displayable location (the root path for a directory), and
+                  the version token of that read.
+                </>,
+              ],
               [
                 'Concepts → IReadOnlyList<Concept>',
                 'All parsed concepts, in component-wise walk order.',
@@ -97,23 +112,116 @@ export default function Library() {
               ['Backlinks(ConceptId) → IReadOnlyList<ConceptId>', 'Concepts that link to this one.'],
               ['BrokenLinks() → IReadOnlyList<(ConceptId, string)>', 'Every edge to a missing concept.'],
               [
-                'IndexFiles · LogFiles → IReadOnlyList<string>',
+                'IndexKeys · LogKeys → IReadOnlyList<BundleKey>',
                 <>
-                  Reserved <code>index.md</code> / <code>log.md</code> paths found.
+                  Keys of the reserved <code>index.md</code> / <code>log.md</code> objects found.
                 </>,
               ],
               [
-                'ParseErrors → IReadOnlyList<(string Path, string Error)>',
-                'Files that failed to parse, with why.',
+                'ParseProblems → IReadOnlyList<BundleParseError>',
+                <>
+                  Objects that failed to parse or whose name was refused, with why;{' '}
+                  <code>bundle.DisplayPath(problem)</code> gives the path to print.
+                </>,
+              ],
+              [
+                'PortabilityIssues → IReadOnlyList<BundlePortabilityIssue>',
+                <>
+                  Names the load accepted that the portable key profile would refuse (a Windows reserved name, a
+                  case-colliding sibling); <code>okf validate</code> reports each as a <code>KeyNotPortable</code>{' '}
+                  warning.
+                </>,
+              ],
+              [
+                'TryResolveResourceKey(…) · ReadResourceText(BundleKey)',
+                <>
+                  Resolve a §6.2 path field lexically to a key (existence checked through the provider), then read it as UTF-8 through the provider.
+                </>,
               ],
               [
                 'Concept',
                 <>
-                  Record: <code>Id</code>, <code>Path</code>, <code>Document</code>.
+                  Record: <code>Id</code>, <code>Path</code> (the display path), <code>Document</code>, plus the
+                  provider <code>Key</code> it was read under.
+                </>,
+              ],
+              [
+                'Root · IndexFiles · LogFiles · ParseErrors · TryResolveResource · ReadResourceText(string)',
+                <>
+                  <strong>Obsolete</strong> (a warning, not an error): the path-based forms of the members above, kept
+                  one version and removed with the asynchronous provider contract (#152). Replacements:{' '}
+                  <code>Location</code>, <code>IndexKeys</code>/<code>LogKeys</code>, <code>ParseProblems</code>,{' '}
+                  <code>TryResolveResourceKey</code>, <code>ReadResourceText(BundleKey)</code>.
                 </>,
               ],
             ]}
           />
+        </Chapter>
+
+        <Chapter id="providers" title="Providers & handles" refText="§1, §5.2, §5.3 — where a bundle lives">
+          <p>
+            A bundle is a key space of byte objects behind an <code>IBundleProvider</code> (
+            <code>OKF4net.Providers</code>): keys are slash-separated names, there are no directories, and writing is a
+            capability the provider declares. The built-in provider is <code>FileSystemBundleProvider</code>; a host
+            plugs in any other storage by implementing the interface. Every key is validated as a tree before use.
+          </p>
+          <MapTable
+            head={['Type', 'Description']}
+            rows={[
+              [
+                'IBundleProvider',
+                <>
+                  <code>Id</code>, <code>Location</code>, <code>Capabilities</code> (<code>CanWrite</code>),{' '}
+                  <code>GetVersion</code>, <code>Enumerate</code>, <code>Read</code>, <code>Write</code>,{' '}
+                  <code>Delete</code>. Knows nothing of concepts.
+                </>,
+              ],
+              [
+                'FileSystemBundleProvider(root, …)',
+                <>
+                  The default, writable provider over a directory; with a confinement boundary it re-checks the chain
+                  to the root for symlinks and junctions before every access.
+                </>,
+              ],
+              [
+                'BundleKey · BundleKeyPolicy · BundleLoadOptions',
+                <>
+                  A validated object name. <code>BundleKeyPolicy.Native</code> (the default) refuses only what the
+                  storage cannot hold or would alias; <code>Strict</code> is the portable profile. Options also carry the{' '}
+                  <code>BundleLimits</code> (object size, entry count, depth, key length).
+                </>,
+              ],
+              [
+                'BundleHandle(provider, options, refreshPolicy)',
+                <>
+                  Holds one bundle's image: <code>Current</code> (loaded on first use), <code>Refresh()</code>,{' '}
+                  <code>Invalidate()</code>, <code>IsStale</code>, <code>LastLoadError</code>. One load at a time; a
+                  failed reload keeps the previous image served, marked stale.
+                </>,
+              ],
+              [
+                'BundleRefreshPolicy',
+                <>
+                  <code>Manual</code> (the default: the host calls <code>Refresh()</code>), <code>OnAccess</code>{' '}
+                  (version token compared before every use), <code>Every(interval)</code>, <code>Notify</code> (a
+                  provider implementing <code>IBundleChangeNotifier</code> signals; the next access compares the
+                  token). No timer, no thread.
+                </>,
+              ],
+              [
+                'BundleConceptWriter(provider | handle, …)',
+                <>
+                  Writes through any writable provider; <code>WriteConcept</code> accepts{' '}
+                  <code>BundleWriteCondition</code> (<code>IfMatch(version)</code>, <code>MustNotExist</code>). Built
+                  over a handle, it invalidates the image after each committed write.
+                </>,
+              ],
+            ]}
+          />
+          <p>
+            Only the filesystem provider ships with this repository. <code>okf validate</code> and the other CLI verbs
+            load directories, as before.
+          </p>
         </Chapter>
 
         <Chapter id="conceptid" title="ConceptId" refText="§2 — id ↔ path">
@@ -333,7 +441,7 @@ export default function Library() {
                 'ConceptSearch',
                 <>
                   <code>Search(concepts, query, tag?)</code> — title ×3, tags/description ×2, body ×1. The one
-                  scorer behind <code>okf_search</code> and the local catalog resolver; see{' '}
+                  scorer behind <code>okf_search</code> and the catalog resolver; see{' '}
                   <Link to="/docs/catalog">docs/catalog.md</Link>.
                 </>,
               ],
@@ -480,7 +588,7 @@ export default function Library() {
           <p>
             Every library exception derives from <code>OkfException</code>, so one <code>catch</code> covers the
             surface. Loading is permissive, so most day-to-day work throws nothing — failures accumulate in{' '}
-            <code>ParseErrors</code> instead.
+            <code>ParseProblems</code> instead.
           </p>
           <MapTable
             head={['Exception', 'Thrown by']}
@@ -496,6 +604,13 @@ export default function Library() {
                 'BundleLoadException',
                 <>
                   <code>Bundle.Load</code>, when the root is unreadable.
+                </>,
+              ],
+              [
+                'BundleProviderException',
+                <>
+                  Abstract base of what a provider throws (read-only, write conflict, version mismatch, object not
+                  found or too large, access refused, limit exceeded).
                 </>,
               ],
               [

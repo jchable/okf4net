@@ -44,6 +44,34 @@ public class BundleConceptWriterTests
         Assert.False(File.Exists(Path.Combine(tmp.Path, "tables", "refunds.md")));
     }
 
+    /// <summary>
+    /// A first write into a bundle whose root does not exist yet creates the root, as the
+    /// writer's <c>Directory.CreateDirectory</c> of the target's parent did before the provider
+    /// seam (nested and top-level concept alike), and the bytes are those of a write over a
+    /// root that was created beforehand.
+    /// </summary>
+    [Theory]
+    [InlineData("tables/refunds")]
+    [InlineData("refunds")]
+    public void WriteConcept_over_an_absent_bundle_root_creates_the_root_and_writes_the_same_bytes(string id)
+    {
+        using var tmp = new TempDir();
+        var absentRoot = Path.Combine(tmp.Path, "new", "bundle");
+        var existingRoot = Path.Combine(tmp.Path, "old");
+        Directory.CreateDirectory(existingRoot);
+        Assert.False(Directory.Exists(absentRoot));
+
+        var result = new BundleConceptWriter(absentRoot).WriteConcept(id, ValidFrontmatter, "# Refunds\n\nBody.\n");
+        var reference = new BundleConceptWriter(existingRoot).WriteConcept(id, ValidFrontmatter, "# Refunds\n\nBody.\n");
+
+        Assert.StartsWith("Written", result);
+        Assert.Equal(reference, result);
+        Assert.True(Directory.Exists(absentRoot));
+        var relative = id.Replace('/', Path.DirectorySeparatorChar) + ".md";
+        Assert.Equal(File.ReadAllBytes(Path.Combine(existingRoot, relative)), File.ReadAllBytes(Path.Combine(absentRoot, relative)));
+        Assert.Equal(Directory.GetFiles(existingRoot, "*", SearchOption.AllDirectories).Length, Directory.GetFiles(absentRoot, "*", SearchOption.AllDirectories).Length);
+    }
+
     [Fact]
     public void AppendToConceptAtomic_creates_then_appends()
     {
@@ -300,9 +328,15 @@ public class BundleConceptWriterTests
         // H1 fix round (M1): "x/refunds.md" is a junction named like the
         // concept file, whose attributes cannot be read ("x" denies listing).
         // Only the early check on the target FILE node can refuse it -- "x"
-        // itself is readable -- so its message pins that check. (Not an escape:
-        // with it removed, the late strict guard, or the OS writing into a
-        // directory, still refuses.)
+        // itself is readable. (Not an escape: with it removed, the late strict
+        // guard, or the OS writing into a directory, still refuses.) Since the
+        // write moved behind the provider (lot B), that early check is the
+        // provider's STRICT check of the whole path before anything is listed;
+        // the provider reports every refused path, the object's own entry
+        // included, as one BundleAccessRefusedException, which the writer
+        // translates into its one reparse-point message (decision B15) -- the
+        // former "is a reparse point ... refusing to overwrite it" wording,
+        // which only the writer's own target-node check produced, is gone.
         using var tmp = new TempDir();
         using var external = new TempDir();
         Directory.CreateDirectory(Path.Combine(tmp.Path, "x"));
@@ -312,7 +346,7 @@ public class BundleConceptWriterTests
 
         var result = writer.WriteConcept("x/refunds", ValidFrontmatter, "# Refunds\n");
 
-        Assert.Equal("Error: 'x/refunds' is a reparse point (symlink/junction) or could not be inspected, not a regular file -- refusing to overwrite it.", result);
+        Assert.Equal("Error: 'x/refunds' resolves through a reparse point (symlink/junction), or an entry that could not be inspected, inside the bundle, which is not allowed.", result);
         Assert.Empty(Directory.EnumerateFileSystemEntries(external.Path));
     }
 
