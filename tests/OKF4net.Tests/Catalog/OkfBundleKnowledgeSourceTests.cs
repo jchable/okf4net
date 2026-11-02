@@ -94,6 +94,22 @@ public class OkfBundleKnowledgeSourceTests
     }
 
     [Fact]
+    public async Task A_failed_token_read_keeps_the_previous_image_served()
+    {
+        var storage = new InMemoryBundleProvider(id: "k").Add("a.md", Doc);
+        using var handle = new BundleHandle(storage, refreshPolicy: BundleRefreshPolicy.OnAccess);
+        var source = new OkfBundleKnowledgeSource("k", handle);
+        Assert.Single((await source.SearchAsync(new KnowledgeQuery("orders"))).Passages);
+
+        storage.FailVersionWith = new IOException("token unreadable");
+        var result = await source.SearchAsync(new KnowledgeQuery("orders"));
+
+        Assert.Null(result.Diagnostic);
+        Assert.Single(result.Passages);
+        Assert.True(handle.IsStale);
+    }
+
+    [Fact]
     public void The_directory_constructor_builds_its_own_OnAccess_handle_over_the_filesystem()
     {
         using var tmp = new TempDir();

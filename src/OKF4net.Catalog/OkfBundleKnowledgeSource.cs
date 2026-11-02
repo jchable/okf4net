@@ -25,7 +25,11 @@ namespace OKF4net.Catalog;
 /// <b>The sharing is explicit.</b> The directory constructor builds a handle of its own
 /// over a <see cref="FileSystemBundleProvider"/>, under <see cref="BundleRefreshPolicy.OnAccess"/>
 /// (the policy of a catalog source: the bundle's token is compared at every search, so an
-/// external change is still seen, where the source used to reload at every call). Two
+/// external change is still seen, where the source used to reload at every call). The
+/// filesystem token is weak, though (<c>FileSystemBundleProvider.GetVersion</c>: name, length
+/// and modification time): two edits of the same size within one modification-time tick can
+/// be missed until the next change, so a host that must see every edit calls
+/// <c>Handle.Refresh()</c> or <c>Handle.Invalidate()</c>. Two
 /// sources built that way over one directory have two images; a host that wants one image
 /// per source passes the same <see cref="BundleHandle"/> to both.
 /// </para>
@@ -49,7 +53,9 @@ public sealed class OkfBundleKnowledgeSource : IKnowledgeSource
 
     /// <summary>
     /// Creates a source served from <paramref name="handle"/>, whose image, options and
-    /// refresh policy it shares with every other consumer of that handle.
+    /// refresh policy it shares with every other consumer of that handle. The source never
+    /// disposes the handle: the caller owns it (a handle under a notify policy keeps its
+    /// subscription alive until it is disposed).
     /// </summary>
     /// <param name="id">The source's id, echoed onto every produced <see cref="KnowledgePassage.SourceId"/>.</param>
     /// <param name="handle">The handle the bundle is read from.</param>
