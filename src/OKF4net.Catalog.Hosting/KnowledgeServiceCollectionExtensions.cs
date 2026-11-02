@@ -81,6 +81,7 @@ public static class KnowledgeServiceCollectionExtensions
         {
             CatalogFilePath = options.CatalogFilePath!,
             CatalogRoot = options.CatalogRoot!,
+            ProviderFactories = [.. options.ProviderFactories],
         };
 
         services.TryAddSingleton(catalogOptions);

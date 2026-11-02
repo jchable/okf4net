@@ -53,6 +53,7 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
 {
     private readonly KnowledgeCatalogOptions _options;
     private readonly string _manifestDirectory;
+    private readonly Dictionary<string, IBundleProviderFactory> _factories;
     private readonly Lock _gate = new();
     private readonly FileSystemWatcher? _watcher;
     private readonly Timer? _debounceTimer;
@@ -74,10 +75,17 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
     /// not be read, parsed, or path-validated. The exception message
     /// aggregates every underlying <see cref="CatalogDiagnostic"/>.
     /// </exception>
+    /// <exception cref="ArgumentException">
+    /// <see cref="KnowledgeCatalogOptions.ProviderFactories"/> holds two factories for one
+    /// provider type, or one for the built-in <c>filesystem</c> type: a host configuration
+    /// error, refused before any manifest is read.
+    /// </exception>
     public FileKnowledgeCatalog(KnowledgeCatalogOptions options)
     {
+        ArgumentNullException.ThrowIfNull(options);
         _options = options;
         _manifestDirectory = GetManifestDirectory(options.CatalogFilePath);
+        _factories = IndexFactories(options.ProviderFactories);
 
         if (!TryLoadSnapshot(out var snapshot, out var diagnostics))
         {
@@ -267,9 +275,32 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
                 continue;
             }
 
-            if (!CatalogPathResolver.TryResolve(_options.CatalogRoot, _manifestDirectory, source.Path, out _, out var pathDiagnostic))
+            // A filesystem source's path is checked as before; another provider type needs a
+            // registered factory that accepts every setting the source carries (spec §9).
+            if (source.IsFileSystem)
             {
-                pathDiagnostics.Add(pathDiagnostic!);
+                if (!CatalogPathResolver.TryResolve(_options.CatalogRoot, _manifestDirectory, source.Path, out _, out var pathDiagnostic))
+                {
+                    pathDiagnostics.Add(pathDiagnostic!);
+                }
+            }
+            else if (!_factories.TryGetValue(source.ProviderType, out var factory))
+            {
+                pathDiagnostics.Add(new CatalogDiagnostic(
+                    CatalogDiagnosticCode.UnknownProvider,
+                    $"Source '{source.Id}' names the provider '{source.ProviderType}', for which no factory is registered (KnowledgeCatalogOptions.ProviderFactories)."));
+            }
+            else
+            {
+                foreach (var name in source.Settings.Keys)
+                {
+                    if (!factory.AcceptedSettings.Contains(name))
+                    {
+                        pathDiagnostics.Add(new CatalogDiagnostic(
+                            CatalogDiagnosticCode.IllegalSetting,
+                            $"Source '{source.Id}' carries the setting '{name}', which the '{source.ProviderType}' provider does not accept."));
+                    }
+                }
             }
         }
 
@@ -359,6 +390,33 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
     {
         var full = Path.GetFullPath(catalogFilePath);
         return Path.GetDirectoryName(full) ?? full;
+    }
+
+    /// <summary>The factories by provider type; a duplicate type or the built-in <c>filesystem</c> type is a configuration error.</summary>
+    private static Dictionary<string, IBundleProviderFactory> IndexFactories(IReadOnlyList<IBundleProviderFactory> factories)
+    {
+        ArgumentNullException.ThrowIfNull(factories);
+        var indexed = new Dictionary<string, IBundleProviderFactory>(StringComparer.Ordinal);
+        foreach (var factory in factories)
+        {
+            ArgumentNullException.ThrowIfNull(factory, nameof(factories));
+            if (string.IsNullOrEmpty(factory.ProviderType))
+            {
+                throw new ArgumentException("a provider factory needs a non-empty ProviderType", nameof(factories));
+            }
+
+            if (string.Equals(factory.ProviderType, KnowledgeCatalogSource.FileSystemProviderType, StringComparison.Ordinal))
+            {
+                throw new ArgumentException($"the provider type '{KnowledgeCatalogSource.FileSystemProviderType}' is built in and cannot be registered", nameof(factories));
+            }
+
+            if (!indexed.TryAdd(factory.ProviderType, factory))
+            {
+                throw new ArgumentException($"two provider factories claim the type '{factory.ProviderType}'", nameof(factories));
+            }
+        }
+
+        return indexed;
     }
 
     private static string FormatDiagnostics(IReadOnlyList<CatalogDiagnostic> diagnostics) =>

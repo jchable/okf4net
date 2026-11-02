@@ -40,4 +40,13 @@ public sealed class KnowledgeCatalogOptions
     /// changes. Defaults to <see langword="true"/>.
     /// </summary>
     public bool WatchForChanges { get; init; } = true;
+
+    /// <summary>
+    /// The provider factories the manifest may name by <c>provider</c> (spec §9): one per
+    /// provider type, none for the built-in <c>filesystem</c>. A source naming a type with no
+    /// factory here is rejected (<see cref="CatalogDiagnosticCode.UnknownProvider"/>); two
+    /// factories with the same type, or one claiming <c>filesystem</c>, are a configuration
+    /// error <see cref="FileKnowledgeCatalog"/>'s constructor refuses. Empty by default.
+    /// </summary>
+    public IReadOnlyList<IBundleProviderFactory> ProviderFactories { get; init; } = [];
 }

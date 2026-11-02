@@ -15,6 +15,7 @@ namespace OKF4net.Catalog.Hosting;
 public sealed class KnowledgeOptions
 {
     private int _catalogFileCallCount;
+    private readonly List<IBundleProviderFactory> _providerFactories = [];
 
     /// <summary>
     /// The <see cref="KnowledgeResolverStrategy"/> used for searches whose
@@ -84,6 +85,28 @@ public sealed class KnowledgeOptions
         var fullPath = Path.GetFullPath(path);
         CatalogFilePath = fullPath;
         CatalogRoot = Path.GetDirectoryName(fullPath) ?? fullPath;
+    }
+
+    /// <summary>
+    /// The provider factories registered by <see cref="AddProviderFactory"/>, in order,
+    /// handed to <see cref="KnowledgeCatalogOptions.ProviderFactories"/>.
+    /// </summary>
+    internal IReadOnlyList<IBundleProviderFactory> ProviderFactories => _providerFactories;
+
+    /// <summary>
+    /// Registers a factory for the <c>provider</c> type it names
+    /// (<see cref="IBundleProviderFactory.ProviderType"/>), so a <c>catalog.json</c> source may
+    /// name that type. The credentials the provider needs are the factory's own (injected by
+    /// the host that built it), never read from the manifest. The built-in <c>filesystem</c>
+    /// type needs no factory and cannot be registered: <see cref="FileKnowledgeCatalog"/>
+    /// refuses it, as it refuses two factories for one type, on first resolve.
+    /// </summary>
+    /// <param name="factory">The factory to register.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="factory"/> is <see langword="null"/>.</exception>
+    public void AddProviderFactory(IBundleProviderFactory factory)
+    {
+        ArgumentNullException.ThrowIfNull(factory);
+        _providerFactories.Add(factory);
     }
 
     /// <summary>
