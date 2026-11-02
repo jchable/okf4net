@@ -179,6 +179,21 @@ public sealed class Bundle
     }
 
     /// <summary>
+    /// The display path of one of this bundle's <see cref="ParseProblems"/> (spec §8): the
+    /// <see cref="Location"/>, then the key's segments joined by the OS separator when the name
+    /// is a key, else the raw name as listed with <c>/</c> turned into the OS separator — the
+    /// same string the loader printed for an unparseable file before the provider seam. The one
+    /// text every output (the CLI, its JSON, the viewer's index page) prints for a problem; it
+    /// escapes nothing, that is each output's own job.
+    /// </summary>
+    /// <param name="problem">One of <see cref="ParseProblems"/> (or any problem to display under this bundle's location).</param>
+    public string DisplayPath(BundleParseError problem)
+    {
+        ArgumentNullException.ThrowIfNull(problem);
+        return DisplayPathOf(Location, problem);
+    }
+
+    /// <summary>
     /// Loads a bundle from a directory tree through the default
     /// <see cref="FileSystemBundleProvider"/> (spec §8).
     ///
