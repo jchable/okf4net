@@ -180,6 +180,13 @@ and this project adheres to
   flag a resource `Unsafe` or `Missing` — for a key-policy, case or backslash
   reason — that `okf_run_computation` still reads.
 
+### Fixed
+
+- `samples/acme-retail-agent` builds again (NU1605: its explicit
+  `Microsoft.Agents.AI` 1.20.0 pin was below the 1.24.0 that `OKF4net.Agents`
+  requires). The redundant `PackageReference` is removed; the version now
+  flows from the `OKF4net.Agents` project reference.
+
 ## [0.7.0] - 2026-10-14
 
 The headline is the interactive `okf-render` viewer, and `okf` is now also a
