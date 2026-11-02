@@ -1173,6 +1173,70 @@ sources mémoire. Désormais :
   aujourd'hui. Une source mémoire d'un autre type est rejetée avec un
   diagnostic, puisque la mémoire distante est hors périmètre.
 
+> **Note du 2026-11-02 (lot D, plan d'implémentation, décisions L1 à L14).**
+> Les handles vivent sur l'instantané (`KnowledgeCatalogSnapshot.Handles`,
+> vide pour un instantané construit à la main ou par le parseur : les
+> resolvers retombent alors sur la résolution du chemin à chaque requête,
+> comme avant). La configuration effective comparée pour réutiliser un handle
+> est (type de provider, répertoire résolu, `settings`, politique de
+> rafraîchissement, `BundleLoadOptions`) ; la frontière de confinement est
+> toujours la racine du catalogue, donc hors de la clé. Les fabriques sont
+> `IBundleProviderFactory` (`ProviderType`, `AcceptedSettings`, `Create`),
+> enregistrées dans `KnowledgeCatalogOptions.ProviderFactories` ; `filesystem`
+> ne peut pas l'être, et une fabrique mal enregistrée (type vide, `filesystem`,
+> deux fabriques pour un type) est refusée à l'enregistrement. Un
+> `KnowledgeCatalogSource` gagne `ProviderType` et `Settings` en propriétés
+> `init` (pas de rupture) ; son `Path` est vide, et refusé s'il est présent
+> (`IllegalPath`), hors `filesystem`. Les sept nouveaux codes de
+> `CatalogDiagnosticCode` sont **ajoutés à la fin** : les valeurs livrées
+> (0 à 18) ne bougent pas, ce n'est pas une rupture, et l'ordre des
+> diagnostics d'un manifeste sans `provider` ni `settings` est celui d'avant.
+> Un provider dont l'`Id` est vide, ou dont la fabrique, la politique de la
+> source ou le handle lèvent, rejette le chargement en `ProviderUnavailable`,
+> par le nom du type de l'exception seul. Le constructeur
+> `OkfBundleKnowledgeSource(string, string)` crée son propre handle en
+> `OnAccess` (une source de catalogue par nature : le rechargement à chaque
+> appel devient une comparaison de jeton, faible pour un répertoire), et
+> lève dès la construction pour un identifiant nul ou un répertoire nul ou
+> vide. La déduplication par `IBundleProvider.Id` fusionne aussi deux graphies
+> qui ne diffèrent que par un séparateur final (pas les variantes de casse ni
+> les noms 8.3). Le §11 « refusée au prochain accès » pour une racine
+> remplacée par une jonction est appliqué selon le §5.2 : la lecture du jeton
+> est refusée, le rechargement échoue, l'image précédente est servie périmée
+> (`IsStale`, `LastLoadError` enveloppant `BundleAccessRefusedException`) et
+> rien sous la jonction n'est lu. Cette source est alors signalée par un
+> nouveau `KnowledgeDiagnosticCode.SourceStale` (ajouté à la fin, valeur 4),
+> avec ses passages, le message nommant le type de l'exception seul ; seule une
+> source dont le **premier** chargement échoue reste `SourceUnavailable`.
+> **Limite connue :** une exception qui n'est ni une `BundleProviderException`,
+> ni une `IOException`, ni une `UnauthorizedAccessException`, levée par un
+> provider hôte pendant un rechargement, n'est pas traduite par le cœur et
+> sort de `SearchAsync`.
+>
+> **Suppression d'un scope : décision 14 précisée.** Un scope existe s'il
+> contient une clé, et la suppression retire chaque objet par le provider,
+> sans condition. Mais « les dossiers vides laissés n'ont aucun effet » ne
+> vaut que pour l'existence : les noms de dossiers portent les identifiants
+> de tenant, d'utilisateur et de session en minuscules, et
+> `DeleteScopeAsync` est le chemin d'effacement documenté. Une fois tous les
+> objets supprimés, `FileMemoryStore` retire donc les dossiers du scope devenus
+> vides, du bas vers le haut, par un `Directory.Delete` non récursif, la garde
+> STRICT étant rejouée sur le dossier et chacun de ses ancêtres juste avant
+> chaque listage et chaque suppression, sur 64 niveaux au plus sous le dossier
+> du scope. Un dossier qui ne peut pas l'être (un lien, un fichier que le
+> provider n'a pas listé, un arbre plus profond) est un échec sous le préfixe
+> du scope et le tier n'est pas `Succeeded`. C'est **la seule suppression
+> directe qui reste** dans `OKF4net.Catalog` : la couture n'a pas de
+> suppression de dossier (§8), et une suppression de dossier au niveau du
+> provider la ferait disparaître. Les dossiers **parents** du scope supprimé
+> restent et portent encore les identifiants des niveaux supérieurs
+> (`memory-session/<tenant>-<hash>/<user>-<hash>/` après les sessions d'un
+> utilisateur, `memory-user/<tenant>-<hash>/` après le dernier) : on ne promet
+> pas l'effacement complet d'un identifiant. Un scope dont le listage échoue
+> est rapporté comme donnée (un diagnostic en lecture, rien en énumération,
+> un échec en suppression sans rien supprimer), par le nom du type de
+> l'exception seul : le texte du runtime peut nommer un chemin de l'hôte (#211).
+
 **Catalog : nommer un provider dans `catalog.json`.** Une source peut porter
 `"provider": "<type>"` et un objet `"settings"`. Le type `filesystem` reste le
 défaut, avec `path` comme aujourd'hui. L'hôte enregistre des fabriques de
@@ -1242,6 +1306,29 @@ l'arbitrage du 2026-10-08).
     seulement enrichi.
 
   La migration asynchrone (#152) sera un second changement cassant, accepté.
+
+  > **Note du 2026-11-02 (lot D).** Les membres fondés sur les chemins ne sont
+  > pas retirés dans ce lot mais marqués `[Obsolete]` (avertissement, jamais
+  > erreur, message nommant le remplaçant), comme `BundleRoot` : `Bundle.Root`,
+  > `IndexFiles`, `LogFiles`, `ParseErrors`, `TryResolveResource`,
+  > `ReadResourceText(string)` et les deux `BundleRoot` ; leur retrait va avec
+  > #152. `Concept.Path`, `Diagnostic.Path` et `AuditFinding.Path` restent, à
+  > côté d'une `Key` ajoutée (`Diagnostic.Key`, `AuditFinding.Key`) : ce sont
+  > la projection d'affichage du §8 que chaque sortie imprime. La décision 12
+  > est donc révisée : `Path` ne devient pas `Key`, les deux coexistent. La
+  > `Key` est posée là où chaque constat est construit, jamais retrouvée à
+  > partir du chemin affiché, que deux noms distincts peuvent partager ; elle
+  > est `null` pour un constat construit à la main et pour un nom que le
+  > chargement a refusé (politique de clés, collision) ou qui n'est pas une
+  > clé, mais un nom `.md` trop long reçoit la sienne. Comme `Key` est une
+  > propriété `init` hors de la liste positionnelle, l'égalité synthétisée des
+  > deux enregistrements la **compte** désormais : comparer un constat du
+  > validateur ou de l'audit à un `new Diagnostic(…)` construit à la main donne
+  > `false` si `Key` diffère. Les seules ruptures effectives de ce lot sont
+  > `MemoryDeleteResult` et la signature de `IMemoryStore.DeleteScopeAsync`,
+  > plus cette égalité ; `KnowledgeCatalogSource` gagne ses réglages en
+  > propriétés `init`, et `CatalogDiagnosticCode` et `KnowledgeDiagnosticCode`
+  > de nouveaux membres ajoutés à la fin, sans rupture.
 - **Comportement, filesystem compris** :
   - bornes finies par défaut (§6). La borne d'entrées compte **toutes** les
     entrées, `.git` et `node_modules` compris (§2) : un très gros dossier peut

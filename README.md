@@ -108,7 +108,7 @@ extensive test suite, including snapshot comparisons of the CLI's output.
   top. This satisfies the spec's requirement that consumers preserve unknown
   keys when round-tripping.
 - **Permissive loading.** `Bundle.Load` never aborts on a bad concept file; it
-  collects parse failures in `ParseErrors` and keeps going. Broken
+  collects parse failures in `ParseProblems` and keeps going. Broken
   cross-links are retained as graph edges to non-existent concepts.
 - **Two levels of validation.** `OkfDocument.ValidateConformance()` enforces
   only what §11 requires (a non-empty `type`). `OkfDocument.Validate()` is the
@@ -251,19 +251,24 @@ bytes; hosts reading untrusted storage should lower them. The filesystem
 walk is recursive and needs roughly 0.6 KB of stack per level, so the default
 depth takes about 0.6 MB: a host that runs `Bundle.Load` over untrusted storage
 on a thread of 512 KB or less should lower `MaxDepth`.
-Every rejected `.md` name is a `Bundle.ParseProblems` entry (and a
-`ParseErrors` line); other rejected names are skipped silently. The
+Every rejected `.md` name is a `Bundle.ParseProblems` entry
+(`bundle.DisplayPath(problem)` gives the path to print; the obsolete
+`ParseErrors` projects the same list); other rejected names are skipped silently. The
 filesystem provider is writable (see "Writing through a provider" below); no
 other provider ships yet, and the first remote providers are tracked in #139.
 
 The historical members `Bundle.TryResolveResource` and
-`Bundle.ReadResourceText(string)` are unchanged in this release: they apply
-neither the key policy, nor the rejected-key guard, nor the exact-case and
-backslash rules (they still resolve through the OS filesystem), and the readers
-that still use them (`AttestationOrchestrator`, `OkfBundleTools`) move to the
-key-based members in the next lots. Until then `okf_run_computation` can read a
-resource that `okf validate` reports `Unsafe` or `Missing` for a key-policy,
-case or backslash reason — a known, temporary gap.
+`Bundle.ReadResourceText(string)` still resolve through the OS filesystem, so
+they apply neither the key policy, nor the rejected-key guard, nor the
+exact-case and backslash rules; they are obsolete (a warning naming
+`TryResolveResourceKey` and `ReadResourceText(BundleKey)`, removed with #152),
+and no reader in this repository uses them any more
+(`AttestationOrchestrator.Capture`, `OkfBundleTools` and the validator read
+through the key-based members). The other path-based members of `Bundle`
+(`Root`, `IndexFiles`, `LogFiles`, `ParseErrors`) and the `BundleRoot` of
+`BundleConceptWriter` and `OkfBundleTools` are obsolete in the same way;
+`Concept.Path`, `Diagnostic.Path` and `AuditFinding.Path` are not: each is the
+display path of its `Key`.
 
 ### Writing through a provider
 
@@ -409,6 +414,29 @@ is the handle a tool set serves from; `tools.Location` the provider's
 displayable location. The image is replaced as a whole but its documents are
 not frozen (the `Frontmatter` of today is mutable): modifying a document of a
 shared image is not supported.
+
+A catalog keeps the handles itself (spec §9): each `FileKnowledgeCatalog`
+snapshot carries one per enabled knowledge source
+(`snapshot.Handles[sourceId]`), built under the catalog's
+`KnowledgeCatalogOptions.LoadOptions` and the source's refresh policy
+(`RefreshPolicy`, `OnAccess` by default, so a source stays as fresh as when it
+was reloaded at every request at the cost of a token read — a weak token for a
+directory: name, length and modification time; `RefreshPolicyFor` chooses per
+source), and the resolvers search through them. A source whose later reload
+fails is answered from its last good image and reported as
+`KnowledgeDiagnosticCode.SourceStale`; only a first load that fails is
+`SourceUnavailable`. A reload keeps a source's handle, image included, while
+its effective configuration is unchanged, and rebuilds it otherwise (a changed
+`path`, say); a handle that leaves the catalog is disposed, which only ends its
+change subscription — a request still holding the old snapshot keeps reading
+its image. A `catalog.json` source may name another storage than a directory
+under the catalog root: `"provider": "<type>"` plus `"settings"`, served by the
+`IBundleProviderFactory` the host registered for that type
+(`KnowledgeOptions.AddProviderFactory`, or `KnowledgeCatalogOptions.ProviderFactories`);
+each factory declares the settings it accepts, and a source carrying any other
+setting, an unknown type (on an enabled source), or a `path` on a non-filesystem type is rejected
+with the whole manifest or reload, so no credential ever travels through the
+manifest (spec §7). Memory sources stay on the filesystem.
 
 ### As a CLI
 
@@ -916,7 +944,8 @@ full contract/value-type reference.
 ### Local catalog (OKF4net.Catalog)
 
 `src/OKF4net.Catalog/` and `src/OKF4net.Catalog.Hosting/` add a catalog of
-local OKF bundles: a hot-reloadable `catalog.json` manifest naming one or more
+OKF bundles (directories under the catalog root unless the host registers a
+provider factory): a hot-reloadable `catalog.json` manifest naming one or more
 bundles as *sources*, and a resolver that searches every enabled source.
 `catalog.json` is an **OKF4net manifest, not an OKF concept** — it configures
 the catalog from the outside and is not part of the OKF spec.
@@ -934,7 +963,11 @@ KnowledgeContext result = await resolver.SearchAsync(new KnowledgeQuery("refund 
 
 **V1 limits, stated exactly:**
 
-- Local filesystem bundles only.
+- Bundles under the catalog root by default; another storage only through a
+  provider factory the host registers (`provider` in `catalog.json`, see "One
+  image per source" above). No provider but the filesystem ships with this
+  repository (#141 embedded resources, #142 S3 are the tracked ones), and
+  memory sources are always on the filesystem.
 - One shared catalog.
 - No semantic/fuzzy deduplication across sources (two manifest entries
   resolving to the *same directory* are collapsed only under the two merged
@@ -1006,7 +1039,7 @@ This table is also published as the
 | §5.2 Generation and verification stamps | `Frontmatter.Generated`/`Verified`, `BundleConceptWriter.RecordVerifications` — the governed writer behind `okf verify` and `okf_verify` |
 | §5.3–§5.5 trust, lifecycle, staleness | `ConceptAudit`, `AuditQuery`, `AuditReport` — the corpus-level query behind `okf audit` and `okf_audit` |
 | §6 Cross-linking and paths            | `OKF4net.LinkScanner`, `Bundle.LinksFrom` / `Bundle.Backlinks` |
-| §6.2 Path-valued fields               | `OkfDocument.FrontmatterResources()`, `Bundle.TryResolveResource` / `Bundle.ReadResourceText` |
+| §6.2 Path-valued fields               | `OkfDocument.FrontmatterResources()`, `Bundle.TryResolveResourceKey` / `Bundle.ReadResourceText(BundleKey)` |
 | §7 Actor convention                   | `OKF4net.Actor.Parse` — `human:`/`process:`/`<producer>/<version>` |
 | §8 Index files                        | `OKF4net.IndexGenerator`                                       |
 | §9 Log files                          | `OKF4net.ChangeLog`                                            |

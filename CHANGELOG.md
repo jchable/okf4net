@@ -114,9 +114,209 @@ and this project adheres to
   saying whether the image may be behind. `RunCapturedAsync` runs §10.5 from
   step 3 on a capture; `RunAsync` captures and calls it, and reads nothing
   from the bundle afterwards.
+- **`Bundle.DisplayPath(BundleParseError)`** (#139, lot D; spec §8): the one
+  display path of a load problem — the location, then the key's segments with
+  the OS separator, or the raw name with `/` turned into the OS separator when
+  the name is no key — the string the obsolete `ParseErrors` projected and the
+  CLI, its JSON and the viewer print.
+- **`Diagnostic.Key` and `AuditFinding.Key`** (#139, lot D; spec §9): the key
+  of the object a finding is about — the concept's, the `index.md`'s or
+  `log.md`'s, the unparseable document's when the load gave its name a key (an
+  over-length `.md` name does) — beside the display path `Path` still carries.
+  `Key` is `null` for a hand-built finding, for a name the load refused (by the
+  key policy or by a collision) and for a name that is no key. It is set where
+  each finding is built, never recovered from the display path, which two
+  distinct names can share. `Path` is unchanged, so the `validate` and
+  `audit --json` outputs are too (equality changed: see Changed (breaking)).
+- **`OkfBundleKnowledgeSource(string id, BundleHandle handle)`** and
+  `OkfBundleKnowledgeSource.Handle` (#139, lot D; spec §5.2, §9): a catalog
+  source served from a handle it shares with every other consumer of that
+  handle, which it never disposes (the caller owns it). The directory
+  constructor builds a handle of its own (see Changed).
+- **A `catalog.json` source names its provider** (#139, lot D; spec §9):
+  `"provider": "<type>"` (`filesystem` when absent) and `"settings": { … }`
+  (string values), on `KnowledgeCatalogSource.ProviderType` and `.Settings`
+  (`ProviderSettings`, compared by value; its `ToString` prints the setting
+  names only, never a value). A host registers one `IBundleProviderFactory`
+  per type (`KnowledgeCatalogOptions.ProviderFactories`,
+  `KnowledgeOptions.AddProviderFactory`), each declaring the settings it
+  accepts, so no credential can enter through the manifest. A misregistered
+  factory (an empty type, `filesystem`, two for one type) is refused when the
+  host registers it (`AddKnowledge` throws `ArgumentException`; so does the
+  `FileKnowledgeCatalog` constructor). Seven new `CatalogDiagnosticCode`
+  members, **appended** (values 19 to 25: the shipped 0 to 18 keep theirs, so
+  this is not a break, and the diagnostics of a manifest without `provider` or
+  `settings` are the same, in the same order): `MalformedProvider`,
+  `MalformedSettings`, `IllegalSetting` (any setting for `filesystem`, or one
+  the factory does not list; a disabled source's setting names are checked
+  too when a factory exists for its type), `IllegalPath` (a `path` on another
+  provider type, whose storage is its settings), `IllegalMemoryProvider`
+  (memory stays on the filesystem), `UnknownProvider` (an enabled source whose
+  type has no factory; a disabled one stays accepted) and `ProviderUnavailable`
+  (the factory, the per-source `RefreshPolicyFor`, or the handle over the
+  provider threw, or the provider reports an empty id: the diagnostic names the
+  exception type, never its text).
+- **The catalog snapshot owns the handles** (#139, lot D; spec §5.2, §9):
+  `KnowledgeCatalogSnapshot.Handles` holds one `BundleHandle` per enabled
+  knowledge source (empty for a snapshot the parser or a test built by hand),
+  built by `FileKnowledgeCatalog` under `KnowledgeCatalogOptions.LoadOptions`
+  and the source's refresh policy (`RefreshPolicy`, `OnAccess` by default;
+  `RefreshPolicyFor` per source; `KnowledgeOptions.RefreshPolicy` for a host),
+  the filesystem provider confined to the catalog root. A reload reuses a
+  source's handle only when its effective configuration (provider type,
+  resolved directory, settings, policy, load options) is identical; otherwise
+  it builds a new one and disposes the old one with the catalog, which only
+  ends its change subscription — a request still holding the old snapshot
+  keeps reading its image. A rejected reload keeps every current handle and
+  disposes the ones it built; a handle whose `Dispose` throws strands no other,
+  and a host exception thrown inside the debounced reload (the watcher's
+  timer) is swallowed without a trace — call `ReloadAsync` for a reload whose
+  outcome you must see.
+- **`KnowledgeDiagnosticCode.SourceStale`** (#139, lot D; spec §5.2, §7),
+  appended (value 4): a source whose last reload failed and that was answered
+  from its last good image — its passages are returned, and the message names
+  the exception type only.
+- **`MemoryTierDeletion`** (#139, lot D; spec §1, §9): what deleting one tier's
+  scope did, as a `BundleWriteReport` (see Changed (breaking)).
+
+### Changed (breaking)
+
+- **`MemoryDeleteResult` is `(IReadOnlyList<MemoryTierDeletion> Tiers,
+  string? Error)`** (#139, lot D; spec §1, §9, §10): `TiersDeleted` counted
+  directories removed by `Directory.Delete`; a scope is now a prefix whose
+  objects are deleted one by one, so each tier reports the keys deleted and
+  those that failed, with why. `IMemoryStore.DeleteScopeAsync` changes
+  signature with it, so a host's own `IMemoryStore` must build the new result.
+  A tier whose scope held no key is absent from `Tiers`. Migration:
+  `result.TiersDeleted` becomes `result.Tiers.Count(t => t.Report.Succeeded)`
+  (a tier reported with a failure is no longer counted as deleted);
+  `result.Error` is `null` when nothing failed, as before, but its text changed
+  (see Changed).
+- **`Diagnostic` and `AuditFinding` equality includes `Key`** (#139, lot D;
+  spec §9): `Key` is an `init` property outside the positional list, and the
+  record's synthesised `Equals`, `GetHashCode` and `ToString` (`AuditFinding`'s
+  ends with `Key = …`) now take it into account. A host that compared a
+  finding of `BundleValidator.Validate` or `ConceptAudit` with a hand-built
+  `new Diagnostic(…)` or `new AuditFinding(…)` now gets `false` unless it sets
+  `Key` to the key the load gave (`bundle.Concepts[…].Key`, an index's or a
+  log's key) or compares the fields it cares about (`Path`, `Code`, `Message`)
+  instead. `Diagnostic.ToString` is its own rendering and does not change.
+- **The path-based members are obsolete** (#139, lot D; spec §9, §10), kept
+  one version with a warning (never an error) whose message names the
+  replacement: `Bundle.Root` → `Bundle.Location`; `Bundle.IndexFiles` /
+  `LogFiles` → `IndexKeys` / `LogKeys` with
+  `BundleDisplayPath.Compose(bundle.Location, key)` for a path to print;
+  `Bundle.ParseErrors` → `ParseProblems` with `bundle.DisplayPath(problem)`;
+  `Bundle.TryResolveResource` → `TryResolveResourceKey`;
+  `Bundle.ReadResourceText(string)` → `ReadResourceText(BundleKey)`;
+  `BundleConceptWriter.BundleRoot` and `OkfBundleTools.BundleRoot` → the
+  `FileSystemBundleProvider`'s `Root`, or the provider's `Location`. They are
+  removed with the asynchronous provider contract (#152). No code of this
+  repository reads them any more (the tests that pin their strings suppress
+  the warning); a host that does keeps their historical behaviour, warned.
+  `Concept.Path`, `Diagnostic.Path` and `AuditFinding.Path` are not obsolete:
+  they are the §8 display projection every output prints, beside `Key`.
 
 ### Changed
 
+- **A catalog source no longer reloads its bundle at every request** (#139,
+  lot D; spec §5.3, §9, §10): `GroupedKnowledgeResolver`,
+  `MergedKnowledgeResolver` and `PriorityWeightedKnowledgeResolver` search
+  through the handles the snapshot keeps, so two requests over an unchanged
+  source load it once, and a change in storage is seen at the next request
+  under the default `OnAccess` policy (the bundle's token — a listing with
+  sizes and modification times for the filesystem, a weak token: two edits of
+  the same size within one modification-time tick can be missed until the next
+  change — is compared before each use; `Handle.Refresh()` or `Invalidate()`
+  forces a re-read). A reload that fails keeps the previous image served
+  (`Handle.IsStale`) and the search reports `KnowledgeDiagnosticCode.SourceStale`
+  with the passages; only a source whose first load fails is reported
+  `SourceUnavailable`, as a vanished source used to be at every search (its
+  message is now `bundle at '<location>' could not be loaded: …`). The fused
+  resolvers deduplicate by the provider's id, the canonical root for the
+  filesystem: two sources naming one directory are still collapsed and
+  reported under the resolved directory, and so now are two spellings that
+  differ by a trailing separator (case and 8.3 variants are still not merged).
+  In the fused path the load-failure diagnostics now come from the search loop,
+  after the open and deduplication loop. A snapshot that carries no handle for a
+  source (built by hand, or by `CatalogManifestParser.TryParse`) is served as
+  before: the path re-resolved and the bundle loaded at each request. The
+  catalog root's confinement is re-checked by the provider before every
+  access: a source directory replaced by a junction after the handle was
+  created makes the next token read fail and the previous image is served
+  stale, nothing under the junction ever read. **Known limit:** a host
+  provider that throws, during a reload, an exception that is neither a
+  `BundleProviderException` nor an `IOException` nor an
+  `UnauthorizedAccessException` is not translated by the core and escapes
+  `SearchAsync`; a provider should wrap its own failures.
+- **`new OkfBundleKnowledgeSource(id, directory)` builds its own `OnAccess`
+  handle** (#139, lot D; spec §5.2): it used to load the bundle at every
+  search; it now loads once and compares the token at each search, so an
+  external change is still seen at the next one (with the weak filesystem
+  token above). Two sources built that way over one directory have two images.
+  It now throws at construction for a null id or a null or empty directory (an
+  empty directory used to surface as `SourceUnavailable` at the first search),
+  and a directory that does not exist is reported, for a direct caller, as
+  `I/O error while listing the bundle (DirectoryNotFoundException)` instead of
+  `bundle root is not a directory`.
+- **`FileMemoryStore` reads, enumerates and deletes through the provider**
+  (#139, lot D; spec §3, §8, §9): one `FileSystemBundleProvider` per tier
+  root, built once at construction (an empty tier root now throws
+  `ArgumentException` there, where it used to fail at first use), and, for a
+  scope, one rooted at the scope's directory and confined to the tier root, so
+  the chain from the tier root to the scope is re-checked STRICTly before every
+  access (the old `IsReparseEscaped` walk, now the provider's; its refusal
+  texts are unchanged). A scope exists while it holds a key (spec §9, decision
+  14): an empty or absent scope directory is read and enumerated as nothing.
+  Deleting a scope deletes each object under its prefix on its own,
+  unconditionally; a `.md` the storage holds under a name that is no key
+  cannot be deleted through the provider and is reported as a failure under the
+  scope's prefix. An object that cannot be deleted (held open on Windows, say)
+  is reported by the exception's type and the key, never by the runtime's
+  message, which can name a host path (#211). When every object is gone, the
+  scope's now-empty directories are removed too, bottom-up with a
+  non-recursive `Directory.Delete`, the STRICT reparse-point guard run on each
+  directory and its ancestors right before every listing and every removal, and
+  at most 64 levels below the scope's own directory: a directory that cannot be
+  removed (a link, a file the provider did not list, a deeper tree) is a failure
+  under the scope's prefix and the tier is not `Succeeded`. That is the one
+  direct filesystem deletion left in `OKF4net.Catalog`, kept because the
+  directory names carry the lowercased tenant, user and session ids and
+  `DeleteScopeAsync` is the erasure path (the provider seam has no directory
+  deletion). **It does not erase an id completely**: the parents of a deleted
+  scope are kept and still carry the ids above it
+  (`memory-session/<tenant>-<hash>/<user>-<hash>/` after that user's
+  sessions are deleted, `memory-user/<tenant>-<hash>/` after the last user). A scope that
+  cannot be listed (a subdirectory that denies listing, a bound exceeded) is
+  reported as data and never thrown: a diagnostic on a read
+  (`could not be loaded: <exception type>`), nothing on an enumeration, a
+  failure on a deletion with nothing deleted. In a `Tiers` report, a tier's
+  failures are joined by a comma and tiers by a semicolon in `Error`. Writes already
+  went through the provider (lot B); they now share the tier's provider
+  instance.
+- **A memory scope segment whose base is a Windows reserved device name is
+  prefixed with `_`** (#139, lot D; spec §9, D4): `con.foo` encodes as
+  `_con.foo-<hash>` where it encoded as `con.foo-<hash>`, a name Windows maps
+  to a device (the extension does not lift the reservation); the hash is that
+  of the raw identifier and is unchanged, and no other identifier changes
+  (`con` alone, `console.x`, `com10.x` are not reserved). Such scopes never
+  worked on Windows. **Migration (Linux, macOS):** a tenant, user or session
+  identifier whose part before its first `.` is `CON`, `PRN`, `AUX`, `NUL`,
+  `COM1`–`COM9` or `LPT1`–`LPT9` (any case) has its existing directory under
+  the old name, which is no longer found: reads, enumeration and
+  `DeleteScopeAsync` address the prefixed name, and the old directory is
+  neither read, migrated nor deleted. Copy it by hand by prefixing `_`
+  (`mv memory-tenant/con.foo-0123… memory-tenant/_con.foo-0123…`, and the same
+  for each such segment under `memory-user/` and `memory-session/`).
+- **`okf info`, `okf info --json`, `okf validate` and the viewer read the keys
+  and the display path** (#139, lot D; spec §8, §9) instead of the obsolete
+  path-based members (`Location`, `IndexKeys`/`LogKeys`, `ParseProblems` with
+  `Bundle.DisplayPath`, `ConceptId.FromKey` for an index's location): the same
+  strings by construction, so no byte of `okf` or `okf-render` output changes.
+  One validator behaviour does: the §8 index-entry description check derives
+  the index's id from its key, so it now also runs for an index whose display
+  path the old path-based derivation could not place under the location (an
+  empty `Location`, a first segment that is drive-rooted).
 - **`okf-mcp`'s bundle discovery reads a candidate's root `index.md` under a
   16 MiB bound** (#139, lot C; spec §6, §9): `OkfBundleDiscovery.ReadRootIndexOrNull`
   answers `null` — "no declared version", as for any unreadable index — for

@@ -55,6 +55,16 @@ missing or duplicate `AddCatalogFile` call surfaces right away), but the
 container — an invalid manifest surfaces as `CatalogException` from that
 first resolve, not from `AddKnowledge`.
 
+Two more options are handed to the catalog: `KnowledgeOptions.AddProviderFactory(factory)`
+registers the `IBundleProviderFactory` of a `provider` type a `catalog.json`
+source may name (see "Bundle providers and handles" in the
+[OKF4net.Catalog README](https://www.nuget.org/packages/OKF4net.Catalog)), and
+`KnowledgeOptions.RefreshPolicy` sets the refresh policy of every source's
+`BundleHandle` (default `OnAccess`). Both are validated at registration: a
+null policy, or a factory with an empty type, the built-in `filesystem` type or
+a type another factory already claims, throws `ArgumentException` from
+`AddKnowledge`.
+
 ## V1 limits
 
 - **Exactly one catalog per `AddKnowledge` call, and exactly one call wins.**

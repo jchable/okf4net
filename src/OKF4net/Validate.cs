@@ -895,7 +895,7 @@ public static class BundleValidator
         {
             // `metrics/index.md` becomes `metrics/index`, whose parent is `metrics` --
             // the directory a relative entry resolves against. From the key, as the
-            // display path was derived from it (spec §9): the same segments, validated the same way.
+            // display path was derived from it (spec §8): the same segments, validated the same way.
             source = ConceptId.FromKey(indexKey);
         }
         catch (ConceptIdException)
