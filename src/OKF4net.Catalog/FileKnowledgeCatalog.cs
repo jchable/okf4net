@@ -357,7 +357,7 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
         {
             foreach (var handle in created)
             {
-                handle.Dispose();
+                DisposeQuietly(handle);
             }
 
             handles = null;
@@ -583,7 +583,8 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
     {
         // Runs on a timer thread with no caller to observe an exception: one thrown by host
         // code (a policy callback, a factory) must not terminate the process, exactly as in
-        // OnCatalogFileEvent. A failing reload is reported through LastReloadDiagnostics.
+        // OnCatalogFileEvent. A rejected load reaches LastReloadDiagnostics (ReloadAsync records
+        // it); an exception thrown by host code is swallowed here, silently.
         try
         {
             _ = ReloadAsync();

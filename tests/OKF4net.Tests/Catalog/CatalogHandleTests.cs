@@ -274,7 +274,7 @@ public class CatalogHandleTests
     }
 
     [Fact]
-    public async Task A_dispose_that_throws_does_not_fail_a_published_reload_nor_leave_the_other_handles_subscribed()
+    public async Task A_handle_whose_dispose_throws_when_it_leaves_does_not_fail_the_published_reload()
     {
         using var root = new TempDir();
         var first = NewNotifying("first");
@@ -294,6 +294,79 @@ public class CatalogHandleTests
         Assert.Empty(catalog.LastReloadDiagnostics);
 
         catalog.Dispose();
+        Assert.Equal(0, second.Subscribers);
+    }
+
+    [Fact]
+    public async Task A_dispose_that_throws_in_a_rejected_load_loses_neither_the_diagnostic_nor_the_other_handles()
+    {
+        using var root = new TempDir();
+        root.Write("a/x.md", Doc);
+        var first = NewNotifying("first");
+        var second = NewNotifying("second");
+        var factory = new TestProviderFactory("memory", s => s.Id == "one" ? new ThrowingDisposeProvider(first) : second);
+        var broken = new TestProviderFactory("broken", _ => throw new InvalidOperationException("s3://secret"));
+        using var catalog = Catalog(
+            root,
+            """{ "version": 1, "sources": [ { "id": "a", "path": "./a" } ] }""",
+            policyFor: s => s.IsFileSystem ? null : BundleRefreshPolicy.Notify,
+            factories: [factory, broken]);
+        var before = catalog.Current;
+
+        // "one" (throwing dispose) is built first, then "two", then "bad" fails: the load is rejected
+        // and the two built handles are disposed, the throwing one first.
+        root.Write("catalog.json", """{ "version": 1, "sources": [ { "id": "a", "path": "./a" }, { "id": "one", "provider": "memory" }, { "id": "two", "provider": "memory" }, { "id": "bad", "provider": "broken" } ] }""");
+        var after = await catalog.ReloadAsync();
+
+        Assert.Same(before, after);
+        var diagnostic = Assert.Single(catalog.LastReloadDiagnostics);
+        Assert.Equal(CatalogDiagnosticCode.ProviderUnavailable, diagnostic.Code);
+        Assert.Equal(2, factory.Created.Count);
+        Assert.Equal(0, second.Subscribers);
+    }
+
+    [Fact]
+    public void A_dispose_that_throws_does_not_strand_the_other_handles_when_the_catalog_is_disposed()
+    {
+        using var root = new TempDir();
+        var first = NewNotifying("first");
+        var second = NewNotifying("second");
+        var factory = new TestProviderFactory("memory", s => s.Id == "one" ? new ThrowingDisposeProvider(first) : second);
+        var catalog = Catalog(
+            root,
+            """{ "version": 1, "sources": [ { "id": "one", "provider": "memory" }, { "id": "two", "provider": "memory" } ] }""",
+            policy: BundleRefreshPolicy.Notify,
+            factories: factory);
+        Assert.Equal(1, second.Subscribers);
+
+        // The throwing handle is the first one the snapshot iterates (manifest order).
+        Assert.Equal("one", catalog.Current.Handles.Keys.First());
+        catalog.Dispose();
+
+        Assert.Equal(0, second.Subscribers);
+    }
+
+    [Fact]
+    public async Task A_dispose_that_throws_does_not_strand_the_other_handles_a_reload_drops()
+    {
+        using var root = new TempDir();
+        root.Write("a/x.md", Doc);
+        var first = NewNotifying("first");
+        var second = NewNotifying("second");
+        var factory = new TestProviderFactory("memory", s => s.Id == "one" ? new ThrowingDisposeProvider(first) : second);
+        using var catalog = Catalog(
+            root,
+            """{ "version": 1, "sources": [ { "id": "one", "provider": "memory" }, { "id": "two", "provider": "memory" }, { "id": "a", "path": "./a" } ] }""",
+            policyFor: s => s.IsFileSystem ? null : BundleRefreshPolicy.Notify,
+            factories: factory);
+        Assert.Equal("one", catalog.Current.Handles.Keys.First());
+
+        // Both leave the catalog, the throwing one iterated first by the disposal.
+        root.Write("catalog.json", """{ "version": 1, "sources": [ { "id": "a", "path": "./a" } ] }""");
+        var reloaded = await catalog.ReloadAsync();
+
+        Assert.Equal(2, reloaded.Generation);
+        Assert.Empty(catalog.LastReloadDiagnostics);
         Assert.Equal(0, second.Subscribers);
     }
 
@@ -444,7 +517,10 @@ public class CatalogHandleTests
         Directory.Delete(Path.Combine(root.Path, "a"), recursive: true);
         Skip.IfNot(root.TryCreateJunctionToExternalDir("a", outside.Path), "no junction/symlink privilege on this machine");
 
-        // The OnAccess handle fails closed or stays stale; either way nothing from outside the root is served.
+        // A no-leak oracle, not a pin of one outcome: the OnAccess handle may fail closed
+        // (BundleLoadException), or keep serving its previous image (stale), or whatever the
+        // guards decide on this platform; the only thing asserted is that nothing from outside
+        // the catalog root is ever served.
         try
         {
             var served = handle.Current;
