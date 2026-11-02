@@ -51,8 +51,11 @@ public sealed class FileMemoryStore : IMemoryStore
     /// <summary>Test seam, after the provider's <c>*ForTest</c> precedent: called with a scope directory (or one of its descendants) right before each of its two guards in <see cref="RemoveScopeDirectories"/> (before it is listed, and again before it is removed), so a test can swap a directory for a link between the inspection and the system call.</summary>
     internal Action<string>? BeforeScopeDirectoriesRemovedForTest { get; set; }
 
-    /// <summary>Test seam: the depth bound of <see cref="RemoveScopeDirectories"/>, <see cref="BundleLimits.MaxDepth"/> of the default limits unless a test lowers it (the guard runs on every ancestor of every directory, so a deep tree takes time quadratic in its depth).</summary>
-    internal int ScopeDirectoryDepthBoundForTest { get; set; } = BundleLimits.Default.MaxDepth;
+    /// <summary>How many levels below a scope's own directory <see cref="RemoveScopeDirectories"/> goes. A memory scope never nests in practice, and the guard walks every ancestor of every directory, so the cost of a tree is quadratic in its depth (35 s measured at 1 024 levels): the bound keeps a deep tree written into a scope from being a cheap way to stall an erasure. Objects are deleted by key whatever their depth; only this cleanup of empty directories is bounded.</summary>
+    private const int MaxScopeDirectoryDepth = 64;
+
+    /// <summary>Test seam: the depth bound of <see cref="RemoveScopeDirectories"/>, <see cref="MaxScopeDirectoryDepth"/> unless a test lowers it.</summary>
+    internal int ScopeDirectoryDepthBoundForTest { get; set; } = MaxScopeDirectoryDepth;
 
     /// <summary>Creates a store over the given per-tier, resolved absolute source roots.</summary>
     public FileMemoryStore(IReadOnlyDictionary<MemoryTier, string> tierRoots)
@@ -356,7 +359,8 @@ public sealed class FileMemoryStore : IMemoryStore
     /// a directory inspected earlier but swapped for a link since, or one of its ancestors
     /// swapped, is left alone. Returns <see langword="null"/> when nothing is left (or there was
     /// nothing), otherwise a sentence with no host path: a link or an uninspectable entry that
-    /// was left in place, a tree nested deeper than <see cref="BundleLimits.MaxDepth"/>, or a
+    /// was left in place, a tree nested more than <see cref="MaxScopeDirectoryDepth"/> levels below the
+    /// scope's directory (the cleanup stops there, the directories are left in place), or a
     /// directory that is not empty or could not be removed, named by its exception's type.
     /// </summary>
     /// <remarks>
@@ -378,10 +382,10 @@ public sealed class FileMemoryStore : IMemoryStore
             return null;
         }
 
-        return RemoveEmptyDirectories(tierRoot, scopeDir, prefix.Segments.Count);
+        return RemoveEmptyDirectories(tierRoot, scopeDir, 0);
     }
 
-    /// <summary><paramref name="depth"/> is the directory's depth as a key prefix, counted as the provider's walk counts it, so a tree the listing accepted is never refused here and one deepened since is.</summary>
+    /// <summary><paramref name="depth"/> is the number of levels below the scope's own directory (0 for it).</summary>
     private string? RemoveEmptyDirectories(string tierRoot, string directory, int depth)
     {
         const string LinkOnPath = "a link, or an entry that could not be inspected, is on the path of a directory under the scope - its directories were left in place";

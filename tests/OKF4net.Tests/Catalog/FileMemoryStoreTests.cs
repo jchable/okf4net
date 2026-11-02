@@ -898,11 +898,8 @@ public class FileMemoryStoreTests
         await store.WriteAsync(scope, Entry("alice data"), MemoryTier.User);
         var scopeDir = MemPath(tmp.Path, MemoryTier.User, scope);
 
-        // The removal's guard walks every ancestor of every directory, so a tree 1 000 deep took
-        // 35 s here: the bound is lowered through the seam instead of the tree deepened to the
-        // default MaxDepth (which the listing test above exercises on the provider's own walk).
-        var scopeDepth = MemoryPath.For(MemoryTier.User, scope).Split('/').Length;
-        store.ScopeDirectoryDepthBoundForTest = scopeDepth + 4;
+        // The bound is lowered through the seam; the default is pinned by the 64/65-level tests below.
+        store.ScopeDirectoryDepthBoundForTest = 4;
         var deepened = false;
         store.BeforeScopeDirectoriesRemovedForTest = path =>
         {
@@ -922,6 +919,54 @@ public class FileMemoryStoreTests
         Assert.Equal(MemoryPath.For(MemoryTier.User, scope), failure.Key.ToString());
         Assert.Contains("depth bound", failure.Reason, StringComparison.Ordinal);
         Assert.True(Directory.Exists(scopeDir));
+    }
+
+    [Fact]
+    public async Task The_directory_cleanup_goes_64_levels_below_the_scope_and_refuses_beyond_with_a_bounded_cost()
+    {
+        using (var probe = new TempDir())
+        {
+            Assert.Equal(64, UserStore(probe).ScopeDirectoryDepthBoundForTest);
+        }
+
+        // 64 levels below the scope: all removed, the scope's directory included.
+        using (var tmp = new TempDir())
+        {
+            var scope = new KnowledgeAccessScope(tenantId: "acme", userId: "alice");
+            var store = UserStore(tmp);
+            await store.WriteAsync(scope, Entry("alice data"), MemoryTier.User);
+            var scopeDir = MemPath(tmp.Path, MemoryTier.User, scope);
+            CreateChain(scopeDir, 64);
+
+            var delete = await store.DeleteScopeAsync(scope, MemoryTier.User);
+
+            Assert.True(Assert.Single(delete.Tiers).Report.Succeeded);
+            Assert.Null(delete.Error);
+            Assert.False(Directory.Exists(scopeDir));
+        }
+
+        // 65 levels: the objects are deleted by key, the cleanup stops at the bound, and at most
+        // the scope's directory and 64 levels are ever listed (the guard-call count, never a clock).
+        using (var tmp = new TempDir())
+        {
+            var scope = new KnowledgeAccessScope(tenantId: "acme", userId: "alice");
+            var store = UserStore(tmp);
+            await store.WriteAsync(scope, Entry("alice data"), MemoryTier.User);
+            var scopeDir = MemPath(tmp.Path, MemoryTier.User, scope);
+            CreateChain(scopeDir, 65);
+            var listed = 0;
+            store.BeforeScopeDirectoriesRemovedForTest = _ => listed++;
+
+            var delete = await store.DeleteScopeAsync(scope, MemoryTier.User);
+
+            var deletion = Assert.Single(delete.Tiers);
+            Assert.Single(deletion.Report.Deleted);
+            var failure = Assert.Single(deletion.Report.Failed);
+            Assert.Equal(MemoryPath.For(MemoryTier.User, scope), failure.Key.ToString());
+            Assert.Contains("depth bound", failure.Reason, StringComparison.Ordinal);
+            Assert.Equal(65, listed);
+            Assert.True(Directory.Exists(scopeDir));
+        }
     }
 
     private static void CreateChain(string parent, int depth) =>
