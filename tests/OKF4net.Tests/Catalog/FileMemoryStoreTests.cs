@@ -722,7 +722,7 @@ public class FileMemoryStoreTests
             Assert.Empty(deletion.Report.Deleted);
             var failure = Assert.Single(deletion.Report.Failed);
             Assert.Equal(MemoryPath.For(MemoryTier.User, scope), failure.Key.ToString());
-            Assert.Equal("Memory tier 'User' subtree could not be deleted: the scope could not be listed (UnauthorizedAccessException); nothing was deleted", delete.Error);
+            Assert.Equal("Memory tier 'User' subtree could not be deleted: the scope could not be listed (UnauthorizedAccessException) - nothing was deleted", delete.Error);
             Assert.DoesNotContain(tmp.Path, delete.Error, StringComparison.OrdinalIgnoreCase);
             Assert.True(File.Exists(MemPath(tmp.Path, MemoryTier.User, scope, "2026-07-27.md")));
         }
@@ -738,6 +738,194 @@ public class FileMemoryStoreTests
         Assert.True(Assert.Single(after.Tiers).Report.Succeeded);
         Assert.False(Directory.Exists(MemPath(tmp.Path, MemoryTier.User, scope)));
     }
+
+    private static bool CanLink(TempDir tmp, TempDir external)
+    {
+        if (!tmp.TryCreateJunctionToExternalDir("probe-link", external.Path))
+        {
+            return false;
+        }
+
+        Directory.Delete(Path.Combine(tmp.Path, "probe-link")); // removes the link only
+        return true;
+    }
+
+    /// <summary>Moves <paramref name="directory"/> aside and puts a junction to <paramref name="target"/> under its name: what another process could do between the store's inspection and its system call.</summary>
+    private static void ReplaceWithLink(TempDir tmp, string directory, string target)
+    {
+        Directory.Move(directory, directory + ".moved");
+        if (!tmp.TryCreateJunctionToExternalDir(Path.GetRelativePath(tmp.Path, directory), target))
+        {
+            throw new InvalidOperationException("the link could not be created");
+        }
+    }
+
+    private static void AssertLeftInPlaceAsFailureUnderThePrefix(MemoryDeleteResult delete, KnowledgeAccessScope scope, TempDir tmp, TempDir external)
+    {
+        var deletion = Assert.Single(delete.Tiers);
+        Assert.Single(deletion.Report.Deleted);
+        var failure = Assert.Single(deletion.Report.Failed);
+        Assert.Equal(MemoryPath.For(MemoryTier.User, scope), failure.Key.ToString());
+        Assert.Contains("a link, or an entry that could not be inspected", failure.Reason, StringComparison.Ordinal);
+        Assert.False(deletion.Report.Succeeded);
+        Assert.StartsWith("Memory tier 'User' subtree could not be deleted: ", delete.Error);
+        Assert.DoesNotContain(tmp.Path, delete.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(external.Path, delete.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task A_scope_directory_swapped_for_a_link_after_the_listing_is_left_alone_and_nothing_outside_is_removed()
+    {
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        Skip.IfNot(CanLink(tmp, external), "needs a junction or a directory symlink");
+        var scope = new KnowledgeAccessScope(tenantId: "acme", userId: "alice");
+        var store = UserStore(tmp);
+        await store.WriteAsync(scope, Entry("alice data"), MemoryTier.User);
+        var scopeDir = MemPath(tmp.Path, MemoryTier.User, scope);
+        Directory.CreateDirectory(Path.Combine(external.Path, "outside-empty"));
+        var swapped = false;
+        store.BeforeScopeDirectoriesRemovedForTest = path =>
+        {
+            if (!swapped && path == scopeDir)
+            {
+                swapped = true;
+                ReplaceWithLink(tmp, scopeDir, external.Path);
+            }
+        };
+
+        var delete = await store.DeleteScopeAsync(scope, MemoryTier.User);
+
+        Assert.True(swapped);
+        AssertLeftInPlaceAsFailureUnderThePrefix(delete, scope, tmp, external);
+        Assert.True(Directory.Exists(Path.Combine(external.Path, "outside-empty")));
+    }
+
+    [SkippableFact]
+    public async Task A_tenant_directory_swapped_for_a_link_after_the_listing_is_left_alone_and_nothing_outside_is_removed()
+    {
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        Skip.IfNot(CanLink(tmp, external), "needs a junction or a directory symlink");
+        var scope = new KnowledgeAccessScope(tenantId: "acme", userId: "alice");
+        var store = UserStore(tmp);
+        await store.WriteAsync(scope, Entry("alice data"), MemoryTier.User);
+        var scopeDir = MemPath(tmp.Path, MemoryTier.User, scope);
+        var tenantDir = Path.GetDirectoryName(scopeDir)!;
+
+        // Behind the tenant link the same user directory exists, with an empty directory in it.
+        Directory.CreateDirectory(Path.Combine(external.Path, Path.GetFileName(scopeDir), "outside-empty"));
+        var swapped = false;
+        store.BeforeScopeDirectoriesRemovedForTest = path =>
+        {
+            if (!swapped && path == scopeDir)
+            {
+                swapped = true;
+                ReplaceWithLink(tmp, tenantDir, external.Path);
+            }
+        };
+
+        var delete = await store.DeleteScopeAsync(scope, MemoryTier.User);
+
+        Assert.True(swapped);
+        AssertLeftInPlaceAsFailureUnderThePrefix(delete, scope, tmp, external);
+        Assert.True(Directory.Exists(Path.Combine(external.Path, Path.GetFileName(scopeDir), "outside-empty")));
+    }
+
+    [SkippableTheory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task A_nested_directory_whose_parent_is_swapped_for_a_link_is_left_alone_and_nothing_outside_is_removed(int swapAtCall)
+    {
+        // Call 1 is the nested directory's guard before it is listed, call 2 its guard before it is removed.
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        Skip.IfNot(CanLink(tmp, external), "needs a junction or a directory symlink");
+        var scope = new KnowledgeAccessScope(tenantId: "acme", userId: "alice");
+        var store = UserStore(tmp);
+        await store.WriteAsync(scope, Entry("alice data"), MemoryTier.User);
+        var scopeDir = MemPath(tmp.Path, MemoryTier.User, scope);
+        Directory.CreateDirectory(Path.Combine(scopeDir, "a", "b"));
+
+        // Behind the link "a" there is a "b" with an empty directory in it.
+        Directory.CreateDirectory(Path.Combine(external.Path, "b", "c"));
+        var nested = Path.Combine(scopeDir, "a", "b");
+        var calls = 0;
+        store.BeforeScopeDirectoriesRemovedForTest = path =>
+        {
+            if (path == nested && ++calls == swapAtCall)
+            {
+                ReplaceWithLink(tmp, Path.Combine(scopeDir, "a"), external.Path);
+            }
+        };
+
+        var delete = await store.DeleteScopeAsync(scope, MemoryTier.User);
+
+        Assert.True(calls >= swapAtCall);
+        AssertLeftInPlaceAsFailureUnderThePrefix(delete, scope, tmp, external);
+        Assert.True(Directory.Exists(Path.Combine(external.Path, "b", "c")));
+    }
+
+    [Fact]
+    public async Task A_scope_nested_deeper_than_the_depth_bound_is_unavailable_as_data()
+    {
+        using var tmp = new TempDir();
+        var scope = new KnowledgeAccessScope(tenantId: "acme", userId: "alice");
+        var store = UserStore(tmp);
+        await store.WriteAsync(scope, Entry("deep scope data"), MemoryTier.User);
+        var scopeDir = MemPath(tmp.Path, MemoryTier.User, scope);
+        CreateChain(scopeDir, OKF4net.Providers.BundleLimits.Default.MaxDepth + 6);
+
+        var read = await store.ReadAsync(scope, new KnowledgeQuery("deep"));
+        Assert.Empty(read.Passages);
+        Assert.Equal("Memory tier 'User' could not be loaded: BundleLimitExceededException", Assert.Single(read.Diagnostics).Message);
+        Assert.Empty(await store.EnumerateAsync(scope));
+
+        var delete = await store.DeleteScopeAsync(scope, MemoryTier.User);
+        var deletion = Assert.Single(delete.Tiers);
+        Assert.Empty(deletion.Report.Deleted);
+        Assert.Equal(MemoryPath.For(MemoryTier.User, scope), Assert.Single(deletion.Report.Failed).Key.ToString());
+        Assert.Equal("Memory tier 'User' subtree could not be deleted: the scope could not be listed (BundleLimitExceededException) - nothing was deleted", delete.Error);
+        Assert.True(File.Exists(Path.Combine(scopeDir, "2026-07-27.md")));
+    }
+
+    [Fact]
+    public async Task A_tree_deepened_past_the_depth_bound_after_the_listing_is_left_in_place_without_unbounded_recursion()
+    {
+        using var tmp = new TempDir();
+        var scope = new KnowledgeAccessScope(tenantId: "acme", userId: "alice");
+        var store = UserStore(tmp);
+        await store.WriteAsync(scope, Entry("alice data"), MemoryTier.User);
+        var scopeDir = MemPath(tmp.Path, MemoryTier.User, scope);
+
+        // The removal's guard walks every ancestor of every directory, so a tree 1 000 deep took
+        // 35 s here: the bound is lowered through the seam instead of the tree deepened to the
+        // default MaxDepth (which the listing test above exercises on the provider's own walk).
+        var scopeDepth = MemoryPath.For(MemoryTier.User, scope).Split('/').Length;
+        store.ScopeDirectoryDepthBoundForTest = scopeDepth + 4;
+        var deepened = false;
+        store.BeforeScopeDirectoriesRemovedForTest = path =>
+        {
+            if (!deepened && path == scopeDir)
+            {
+                deepened = true;
+                CreateChain(scopeDir, 10);
+            }
+        };
+
+        var delete = await store.DeleteScopeAsync(scope, MemoryTier.User);
+
+        Assert.True(deepened);
+        var deletion = Assert.Single(delete.Tiers);
+        Assert.Single(deletion.Report.Deleted);
+        var failure = Assert.Single(deletion.Report.Failed);
+        Assert.Equal(MemoryPath.For(MemoryTier.User, scope), failure.Key.ToString());
+        Assert.Contains("depth bound", failure.Reason, StringComparison.Ordinal);
+        Assert.True(Directory.Exists(scopeDir));
+    }
+
+    private static void CreateChain(string parent, int depth) =>
+        Directory.CreateDirectory(Path.Combine(parent, string.Join(Path.DirectorySeparatorChar, Enumerable.Repeat("d", depth))));
 
     /// <summary>Denies listing <paramref name="directory"/> (not its parent): icacls (RD) on Windows, mode bits elsewhere. <see langword="false"/> when this process can list it anyway (root) or the change is refused; the denial is undone then.</summary>
     private static bool TryDenyListing(string directory, out Action undo)

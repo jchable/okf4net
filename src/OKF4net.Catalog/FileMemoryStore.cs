@@ -27,9 +27,12 @@ namespace OKF4net.Catalog;
 /// (<see cref="MemoryTierDeletion.Report"/>), so a failed deletion can be run again. When every
 /// object was deleted, the scope's now-empty directories are removed too, bottom-up and without
 /// following a link (see <see cref="RemoveScopeDirectories"/>): the directory names carry the
-/// lowercased tenant, user and session ids, so erasing a scope leaves nothing named after it.
-/// A directory that cannot be removed (it holds a link or a file the provider did not list) is
-/// a failure under the scope's prefix, so the tier is not reported as succeeded.</para>
+/// lowercased tenant, user and session ids, so the scope's OWN directory, the one named for its
+/// own id, does not outlive it. Its parent directories are kept and still carry the ids of the
+/// levels above: <c>memory-session/&lt;tenant&gt;/&lt;user&gt;-&lt;hash&gt;/</c> after a user's sessions
+/// are erased, <c>memory-user/&lt;tenant&gt;-&lt;hash&gt;/</c> after the last user. A directory that
+/// cannot be removed (it holds a link or a file the provider did not list) is a failure under the
+/// scope's prefix, so the tier is not reported as succeeded.</para>
 /// <para>A scope's listing that fails for any other reason than a refusal (a subdirectory that
 /// cannot be listed, a bound of <see cref="BundleLimits"/> exceeded) is an unavailable scope,
 /// reported as data: a diagnostic on a read, nothing on an enumeration, a failure on a deletion,
@@ -44,6 +47,12 @@ public sealed class FileMemoryStore : IMemoryStore
     private static readonly BundleKey ProbeKey = BundleKey.Parse("index.md");
 
     private readonly Dictionary<MemoryTier, FileSystemBundleProvider> _tierProviders;
+
+    /// <summary>Test seam, after the provider's <c>*ForTest</c> precedent: called with a scope directory (or one of its descendants) right before each of its two guards in <see cref="RemoveScopeDirectories"/> (before it is listed, and again before it is removed), so a test can swap a directory for a link between the inspection and the system call.</summary>
+    internal Action<string>? BeforeScopeDirectoriesRemovedForTest { get; set; }
+
+    /// <summary>Test seam: the depth bound of <see cref="RemoveScopeDirectories"/>, <see cref="BundleLimits.MaxDepth"/> of the default limits unless a test lowers it (the guard runs on every ancestor of every directory, so a deep tree takes time quadratic in its depth).</summary>
+    internal int ScopeDirectoryDepthBoundForTest { get; set; } = BundleLimits.Default.MaxDepth;
 
     /// <summary>Creates a store over the given per-tier, resolved absolute source roots.</summary>
     public FileMemoryStore(IReadOnlyDictionary<MemoryTier, string> tierRoots)
@@ -200,7 +209,7 @@ public sealed class FileMemoryStore : IMemoryStore
                     deletions.Add(new MemoryTierDeletion(currentTier, new BundleWriteReport([], [], [new BundleWriteFailure(prefix, refusal)])));
                     continue;
                 case ScopeState.Unavailable:
-                    var unavailable = $"the scope could not be listed ({probe.Failure}); nothing was deleted";
+                    var unavailable = $"the scope could not be listed ({probe.Failure}) - nothing was deleted";
                     errors.Add($"Memory tier '{currentTier}' subtree could not be deleted: {unavailable}");
                     deletions.Add(new MemoryTierDeletion(currentTier, new BundleWriteReport([], [], [new BundleWriteFailure(prefix, unavailable)])));
                     continue;
@@ -341,20 +350,26 @@ public sealed class FileMemoryStore : IMemoryStore
     /// Removes the scope's directories once its objects are gone: bottom-up, only directories
     /// at or under the scope's own directory (never the tier root nor anything above the
     /// scope), each with a non-recursive <see cref="Directory.Delete(string, bool)"/>, and
-    /// never following a link: the STRICT guard (a reparse point, or an entry whose link
-    /// status cannot be read, is refused like a link) runs on the chain from the tier root to
-    /// the scope and on every directory before it is entered or removed. Returns <see langword="null"/>
-    /// when nothing is left (or there was nothing), otherwise a sentence with no host path:
-    /// a link or an uninspectable entry that was left in place, or a directory that is not
-    /// empty or could not be removed, named by its exception's type.
+    /// never following a link. Right before EVERY listing and EVERY removal of a directory the
+    /// STRICT guard runs on that directory and each of its ancestors up to the tier root (a
+    /// reparse point, or an entry whose link status cannot be read, is refused like a link), so
+    /// a directory inspected earlier but swapped for a link since, or one of its ancestors
+    /// swapped, is left alone. Returns <see langword="null"/> when nothing is left (or there was
+    /// nothing), otherwise a sentence with no host path: a link or an uninspectable entry that
+    /// was left in place, a tree nested deeper than <see cref="BundleLimits.MaxDepth"/>, or a
+    /// directory that is not empty or could not be removed, named by its exception's type.
     /// </summary>
     /// <remarks>
-    /// This is the ONE direct filesystem deletion left in <c>OKF4net.Catalog</c>: the provider
+    /// <para>This is the ONE direct filesystem deletion left in <c>OKF4net.Catalog</c>: the provider
     /// seam has no directory deletion (design §8, objects only), and the directory names carry
     /// the lowercased tenant, user and session ids, so the erasure obligation behind
-    /// <see cref="DeleteScopeAsync"/> keeps it (follow-up #152). Do not add another.
+    /// <see cref="DeleteScopeAsync"/> keeps it; a provider-level directory deletion would remove
+    /// this exception. Do not add another.</para>
+    /// <para>The guard and the system call it precedes are two steps: a link planted by ANOTHER
+    /// process between them is not excluded by this code (the cross-process window, #178). The
+    /// non-recursive delete bounds what such a swap can cost: an EMPTY directory of the link's target.</para>
     /// </remarks>
-    private static string? RemoveScopeDirectories(FileSystemBundleProvider tierProvider, BundleKey prefix)
+    private string? RemoveScopeDirectories(FileSystemBundleProvider tierProvider, BundleKey prefix)
     {
         var tierRoot = ReparsePoints.CanonicalizeRoot(tierProvider.Root);
         var scopeDir = Path.GetFullPath(Path.Combine([tierRoot, .. prefix.Segments]));
@@ -363,39 +378,51 @@ public sealed class FileMemoryStore : IMemoryStore
             return null;
         }
 
-        if (ReparsePoints.HasReparsePointOrUninspectableAncestor(tierRoot, scopeDir, StringComparison.Ordinal))
-        {
-            return "the scope's directory is a link, or on a path with one, or could not be inspected; its directories were left in place";
-        }
-
-        return RemoveEmptyDirectories(scopeDir);
+        return RemoveEmptyDirectories(tierRoot, scopeDir, prefix.Segments.Count);
     }
 
-    private static string? RemoveEmptyDirectories(string directory)
+    /// <summary><paramref name="depth"/> is the directory's depth as a key prefix, counted as the provider's walk counts it, so a tree the listing accepted is never refused here and one deepened since is.</summary>
+    private string? RemoveEmptyDirectories(string tierRoot, string directory, int depth)
     {
+        const string LinkOnPath = "a link, or an entry that could not be inspected, is on the path of a directory under the scope - its directories were left in place";
+        if (depth > ScopeDirectoryDepthBoundForTest)
+        {
+            return "the scope's directories nest deeper than the depth bound - they were left in place";
+        }
+
+        BeforeScopeDirectoriesRemovedForTest?.Invoke(directory);
+        if (ReparsePoints.HasReparsePointOrUninspectableAncestor(tierRoot, directory, StringComparison.Ordinal))
+        {
+            return LinkOnPath;
+        }
+
         string? failure = null;
         try
         {
             foreach (var child in Directory.EnumerateDirectories(directory).ToList())
             {
-                if (ReparsePoints.IsReparsePointOrUninspectable(child))
-                {
-                    failure ??= "a link, or an entry that could not be inspected, is under the scope; its directories were left in place";
-                    continue;
-                }
-
-                var childFailure = RemoveEmptyDirectories(child);
+                var childFailure = RemoveEmptyDirectories(tierRoot, child, depth + 1);
                 failure ??= childFailure;
             }
         }
+        catch (DirectoryNotFoundException)
+        {
+            return null; // gone already
+        }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            return $"a directory under the scope could not be listed ({e.GetType().Name}); its directories were left in place";
+            return $"a directory under the scope could not be listed ({e.GetType().Name}) - its directories were left in place";
         }
 
         if (failure is not null)
         {
             return failure; // a child stays, so this directory cannot be removed either
+        }
+
+        BeforeScopeDirectoriesRemovedForTest?.Invoke(directory);
+        if (ReparsePoints.HasReparsePointOrUninspectableAncestor(tierRoot, directory, StringComparison.Ordinal))
+        {
+            return LinkOnPath;
         }
 
         try
@@ -408,7 +435,7 @@ public sealed class FileMemoryStore : IMemoryStore
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            return $"a directory under the scope is not empty or could not be removed ({e.GetType().Name}); its directories were left in place";
+            return $"a directory under the scope is not empty or could not be removed ({e.GetType().Name}) - its directories were left in place";
         }
 
         return null;
