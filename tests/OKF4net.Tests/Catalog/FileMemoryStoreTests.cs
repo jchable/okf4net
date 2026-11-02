@@ -887,7 +887,7 @@ public class FileMemoryStoreTests
         Assert.True(Directory.Exists(Path.Combine(external.Path, "b", "c")));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task A_scope_nested_deeper_than_the_depth_bound_is_unavailable_as_data()
     {
         using var tmp = new TempDir();
@@ -895,7 +895,19 @@ public class FileMemoryStoreTests
         var store = UserStore(tmp);
         await store.WriteAsync(scope, Entry("deep scope data"), MemoryTier.User);
         var scopeDir = MemPath(tmp.Path, MemoryTier.User, scope);
-        CreateChain(scopeDir, OKF4net.Providers.BundleLimits.Default.MaxDepth + 6);
+        // The default bound is 1 024 levels, a path of about 2 100 bytes: macOS refuses a path past PATH_MAX
+        // (1 024), so the tree cannot exist there. The bound itself is covered in memory by the Providers tests.
+        var built = true;
+        try
+        {
+            CreateChain(scopeDir, OKF4net.Providers.BundleLimits.Default.MaxDepth + 6);
+        }
+        catch (PathTooLongException)
+        {
+            built = false;
+        }
+
+        Skip.IfNot(built, "this OS refuses a path past PATH_MAX, so a tree deeper than the default bound cannot be built");
 
         var read = await store.ReadAsync(scope, new KnowledgeQuery("deep"));
         Assert.Empty(read.Passages);
