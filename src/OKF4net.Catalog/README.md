@@ -277,8 +277,11 @@ only; the failure itself stays on `Handle.LastLoadError`). Only a source whose
 first load fails is `SourceUnavailable`. A host provider should report its own
 failures with the provider contract's exceptions (`BundleProviderException` and
 its derived types) or `IOException`: the core translates provider, I/O and
-access exceptions only, so any other exception a provider throws during any
-load or token read escapes `SearchAsync`.
+access exceptions only. Any other exception a provider throws during a load or
+a token read is reported by `SearchAsync` as `SourceUnavailable` for that
+source alone, by the exception's type name (never its message) and without
+passages; the other sources are still searched, and a cancellation still
+propagates.
 
 A source may name its storage:
 

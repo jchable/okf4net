@@ -266,11 +266,13 @@ and this project adheres to
   catalog root's confinement is re-checked by the provider before every
   access: a source directory replaced by a junction after the handle was
   created makes the next token read fail and the previous image is served
-  stale, nothing under the junction ever read. **Known limit:** a host
-  provider that throws, during any load or token read, an exception that is neither a
-  `BundleProviderException` nor an `IOException` nor an
-  `UnauthorizedAccessException` is not translated by the core and escapes
-  `SearchAsync`; a provider should wrap its own failures.
+  stale, nothing under the junction ever read. A host provider that throws, during
+  any load or token read, an exception that is neither a `BundleProviderException`
+  nor an `IOException` nor an `UnauthorizedAccessException` is not translated by
+  the core, but it no longer escapes `SearchAsync`: that source is reported
+  `SourceUnavailable`, by the exception's type name only (never its message), with
+  no passages (a failed token read after a first load is not a stale image here),
+  and the other sources are still searched; a cancellation still propagates.
 - **`new OkfBundleKnowledgeSource(id, directory)` builds its own `OnAccess`
   handle** (#139, lot D; spec §5.2): it used to load the bundle at every
   search; it now loads once and compares the token at each search, so an

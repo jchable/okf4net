@@ -20,7 +20,9 @@ namespace OKF4net.Catalog;
 /// loaded once and a changed one is seen at the next search. A reload that fails keeps
 /// the previous image served (<see cref="BundleHandle.IsStale"/>, which the catalog's
 /// resolvers report as <see cref="KnowledgeDiagnosticCode.SourceStale"/>); only a bundle
-/// that never loaded is reported as <see cref="KnowledgeDiagnosticCode.SourceUnavailable"/>.
+/// that never loaded is reported as <see cref="KnowledgeDiagnosticCode.SourceUnavailable"/>, and
+/// so is one whose provider throws an exception the core does not translate (neither a provider
+/// exception, an I/O error nor an access error), by its type name only.
 /// </para>
 /// <para>
 /// <b>The sharing is explicit.</b> The directory constructor builds a handle of its own
@@ -115,6 +117,18 @@ public sealed class OkfBundleKnowledgeSource : IKnowledgeSource
                     KnowledgeDiagnosticCode.SourceUnavailable,
                     Id,
                     $"Source '{Id}' bundle at '{Handle.Location}' could not be loaded: {e.Message}")));
+        }
+        catch (Exception e) when (e is not (OutOfMemoryException or OperationCanceledException))
+        {
+            // A host provider's own exception (neither a BundleProviderException nor an I/O error, so the core did
+            // not translate it): this source is unavailable, by type only -- a host's message can name a bucket or
+            // a path (spec §7) -- and the sources around it are still searched. A cancellation still propagates.
+            return new ValueTask<KnowledgeSearchResult>(new KnowledgeSearchResult(
+                Array.Empty<KnowledgePassage>(),
+                new KnowledgeDiagnostic(
+                    KnowledgeDiagnosticCode.SourceUnavailable,
+                    Id,
+                    $"Source '{Id}' bundle at '{Handle.Location}' could not be loaded ({e.GetType().Name}).")));
         }
 
         var scored = ConceptSearch.Search(bundle.Concepts, query.Text, query.Tag);

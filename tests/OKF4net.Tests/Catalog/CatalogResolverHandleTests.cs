@@ -235,6 +235,82 @@ public class CatalogResolverHandleTests
         Assert.Equal(2, after.Passages.Count);
     }
 
+    private const string BadAndGood = """{ "version": 1, "sources": [ { "id": "bad", "provider": "memory", "priority": 2 }, { "id": "good", "provider": "memory", "priority": 1 } ] }""";
+
+    private static TestProviderFactory BadAndGoodFactory(InMemoryBundleProvider bad, InMemoryBundleProvider good) =>
+        new("memory", s => s.Id == "bad" ? bad : good);
+
+    // A host provider's raw (non-provider) exception must not take every other source's passages
+    // with it: the source reports itself unavailable, by exception type only, and the search goes on.
+    [Theory]
+    [InlineData(KnowledgeResolverStrategy.GroupedBySource)]
+    [InlineData(KnowledgeResolverStrategy.Merged)]
+    [InlineData(KnowledgeResolverStrategy.PriorityWeighted)]
+    public async Task A_raw_exception_from_a_providers_token_read_makes_only_that_source_unavailable(KnowledgeResolverStrategy strategy)
+    {
+        using var root = new TempDir();
+        var bad = new InMemoryBundleProvider(id: "bad").Add("a.md", Doc);
+        var good = new InMemoryBundleProvider(id: "good").Add("b.md", Doc);
+        using var catalog = Catalog(root, BadAndGood, BadAndGoodFactory(bad, good));
+        var resolver = new KnowledgeResolverRouter(catalog, strategy, null, null);
+        Assert.Equal(2, (await resolver.SearchAsync(new KnowledgeQuery("orders"))).Passages.Count);
+
+        // The second search reads the bad provider's token first: the raw exception comes from the handle.
+        bad.FailVersionWith = new InvalidOperationException("s3://secret-bucket exploded");
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders"));
+
+        var passage = Assert.Single(context.Passages);
+        Assert.Equal("good", passage.SourceId);
+        var unavailable = Assert.Single(context.Diagnostics, d => d.Code == KnowledgeDiagnosticCode.SourceUnavailable);
+        Assert.Equal("bad", unavailable.SourceId);
+        Assert.Equal("Source 'bad' bundle at 'memory://bad' could not be loaded (InvalidOperationException).", unavailable.Message);
+        Assert.DoesNotContain("secret", unavailable.Message);
+
+        // The source recovers when the provider does.
+        bad.FailVersionWith = null;
+        Assert.Equal(2, (await resolver.SearchAsync(new KnowledgeQuery("orders"))).Passages.Count);
+    }
+
+    [Theory]
+    [InlineData(KnowledgeResolverStrategy.GroupedBySource)]
+    [InlineData(KnowledgeResolverStrategy.Merged)]
+    [InlineData(KnowledgeResolverStrategy.PriorityWeighted)]
+    public async Task A_raw_exception_from_a_providers_first_load_makes_only_that_source_unavailable(KnowledgeResolverStrategy strategy)
+    {
+        using var root = new TempDir();
+        var bad = new InMemoryBundleProvider(id: "bad").Add("a.md", Doc);
+        bad.FailEnumerateWith = new InvalidOperationException("s3://secret-bucket exploded");
+        var good = new InMemoryBundleProvider(id: "good").Add("b.md", Doc);
+        using var catalog = Catalog(root, BadAndGood, BadAndGoodFactory(bad, good));
+        var resolver = new KnowledgeResolverRouter(catalog, strategy, null, null);
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders"));
+
+        Assert.Equal("good", Assert.Single(context.Passages).SourceId);
+        var unavailable = Assert.Single(context.Diagnostics, d => d.Code == KnowledgeDiagnosticCode.SourceUnavailable);
+        Assert.Equal("bad", unavailable.SourceId);
+        Assert.Equal("Source 'bad' bundle at 'memory://bad' could not be loaded (InvalidOperationException).", unavailable.Message);
+        Assert.DoesNotContain("secret", unavailable.Message);
+    }
+
+    [Theory]
+    [InlineData(KnowledgeResolverStrategy.GroupedBySource)]
+    [InlineData(KnowledgeResolverStrategy.Merged)]
+    [InlineData(KnowledgeResolverStrategy.PriorityWeighted)]
+    public async Task A_cancellation_from_a_provider_still_propagates(KnowledgeResolverStrategy strategy)
+    {
+        using var root = new TempDir();
+        var bad = new InMemoryBundleProvider(id: "bad").Add("a.md", Doc);
+        var good = new InMemoryBundleProvider(id: "good").Add("b.md", Doc);
+        using var catalog = Catalog(root, BadAndGood, BadAndGoodFactory(bad, good));
+        var resolver = new KnowledgeResolverRouter(catalog, strategy, null, null);
+        await resolver.SearchAsync(new KnowledgeQuery("orders"));
+
+        bad.FailVersionWith = new OperationCanceledException();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await resolver.SearchAsync(new KnowledgeQuery("orders")));
+    }
+
     [SkippableFact]
     public async Task A_source_root_replaced_by_a_junction_after_the_handle_was_created_is_refused_at_the_next_access()
     {

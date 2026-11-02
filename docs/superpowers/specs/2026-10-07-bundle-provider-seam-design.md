@@ -1208,11 +1208,13 @@ sources mémoire. Désormais :
 > nouveau `KnowledgeDiagnosticCode.SourceStale` (ajouté à la fin, valeur 4),
 > avec ses passages, le message nommant le type de l'exception seul ; seule une
 > source dont le **premier** chargement échoue reste `SourceUnavailable`.
-> **Limite connue :** une exception qui n'est ni une `BundleProviderException`,
-> ni une `IOException`, ni une `UnauthorizedAccessException`, levée par un
-> provider hôte pendant un chargement ou une lecture du jeton (le premier
-> chargement compris), n'est pas traduite par le cœur et
-> sort de `SearchAsync`.
+> Une exception qui n'est ni une `BundleProviderException`, ni une
+> `IOException`, ni une `UnauthorizedAccessException`, levée par un provider
+> hôte pendant un chargement ou une lecture du jeton (le premier chargement
+> compris), n'est pas traduite par le cœur mais ne sort plus de `SearchAsync` :
+> la source est signalée `SourceUnavailable` par le nom du type de l'exception
+> seul, sans passages, et les autres sources sont cherchées ; une annulation
+> se propage toujours.
 >
 > **Suppression d'un scope : décision 14 précisée.** Un scope existe s'il
 > contient une clé, et la suppression retire chaque objet par le provider,
