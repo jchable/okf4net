@@ -1102,25 +1102,31 @@ public class FileMemoryStoreTests
         Assert.Empty(Directory.GetFileSystemEntries(tmp.Path));
     }
 
-    // An id longer than the OS file-name component limit (but inside the key limit) is not
-    // an over-long key: nothing throws, and where the operating system rejects the name (Linux:
-    // 255 bytes per component) the provider's STRICT guard refuses it and that refusal is what is
-    // reported (Windows accepts a name this long, so there it is simply absent).
+    // An id longer than the OS file-name component limit but inside the key limit is not an over-long key:
+    // nothing throws. On Linux the STRICT guard's lstat of the over-long name fails (ENAMETOOLONG), so the
+    // refusal is reported, unconditionally there (a regression to "skipped silently" fails this test). Windows
+    // answers "not found" for such a name (measured: the scope is simply absent, nothing reported) and macOS is
+    // not measured, so there the test only requires that nothing throws and that anything reported is the refusal.
     [Fact]
-    public async Task A_scope_id_longer_than_the_os_component_limit_throws_nothing_and_reports_at_most_the_guards_refusal()
+    public async Task A_scope_id_longer_than_the_os_component_limit_throws_nothing_and_reports_the_guards_refusal_where_the_os_fails_the_inspection()
     {
         using var tmp = new TempDir();
         var store = UserStore(tmp);
         var scope = new KnowledgeAccessScope(tenantId: new string('t', 300), userId: "alice");
+        var linux = OperatingSystem.IsLinux();
 
         var read = await store.ReadAsync(scope, new KnowledgeQuery("anything"));
         Assert.Empty(read.Passages);
+        if (linux)
+        {
+            Assert.Single(read.Diagnostics);
+        }
+
         Assert.All(read.Diagnostics, d => Assert.Equal("Memory tier 'User' path is a reparse point or could not be inspected; refusing to read.", d.Message));
-        var refused = read.Diagnostics.Count == 1;
 
         Assert.Empty(await store.EnumerateAsync(scope));
         var delete = await store.DeleteScopeAsync(scope, MemoryTier.User);
-        Assert.Equal(refused ? "Memory tier 'User' path is a reparse point or could not be inspected; refusing to delete." : null, delete.Error);
+        Assert.Equal(linux ? "Memory tier 'User' path is a reparse point or could not be inspected; refusing to delete." : null, delete.Error);
         Assert.Empty(Directory.GetFileSystemEntries(tmp.Path));
     }
 

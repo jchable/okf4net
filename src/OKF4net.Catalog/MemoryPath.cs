@@ -72,12 +72,21 @@ public static class MemoryPath
 
         return tier switch
         {
-            MemoryTier.Tenant => $"memory-tenant/{tenant}",
-            MemoryTier.User => $"memory-user/{tenant}/{user}",
-            MemoryTier.Session => $"memory-session/{tenant}/{user}/{session}",
+            MemoryTier.Tenant => $"{TierDirectory(tier)}/{tenant}",
+            MemoryTier.User => $"{TierDirectory(tier)}/{tenant}/{user}",
+            MemoryTier.Session => $"{TierDirectory(tier)}/{tenant}/{user}/{session}",
             _ => throw new ArgumentOutOfRangeException(nameof(tier), tier, "Unknown memory tier."),
         };
     }
+
+    /// <summary>The fixed first segment of every prefix of <paramref name="tier"/> (<c>memory-user</c>, ...), never an object's name.</summary>
+    internal static string TierDirectory(MemoryTier tier) => tier switch
+    {
+        MemoryTier.Tenant => "memory-tenant",
+        MemoryTier.User => "memory-user",
+        MemoryTier.Session => "memory-session",
+        _ => throw new ArgumentOutOfRangeException(nameof(tier), tier, "Unknown memory tier."),
+    };
 
     /// <summary>
     /// Encodes a validated scope segment as <c>{lowercased-raw}-{hash}</c>,

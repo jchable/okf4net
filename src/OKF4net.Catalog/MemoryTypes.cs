@@ -23,7 +23,10 @@ public sealed record MemoryWriteResult(bool Written, string? Error);
 /// when any tier failed. A tier whose scope held no key is absent from <see cref="Tiers"/>,
 /// unless directories left in it could not be removed. A scope that could not be listed (a
 /// subdirectory that denies listing, a bound exceeded) yields one failure under the scope's
-/// prefix and nothing deleted. Once every object of a scope is deleted its now-empty
+/// prefix and nothing deleted. A scope whose prefix is no valid key (an id that makes it
+/// longer than <see cref="OKF4net.Providers.BundleKey.MaxUtf8Bytes"/> bytes) has no key to
+/// file a failure under: its tier appears all the same, with one failure filed under the
+/// tier's fixed first segment (<c>memory-user</c>, ...), which is never an object. Once every object of a scope is deleted its now-empty
 /// directories are removed too: the scope's own directory, named for its own id, does not
 /// outlive it, but its parent directories are kept and still carry the ids above it
 /// (<c>memory-session/&lt;tenant&gt;-&lt;hash&gt;/&lt;user&gt;-&lt;hash&gt;/</c> after a user's sessions are erased,
@@ -39,7 +42,10 @@ public sealed record MemoryDeleteResult(IReadOnlyList<MemoryTierDeletion> Tiers,
 /// were deleted and which failed, with why; a scope the provider refused (a reparse point
 /// on its path) or could not list reports one failure under the scope's prefix and nothing
 /// deleted, and so does a scope whose objects are all deleted but whose directories could
-/// not all be removed (the keys deleted are then reported as well).
+/// not all be removed (the keys deleted are then reported as well). For a scope whose prefix
+/// is no valid key the one failure carries the tier's fixed first segment
+/// (<c>memory-tenant</c>, <c>memory-user</c> or <c>memory-session</c>) as its key, which is
+/// never an object; the tier is reported, with nothing deleted.
 /// </summary>
 /// <param name="Tier">The tier.</param>
 /// <param name="Report">The keys deleted, in order, and the failures.</param>

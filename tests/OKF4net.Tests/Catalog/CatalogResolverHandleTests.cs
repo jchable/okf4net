@@ -95,7 +95,9 @@ public class CatalogResolverHandleTests
 
         public string Id => FailId ? throw new InvalidOperationException("s3://secret-bucket id") : inner.Id;
 
-        public string Location => inner.Location;
+        public bool FailLocation { get; set; }
+
+        public string Location => FailLocation ? throw new InvalidOperationException("s3://secret-bucket location") : inner.Location;
 
         public BundleProviderCapabilities Capabilities => inner.Capabilities;
 
@@ -112,6 +114,40 @@ public class CatalogResolverHandleTests
         public BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition) => inner.Write(key, content, condition);
 
         public void Delete(BundleKey key, BundleWriteCondition condition) => inner.Delete(key, condition);
+    }
+
+    [Theory]
+    [InlineData(KnowledgeResolverStrategy.GroupedBySource)]
+    [InlineData(KnowledgeResolverStrategy.Merged)]
+    [InlineData(KnowledgeResolverStrategy.PriorityWeighted)]
+    public async Task A_provider_location_that_starts_throwing_makes_only_its_source_unavailable(KnowledgeResolverStrategy strategy)
+    {
+        using var root = new TempDir();
+        var bad = new LateIdProvider(new InMemoryBundleProvider(id: "bad").Add("a.md", Doc));
+        var good = new InMemoryBundleProvider(id: "good").Add("b.md", Doc);
+        using var catalog = Catalog(root, BadAndGood, new TestProviderFactory("memory", s => s.Id == "bad" ? bad : good));
+        var resolver = new KnowledgeResolverRouter(catalog, strategy, null, null);
+        Assert.Equal(2, (await resolver.SearchAsync(new KnowledgeQuery("orders"))).Passages.Count);
+
+        bad.FailLocation = true;
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders"));
+
+        Assert.Equal("good", Assert.Single(context.Passages).SourceId);
+        var unavailable = Assert.Single(context.Diagnostics, d => d.Code == KnowledgeDiagnosticCode.SourceUnavailable);
+        Assert.Equal("Source 'bad' storage could not be identified (InvalidOperationException).", unavailable.Message);
+    }
+
+    // The location is also read for the diagnostics built from a source that was opened: a getter that starts
+    // throwing after TryOpen read it must not turn a diagnostic into an exception.
+    [Fact]
+    public async Task The_location_of_a_diagnostic_is_read_inside_a_guard()
+    {
+        var failing = new InMemoryBundleProvider(id: "f").Add("a.md", Doc);
+        failing.FailEnumerateWith = new InvalidOperationException("boom");
+        var locationFails = new LateIdProvider(failing) { FailLocation = true };
+        var result = await new OkfBundleKnowledgeSource("f", new BundleHandle(locationFails)).SearchAsync(new KnowledgeQuery("orders"));
+
+        Assert.Equal("Source 'f' bundle at '(location unavailable)' could not be loaded (InvalidOperationException).", result.Diagnostic!.Message);
     }
 
     // The catalog refuses a provider whose Id throws when it enters; one that starts throwing later is
@@ -364,7 +400,7 @@ public class CatalogResolverHandleTests
     [InlineData(KnowledgeResolverStrategy.GroupedBySource)]
     [InlineData(KnowledgeResolverStrategy.Merged)]
     [InlineData(KnowledgeResolverStrategy.PriorityWeighted)]
-    public async Task A_cancellation_from_a_provider_still_propagates(KnowledgeResolverStrategy strategy)
+    public async Task A_cancellation_raised_by_a_provider_is_that_sources_problem_and_only_the_callers_token_propagates(KnowledgeResolverStrategy strategy)
     {
         using var root = new TempDir();
         var bad = new InMemoryBundleProvider(id: "bad").Add("a.md", Doc);
@@ -373,9 +409,31 @@ public class CatalogResolverHandleTests
         var resolver = new KnowledgeResolverRouter(catalog, strategy, null, null);
         await resolver.SearchAsync(new KnowledgeQuery("orders"));
 
-        bad.FailVersionWith = new OperationCanceledException();
+        // An HttpClient timeout surfaces as a TaskCanceledException while the caller's token is not cancelled.
+        bad.FailVersionWith = new TaskCanceledException("s3://secret-bucket timed out");
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders"), CancellationToken.None);
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await resolver.SearchAsync(new KnowledgeQuery("orders")));
+        Assert.Equal("good", Assert.Single(context.Passages).SourceId);
+        var unavailable = Assert.Single(context.Diagnostics, d => d.Code == KnowledgeDiagnosticCode.SourceUnavailable);
+        Assert.Equal("bad", unavailable.SourceId);
+        Assert.Equal("Source 'bad' bundle at 'memory://bad' could not be loaded (TaskCanceledException).", unavailable.Message);
+        Assert.DoesNotContain("secret", unavailable.Message);
+
+        // The caller's own cancellation is still thrown.
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await resolver.SearchAsync(new KnowledgeQuery("orders"), cts.Token));
+    }
+
+    [Fact]
+    public async Task A_cancelled_caller_token_still_throws_from_the_source()
+    {
+        var storage = new InMemoryBundleProvider(id: "s").Add("a.md", Doc);
+        var source = new OkfBundleKnowledgeSource("s", new BundleHandle(storage));
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await source.SearchAsync(new KnowledgeQuery("orders"), cts.Token));
     }
 
     [SkippableFact]

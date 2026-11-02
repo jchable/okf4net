@@ -281,8 +281,9 @@ its derived types) or `IOException`: the core translates provider, I/O and
 access exceptions only. Any other exception a provider throws during a load or
 a token read is reported by `SearchAsync` as `SourceUnavailable` for that
 source alone, by the exception's type name (never its message) and without
-passages; the other sources are still searched, and a cancellation still
-propagates.
+passages; the other sources are still searched, and a cancellation of the
+caller's token still propagates (one a provider raises itself, a timeout for
+instance, is reported the same way, by type name).
 
 A source may name its storage:
 

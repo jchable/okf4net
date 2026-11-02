@@ -36,8 +36,9 @@ internal static class CatalogSourceOpener
                 identity = handle.Provider.Id;
                 location = handle.Location;
             }
-            catch (Exception e) when (e is not (OutOfMemoryException or OperationCanceledException))
+            catch (Exception e) when (e is not OutOfMemoryException)
             {
+                // No token here: a cancellation raised by a getter is the provider's own, reported like any other.
                 bundleSource = null;
                 identity = null;
                 location = null;
@@ -97,6 +98,6 @@ internal static class CatalogSourceOpener
         return new KnowledgeDiagnostic(
             KnowledgeDiagnosticCode.SourceStale,
             source.Id,
-            $"Source '{source.Id}' bundle at '{handle.Location}' is served from its last good image; the last reload failed ({cause.GetType().Name}).");
+            $"Source '{source.Id}' bundle at '{source.LocationForDiagnostic}' is served from its last good image; the last reload failed ({cause.GetType().Name}).");
     }
 }

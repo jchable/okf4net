@@ -1213,8 +1213,9 @@ sources mémoire. Désormais :
 > hôte pendant un chargement ou une lecture du jeton (le premier chargement
 > compris), n'est pas traduite par le cœur mais ne sort plus de `SearchAsync` :
 > la source est signalée `SourceUnavailable` par le nom du type de l'exception
-> seul, sans passages, et les autres sources sont cherchées ; une annulation
-> se propage toujours.
+> seul, sans passages, et les autres sources sont cherchées ; l'annulation du
+> jeton de l'appelant se propage toujours (celle que lève le provider lui-même,
+> un délai dépassé par exemple, est signalée de la même façon).
 >
 > **Suppression d'un scope : décision 14 précisée.** Un scope existe s'il
 > contient une clé, et la suppression retire chaque objet par le provider,

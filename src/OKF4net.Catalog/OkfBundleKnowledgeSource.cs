@@ -78,6 +78,25 @@ public sealed class OkfBundleKnowledgeSource : IKnowledgeSource
     /// <summary>The handle the bundle is read from.</summary>
     public BundleHandle Handle { get; }
 
+    /// <summary>
+    /// The handle's location for a diagnostic: a host provider's getter that throws (it is documented stable and
+    /// non-throwing, but is a host getter read at every search) must not turn a diagnostic into an exception.
+    /// </summary>
+    internal string LocationForDiagnostic
+    {
+        get
+        {
+            try
+            {
+                return Handle.Location;
+            }
+            catch (Exception e) when (e is not OutOfMemoryException)
+            {
+                return "(location unavailable)";
+            }
+        }
+    }
+
     /// <inheritdoc/>
     /// <remarks>
     /// A null/blank <see cref="KnowledgeQuery.Text"/> is handled defensively
@@ -118,19 +137,21 @@ public sealed class OkfBundleKnowledgeSource : IKnowledgeSource
                 new KnowledgeDiagnostic(
                     KnowledgeDiagnosticCode.SourceUnavailable,
                     Id,
-                    $"Source '{Id}' bundle at '{Handle.Location}' could not be loaded: {e.Message}")));
+                    $"Source '{Id}' bundle at '{LocationForDiagnostic}' could not be loaded: {e.Message}")));
         }
-        catch (Exception e) when (e is not (OutOfMemoryException or OperationCanceledException))
+        catch (Exception e) when (e is not OutOfMemoryException && !(e is OperationCanceledException && ct.IsCancellationRequested))
         {
             // A host provider's own exception (neither a BundleProviderException nor an I/O error, so the core did
             // not translate it): this source is unavailable, by type only -- a host's message can name a bucket or
-            // a path (spec §7) -- and the sources around it are still searched. A cancellation still propagates.
+            // a path (spec §7) -- and the sources around it are still searched. Handle.Current takes no token and
+            // ct was checked above, so a cancellation raised here is the provider's own (an HttpClient timeout, say)
+            // and is reported the same way; only a cancellation of the CALLER's token still propagates.
             return new ValueTask<KnowledgeSearchResult>(new KnowledgeSearchResult(
                 Array.Empty<KnowledgePassage>(),
                 new KnowledgeDiagnostic(
                     KnowledgeDiagnosticCode.SourceUnavailable,
                     Id,
-                    $"Source '{Id}' bundle at '{Handle.Location}' could not be loaded ({e.GetType().Name}).")));
+                    $"Source '{Id}' bundle at '{LocationForDiagnostic}' could not be loaded ({e.GetType().Name}).")));
         }
 
         var scored = ConceptSearch.Search(bundle.Concepts, query.Text, query.Tag);

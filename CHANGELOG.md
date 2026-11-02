@@ -274,7 +274,9 @@ and this project adheres to
   the core, but it no longer escapes `SearchAsync`: that source is reported
   `SourceUnavailable`, by the exception's type name only (never its message), with
   no passages (a failed token read after a first load is not a stale image here),
-  and the other sources are still searched; a cancellation still propagates. A
+  and the other sources are still searched; a cancellation of the caller's token still propagates (one a provider raises
+  itself, an `HttpClient` timeout for instance, is that source's problem and is
+  reported the same way, by type name). A
   provider's `Id` and `Location` are read at every search (`IBundleProvider`
   now documents them as stable and non-throwing): a getter that starts throwing
   costs its own source only, `SourceUnavailable` by type name. The fused

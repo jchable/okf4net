@@ -206,7 +206,7 @@ public sealed class FileMemoryStore : IMemoryStore
                 // failure is filed under the tier's fixed first segment, the nearest key there is.
                 var invalid = $"the scope has no valid key ({keyFailure}) - nothing was deleted";
                 errors.Add($"Memory tier '{currentTier}' subtree could not be deleted: {invalid}");
-                deletions.Add(new MemoryTierDeletion(currentTier, new BundleWriteReport([], [], [new BundleWriteFailure(BundleKey.Parse(conceptIdPrefix[..conceptIdPrefix.IndexOf('/')]), invalid)])));
+                deletions.Add(new MemoryTierDeletion(currentTier, new BundleWriteReport([], [], [new BundleWriteFailure(BundleKey.Parse(MemoryPath.TierDirectory(currentTier)), invalid)])));
                 continue;
             }
 
