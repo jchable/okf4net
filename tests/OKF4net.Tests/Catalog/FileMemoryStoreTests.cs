@@ -1102,32 +1102,34 @@ public class FileMemoryStoreTests
         Assert.Empty(Directory.GetFileSystemEntries(tmp.Path));
     }
 
-    // An id longer than the OS file-name component limit but inside the key limit is not an over-long key:
-    // nothing throws. On Linux the STRICT guard's lstat of the over-long name fails (ENAMETOOLONG), so the
-    // refusal is reported, unconditionally there (a regression to "skipped silently" fails this test). Windows
-    // answers "not found" for such a name (measured: the scope is simply absent, nothing reported) and macOS is
-    // not measured, so there the test only requires that nothing throws and that anything reported is the refusal.
+    // An id longer than the OS file-name component limit (255 on NTFS, ext4 and APFS) but inside the key limit
+    // is not an over-long key: nothing throws. While the tier's own directory does not exist the scope is simply
+    // absent, as it was before the seam (nothing reported); once it exists (any earlier write, even a failed one,
+    // creates it) the STRICT guard's inspection of the over-long name fails and its refusal is what a read and a
+    // deletion report, on every operating system (measured on Windows and Linux).
     [Fact]
-    public async Task A_scope_id_longer_than_the_os_component_limit_throws_nothing_and_reports_the_guards_refusal_where_the_os_fails_the_inspection()
+    public async Task A_scope_id_longer_than_the_os_component_limit_throws_nothing_and_is_refused_once_the_tier_directory_exists()
     {
         using var tmp = new TempDir();
         var store = UserStore(tmp);
         var scope = new KnowledgeAccessScope(tenantId: new string('t', 300), userId: "alice");
-        var linux = OperatingSystem.IsLinux();
+
+        var absentRead = await store.ReadAsync(scope, new KnowledgeQuery("anything"));
+        Assert.Empty(absentRead.Passages);
+        Assert.Empty(absentRead.Diagnostics);
+        Assert.Null((await store.DeleteScopeAsync(scope, MemoryTier.User)).Error);
+        Assert.Empty(Directory.GetFileSystemEntries(tmp.Path));
+
+        var tierDirectory = Path.Combine(tmp.Path, MemoryPath.TierDirectory(MemoryTier.User));
+        Directory.CreateDirectory(tierDirectory);
 
         var read = await store.ReadAsync(scope, new KnowledgeQuery("anything"));
         Assert.Empty(read.Passages);
-        if (linux)
-        {
-            Assert.Single(read.Diagnostics);
-        }
-
-        Assert.All(read.Diagnostics, d => Assert.Equal("Memory tier 'User' path is a reparse point or could not be inspected; refusing to read.", d.Message));
-
+        Assert.Equal("Memory tier 'User' path is a reparse point or could not be inspected; refusing to read.", Assert.Single(read.Diagnostics).Message);
         Assert.Empty(await store.EnumerateAsync(scope));
         var delete = await store.DeleteScopeAsync(scope, MemoryTier.User);
-        Assert.Equal(linux ? "Memory tier 'User' path is a reparse point or could not be inspected; refusing to delete." : null, delete.Error);
-        Assert.Empty(Directory.GetFileSystemEntries(tmp.Path));
+        Assert.Equal("Memory tier 'User' path is a reparse point or could not be inspected; refusing to delete.", delete.Error);
+        Assert.Empty(Directory.GetFileSystemEntries(tierDirectory));
     }
 
     private static bool Icacls(params string[] arguments)

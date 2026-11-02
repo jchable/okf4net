@@ -329,9 +329,11 @@ and this project adheres to
   reported the same way (`could not be loaded: key is longer than 1024 UTF-8
   bytes` on a read, nothing on an enumeration, a failure on a deletion, a
   failed write), never thrown; an id longer than the operating system's
-  file-name component limit (255 bytes on Linux) now reports the guard's
-  refusal text (`path is a reparse point or could not be inspected; refusing
-  to read`) instead of being skipped silently. In a `Tiers` report, a tier's
+  file-name component limit (255 on NTFS, ext4 and APFS) is still absent while
+  the tier's own directory does not exist, but once it exists (any earlier
+  write, even a failed one, creates it) a read and a deletion now report the
+  guard's refusal text (`path is a reparse point or could not be inspected;
+  refusing to read`) where they used to skip it silently. In a `Tiers` report, a tier's
   failures are joined by a comma and tiers by a semicolon in `Error`. Writes already
   went through the provider (lot B); they now share the tier's provider
   instance.
