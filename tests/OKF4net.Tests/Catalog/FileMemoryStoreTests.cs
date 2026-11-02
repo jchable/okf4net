@@ -1042,6 +1042,88 @@ public class FileMemoryStoreTests
         return false;
     }
 
+    // A scope id bounded only by its character class can make the scope's key
+    // longer than BundleKey.MaxUtf8Bytes (1 024): that is a storage condition
+    // reported as data, never an exception out of the store (before the seam it was
+    // Directory.Exists == false, silently skipped).
+    [Theory]
+    [InlineData(MemoryTier.Tenant)]
+    [InlineData(MemoryTier.User)]
+    [InlineData(MemoryTier.Session)]
+    public async Task A_scope_id_whose_key_exceeds_the_key_limit_is_reported_as_data_by_all_four_operations(MemoryTier tier)
+    {
+        using var tmp = new TempDir();
+        var store = new FileMemoryStore(new Dictionary<MemoryTier, string> { [tier] = tmp.Path });
+        var scope = new KnowledgeAccessScope(tenantId: new string('t', 1100), userId: "alice", sessionId: "s1");
+
+        var read = await store.ReadAsync(scope, new KnowledgeQuery("anything"));
+        Assert.Empty(read.Passages);
+        var diagnostic = Assert.Single(read.Diagnostics);
+        Assert.Equal(KnowledgeDiagnosticCode.SourceUnavailable, diagnostic.Code);
+        Assert.Equal($"Memory tier '{tier}' could not be loaded: key is longer than 1024 UTF-8 bytes", diagnostic.Message);
+        Assert.DoesNotContain("ttttt", diagnostic.Message);
+
+        Assert.Empty(await store.EnumerateAsync(scope));
+
+        var write = await store.WriteAsync(scope, Entry("never written"), tier);
+        Assert.False(write.Written);
+        Assert.NotNull(write.Error);
+
+        var delete = await store.DeleteScopeAsync(scope, tier);
+        Assert.NotNull(delete.Error);
+        Assert.Contains($"Memory tier '{tier}' subtree could not be deleted", delete.Error);
+        Assert.Contains("key is longer than 1024 UTF-8 bytes", delete.Error);
+        Assert.DoesNotContain("ttttt", delete.Error);
+        var deletion = Assert.Single(delete.Tiers);
+        Assert.Equal(tier, deletion.Tier);
+        Assert.Empty(deletion.Report.Deleted);
+        Assert.Single(deletion.Report.Failed);
+
+        // Nothing was created or touched under the tier's root.
+        Assert.Empty(Directory.GetFileSystemEntries(tmp.Path));
+    }
+
+    // The same over-long id, without a tier: DeleteScopeAsync(scope) walks every applicable tier.
+    [Fact]
+    public async Task Deleting_every_tier_of_an_over_long_scope_id_reports_each_without_throwing()
+    {
+        using var tmp = new TempDir();
+        var store = new FileMemoryStore(new Dictionary<MemoryTier, string>
+        {
+            [MemoryTier.Tenant] = tmp.Path,
+            [MemoryTier.User] = tmp.Path,
+            [MemoryTier.Session] = tmp.Path,
+        });
+        var scope = new KnowledgeAccessScope(tenantId: new string('t', 1100), userId: "alice", sessionId: "s1");
+
+        var delete = await store.DeleteScopeAsync(scope);
+        Assert.Equal(3, delete.Tiers.Count);
+        Assert.All(delete.Tiers, d => Assert.Empty(d.Report.Deleted));
+        Assert.Empty(Directory.GetFileSystemEntries(tmp.Path));
+    }
+
+    // An id longer than the OS file-name component limit (but inside the key limit) is not
+    // an over-long key: nothing throws, and where the operating system rejects the name (Linux:
+    // 255 bytes per component) the provider's STRICT guard refuses it and that refusal is what is
+    // reported (Windows accepts a name this long, so there it is simply absent).
+    [Fact]
+    public async Task A_scope_id_longer_than_the_os_component_limit_throws_nothing_and_reports_at_most_the_guards_refusal()
+    {
+        using var tmp = new TempDir();
+        var store = UserStore(tmp);
+        var scope = new KnowledgeAccessScope(tenantId: new string('t', 300), userId: "alice");
+
+        var read = await store.ReadAsync(scope, new KnowledgeQuery("anything"));
+        Assert.Empty(read.Passages);
+        Assert.All(read.Diagnostics, d => Assert.Equal("Memory tier 'User' path is a reparse point or could not be inspected; refusing to read.", d.Message));
+        var refused = read.Diagnostics.Count == 1;
+
+        Assert.Empty(await store.EnumerateAsync(scope));
+        var delete = await store.DeleteScopeAsync(scope, MemoryTier.User);
+        Assert.Equal(refused ? "Memory tier 'User' path is a reparse point or could not be inspected; refusing to delete." : null, delete.Error);
+        Assert.Empty(Directory.GetFileSystemEntries(tmp.Path));
+    }
+
     private static bool Icacls(params string[] arguments)
     {
         var info = new System.Diagnostics.ProcessStartInfo("icacls.exe")

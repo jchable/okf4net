@@ -103,7 +103,13 @@ public sealed class FileMemoryStore : IMemoryStore
             // call -- and reused both to open the scope below and as every
             // hit's ConceptId prefix further down.
             var conceptIdPrefix = MemoryPath.For(tier, scope);
-            var prefix = BundleKey.Parse(conceptIdPrefix);
+            if (!BundleKey.TryParse(conceptIdPrefix, out var prefix, out var keyFailure))
+            {
+                // An id the scope's character class admits can still make the prefix an invalid key (over-long).
+                diagnostics.Add(new KnowledgeDiagnostic(KnowledgeDiagnosticCode.SourceUnavailable, $"memory:{tier}", $"Memory tier '{tier}' could not be loaded: {keyFailure}"));
+                continue;
+            }
+
             var scopeProvider = ScopeProvider(tierProvider, prefix);
             var probe = Probe(tierProvider, scopeProvider, prefix);
             switch (probe.State)
@@ -193,7 +199,17 @@ public sealed class FileMemoryStore : IMemoryStore
                 continue;
             }
 
-            var prefix = BundleKey.Parse(MemoryPath.For(currentTier, scope));
+            var conceptIdPrefix = MemoryPath.For(currentTier, scope);
+            if (!BundleKey.TryParse(conceptIdPrefix, out var prefix, out var keyFailure))
+            {
+                // No key exists for this scope, so nothing can be stored under it and nothing is touched; the one
+                // failure is filed under the tier's fixed first segment, the nearest key there is.
+                var invalid = $"the scope has no valid key ({keyFailure}) - nothing was deleted";
+                errors.Add($"Memory tier '{currentTier}' subtree could not be deleted: {invalid}");
+                deletions.Add(new MemoryTierDeletion(currentTier, new BundleWriteReport([], [], [new BundleWriteFailure(BundleKey.Parse(conceptIdPrefix[..conceptIdPrefix.IndexOf('/')]), invalid)])));
+                continue;
+            }
+
             var probe = Probe(tierProvider, ScopeProvider(tierProvider, prefix), prefix);
             switch (probe.State)
             {
@@ -277,7 +293,11 @@ public sealed class FileMemoryStore : IMemoryStore
             }
 
             var conceptIdPrefix = MemoryPath.For(tier, scope);
-            var prefix = BundleKey.Parse(conceptIdPrefix);
+            if (!BundleKey.TryParse(conceptIdPrefix, out var prefix, out _))
+            {
+                continue;
+            }
+
             var scopeProvider = ScopeProvider(tierProvider, prefix);
             if (Probe(tierProvider, scopeProvider, prefix).State != ScopeState.Present)
             {

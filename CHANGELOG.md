@@ -312,7 +312,14 @@ and this project adheres to
   cannot be listed (a subdirectory that denies listing, a bound exceeded) is
   reported as data and never thrown: a diagnostic on a read
   (`could not be loaded: <exception type>`), nothing on an enumeration, a
-  failure on a deletion with nothing deleted. In a `Tiers` report, a tier's
+  failure on a deletion with nothing deleted. A scope id (bounded only by its
+  character class) that makes the scope's key longer than 1 024 UTF-8 bytes is
+  reported the same way (`could not be loaded: key is longer than 1024 UTF-8
+  bytes` on a read, nothing on an enumeration, a failure on a deletion, a
+  failed write), never thrown; an id longer than the operating system's
+  file-name component limit (255 bytes on Linux) now reports the guard's
+  refusal text (`path is a reparse point or could not be inspected; refusing
+  to read`) instead of being skipped silently. In a `Tiers` report, a tier's
   failures are joined by a comma and tiers by a semicolon in `Error`. Writes already
   went through the provider (lot B); they now share the tier's provider
   instance.
