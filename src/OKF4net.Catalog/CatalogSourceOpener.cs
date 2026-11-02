@@ -29,9 +29,26 @@ internal static class CatalogSourceOpener
     {
         if (snapshot.Handles.TryGetValue(source.Id, out var handle))
         {
+            // Both are host getters read at every search (the catalog checked the id once, when the provider
+            // entered): one that starts throwing costs this source only, reported by type name (spec §7).
+            try
+            {
+                identity = handle.Provider.Id;
+                location = handle.Location;
+            }
+            catch (Exception e) when (e is not (OutOfMemoryException or OperationCanceledException))
+            {
+                bundleSource = null;
+                identity = null;
+                location = null;
+                diagnostic = new KnowledgeDiagnostic(
+                    KnowledgeDiagnosticCode.SourceUnavailable,
+                    source.Id,
+                    $"Source '{source.Id}' storage could not be identified ({e.GetType().Name}).");
+                return false;
+            }
+
             bundleSource = new OkfBundleKnowledgeSource(source.Id, handle);
-            identity = handle.Provider.Id;
-            location = handle.Location;
             diagnostic = null;
             return true;
         }
@@ -68,6 +85,8 @@ internal static class CatalogSourceOpener
     /// </summary>
     internal static KnowledgeDiagnostic? StaleDiagnostic(OkfBundleKnowledgeSource source)
     {
+        // Read after the search, not during it: a reload by another request in between can label a current
+        // image stale or a stale one current. That is inherent to the per-search cadence; do not "fix" it with a lock.
         var handle = source.Handle;
         if (!handle.IsStale || handle.LastLoadError is not { } error)
         {

@@ -10,10 +10,10 @@ namespace OKF4net.Providers;
 /// </summary>
 public interface IBundleProvider
 {
-    /// <summary>A stable, non-secret identity: diagnostics, catalog de-duplication, lock key for non-filesystem providers.</summary>
+    /// <summary>A stable, non-secret identity: diagnostics, catalog de-duplication, lock key for non-filesystem providers. Stable and non-throwing: the catalog's resolvers read it at every search.</summary>
     string Id { get; }
 
-    /// <summary>A displayable, non-secret location (the root as given, for the filesystem).</summary>
+    /// <summary>A displayable, non-secret location (the root as given, for the filesystem). Stable and non-throwing, like <see cref="Id"/>.</summary>
     string Location { get; }
 
     /// <summary>What this provider can do beyond reading.</summary>

@@ -147,7 +147,8 @@ and this project adheres to
   members, **appended** (values 19 to 25: the shipped 0 to 18 keep theirs, so
   this is not a break, and the diagnostics of a manifest without `provider` or
   `settings` are the same, in the same order): `MalformedProvider`,
-  `MalformedSettings`, `IllegalSetting` (any setting for `filesystem`, or one
+  `MalformedSettings` (a `settings` that is not an object of strings, a name
+  given twice, an empty name), `IllegalSetting` (any setting for `filesystem`, or one
   the factory does not list; a disabled source's setting names are checked
   too when a factory exists for its type), `IllegalPath` (a `path` on another
   provider type, whose storage is its settings), `IllegalMemoryProvider`
@@ -273,14 +274,20 @@ and this project adheres to
   the core, but it no longer escapes `SearchAsync`: that source is reported
   `SourceUnavailable`, by the exception's type name only (never its message), with
   no passages (a failed token read after a first load is not a stale image here),
-  and the other sources are still searched; a cancellation still propagates.
+  and the other sources are still searched; a cancellation still propagates. A
+  provider's `Id` and `Location` are read at every search (`IBundleProvider`
+  now documents them as stable and non-throwing): a getter that starts throwing
+  costs its own source only, `SourceUnavailable` by type name. The fused
+  resolvers compare the ids exactly (ordinal), on every platform.
 - **`new OkfBundleKnowledgeSource(id, directory)` builds its own `OnAccess`
   handle** (#139, lot D; spec §5.2): it used to load the bundle at every
   search; it now loads once and compares the token at each search, so an
   external change is still seen at the next one (with the weak filesystem
   token above). Two sources built that way over one directory have two images.
-  It now throws at construction for a null id or a null or empty directory (an
-  empty directory used to surface as `SourceUnavailable` at the first search),
+  It now throws `ArgumentException` at construction for a null id, for a null or
+  empty directory (an empty directory used to surface as `SourceUnavailable` at
+  the first search) and for a directory string `Path.GetFullPath` rejects (one
+  with an embedded NUL character),
   and a directory that does not exist is reported, for a direct caller, as
   `I/O error while listing the bundle (DirectoryNotFoundException)` instead of
   `bundle root is not a directory`.

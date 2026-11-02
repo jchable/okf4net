@@ -16,7 +16,9 @@ namespace OKF4net.Catalog;
 /// use, so ranking and scoring are identical by construction rather than by parallel
 /// re-implementation. The handle decides when the image is reloaded: a catalog source
 /// is served from the handle its catalog keeps across requests (the snapshot's handles,
-/// <see cref="BundleRefreshPolicy.OnAccess"/> by default), so an unchanged bundle is
+/// <see cref="BundleRefreshPolicy.OnAccess"/> by default; a hand-built snapshot without handles
+/// falls back to a fresh <c>OnAccess</c> handle per request, with no subscription and nothing to
+/// dispose), so an unchanged bundle is
 /// loaded once and a changed one is seen at the next search. A reload that fails keeps
 /// the previous image served (<see cref="BundleHandle.IsStale"/>, which the catalog's
 /// resolvers report as <see cref="KnowledgeDiagnosticCode.SourceStale"/>); only a bundle

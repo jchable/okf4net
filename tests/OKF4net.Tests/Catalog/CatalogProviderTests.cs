@@ -57,6 +57,7 @@ public class CatalogProviderTests
     [InlineData("""{ "version": 1, "sources": [ { "id": "a", "provider": "s3", "settings": [ "bucket" ] } ] }""", CatalogDiagnosticCode.MalformedSettings)]
     [InlineData("""{ "version": 1, "sources": [ { "id": "a", "provider": "s3", "settings": { "bucket": 1 } } ] }""", CatalogDiagnosticCode.MalformedSettings)]
     [InlineData("""{ "version": 1, "sources": [ { "id": "a", "provider": "s3", "settings": { "bucket": "b", "bucket": "c" } } ] }""", CatalogDiagnosticCode.MalformedSettings)]
+    [InlineData("""{ "version": 1, "sources": [ { "id": "a", "provider": "s3", "settings": { "": "v" } } ] }""", CatalogDiagnosticCode.MalformedSettings)]
     [InlineData("""{ "version": 1, "sources": [ { "id": "a", "path": "./a", "settings": { "bucket": "b" } } ] }""", CatalogDiagnosticCode.IllegalSetting)]
     [InlineData("""{ "version": 1, "sources": [ { "id": "a", "provider": "s3", "path": "./a" } ] }""", CatalogDiagnosticCode.IllegalPath)]
     [InlineData("""{ "version": 1, "sources": [ { "id": "a", "provider": "s3", "role": "memory", "tier": "user" } ] }""", CatalogDiagnosticCode.IllegalMemoryProvider)]

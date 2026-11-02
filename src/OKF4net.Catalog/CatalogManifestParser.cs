@@ -277,6 +277,12 @@ public static class CatalogManifestParser
                 return ProviderSettings.Empty;
             }
 
+            if (setting.Name.Length == 0)
+            {
+                diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.MalformedSettings, "A source setting has an empty name."));
+                return ProviderSettings.Empty;
+            }
+
             if (!names.Add(setting.Name))
             {
                 diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.MalformedSettings, $"Source setting '{setting.Name}' appears twice."));

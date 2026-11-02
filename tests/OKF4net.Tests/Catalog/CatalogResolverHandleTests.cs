@@ -75,6 +75,68 @@ public class CatalogResolverHandleTests
         Assert.Equal("y", duplicate.SourceId);
         Assert.Contains("('memory://shared')", duplicate.Message);
         Assert.Contains("as source 'x'", duplicate.Message);
+
+        // The shared storage goes stale after that first search: the one surviving source reports it
+        // once; the skipped duplicate never opened a search of its own, so it reports nothing.
+        storage.Add("b.md", Doc);
+        storage.FailReadsWith = new BundleAccessRefusedException(null, "s3://secret-bucket denied");
+        var stale = await resolver.SearchAsync(new KnowledgeQuery("orders"));
+
+        Assert.Equal("x", Assert.Single(stale.Passages).SourceId);
+        var staleDiagnostic = Assert.Single(stale.Diagnostics, d => d.Code == KnowledgeDiagnosticCode.SourceStale);
+        Assert.Equal("x", staleDiagnostic.SourceId);
+        Assert.Single(stale.Diagnostics, d => d.Code == KnowledgeDiagnosticCode.DuplicateDirectory);
+    }
+
+    /// <summary>A provider whose <see cref="Id"/> starts throwing once the test says so (a host getter that is not stable).</summary>
+    private sealed class LateIdProvider(IBundleProvider inner) : IBundleProvider
+    {
+        public bool FailId { get; set; }
+
+        public string Id => FailId ? throw new InvalidOperationException("s3://secret-bucket id") : inner.Id;
+
+        public string Location => inner.Location;
+
+        public BundleProviderCapabilities Capabilities => inner.Capabilities;
+
+        public BundleKeyConstraints NativeConstraints => inner.NativeConstraints;
+
+        public BundleVersion GetVersion(BundleLimits limits) => inner.GetVersion(limits);
+
+        public IEnumerable<BundleListing> Enumerate(BundleKey? prefix, BundleLimits limits) => inner.Enumerate(prefix, limits);
+
+        public BundleObject Read(BundleKey key, BundleObjectVersion? expected = null) => inner.Read(key, expected);
+
+        public bool Exists(BundleKey key) => inner.Exists(key);
+
+        public BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition) => inner.Write(key, content, condition);
+
+        public void Delete(BundleKey key, BundleWriteCondition condition) => inner.Delete(key, condition);
+    }
+
+    // The catalog refuses a provider whose Id throws when it enters; one that starts throwing later is
+    // read at every search, and must cost only its own source.
+    [Theory]
+    [InlineData(KnowledgeResolverStrategy.GroupedBySource)]
+    [InlineData(KnowledgeResolverStrategy.Merged)]
+    [InlineData(KnowledgeResolverStrategy.PriorityWeighted)]
+    public async Task A_provider_id_that_starts_throwing_makes_only_its_source_unavailable(KnowledgeResolverStrategy strategy)
+    {
+        using var root = new TempDir();
+        var bad = new LateIdProvider(new InMemoryBundleProvider(id: "bad").Add("a.md", Doc));
+        var good = new InMemoryBundleProvider(id: "good").Add("b.md", Doc);
+        using var catalog = Catalog(root, BadAndGood, new TestProviderFactory("memory", s => s.Id == "bad" ? bad : good));
+        var resolver = new KnowledgeResolverRouter(catalog, strategy, null, null);
+        Assert.Equal(2, (await resolver.SearchAsync(new KnowledgeQuery("orders"))).Passages.Count);
+
+        bad.FailId = true;
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders"));
+
+        Assert.Equal("good", Assert.Single(context.Passages).SourceId);
+        var unavailable = Assert.Single(context.Diagnostics, d => d.Code == KnowledgeDiagnosticCode.SourceUnavailable);
+        Assert.Equal("bad", unavailable.SourceId);
+        Assert.Equal("Source 'bad' storage could not be identified (InvalidOperationException).", unavailable.Message);
+        Assert.DoesNotContain("secret", unavailable.Message);
     }
 
     [Fact]

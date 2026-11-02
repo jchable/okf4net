@@ -29,6 +29,15 @@ public interface IBundleProviderFactory
     /// the source's effective configuration); what it throws rejects that load as
     /// <see cref="CatalogDiagnosticCode.ProviderUnavailable"/>.
     /// </summary>
+    /// <remarks>
+    /// <para>The catalog never disposes a provider: a factory owns, or shares, the clients behind
+    /// the providers it creates, and a handle's disposal ends only its change subscription.</para>
+    /// <para>Once the catalog is built, this call, the construction of the handle over the
+    /// provider (hence <see cref="IBundleChangeNotifier.Subscribe"/>) and the disposal of a
+    /// handle all run under the catalog's lock, the one every read of
+    /// <see cref="IKnowledgeCatalog.Current"/> takes: they must not block on another thread that
+    /// reads the catalog's current snapshot, nor call back into the catalog.</para>
+    /// </remarks>
     /// <param name="source">The validated source.</param>
     IBundleProvider Create(KnowledgeCatalogSource source);
 }

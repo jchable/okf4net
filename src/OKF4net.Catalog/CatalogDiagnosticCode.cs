@@ -81,7 +81,7 @@ public enum CatalogDiagnosticCode
     /// <summary>A source's <c>provider</c> is present but not a non-empty string.</summary>
     MalformedProvider,
 
-    /// <summary>A source's <c>settings</c> is present but not a JSON object whose values are all strings, or names a setting twice.</summary>
+    /// <summary>A source's <c>settings</c> is present but not a JSON object whose values are all strings, , names a setting twice, or names one with an empty name.</summary>
     MalformedSettings,
 
     /// <summary>A source carries a setting its provider does not accept: any setting for the built-in <c>filesystem</c> provider, or a name the provider's factory does not list in <see cref="IBundleProviderFactory.AcceptedSettings"/>.</summary>

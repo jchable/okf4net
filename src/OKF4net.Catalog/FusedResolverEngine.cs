@@ -124,7 +124,8 @@ internal static class FusedResolverEngine
         // in priority-then-id order, so the first entry reaching a given
         // storage is the survivor by construction; a later duplicate is
         // skipped and reported (see below), not just silently dropped.
-        var seenIdentities = new Dictionary<string, string>(StringComparer.FromComparison(CatalogPathResolver.PathComparison));
+        // An identity is an opaque provider id (or a resolved directory): compared exactly, whatever the platform.
+        var seenIdentities = new Dictionary<string, string>(StringComparer.Ordinal);
         var opened = new List<(KnowledgeCatalogSource Source, OkfBundleKnowledgeSource Bundle)>();
 
         foreach (var source in enabledSources)

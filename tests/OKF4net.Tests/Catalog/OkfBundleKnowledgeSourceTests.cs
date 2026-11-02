@@ -123,6 +123,17 @@ public class OkfBundleKnowledgeSourceTests
         Assert.Throws<ArgumentNullException>(() => new OkfBundleKnowledgeSource("x", (BundleHandle)null!));
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("a\0b")]
+    public void The_directory_constructor_refuses_a_directory_that_is_null_empty_or_not_a_path(string? directory)
+    {
+        // A null or empty one is the provider's own guard; a string Path.GetFullPath rejects (an embedded NUL)
+        // is the canonicalisation of the root: both surface as an ArgumentException at construction.
+        Assert.ThrowsAny<ArgumentException>(() => new OkfBundleKnowledgeSource("x", directory!));
+    }
+
     [Fact]
     public void BundleRelativePath_is_the_key_or_the_relativised_path_of_a_hand_built_concept()
     {
