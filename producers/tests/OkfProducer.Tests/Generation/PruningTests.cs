@@ -1360,7 +1360,7 @@ public class PruningTests
         // parse as one, which is a diagnostic in every `okf validate` run from then on.
         var bundle = Bundle.Load(tmp.Path);
         Assert.DoesNotContain(bundle.Concepts, c => c.Path.EndsWith(GenerationManifest.FileName, StringComparison.Ordinal));
-        Assert.DoesNotContain(bundle.ParseErrors, e => e.Path.EndsWith(GenerationManifest.FileName, StringComparison.Ordinal));
+        Assert.DoesNotContain(bundle.ParseProblems, p => p.RawName.EndsWith(GenerationManifest.FileName, StringComparison.Ordinal));
     }
 
     [Fact]
