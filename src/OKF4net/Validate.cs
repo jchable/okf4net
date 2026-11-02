@@ -345,13 +345,13 @@ public static class BundleValidator
         var diagnostics = new List<Diagnostic>();
 
         // (1) Files whose frontmatter could not be parsed are conformance errors.
-        foreach (var (path, error) in bundle.ParseErrors)
+        foreach (var problem in bundle.ParseProblems)
         {
             diagnostics.Add(new Diagnostic(
                 Severity.Error,
-                path,
+                bundle.DisplayPath(problem),
                 null,
-                $"unparseable concept document: {error}",
+                $"unparseable concept document: {problem.Error}",
                 DiagnosticCode.UnparseableDocument));
         }
 
@@ -835,14 +835,15 @@ public static class BundleValidator
     /// so a relative entry resolves from the index's directory and a <c>/</c> entry
     /// from the bundle root — no second implementation of link resolution.
     /// </summary>
-    private static void CheckIndexEntryDescriptions(Bundle bundle, string indexPath, string body, List<Diagnostic> diagnostics)
+    private static void CheckIndexEntryDescriptions(Bundle bundle, BundleKey indexKey, string indexPath, string body, List<Diagnostic> diagnostics)
     {
         ConceptId source;
         try
         {
             // `metrics/index.md` becomes `metrics/index`, whose parent is `metrics` --
-            // the directory a relative entry resolves against.
-            source = ConceptId.FromPath(bundle.Root, indexPath);
+            // the directory a relative entry resolves against. From the key, as the
+            // display path was derived from it (spec §9): the same segments, validated the same way.
+            source = ConceptId.FromKey(indexKey);
         }
         catch (ConceptIdException)
         {
@@ -876,7 +877,7 @@ public static class BundleValidator
         for (var i = 0; i < bundle.IndexKeys.Count; i++)
         {
             var key = bundle.IndexKeys[i];
-            var path = bundle.IndexFiles[i];
+            var path = BundleDisplayPath.Compose(bundle.Location, key);
             string text;
             try
             {
@@ -904,7 +905,7 @@ public static class BundleValidator
             // well-formed index has no frontmatter at all -- so the body of every
             // conformant index was skipped, and an entry could omit its description
             // with nothing to say so.
-            CheckIndexEntryDescriptions(bundle, path, doc.Body, diagnostics);
+            CheckIndexEntryDescriptions(bundle, key, path, doc.Body, diagnostics);
             CheckIndexEntriesAreLinks(path, doc.Body, diagnostics);
 
             if (doc.Frontmatter.IsEmpty)
@@ -955,7 +956,7 @@ public static class BundleValidator
         for (var i = 0; i < bundle.LogKeys.Count; i++)
         {
             var key = bundle.LogKeys[i];
-            var path = bundle.LogFiles[i];
+            var path = BundleDisplayPath.Compose(bundle.Location, key);
             string text;
             try
             {

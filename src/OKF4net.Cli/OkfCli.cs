@@ -847,7 +847,7 @@ public static class OkfCli
             return 0;
         }
 
-        stdout.Write($"bundle:     {bundle.Root}\n");
+        stdout.Write($"bundle:     {bundle.Location}\n");
         var okfVersion = bundle.OkfVersion;
         if (okfVersion is not null)
         {
@@ -855,8 +855,8 @@ public static class OkfCli
         }
 
         stdout.Write($"concepts:   {bundle.Count}\n");
-        stdout.Write($"index.md:   {bundle.IndexFiles.Count}\n");
-        stdout.Write($"log.md:     {bundle.LogFiles.Count}\n");
+        stdout.Write($"index.md:   {bundle.IndexKeys.Count}\n");
+        stdout.Write($"log.md:     {bundle.LogKeys.Count}\n");
 
         var byType = JsonOutput.BuildTypeHistogram(bundle);
 
@@ -878,12 +878,12 @@ public static class OkfCli
 
         stdout.Write($"\nlinks:      {totalLinks} internal ({broken.Count} broken)\n");
 
-        if (bundle.ParseErrors.Count > 0)
+        if (bundle.ParseProblems.Count > 0)
         {
             stdout.Write("\nunparseable files:\n");
-            foreach (var (p, e) in bundle.ParseErrors)
+            foreach (var problem in bundle.ParseProblems)
             {
-                stdout.Write($"  {p}: {e}\n");
+                stdout.Write($"  {bundle.DisplayPath(problem)}: {problem.Error}\n");
             }
         }
 
