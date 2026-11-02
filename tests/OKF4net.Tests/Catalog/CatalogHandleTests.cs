@@ -253,6 +253,37 @@ public class CatalogHandleTests
         Assert.Equal(0, notifying.Subscribers);
     }
 
+    [Theory]
+    [InlineData("null", "reports an empty id")]
+    [InlineData("empty", "reports an empty id")]
+    [InlineData("blank", "reports an empty id")]
+    [InlineData("throws", "(InvalidOperationException)")]
+    public void A_provider_whose_id_is_missing_or_throws_rejects_the_load_without_host_text_and_disposes_the_handles_built_before_it(string kind, string wording)
+    {
+        using var root = new TempDir();
+        var notifying = NewNotifying();
+        var good = new TestProviderFactory("memory", _ => notifying);
+        var odd = new TestProviderFactory("odd", _ => new IdProvider(NewNotifying("x"), () => kind switch
+        {
+            "null" => null!,
+            "empty" => "",
+            "blank" => "  ",
+            _ => throw new InvalidOperationException("tenant secret-42 unknown"),
+        }));
+
+        var error = Assert.Throws<CatalogException>(() => Catalog(
+            root,
+            """{ "version": 1, "sources": [ { "id": "n", "provider": "memory" }, { "id": "bad", "provider": "odd" } ] }""",
+            policy: BundleRefreshPolicy.Notify,
+            factories: [good, odd]));
+
+        Assert.Contains("[ProviderUnavailable]", error.Message);
+        Assert.Contains("Source 'bad' provider 'odd' could not be created", error.Message);
+        Assert.Contains(wording, error.Message);
+        Assert.DoesNotContain("secret", error.Message);
+        Assert.Equal(0, notifying.Subscribers);
+    }
+
     [Fact]
     public async Task A_throwing_RefreshPolicyFor_on_a_reload_keeps_the_current_snapshot()
     {
@@ -531,6 +562,21 @@ public class CatalogHandleTests
             // failed closed
         }
     }
+}
+
+/// <summary>A provider whose <see cref="Id"/> is computed by the test (null, blank or throwing), the rest delegated.</summary>
+file sealed class IdProvider(IBundleProvider inner, Func<string> id) : IBundleProvider
+{
+    public string Id => id();
+    public string Location => inner.Location;
+    public BundleProviderCapabilities Capabilities => inner.Capabilities;
+    public BundleKeyConstraints NativeConstraints => inner.NativeConstraints;
+    public BundleVersion GetVersion(BundleLimits limits) => inner.GetVersion(limits);
+    public IEnumerable<BundleListing> Enumerate(BundleKey? prefix, BundleLimits limits) => inner.Enumerate(prefix, limits);
+    public BundleObject Read(BundleKey key, BundleObjectVersion? expected = null) => inner.Read(key, expected);
+    public bool Exists(BundleKey key) => inner.Exists(key);
+    public BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition) => inner.Write(key, content, condition);
+    public void Delete(BundleKey key, BundleWriteCondition condition) => inner.Delete(key, condition);
 }
 
 /// <summary>A notifying provider whose change subscription throws when it is disposed.</summary>

@@ -18,8 +18,12 @@ namespace OKF4net.Catalog;
 /// image survives from one search to the next and is refreshed under the source's policy
 /// (<see cref="KnowledgeCatalogOptions.RefreshPolicy"/>), and the catalog root's confinement
 /// is re-checked by the provider before every access. A source whose bundle never loaded
-/// yields a <see cref="KnowledgeDiagnosticCode.SourceUnavailable"/> diagnostic for that
-/// source alone; the remaining sources are still searched.
+/// (its first load failed) yields a <see cref="KnowledgeDiagnosticCode.SourceUnavailable"/>
+/// diagnostic for that source alone; the remaining sources are still searched. A source
+/// that loaded once and whose later reload fails (its directory deleted, or replaced by a
+/// link, after the first search) is not unavailable: its last good image is served, with a
+/// <see cref="KnowledgeDiagnosticCode.SourceStale"/> diagnostic naming the failure by its
+/// exception type (spec §5.2, §7).
 /// </para>
 /// <para>
 /// A snapshot that carries no handle for a source (one built by hand, or by
@@ -146,6 +150,11 @@ public sealed class GroupedKnowledgeResolver : IKnowledgeResolver
             }
 
             anySourceSearchedSuccessfully = true;
+            if (CatalogSourceOpener.StaleDiagnostic(bundleSource) is { } stale)
+            {
+                diagnostics.Add(stale);
+            }
+
             passages.AddRange(result.Passages);
         }
 

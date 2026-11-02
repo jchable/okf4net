@@ -18,8 +18,9 @@ namespace OKF4net.Catalog;
 /// is served from the handle its catalog keeps across requests (the snapshot's handles,
 /// <see cref="BundleRefreshPolicy.OnAccess"/> by default), so an unchanged bundle is
 /// loaded once and a changed one is seen at the next search. A reload that fails keeps
-/// the previous image served (<see cref="BundleHandle.IsStale"/>); only a bundle that
-/// never loaded is reported as <see cref="KnowledgeDiagnosticCode.SourceUnavailable"/>.
+/// the previous image served (<see cref="BundleHandle.IsStale"/>, which the catalog's
+/// resolvers report as <see cref="KnowledgeDiagnosticCode.SourceStale"/>); only a bundle
+/// that never loaded is reported as <see cref="KnowledgeDiagnosticCode.SourceUnavailable"/>.
 /// </para>
 /// <para>
 /// <b>The sharing is explicit.</b> The directory constructor builds a handle of its own

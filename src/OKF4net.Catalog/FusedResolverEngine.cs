@@ -167,6 +167,11 @@ internal static class FusedResolverEngine
             }
 
             anySourceSearchedSuccessfully = true;
+            if (CatalogSourceOpener.StaleDiagnostic(bundleSource) is { } stale)
+            {
+                diagnostics.Add(stale);
+            }
+
             foreach (var passage in result.Passages)
             {
                 if (query.StalePolicy.Admits(passage.Lifecycle, now))

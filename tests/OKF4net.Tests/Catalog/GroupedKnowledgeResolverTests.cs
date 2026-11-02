@@ -205,10 +205,12 @@ public class GroupedKnowledgeResolverTests
         using var catalog = SetUpTwoSourceCatalog(root);
         var resolver = new GroupedKnowledgeResolver(catalog);
 
-        // The catalog already validated both source paths at construction
-        // (generation 1); delete one afterward so the resolver's own
-        // re-resolution (not the catalog's load-time validation) is what
-        // observes the failure.
+        // The catalog validated both source paths at construction
+        // (generation 1) and built a handle for each, which loads lazily at its
+        // first search; delete one directory before that search so the FIRST
+        // load of its handle fails: a source that never loaded has no image to
+        // serve, hence SourceUnavailable (a source that loaded once and then
+        // vanished is SourceStale, see CatalogResolverHandleTests).
         Directory.Delete(Path.Combine(root.Path, "source-lo"), recursive: true);
 
         var context = await resolver.SearchAsync(new KnowledgeQuery("orders"));

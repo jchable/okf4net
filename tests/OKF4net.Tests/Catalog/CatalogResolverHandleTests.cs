@@ -125,6 +125,116 @@ public class CatalogResolverHandleTests
         Assert.Contains("could not be re-resolved", unavailable.Message);
     }
 
+    [Fact]
+    public void The_numeric_values_of_the_shipped_diagnostic_codes_are_unchanged_and_SourceStale_is_appended()
+    {
+        // The enum has shipped: a member is only ever appended (values of 9d08c87~1).
+        Assert.Equal(0, (int)KnowledgeDiagnosticCode.NoEnabledSources);
+        Assert.Equal(1, (int)KnowledgeDiagnosticCode.SourceUnavailable);
+        Assert.Equal(2, (int)KnowledgeDiagnosticCode.NoMatches);
+        Assert.Equal(3, (int)KnowledgeDiagnosticCode.DuplicateDirectory);
+        Assert.Equal(4, (int)KnowledgeDiagnosticCode.SourceStale);
+        Assert.Equal(5, Enum.GetValues<KnowledgeDiagnosticCode>().Length);
+    }
+
+    [Theory]
+    [InlineData(KnowledgeResolverStrategy.GroupedBySource)]
+    [InlineData(KnowledgeResolverStrategy.Merged)]
+    [InlineData(KnowledgeResolverStrategy.PriorityWeighted)]
+    public async Task A_source_deleted_after_its_first_search_is_served_from_its_last_image_with_one_SourceStale_diagnostic(KnowledgeResolverStrategy strategy)
+    {
+        using var root = new TempDir();
+        root.Write("docs/a.md", Doc);
+        root.Write("other/b.md", Doc);
+        using var catalog = Catalog(root, """{ "version": 1, "sources": [ { "id": "docs", "path": "./docs", "priority": 2 }, { "id": "other", "path": "./other", "priority": 1 } ] }""");
+        var resolver = new KnowledgeResolverRouter(catalog, strategy, null, null);
+        var first = await resolver.SearchAsync(new KnowledgeQuery("orders"));
+        Assert.Equal(2, first.Passages.Count);
+        Assert.Empty(first.Diagnostics);
+
+        Directory.Delete(Path.Combine(root.Path, "docs"), recursive: true);
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders"));
+
+        Assert.Equal(2, context.Passages.Count);
+        Assert.Contains(context.Passages, p => p.SourceId == "docs");
+        var stale = Assert.Single(context.Diagnostics);
+        Assert.Equal(KnowledgeDiagnosticCode.SourceStale, stale.Code);
+        Assert.Equal("docs", stale.SourceId);
+        var handle = catalog.Current.Handles["docs"];
+        Assert.True(handle.IsStale);
+        Assert.Contains($"bundle at '{handle.Location}' is served from its last good image; the last reload failed ({handle.LastLoadError!.GetType().Name})", stale.Message);
+        Assert.DoesNotContain(context.Diagnostics, d => d.Code == KnowledgeDiagnosticCode.SourceUnavailable);
+    }
+
+    [Theory]
+    [InlineData(KnowledgeResolverStrategy.GroupedBySource)]
+    [InlineData(KnowledgeResolverStrategy.Merged)]
+    [InlineData(KnowledgeResolverStrategy.PriorityWeighted)]
+    public async Task A_stale_diagnostic_names_the_failure_by_type_only_and_goes_when_the_source_recovers(KnowledgeResolverStrategy strategy)
+    {
+        using var root = new TempDir();
+        var storage = new InMemoryBundleProvider(id: "mem").Add("a.md", Doc);
+        using var catalog = Catalog(root, OneMemorySource, new TestProviderFactory("memory", _ => storage));
+        var resolver = new KnowledgeResolverRouter(catalog, strategy, null, null);
+        Assert.Empty((await resolver.SearchAsync(new KnowledgeQuery("orders"))).Diagnostics);
+
+        storage.Add("b.md", Doc);
+        storage.FailReadsWith = new BundleAccessRefusedException(null, "s3://secret-bucket denied");
+        var failing = await resolver.SearchAsync(new KnowledgeQuery("orders"));
+
+        Assert.Single(failing.Passages);
+        var stale = Assert.Single(failing.Diagnostics);
+        Assert.Equal(KnowledgeDiagnosticCode.SourceStale, stale.Code);
+        Assert.DoesNotContain("secret", stale.Message);
+
+        storage.FailReadsWith = null;
+        var recovered = await resolver.SearchAsync(new KnowledgeQuery("orders"));
+        Assert.Equal(2, recovered.Passages.Count);
+        Assert.Empty(recovered.Diagnostics);
+    }
+
+    [Fact]
+    public async Task A_catalog_reload_during_a_search_leaves_the_search_on_its_snapshots_handles()
+    {
+        using var root = new TempDir();
+        var old = new InMemoryBundleProvider(id: "old").Add("a.md", Doc);
+        var replacement = new InMemoryBundleProvider(id: "new").Add("b.md", Doc).Add("c.md", Doc);
+        var factory = new TestProviderFactory("memory", s => s.Settings.TryGetValue("bucket", out var bucket) && bucket == "two" ? replacement : old, "bucket");
+        using var catalog = Catalog(root, """{ "version": 1, "sources": [ { "id": "m", "provider": "memory", "settings": { "bucket": "one" } } ] }""", factory);
+        var resolver = new GroupedKnowledgeResolver(catalog);
+        var reloaded = false;
+
+        // The policy runs inside the search, after it captured the snapshot: the reload it
+        // triggers replaces the catalog's snapshot (and disposes the old handle) under it.
+        var query = new KnowledgeQuery("orders")
+        {
+            SourceVisibilityPolicy = (_, _) =>
+            {
+                if (!reloaded)
+                {
+                    reloaded = true;
+                    root.Write("catalog.json", """{ "version": 1, "sources": [ { "id": "m", "provider": "memory", "settings": { "bucket": "two" } } ] }""");
+                    Assert.Equal(2, catalog.ReloadAsync().AsTask().GetAwaiter().GetResult().Generation);
+                }
+
+                return true;
+            },
+        };
+
+        var during = await resolver.SearchAsync(query);
+
+        Assert.True(reloaded);
+        Assert.Equal(1, during.CatalogGeneration);
+        var passage = Assert.Single(during.Passages);
+        Assert.Equal("a", passage.ConceptId);
+        Assert.Empty(during.Diagnostics);
+
+        var after = await resolver.SearchAsync(new KnowledgeQuery("orders"));
+        Assert.Equal(2, after.CatalogGeneration);
+        Assert.Equal(2, after.Passages.Count);
+    }
+
     [SkippableFact]
     public async Task A_source_root_replaced_by_a_junction_after_the_handle_was_created_is_refused_at_the_next_access()
     {
@@ -143,10 +253,14 @@ public class CatalogResolverHandleTests
 
         // The provider re-checks the chain from the catalog root before every access (spec §8):
         // the token read is refused, the reload fails and the previous image is served stale
-        // (spec §5.2); nothing under the junction is ever read.
+        // (spec §5.2); nothing under the junction is ever read. The stale image is reported,
+        // by exception type, not silently served.
         var context = await resolver.SearchAsync(new KnowledgeQuery("orders"));
         Assert.Single(context.Passages);
-        Assert.Empty(context.Diagnostics);
+        var stale = Assert.Single(context.Diagnostics);
+        Assert.Equal(KnowledgeDiagnosticCode.SourceStale, stale.Code);
+        Assert.Equal("docs", stale.SourceId);
+        Assert.Contains("(BundleLoadException)", stale.Message);
         Assert.True(handle.IsStale);
         var failure = Assert.IsType<BundleLoadException>(handle.LastLoadError);
         Assert.IsType<BundleAccessRefusedException>(failure.InnerException);

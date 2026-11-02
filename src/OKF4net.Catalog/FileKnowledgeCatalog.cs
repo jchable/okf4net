@@ -338,6 +338,18 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
                 var provider = source.IsFileSystem
                     ? new FileSystemBundleProvider(resolvedDirectories[source.Id], confinementBoundary: _options.CatalogRoot)
                     : _factories[source.ProviderType].Create(source);
+
+                // The resolvers dedup on this id: a host provider's null or blank one is
+                // refused here, at the one place a provider enters the catalog, so no search
+                // ever throws on it. A getter that throws is translated below, by type name.
+                if (string.IsNullOrWhiteSpace(provider.Id))
+                {
+                    problems.Add(new CatalogDiagnostic(
+                        CatalogDiagnosticCode.ProviderUnavailable,
+                        $"Source '{source.Id}' provider '{source.ProviderType}' could not be created (the provider reports an empty id)."));
+                    continue;
+                }
+
                 var handle = new BundleHandle(provider, _options.LoadOptions, policy);
                 created.Add(handle);
                 built[source.Id] = handle;

@@ -54,4 +54,26 @@ internal static class CatalogSourceOpener
         diagnostic = null;
         return true;
     }
+
+    /// <summary>
+    /// The <see cref="KnowledgeDiagnosticCode.SourceStale"/> diagnostic for a source that has
+    /// just been searched, or <see langword="null"/> when it was served from a current image:
+    /// once an image has loaded, the handle absorbs every later failure and keeps serving the
+    /// last good one (spec §5.2), so the failure is read back from the handle here. The
+    /// message names the failure by its exception type only (spec §7); a handle that is stale
+    /// only because a reload is pending, with no failure recorded, reports nothing.
+    /// </summary>
+    internal static KnowledgeDiagnostic? StaleDiagnostic(OkfBundleKnowledgeSource source)
+    {
+        var handle = source.Handle;
+        if (!handle.IsStale || handle.LastLoadError is not { } error)
+        {
+            return null;
+        }
+
+        return new KnowledgeDiagnostic(
+            KnowledgeDiagnosticCode.SourceStale,
+            source.Id,
+            $"Source '{source.Id}' bundle at '{handle.Location}' is served from its last good image; the last reload failed ({error.GetType().Name}).");
+    }
 }
