@@ -98,8 +98,9 @@ public sealed class KnowledgeOptions
     /// (<see cref="IBundleProviderFactory.ProviderType"/>), so a <c>catalog.json</c> source may
     /// name that type. The credentials the provider needs are the factory's own (injected by
     /// the host that built it), never read from the manifest. The built-in <c>filesystem</c>
-    /// type needs no factory and cannot be registered: <see cref="FileKnowledgeCatalog"/>
-    /// refuses it, as it refuses two factories for one type, on first resolve.
+    /// type needs no factory and cannot be registered: <see cref="KnowledgeServiceCollectionExtensions.AddKnowledge"/>
+    /// refuses it, as it refuses two factories for one type or an empty type, at registration time
+    /// (<see cref="FileKnowledgeCatalog"/>'s constructor makes the same checks).
     /// </summary>
     /// <param name="factory">The factory to register.</param>
     /// <exception cref="ArgumentNullException"><paramref name="factory"/> is <see langword="null"/>.</exception>
@@ -118,7 +119,8 @@ public sealed class KnowledgeOptions
     /// </summary>
     /// <exception cref="ArgumentException">
     /// No <see cref="AddCatalogFile"/> call was made, or <see cref="DefaultFairnessQuota"/>
-    /// is set but not greater than zero.
+    /// is set but not greater than zero, or the registered provider factories include an empty
+    /// type, the built-in <c>filesystem</c> type, or two factories for one type.
     /// </exception>
     /// <exception cref="InvalidOperationException">More than one <see cref="AddCatalogFile"/> call was made.</exception>
     internal void Validate()
@@ -145,6 +147,28 @@ public sealed class KnowledgeOptions
         {
             throw new ArgumentException(
                 $"KnowledgeOptions.DefaultFairnessQuota must be greater than zero (got {DefaultFairnessQuota}); use null to disable fairness reordering.");
+        }
+
+        // The same three factory checks FileKnowledgeCatalog's constructor makes, run here so
+        // the misconfiguration fails at registration time, naming AddProviderFactory.
+        var providerTypes = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var factory in _providerFactories)
+        {
+            if (string.IsNullOrEmpty(factory.ProviderType))
+            {
+                throw new ArgumentException("AddProviderFactory: a provider factory needs a non-empty ProviderType.");
+            }
+
+            if (string.Equals(factory.ProviderType, KnowledgeCatalogSource.FileSystemProviderType, StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    $"AddProviderFactory: the provider type '{KnowledgeCatalogSource.FileSystemProviderType}' is built in and cannot be registered.");
+            }
+
+            if (!providerTypes.Add(factory.ProviderType))
+            {
+                throw new ArgumentException($"AddProviderFactory: two provider factories claim the type '{factory.ProviderType}'.");
+            }
         }
 
         // Same reasoning as the quota check above: caught here, naming the

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Collections;
+using System.Diagnostics.CodeAnalysis;
 
 namespace OKF4net.Catalog;
 
@@ -61,7 +62,7 @@ public sealed class ProviderSettings : IReadOnlyDictionary<string, string>, IEqu
     public bool ContainsKey(string key) => TryGetValue(key, out _);
 
     /// <inheritdoc/>
-    public bool TryGetValue(string key, out string value)
+    public bool TryGetValue(string key, [MaybeNullWhen(false)] out string value)
     {
         foreach (var pair in _pairs)
         {
@@ -117,6 +118,10 @@ public sealed class ProviderSettings : IReadOnlyDictionary<string, string>, IEqu
         return hash.ToHashCode();
     }
 
-    /// <summary>The settings as <c>name=value</c> pairs joined by <c>;</c>, for diagnostics.</summary>
-    public override string ToString() => string.Join(";", _pairs.Select(p => $"{p.Key}={p.Value}"));
+    /// <summary>
+    /// The setting <em>names</em> joined by <c>;</c>, each as <c>name=***</c>: a value may be
+    /// a secret-adjacent identifier (a bucket, an endpoint), so <see cref="object.ToString"/>
+    /// never prints one, and this text must not be relied on to read the settings back.
+    /// </summary>
+    public override string ToString() => string.Join(";", _pairs.Select(p => $"{p.Key}=***"));
 }

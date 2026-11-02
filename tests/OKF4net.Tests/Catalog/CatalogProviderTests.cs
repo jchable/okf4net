@@ -88,10 +88,91 @@ public class CatalogProviderTests
         Assert.NotEqual(a, ProviderSettings.From([new("x", "1")]));
         Assert.Equal("1", a["x"]);
         Assert.False(a.TryGetValue("z", out _));
-        Assert.Equal("x=1;y=2", a.ToString());
         Assert.Same(ProviderSettings.Empty, ProviderSettings.From([]));
         Assert.Throws<ArgumentException>(() => ProviderSettings.From([new("x", "1"), new("x", "2")]));
         Assert.Throws<KeyNotFoundException>(() => a["z"]);
+    }
+
+    [Fact]
+    public void Two_sources_whose_settings_come_in_different_orders_are_equal_records_with_equal_hashes()
+    {
+        var first = Assert.Single(Parse("""{ "version": 1, "sources": [ { "id": "a", "provider": "s3", "settings": { "bucket": "b", "prefix": "p/" } } ] }""").Sources);
+        var second = Assert.Single(Parse("""{ "version": 1, "sources": [ { "id": "a", "provider": "s3", "settings": { "prefix": "p/", "bucket": "b" } } ] }""").Sources);
+
+        Assert.Equal(first, second);
+        Assert.Equal(first.GetHashCode(), second.GetHashCode());
+        Assert.NotEqual(first, second with { ProviderType = "blob" });
+    }
+
+    [Fact]
+    public void ToString_never_prints_a_setting_value_on_the_settings_or_on_the_source()
+    {
+        var settings = ProviderSettings.From([new("y", "secret-two"), new("x", "secret-one")]);
+        var source = new KnowledgeCatalogSource("a", string.Empty, 0, true, SourceRole.Knowledge) { ProviderType = "s3", Settings = settings };
+
+        Assert.Equal("x=***;y=***", settings.ToString());
+        Assert.DoesNotContain("secret", source.ToString());
+        Assert.Contains("x=***", source.ToString());
+    }
+
+    // ---- Diagnostic order --------------------------------------------------
+    // A manifest without provider/settings reports its problems in the order it always did:
+    // id, path, priority, enabled, role, tier.
+
+    [Theory]
+    [InlineData("""{ "id": "a", "path": "", "role": "bogus" }""", new[] { CatalogDiagnosticCode.EmptyPath, CatalogDiagnosticCode.IllegalRole })]
+    [InlineData("""{ "id": "a", "path": "./a", "priority": "x", "enabled": "y", "role": "bogus" }""", new[] { CatalogDiagnosticCode.MalformedPriority, CatalogDiagnosticCode.MalformedEnabled, CatalogDiagnosticCode.IllegalRole })]
+    [InlineData("""{ "id": "a", "path": "", "priority": "x", "role": "memory" }""", new[] { CatalogDiagnosticCode.EmptyPath, CatalogDiagnosticCode.MalformedPriority, CatalogDiagnosticCode.IllegalTier })]
+    [InlineData("""{ "id": "a", "path": "./a", "role": "bogus", "tier": "user" }""", new[] { CatalogDiagnosticCode.IllegalRole })]
+    [InlineData("""{ "id": "a", "path": "./a", "tier": "user" }""", new[] { CatalogDiagnosticCode.IllegalTier })]
+    public void A_manifest_without_provider_reports_its_diagnostics_in_the_shipped_order(string source, CatalogDiagnosticCode[] expected)
+    {
+        var diagnostics = Reject($$"""{ "version": 1, "sources": [ {{source}} ] }""");
+
+        Assert.Equal(expected, diagnostics.Select(d => d.Code).ToArray());
+    }
+
+    // The numeric value of every member that shipped in 0.7.0 is part of the binary contract.
+    [Theory]
+    [InlineData(CatalogDiagnosticCode.ParseError, 0)]
+    [InlineData(CatalogDiagnosticCode.UnknownRootProperty, 1)]
+    [InlineData(CatalogDiagnosticCode.UnknownSourceProperty, 2)]
+    [InlineData(CatalogDiagnosticCode.WrongVersion, 3)]
+    [InlineData(CatalogDiagnosticCode.EmptySources, 4)]
+    [InlineData(CatalogDiagnosticCode.DuplicateSourceId, 5)]
+    [InlineData(CatalogDiagnosticCode.InvalidSourceId, 6)]
+    [InlineData(CatalogDiagnosticCode.EmptyPath, 7)]
+    [InlineData(CatalogDiagnosticCode.EmbeddedNul, 8)]
+    [InlineData(CatalogDiagnosticCode.MalformedPriority, 9)]
+    [InlineData(CatalogDiagnosticCode.MalformedEnabled, 10)]
+    [InlineData(CatalogDiagnosticCode.IllegalRole, 11)]
+    [InlineData(CatalogDiagnosticCode.IllegalTier, 12)]
+    [InlineData(CatalogDiagnosticCode.DuplicateMemoryTier, 13)]
+    [InlineData(CatalogDiagnosticCode.InvalidPath, 14)]
+    [InlineData(CatalogDiagnosticCode.AbsolutePath, 15)]
+    [InlineData(CatalogDiagnosticCode.OutsideRoot, 16)]
+    [InlineData(CatalogDiagnosticCode.TargetNotFound, 17)]
+    [InlineData(CatalogDiagnosticCode.ReparsePointInPath, 18)]
+    public void A_diagnostic_code_that_shipped_keeps_its_numeric_value(CatalogDiagnosticCode code, int shipped)
+    {
+        Assert.Equal(shipped, (int)code);
+    }
+
+    [Fact]
+    public void The_provider_codes_are_appended_after_the_shipped_ones()
+    {
+        CatalogDiagnosticCode[] added =
+        [
+            CatalogDiagnosticCode.MalformedProvider,
+            CatalogDiagnosticCode.MalformedSettings,
+            CatalogDiagnosticCode.IllegalSetting,
+            CatalogDiagnosticCode.IllegalPath,
+            CatalogDiagnosticCode.IllegalMemoryProvider,
+            CatalogDiagnosticCode.UnknownProvider,
+            CatalogDiagnosticCode.ProviderUnavailable,
+        ];
+
+        Assert.Equal(Enumerable.Range(19, 7), added.Select(c => (int)c));
     }
 
     // ---- The catalog -------------------------------------------------------
@@ -190,7 +271,80 @@ public class CatalogProviderTests
         using var fine = new FileKnowledgeCatalog(Options(new TestProviderFactory("s3"), new TestProviderFactory("blob")));
     }
 
+    private const string DisabledRemoteJson = """{ "version": 1, "sources": [ { "id": "docs", "path": "./docs" }, { "id": "remote", "enabled": false, "provider": "s3", "settings": { "bucket": "b" } } ] }""";
+
+    [Fact]
+    public void A_disabled_source_is_checked_against_a_factory_that_exists_but_not_against_a_missing_one()
+    {
+        var (root, manifest) = CatalogWith(DisabledRemoteJson);
+        using var disposable = root;
+        KnowledgeCatalogOptions Options(params IBundleProviderFactory[] factories) => new()
+        {
+            CatalogFilePath = manifest,
+            CatalogRoot = root.Path,
+            WatchForChanges = false,
+            ProviderFactories = factories,
+        };
+
+        // No factory for the type: a host may register it, or enable the source, later.
+        using (new FileKnowledgeCatalog(Options()))
+        {
+        }
+
+        // A factory exists and accepts the setting.
+        using (new FileKnowledgeCatalog(Options(new TestProviderFactory("s3", acceptedSettings: ["bucket"]))))
+        {
+        }
+
+        // A factory exists and does not list the setting: refused although the source is disabled.
+        var error = Assert.Throws<CatalogException>(() => new FileKnowledgeCatalog(Options(new TestProviderFactory("s3", acceptedSettings: ["prefix"]))));
+        Assert.Contains("[IllegalSetting]", error.Message);
+        Assert.Contains("'bucket'", error.Message);
+    }
+
+    [Fact]
+    public void A_null_factory_or_a_null_factory_list_is_refused()
+    {
+        var (root, manifest) = CatalogWith("""{ "version": 1, "sources": [ { "id": "docs", "path": "./docs" } ] }""");
+        using var disposable = root;
+
+        Assert.Throws<ArgumentNullException>(() => new FileKnowledgeCatalog(new KnowledgeCatalogOptions
+        {
+            CatalogFilePath = manifest,
+            CatalogRoot = root.Path,
+            WatchForChanges = false,
+            ProviderFactories = [null!],
+        }));
+        Assert.Throws<ArgumentNullException>(() => new FileKnowledgeCatalog(new KnowledgeCatalogOptions
+        {
+            CatalogFilePath = manifest,
+            CatalogRoot = root.Path,
+            WatchForChanges = false,
+            ProviderFactories = null!,
+        }));
+    }
+
     // ---- Hosting -----------------------------------------------------------
+
+    [Fact]
+    public void AddKnowledge_refuses_a_misconfigured_factory_at_registration_time()
+    {
+        var (root, manifest) = CatalogWith("""{ "version": 1, "sources": [ { "id": "docs", "path": "./docs" } ] }""");
+        using var disposable = root;
+        void Register(params IBundleProviderFactory[] factories) => new ServiceCollection().AddKnowledge(o =>
+        {
+            o.AddCatalogFile(manifest);
+            foreach (var factory in factories)
+            {
+                o.AddProviderFactory(factory);
+            }
+        });
+
+        Assert.Throws<ArgumentException>(() => Register(new TestProviderFactory("filesystem")));
+        Assert.Throws<ArgumentException>(() => Register(new TestProviderFactory("s3"), new TestProviderFactory("s3")));
+        Assert.Throws<ArgumentException>(() => Register(new TestProviderFactory(string.Empty)));
+        Register(new TestProviderFactory("s3"), new TestProviderFactory("blob"));
+    }
 
     [Fact]
     public void AddProviderFactory_hands_the_factories_to_the_catalog_options()

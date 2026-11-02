@@ -65,7 +65,9 @@ public static class KnowledgeServiceCollectionExtensions
     /// <exception cref="ArgumentException">
     /// No <see cref="KnowledgeOptions.AddCatalogFile"/> call was made inside
     /// <paramref name="configure"/>, or <see cref="KnowledgeOptions.DefaultFairnessQuota"/>
-    /// is set but not greater than zero.
+    /// is set but not greater than zero, or the provider factories registered with
+    /// <see cref="KnowledgeOptions.AddProviderFactory"/> include an empty type, the built-in
+    /// <c>filesystem</c> type, or two factories for one type.
     /// </exception>
     /// <exception cref="InvalidOperationException">More than one <see cref="KnowledgeOptions.AddCatalogFile"/> call was made inside <paramref name="configure"/>.</exception>
     public static IServiceCollection AddKnowledge(this IServiceCollection services, Action<KnowledgeOptions> configure)

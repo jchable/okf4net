@@ -19,27 +19,6 @@ public enum CatalogDiagnosticCode
     /// <summary>A source entry contains a property other than <c>id</c>, <c>path</c>, <c>priority</c>, <c>enabled</c>, <c>role</c>, <c>tier</c>, <c>provider</c>, or <c>settings</c>.</summary>
     UnknownSourceProperty,
 
-    /// <summary>A source's <c>provider</c> is present but not a non-empty string.</summary>
-    MalformedProvider,
-
-    /// <summary>A source's <c>settings</c> is present but not a JSON object whose values are all strings, or names a setting twice.</summary>
-    MalformedSettings,
-
-    /// <summary>A source carries a setting its provider does not accept: any setting for the built-in <c>filesystem</c> provider, or a name the provider's factory does not list in <see cref="IBundleProviderFactory.AcceptedSettings"/>.</summary>
-    IllegalSetting,
-
-    /// <summary>A source whose <c>provider</c> is not <c>filesystem</c> carries a <c>path</c>, which names a directory only for the filesystem provider.</summary>
-    IllegalPath,
-
-    /// <summary>A <c>role:"memory"</c> source names a <c>provider</c> other than <c>filesystem</c>: memory stays on the filesystem (spec §9).</summary>
-    IllegalMemoryProvider,
-
-    /// <summary>A source names a <c>provider</c> for which the host registered no <see cref="IBundleProviderFactory"/> (<see cref="KnowledgeCatalogOptions.ProviderFactories"/>).</summary>
-    UnknownProvider,
-
-    /// <summary>A source's provider could not be created: its factory's <see cref="IBundleProviderFactory.Create"/>, or the handle over the provider it returned, threw.</summary>
-    ProviderUnavailable,
-
     /// <summary>The root <c>version</c> property is missing, not a number, or not exactly <c>1</c>.</summary>
     WrongVersion,
 
@@ -95,4 +74,28 @@ public enum CatalogDiagnosticCode
     /// symlinked/mounted root is a legitimate, explicit operator choice.
     /// </summary>
     ReparsePointInPath,
+
+    // The members below are appended, never inserted: the numeric value of every member above
+    // shipped (0.7.0) and a host built against it compares codes by value.
+
+    /// <summary>A source's <c>provider</c> is present but not a non-empty string.</summary>
+    MalformedProvider,
+
+    /// <summary>A source's <c>settings</c> is present but not a JSON object whose values are all strings, or names a setting twice.</summary>
+    MalformedSettings,
+
+    /// <summary>A source carries a setting its provider does not accept: any setting for the built-in <c>filesystem</c> provider, or a name the provider's factory does not list in <see cref="IBundleProviderFactory.AcceptedSettings"/>.</summary>
+    IllegalSetting,
+
+    /// <summary>A source whose <c>provider</c> is not <c>filesystem</c> carries a <c>path</c>, which names a directory only for the filesystem provider.</summary>
+    IllegalPath,
+
+    /// <summary>A <c>role:"memory"</c> source names a <c>provider</c> other than <c>filesystem</c>: memory stays on the filesystem (spec §9).</summary>
+    IllegalMemoryProvider,
+
+    /// <summary>A source names a <c>provider</c> for which the host registered no <see cref="IBundleProviderFactory"/> (<see cref="KnowledgeCatalogOptions.ProviderFactories"/>).</summary>
+    UnknownProvider,
+
+    /// <summary>A source's provider could not be created: its factory's <see cref="IBundleProviderFactory.Create"/>, or the handle over the provider it returned, threw.</summary>
+    ProviderUnavailable,
 }

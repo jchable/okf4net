@@ -270,25 +270,27 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
         var pathDiagnostics = new List<CatalogDiagnostic>();
         foreach (var source in snapshot!.Sources)
         {
-            if (!source.Enabled)
-            {
-                continue;
-            }
-
-            // A filesystem source's path is checked as before; another provider type needs a
-            // registered factory that accepts every setting the source carries (spec §9).
+            // A filesystem source's path is checked as before (an enabled source only); another
+            // provider type needs a registered factory that accepts every setting the source
+            // carries (spec §9). The settings allowlist depends on host configuration only, so
+            // it is checked for a disabled source too whenever a factory exists for its type; a
+            // disabled source naming a type with no factory stays accepted (the host may
+            // register it, or enable the source, later).
             if (source.IsFileSystem)
             {
-                if (!CatalogPathResolver.TryResolve(_options.CatalogRoot, _manifestDirectory, source.Path, out _, out var pathDiagnostic))
+                if (source.Enabled && !CatalogPathResolver.TryResolve(_options.CatalogRoot, _manifestDirectory, source.Path, out _, out var pathDiagnostic))
                 {
                     pathDiagnostics.Add(pathDiagnostic!);
                 }
             }
             else if (!_factories.TryGetValue(source.ProviderType, out var factory))
             {
-                pathDiagnostics.Add(new CatalogDiagnostic(
-                    CatalogDiagnosticCode.UnknownProvider,
-                    $"Source '{source.Id}' names the provider '{source.ProviderType}', for which no factory is registered (KnowledgeCatalogOptions.ProviderFactories)."));
+                if (source.Enabled)
+                {
+                    pathDiagnostics.Add(new CatalogDiagnostic(
+                        CatalogDiagnosticCode.UnknownProvider,
+                        $"Source '{source.Id}' names the provider '{source.ProviderType}', for which no factory is registered (KnowledgeCatalogOptions.ProviderFactories)."));
+                }
             }
             else
             {

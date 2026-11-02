@@ -193,14 +193,19 @@ public static class CatalogManifestParser
         }
 
         var id = ParseId(source, seenIds, diags);
-        var (role, roleWasValid) = ParseRole(source, diags);
-        var providerType = ParseProvider(source, role, roleWasValid, diags);
+        // The order of the diagnostics of a manifest without provider/settings is the shipped
+        // one (id, path, priority, enabled, role, tier): ParseProvider reports only when the
+        // field is present, the memory-provider check follows the role, and the settings come
+        // last, so none of them can reorder what an older manifest was already told.
+        var providerType = ParseProvider(source, diags);
         var isFileSystem = string.Equals(providerType, KnowledgeCatalogSource.FileSystemProviderType, StringComparison.Ordinal);
         var path = ParsePath(source, isFileSystem, diags);
-        var settings = ParseSettings(source, isFileSystem, diags);
         var priority = ParsePriority(source, diags);
         var enabled = ParseEnabled(source, diags);
+        var (role, roleWasValid) = ParseRole(source, diags);
+        CheckMemoryProvider(role, providerType, diags);
         var tier = ParseTier(source, role, roleWasValid, diags);
+        var settings = ParseSettings(source, isFileSystem, diags);
 
         return new KnowledgeCatalogSource(id, path, priority, enabled, role, tier) { ProviderType = providerType, Settings = settings };
     }
@@ -208,11 +213,10 @@ public static class CatalogManifestParser
     /// <summary>
     /// Parses the source's <c>provider</c> (spec §9): absent is the built-in
     /// <see cref="KnowledgeCatalogSource.FileSystemProviderType"/>; present, it must be a
-    /// non-empty string, and a <c>role:"memory"</c> source may only name the filesystem
-    /// (memory stays local). Whether a named type has a factory is the catalog's check,
+    /// non-empty string. Whether a named type has a factory is the catalog's check,
     /// not the parser's, which knows no factory.
     /// </summary>
-    private static string ParseProvider(JsonElement source, SourceRole role, bool roleWasValid, List<CatalogDiagnostic> diags)
+    private static string ParseProvider(JsonElement source, List<CatalogDiagnostic> diags)
     {
         if (!source.TryGetProperty(ProviderProperty, out var providerProperty))
         {
@@ -226,14 +230,22 @@ public static class CatalogManifestParser
             return KnowledgeCatalogSource.FileSystemProviderType;
         }
 
-        if (role == SourceRole.Memory && roleWasValid && !string.Equals(value, KnowledgeCatalogSource.FileSystemProviderType, StringComparison.Ordinal))
+        return value;
+    }
+
+    /// <summary>
+    /// A <c>role:"memory"</c> source may only name the filesystem provider (memory stays
+    /// local, spec §9). <paramref name="role"/> is <see cref="SourceRole.Memory"/> only when
+    /// the manifest's role was valid, so an illegal role adds no second diagnostic here.
+    /// </summary>
+    private static void CheckMemoryProvider(SourceRole role, string providerType, List<CatalogDiagnostic> diags)
+    {
+        if (role == SourceRole.Memory && !string.Equals(providerType, KnowledgeCatalogSource.FileSystemProviderType, StringComparison.Ordinal))
         {
             diags.Add(new CatalogDiagnostic(
                 CatalogDiagnosticCode.IllegalMemoryProvider,
-                $"A role:\"memory\" source must use the \"{KnowledgeCatalogSource.FileSystemProviderType}\" provider, not '{value}': memory stays on the local filesystem."));
+                $"A role:\"memory\" source must use the \"{KnowledgeCatalogSource.FileSystemProviderType}\" provider, not '{providerType}': memory stays on the local filesystem."));
         }
-
-        return value;
     }
 
     /// <summary>
