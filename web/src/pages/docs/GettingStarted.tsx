@@ -143,7 +143,7 @@ export default function GettingStarted() {
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: validateCsharpHtml }} />
           <p>
-            Parse failures land in <code>bundle.ParseErrors</code> and broken cross-links stay in the graph as edges
+            Parse failures land in <code>bundle.ParseProblems</code> and broken cross-links stay in the graph as edges
             to missing concepts — you're told exactly where the holes are, never stopped at the first one.
           </p>
         </Chapter>

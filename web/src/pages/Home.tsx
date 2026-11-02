@@ -80,7 +80,7 @@ export default function Home() {
             <h2>The Library</h2>
             <span className="ref">§4, §6 — documents, cross-linking</span>
           </div>
-          <p>Load a bundle, check conformance, walk the cross-link graph. <strong><code>Bundle.Load</code> never aborts on a bad file</strong> — parse failures land in <code>ParseErrors</code>, broken links stay in the graph as edges to missing concepts.</p>
+          <p>Load a bundle, check conformance, walk the cross-link graph. <strong><code>Bundle.Load</code> never aborts on a bad file</strong> — parse failures land in <code>ParseProblems</code>, broken links stay in the graph as edges to missing concepts.</p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: libraryUsageHtml }} />
           <p><code>Frontmatter</code> keeps the <strong>full ordered mapping</strong> with typed getters on top — producer-defined keys survive round-trips byte for byte. Two validation levels: <code>ValidateConformance()</code> enforces only what §11 requires; <code>Validate()</code> matches the stricter producer-side check.</p>
           <p className="next">→ <Link to="/library">library.md</Link> — install, examples, design choices · <Link to="/docs/library">docs/library.md</Link> — every member, signature by signature</p>
@@ -133,10 +133,10 @@ export default function Home() {
         <section className="chapter" id="catalog">
           <div className="chead">
             <span className="h">##</span>
-            <h2>Local catalog</h2>
+            <h2>Catalog</h2>
             <span className="ref">catalog.json — search many bundles, host multi-tenant memory</span>
           </div>
-          <p><code>OKF4net.Catalog</code> names one or more local bundles as <strong>sources</strong> in a hot-reloadable <code>catalog.json</code> manifest and searches every enabled one, ranked by a <strong>selectable resolver strategy</strong> — grouped by source, merged by score, or priority-weighted, with an optional fairness quota — and with trust and staleness carried on every result. Per-caller <strong>source visibility</strong> restricts which sources a given caller may search, by a host-precomputed set or a per-source policy function. A <code>role: "memory"</code> source, backed by <code>FileMemoryStore</code>, gives an agent deployment host-scoped, layered memory — session, user, and tenant — without cross-scope leakage.</p>
+          <p><code>OKF4net.Catalog</code> names one or more bundles as <strong>sources</strong> in a hot-reloadable <code>catalog.json</code> manifest and searches every enabled one, ranked by a <strong>selectable resolver strategy</strong> — grouped by source, merged by score, or priority-weighted, with an optional fairness quota — and with trust and staleness carried on every result. Per-caller <strong>source visibility</strong> restricts which sources a given caller may search, by a host-precomputed set or a per-source policy function. A <code>role: "memory"</code> source, backed by <code>FileMemoryStore</code>, gives an agent deployment host-scoped, layered memory — session, user, and tenant — without cross-scope leakage.</p>
           <p className="next">→ <Link to="/docs/catalog">docs/catalog.md</Link> — the manifest, the resolver, and scoped memory</p>
         </section>
 

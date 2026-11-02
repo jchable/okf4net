@@ -44,9 +44,9 @@ const indexHtml = `<span class="k">var</span> written = IndexGenerator.Regenerat
 
 const changelogHtml = `<span class="k">using</span> OKF4net;
 
-<span class="k">foreach</span> (<span class="k">var</span> logPath <span class="k">in</span> bundle.LogFiles)
+<span class="k">foreach</span> (<span class="k">var</span> logKey <span class="k">in</span> bundle.LogKeys)
 {
-    <span class="k">var</span> log = ChangeLog.Parse(File.ReadAllText(logPath));
+    <span class="k">var</span> log = ChangeLog.Parse(bundle.ReadResourceText(logKey));
     <span class="k">foreach</span> (<span class="k">var</span> day <span class="k">in</span> log.Days)
         Console.WriteLine(<span class="s">$"{day.Date}: {day.Entries.Count} entr(y/ies)"</span>);
 }`
@@ -117,7 +117,7 @@ export default function Guides() {
 
         <Chapter id="changelog" title="Read a change log" refText="§9 — log.md">
           <p>
-            <code>Bundle.LogFiles</code> lists every reserved <code>log.md</code>; <code>ChangeLog.Parse</code> turns
+            <code>Bundle.LogKeys</code> lists the key of every reserved <code>log.md</code>; <code>ChangeLog.Parse</code> turns
             one into date-grouped entries.
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: changelogHtml }} />

@@ -37,7 +37,7 @@ export default function Catalog() {
   return (
     <DocsLayout
       title="Catalog — OKF4net docs"
-      description="OKF4net.Catalog: a hot-reloadable catalog.json manifest naming one or more local OKF bundles as sources, a multi-source resolver with per-caller source visibility, trust and staleness on every result, and a scoped memory store for host-scoped, multi-tenant agent deployments."
+      description="OKF4net.Catalog: a hot-reloadable catalog.json manifest naming one or more OKF bundles — directories, or storage behind a host-registered bundle provider — as sources, a multi-source resolver with per-caller source visibility, trust and staleness on every result, and a scoped memory store for host-scoped, multi-tenant agent deployments."
       current="catalog"
     >
       <PageDoc
@@ -54,8 +54,10 @@ export default function Catalog() {
         }
         lede={
           <>
-            <code>OKF4net.Catalog</code> names one or more local OKF bundles as <strong>sources</strong> in a
-            hot-reloadable <code>catalog.json</code> manifest, then searches every enabled one. It's an
+            <code>OKF4net.Catalog</code> names one or more OKF bundles as <strong>sources</strong> in a
+            hot-reloadable <code>catalog.json</code> manifest, then searches every enabled one. A source is a
+            directory under the catalog root, or any storage behind an <code>IBundleProvider</code> the host
+            registers. It's an
             OKF4net-specific manifest, not an OKF concept — it configures the catalog from the outside and
             isn't part of the OKF spec itself.
           </>
@@ -80,7 +82,9 @@ export default function Catalog() {
             head={['Field', 'Default / rule']}
             rows={[
               ['id', 'required — a valid single concept-id segment, unique within the manifest'],
-              ['path', 'required — resolved relative to the manifest directory, must stay inside the catalog root'],
+              ['path', 'required for a filesystem source — resolved relative to the manifest directory, must stay inside the catalog root; rejected on any other provider (IllegalPath)'],
+              ['provider', '"filesystem" — or a type the host registered an IBundleProviderFactory for; an unregistered type on an enabled source is rejected (UnknownProvider)'],
+              ['settings', 'object of string values, only for a non-filesystem provider; each name must be one the factory declares (IllegalSetting) — credentials never travel through the manifest'],
               ['priority', '0 — higher-priority sources sort first within the grouped results'],
               ['enabled', "true — a disabled source's path is never resolved or checked against the filesystem"],
               ['role', '"knowledge" — or "memory"; any other string is rejected (IllegalRole)'],
@@ -108,6 +112,30 @@ export default function Catalog() {
             search reflects the latest reload. A debounced (250ms default) file watcher on the manifest file
             itself triggers reloads automatically, but it's best-effort — <code>ReloadAsync()</code> is the only
             path with a delivery guarantee.
+          </p>
+        </Chapter>
+
+        <Chapter id="providers" title="Providers & handles" refText="§5.2, §5.3, §9 — one image per source">
+          <p>
+            Each snapshot owns one <code>BundleHandle</code> per enabled knowledge source (
+            <code>snapshot.Handles[sourceId]</code>), and every resolver searches through them: an unchanged source is
+            loaded once across requests, not at every search. The handle's refresh policy defaults to{' '}
+            <code>OnAccess</code> — the provider's version token is compared before each use, so a change in storage
+            is seen at the next request (for a directory the token is weak: names, lengths and modification times).
+            Set it with <code>KnowledgeOptions.RefreshPolicy</code>, or per source with{' '}
+            <code>KnowledgeCatalogOptions.RefreshPolicyFor</code>; <code>Handle.Refresh()</code> and{' '}
+            <code>Invalidate()</code> force a re-read.
+          </p>
+          <p>
+            A reload that fails does not lose a source: its last good image keeps being served and the search reports{' '}
+            <code>KnowledgeDiagnosticCode.SourceStale</code> (naming the type of the failure's cause, never its
+            message) alongside the passages. Only a source whose <em>first</em> load fails is{' '}
+            <code>SourceUnavailable</code>. A source on another storage needs an{' '}
+            <code>IBundleProviderFactory</code> — <code>ProviderType</code>, <code>AcceptedSettings</code>,{' '}
+            <code>Create(source)</code> — registered with <code>KnowledgeOptions.AddProviderFactory</code> (or{' '}
+            <code>KnowledgeCatalogOptions.ProviderFactories</code>); a factory that throws is{' '}
+            <code>ProviderUnavailable</code>. Only the filesystem provider ships with this repository, and{' '}
+            <code>role: "memory"</code> sources must stay on it (<code>IllegalMemoryProvider</code>).
           </p>
         </Chapter>
 
@@ -143,8 +171,8 @@ export default function Catalog() {
             </li>
           </ul>
           <p>
-            The two merged strategies also collapse two manifest entries that resolve to the same directory,
-            searching that bundle once rather than twice. Two <em>different</em> directories that happen to
+            The two merged strategies also collapse two manifest entries that resolve to the same storage (the
+            provider's id — the same directory, for the filesystem), searching that bundle once rather than twice. Two <em>different</em> directories that happen to
             share a concept id are never merged — a concept id is relative to its own bundle root and is not a
             globally stable identity. Both accept an optional fairness quota that caps how many consecutive
             passages one source may contribute; it reorders and never drops, so it changes what a
@@ -198,14 +226,17 @@ export default function Catalog() {
           <p>
             A <code>role: "memory"</code> source is written by capture (an agent's{' '}
             <Link to="/docs/agents">context provider</Link>), never searched by the resolver — it feeds an{' '}
-            <code>IMemoryStore</code> instead, via <code>FileMemoryStore</code>. All three tiers —{' '}
+            <code>IMemoryStore</code> instead, via <code>FileMemoryStore</code>, which reads, enumerates and deletes through a{' '}
+            <code>FileSystemBundleProvider</code> per tier. All three tiers —{' '}
             <code>Session</code>, <code>User</code>, <code>Tenant</code> — are backed by durable storage, read
             in most-specific-first order (session → user → tenant) so a host can layer per-session scratch
             memory over durable per-user and per-tenant memory. Each present scope segment is path-encoded as
             <code>{'{lowercased}'}-{'{hash}'}</code> (a truncated SHA-256 of the case-sensitive raw value), so
             case-variant tenant or user ids never collide on a case-insensitive filesystem. RGPD/audit
             needs are covered by <code>DeleteScopeAsync</code> and <code>EnumerateAsync</code> — both
-            errors-as-data, never throwing on an expected filesystem condition.
+            errors-as-data, never throwing on an expected filesystem condition. <code>DeleteScopeAsync</code> returns a{' '}
+            <code>MemoryDeleteResult(Tiers, Error)</code>: one <code>MemoryTierDeletion</code> per tier, a report of the
+            keys deleted and those that failed, with why.
           </p>
         </Chapter>
 
@@ -215,7 +246,9 @@ export default function Catalog() {
             <code>Microsoft.Extensions.*</code> package — <code>AddKnowledge</code> registers{' '}
             <code>IKnowledgeCatalog</code>/<code>IKnowledgeResolver</code> lazily (no file I/O until the first
             resolve), and <code>AddMemory</code> registers <code>IMemoryStore</code> from whichever{' '}
-            <code>role:memory</code> sources the manifest declares.
+            <code>role:memory</code> sources the manifest declares. Register the factory of a custom provider type with{' '}
+            <code>o.AddProviderFactory(factory)</code> and set the refresh policy of every source's handle with{' '}
+            <code>o.RefreshPolicy</code>; both are validated at registration.
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: wireUpHtml }} />
           <Warn title="ADDMEMORY IS FROZEN AT STARTUP">
