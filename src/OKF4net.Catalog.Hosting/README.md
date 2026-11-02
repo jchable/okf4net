@@ -1,8 +1,9 @@
 # OKF4net.Catalog.Hosting
 
 `Microsoft.Extensions.DependencyInjection` integration for the
-[OKF4net.Catalog](https://www.nuget.org/packages/OKF4net.Catalog) local
-knowledge catalog: one extension method, `services.AddKnowledge(...)`, wires
+[OKF4net.Catalog](https://www.nuget.org/packages/OKF4net.Catalog)
+knowledge catalog (local directories, or any storage behind an
+`IBundleProvider` the host registers): one extension method, `services.AddKnowledge(...)`, wires
 a `catalog.json` manifest into your host's `IServiceCollection`.
 
 This package depends on `Microsoft.Extensions.DependencyInjection.Abstractions`
