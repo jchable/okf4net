@@ -39,7 +39,12 @@ public sealed record BundleRefreshPolicy
     /// <summary>The version token is compared before every use of the image.</summary>
     public static BundleRefreshPolicy OnAccess { get; } = new(BundleRefreshMode.OnAccess, TimeSpan.Zero);
 
-    /// <summary>The version token is compared at most every <paramref name="every"/>, at an access.</summary>
+    /// <summary>
+    /// The version token is compared at most every <paramref name="every"/>, at an access. A failed
+    /// reload is retried only when the interval has elapsed again, since the comparison that led to
+    /// it counts as this interval's (<see cref="BundleHandle.IsStale"/> says so meanwhile): unlike
+    /// <see cref="Notify"/>, which re-arms its signal, a stale image is served until the next slot.
+    /// </summary>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="every"/> is not positive.</exception>
     public static BundleRefreshPolicy Every(TimeSpan every)
     {

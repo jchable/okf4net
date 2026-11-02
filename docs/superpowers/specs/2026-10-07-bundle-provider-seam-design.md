@@ -871,6 +871,33 @@ changement). Le cœur implémente une fois pour tous les providers :
   perd des événements).
 - Aucun outil de rafraîchissement n'est exposé au modèle.
 
+> **Note du 2026-11-02 (lot C, minors m5 et m7, arbitrage du mainteneur : on
+> garde le comportement et on le documente).**
+> **m5 : `Interval(N)` ne réessaie qu'au créneau suivant.** Le tableau ci-dessus
+> dit « au plus toutes les N secondes ». La comparaison qui précède un
+> rechargement compte pour le créneau en cours (`_lastCheck` est posé avant la
+> comparaison) : si le rechargement échoue, l'image précédente est servie
+> périmée (`IsStale`, `LastLoadError`) et la nouvelle tentative n'a lieu qu'à
+> l'accès qui suit l'écoulement de N secondes. `Notify`, lui, réarme son signal
+> après un échec, et réessaie donc à l'accès suivant. Les deux comportements
+> sont voulus et documentés sur `BundleRefreshPolicy.Every`.
+> **m7 : un fichier qui existe sans être un concept est une observation
+> complète.** Le tableau du §5.4 n'enregistre une observation « concept
+> complet » que lorsque `okf_read_concept` rend le concept entier, et « absent »
+> quand il répond « introuvable ». Pour un objet qui existe mais ne s'est pas
+> chargé en concept (frontmatter non fermé, YAML invalide), l'outil le décrit (« existe mais ne peut pas être lu
+> comme concept ») et, quand l'image en connaît la version, l'enregistre comme
+> lu en entier à cette version : la réparation est alors une réécriture
+> `IfMatch`. L'enregistrer « absent » rendrait la création `MustNotExist`
+> refusée par le stockage, pour toujours. Un objet sans version dans l'image
+> (trop gros) n'enregistre rien et n'est pas réécrivable par l'outil ; un
+> `index.md` ou un journal n'enregistre rien non plus. C'est un écart assumé
+> avec la lettre du tableau, pas avec la spec OKF : il se consigne ici, non
+> dans `docs/spec-conformance/`.
+> **Exception brute d'un provider hôte.** Voir la note du 2026-11-02 du §9 : le
+> handle la range dans une `BundleLoadException` ; l'image précédente est
+> servie périmée, et `Notify` réarme son signal.
+
 **5.4 Observations et épinglage du code exécuté** (D1 : « n'agir que sur ce
 qu'on a vu » ; D5).
 
@@ -1211,11 +1238,18 @@ sources mémoire. Désormais :
 > Une exception qui n'est ni une `BundleProviderException`, ni une
 > `IOException`, ni une `UnauthorizedAccessException`, levée par un provider
 > hôte pendant un chargement ou une lecture du jeton (le premier chargement
-> compris), n'est pas traduite par le cœur mais ne sort plus de `SearchAsync` :
-> la source est signalée `SourceUnavailable` par le nom du type de l'exception
-> seul, sans passages, et les autres sources sont cherchées ; l'annulation du
-> jeton de l'appelant se propage toujours (celle que lève le provider lui-même,
-> un délai dépassé par exemple, est signalée de la même façon).
+> compris), est un échec de chargement comme les autres : `BundleHandle` la
+> range dans une `BundleLoadException` dont le message ne nomme que son type
+> (correctif du 2026-11-02 ; la première version de ce lot la laissait sortir
+> du handle, et un signal `Notify` ou un créneau `Interval` déjà consommé
+> laissait ensuite servir l'image périmée comme courante). Une source déjà
+> chargée est donc servie périmée et signalée `SourceStale`, une source dont
+> le premier chargement échoue est `SourceUnavailable`, toujours par le nom du
+> type de l'exception seul, et les autres sources sont cherchées ;
+> l'annulation du jeton de l'appelant se propage toujours (celle que lève le
+> provider lui-même, un délai dépassé par exemple, est un échec de provider
+> comme les autres : le handle ne tient aucun jeton). Seule
+> `OutOfMemoryException` traverse le handle.
 >
 > **Suppression d'un scope : décision 14 précisée.** Un scope existe s'il
 > contient une clé, et la suppression retire chaque objet par le provider,

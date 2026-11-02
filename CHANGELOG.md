@@ -84,7 +84,15 @@ and this project adheres to
   (compared at most once per interval, at an access) and `Notify` (a signal
   from a provider implementing the new `IBundleChangeNotifier` makes the next
   access compare the token; a signal is a hint, never a reload by itself). No
-  policy runs a timer or a thread. `Invalidate()` obliges the next use to
+  policy runs a timer or a thread. `Every(interval)` retries a failed reload
+  only when the interval has elapsed again (the stale image is served until
+  then), where `Notify` re-arms its signal. A raw exception from a host
+  provider (neither a provider, an I/O nor an access exception), at the token
+  comparison or in a load, is a load failure like any other: wrapped in a
+  `BundleLoadException` that names its type only, the previous image is served
+  stale and the next access after the provider recovers reloads; a first load
+  throws that `BundleLoadException`; only `OutOfMemoryException` propagates.
+  `Invalidate()` obliges the next use to
   reload whatever the policy, and the obligation is acknowledged only by a
   successful load started after it (spec §5.1). `new BundleConceptWriter(handle,
   onWriteCommitted)` writes through the handle's provider under its options
@@ -270,13 +278,15 @@ and this project adheres to
   created makes the next token read fail and the previous image is served
   stale, nothing under the junction ever read. A host provider that throws, during
   any load or token read, an exception that is neither a `BundleProviderException`
-  nor an `IOException` nor an `UnauthorizedAccessException` is not translated by
-  the core, but it no longer escapes `SearchAsync`: that source is reported
-  `SourceUnavailable`, by the exception's type name only (never its message), with
-  no passages (a failed token read after a first load is not a stale image here),
-  and the other sources are still searched; a cancellation of the caller's token still propagates (one a provider raises
-  itself, an `HttpClient` timeout for instance, is that source's problem and is
-  reported the same way, by type name). A
+  nor an `IOException` nor an `UnauthorizedAccessException` is a load failure
+  like those: `BundleHandle` wraps it in a `BundleLoadException` (message naming
+  its type only, never its text), so a source that had loaded is served from its
+  last image and reported `SourceStale`, and one whose first load fails is
+  `SourceUnavailable`, always by the exception's type name only, and the other
+  sources are still searched; a cancellation of the caller's token still
+  propagates (one a provider raises itself, an `HttpClient` timeout for
+  instance, is that source's problem and is reported the same way, by type
+  name). A
   provider's `Id` and `Location` are read at every search (`IBundleProvider`
   now documents them as stable and non-throwing): a getter that starts throwing
   costs its own source only, `SourceUnavailable` by type name. The fused
