@@ -127,7 +127,8 @@ public sealed class KnowledgeOptions
     /// </summary>
     /// <exception cref="ArgumentException">
     /// No <see cref="AddCatalogFile"/> call was made, or <see cref="DefaultFairnessQuota"/>
-    /// is set but not greater than zero, or the registered provider factories include an empty
+    /// is set but not greater than zero, or <see cref="RefreshPolicy"/> is <see langword="null"/>,
+    /// or the registered provider factories include an empty
     /// type, the built-in <c>filesystem</c> type, or two factories for one type.
     /// </exception>
     /// <exception cref="InvalidOperationException">More than one <see cref="AddCatalogFile"/> call was made.</exception>
@@ -155,6 +156,13 @@ public sealed class KnowledgeOptions
         {
             throw new ArgumentException(
                 $"KnowledgeOptions.DefaultFairnessQuota must be greater than zero (got {DefaultFairnessQuota}); use null to disable fairness reordering.");
+        }
+
+        // A config-bound host can leave the property null: caught here, at registration time,
+        // naming the property the host set.
+        if (RefreshPolicy is null)
+        {
+            throw new ArgumentException("KnowledgeOptions.RefreshPolicy must not be null.");
         }
 
         // The same three factory checks FileKnowledgeCatalog's constructor makes, run here so

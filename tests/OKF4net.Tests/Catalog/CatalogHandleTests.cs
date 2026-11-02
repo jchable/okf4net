@@ -199,4 +199,290 @@ public class CatalogHandleTests
         Assert.Empty(snapshot!.Handles);
         Assert.Empty((snapshot with { Generation = 3 }).Handles);
     }
+
+    private static NotifyingBundleProvider NewNotifying(string id = "mem") =>
+        new(new InMemoryBundleProvider(id: id).Add("n.md", Doc));
+
+    [Fact]
+    public async Task A_rejected_reload_disposes_the_handles_it_built_before_the_failure()
+    {
+        using var root = new TempDir();
+        root.Write("a/x.md", Doc);
+        var notifying = NewNotifying();
+        var good = new TestProviderFactory("memory", _ => notifying);
+        var broken = new TestProviderFactory("broken", _ => throw new InvalidOperationException("s3://secret"));
+        using var catalog = Catalog(
+            root,
+            """{ "version": 1, "sources": [ { "id": "a", "path": "./a" } ] }""",
+            policyFor: s => s.Id == "n" ? BundleRefreshPolicy.Notify : null,
+            factories: [good, broken]);
+        var before = catalog.Current;
+
+        root.Write("catalog.json", """{ "version": 1, "sources": [ { "id": "a", "path": "./a" }, { "id": "n", "provider": "memory" }, { "id": "bad", "provider": "broken" } ] }""");
+        var after = await catalog.ReloadAsync();
+
+        Assert.Same(before, after);
+        var diagnostic = Assert.Single(catalog.LastReloadDiagnostics);
+        Assert.Equal(CatalogDiagnosticCode.ProviderUnavailable, diagnostic.Code);
+        Assert.DoesNotContain("secret", diagnostic.Message);
+        Assert.Single(good.Created); // the handle was built, then disposed by the rejection
+        Assert.Equal(0, notifying.Subscribers);
+        Assert.Same(before.Handles["a"], catalog.Current.Handles["a"]);
+        Assert.Equal(1, catalog.Current.Handles["a"].Current.Count);
+    }
+
+    [Fact]
+    public void A_throwing_RefreshPolicyFor_rejects_the_load_by_type_name_and_disposes_the_handles_built_before_it()
+    {
+        using var root = new TempDir();
+        root.Write("a/x.md", Doc);
+        var notifying = NewNotifying();
+        var factory = new TestProviderFactory("memory", _ => notifying);
+
+        var error = Assert.Throws<CatalogException>(() => Catalog(
+            root,
+            """{ "version": 1, "sources": [ { "id": "n", "provider": "memory" }, { "id": "a", "path": "./a" } ] }""",
+            policyFor: s => s.Id == "n"
+                ? BundleRefreshPolicy.Notify
+                : throw new InvalidOperationException("tenant secret-42 unknown"),
+            factories: factory));
+
+        Assert.Contains("[ProviderUnavailable]", error.Message);
+        Assert.Contains("(InvalidOperationException)", error.Message);
+        Assert.DoesNotContain("secret", error.Message);
+        Assert.Equal(0, notifying.Subscribers);
+    }
+
+    [Fact]
+    public async Task A_throwing_RefreshPolicyFor_on_a_reload_keeps_the_current_snapshot()
+    {
+        using var root = new TempDir();
+        root.Write("a/x.md", Doc);
+        var throwNow = false;
+        using var catalog = Catalog(
+            root,
+            """{ "version": 1, "sources": [ { "id": "a", "path": "./a" } ] }""",
+            policyFor: _ => throwNow ? throw new InvalidOperationException("boom") : null);
+        var before = catalog.Current;
+
+        throwNow = true;
+        root.Write("catalog.json", """{ "version": 1, "sources": [ { "id": "a", "path": "./a", "priority": 9 } ] }""");
+        var after = await catalog.ReloadAsync();
+
+        Assert.Same(before, after);
+        Assert.Equal(CatalogDiagnosticCode.ProviderUnavailable, Assert.Single(catalog.LastReloadDiagnostics).Code);
+    }
+
+    [Fact]
+    public async Task A_dispose_that_throws_does_not_fail_a_published_reload_nor_leave_the_other_handles_subscribed()
+    {
+        using var root = new TempDir();
+        var first = NewNotifying("first");
+        var second = NewNotifying("second");
+        var factory = new TestProviderFactory("memory", s => s.Id == "one" ? new ThrowingDisposeProvider(first) : second);
+        var catalog = Catalog(
+            root,
+            """{ "version": 1, "sources": [ { "id": "one", "provider": "memory" }, { "id": "two", "provider": "memory" } ] }""",
+            policy: BundleRefreshPolicy.Notify,
+            factories: factory);
+        Assert.Equal(1, second.Subscribers);
+
+        // "one" leaves: its dispose throws, the reload is still published.
+        root.Write("catalog.json", """{ "version": 1, "sources": [ { "id": "two", "provider": "memory" } ] }""");
+        var reloaded = await catalog.ReloadAsync();
+        Assert.Equal(2, reloaded.Generation);
+        Assert.Empty(catalog.LastReloadDiagnostics);
+
+        catalog.Dispose();
+        Assert.Equal(0, second.Subscribers);
+    }
+
+    [Fact]
+    public async Task A_settings_change_builds_a_second_provider_and_drops_the_replaced_handles_subscription()
+    {
+        using var root = new TempDir();
+        var providers = new List<NotifyingBundleProvider>();
+        var factory = new TestProviderFactory(
+            "memory",
+            _ =>
+            {
+                var created = NewNotifying();
+                providers.Add(created);
+                return created;
+            },
+            "bucket");
+        using var catalog = Catalog(
+            root,
+            """{ "version": 1, "sources": [ { "id": "m", "provider": "memory", "settings": { "bucket": "one" } } ] }""",
+            policy: BundleRefreshPolicy.Notify,
+            factories: factory);
+        var old = catalog.Current.Handles["m"];
+        Assert.Equal(1, providers[0].Subscribers);
+
+        root.Write("catalog.json", """{ "version": 1, "sources": [ { "id": "m", "provider": "memory", "settings": { "bucket": "two" } } ] }""");
+        var reloaded = await catalog.ReloadAsync();
+
+        Assert.Equal(2, factory.Created.Count);
+        Assert.NotSame(old, reloaded.Handles["m"]);
+        Assert.Equal(0, providers[0].Subscribers);
+        Assert.Equal(1, providers[1].Subscribers);
+    }
+
+    [SkippableFact]
+    public void A_failure_after_the_handles_are_built_disposes_them_when_the_constructor_throws()
+    {
+        // The only way to make CreateWatcher fail after a successful load without a seam:
+        // deny the right to list the manifest's directory (a watcher needs it, reading the
+        // known file does not), verified below by probing a watcher on that directory.
+        using var root = new TempDir();
+        var notifying = NewNotifying();
+        var manifestDirectory = Path.Combine(root.Path, "cfg");
+        Directory.CreateDirectory(manifestDirectory);
+        File.WriteAllText(Path.Combine(manifestDirectory, "catalog.json"), """{ "version": 1, "sources": [ { "id": "mem", "provider": "memory" } ] }""");
+
+        var restore = DenyListing(manifestDirectory);
+        try
+        {
+            Skip.If(restore is null, "cannot deny listing of a directory on this machine");
+            Skip.If(WatcherCanBeCreatedOn(manifestDirectory), "a watcher can still be created on a directory whose listing is denied (running as a privileged user?)");
+
+            var options = new KnowledgeCatalogOptions
+            {
+                CatalogFilePath = Path.Combine(manifestDirectory, "catalog.json"),
+                CatalogRoot = root.Path,
+                WatchForChanges = true,
+                ProviderFactories = [new TestProviderFactory("memory", _ => notifying)],
+                RefreshPolicy = BundleRefreshPolicy.Notify,
+            };
+
+            Assert.ThrowsAny<Exception>(() => new FileKnowledgeCatalog(options));
+            Assert.Equal(0, notifying.Subscribers);
+        }
+        finally
+        {
+            restore?.Invoke();
+        }
+    }
+
+    private static bool WatcherCanBeCreatedOn(string directory)
+    {
+        try
+        {
+            using var probe = new FileSystemWatcher(directory, "x") { EnableRaisingEvents = true };
+            return true;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or PlatformNotSupportedException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Denies listing <paramref name="directory"/> (not its children); returns the undo, or <see langword="null"/> when this machine cannot.</summary>
+    private static Action? DenyListing(string directory)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            var sid = "*" + System.Security.Principal.WindowsIdentity.GetCurrent().User!.Value;
+            if (!Icacls(directory, "/deny", sid + ":(RD)"))
+            {
+                return null;
+            }
+
+            return () => Icacls(directory, "/remove:d", sid);
+        }
+
+        try
+        {
+            var original = File.GetUnixFileMode(directory);
+            File.SetUnixFileMode(directory, UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            return () =>
+            {
+                if (!OperatingSystem.IsWindows())
+                {
+                    File.SetUnixFileMode(directory, original);
+                }
+            };
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            return null;
+        }
+    }
+
+    private static bool Icacls(params string[] arguments)
+    {
+        var info = new System.Diagnostics.ProcessStartInfo("icacls.exe")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        foreach (var argument in arguments)
+        {
+            info.ArgumentList.Add(argument);
+        }
+
+        using var process = System.Diagnostics.Process.Start(info)!;
+        process.StandardOutput.ReadToEnd();
+        process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        return process.ExitCode == 0;
+    }
+
+    [SkippableFact]
+    public void A_source_directory_replaced_by_a_junction_outside_the_root_never_serves_outside_content()
+    {
+        using var root = new TempDir();
+        using var outside = new TempDir();
+        root.Write("a/x.md", Doc);
+        outside.Write("leak.md", "---\ntype: Note\ntitle: Leak\ndescription: d\n---\nLeaked.\n");
+        using var catalog = Catalog(root, """{ "version": 1, "sources": [ { "id": "a", "path": "./a" } ] }""");
+        var handle = catalog.Current.Handles["a"];
+        Assert.Equal(1, handle.Current.Count);
+
+        Directory.Delete(Path.Combine(root.Path, "a"), recursive: true);
+        Skip.IfNot(root.TryCreateJunctionToExternalDir("a", outside.Path), "no junction/symlink privilege on this machine");
+
+        // The OnAccess handle fails closed or stays stale; either way nothing from outside the root is served.
+        try
+        {
+            var served = handle.Current;
+            Assert.DoesNotContain(served.Concepts, c => c.Path.EndsWith("leak.md", StringComparison.Ordinal));
+        }
+        catch (BundleLoadException)
+        {
+            // failed closed
+        }
+    }
+}
+
+/// <summary>A notifying provider whose change subscription throws when it is disposed.</summary>
+file sealed class ThrowingDisposeProvider(NotifyingBundleProvider inner) : IBundleProvider, IBundleChangeNotifier
+{
+    public IDisposable Subscribe(Action onChange)
+    {
+        var inside = inner.Subscribe(onChange);
+        return new Throwing(inside);
+    }
+
+    public string Id => inner.Id;
+    public string Location => inner.Location;
+    public BundleProviderCapabilities Capabilities => inner.Capabilities;
+    public BundleKeyConstraints NativeConstraints => inner.NativeConstraints;
+    public BundleVersion GetVersion(BundleLimits limits) => inner.GetVersion(limits);
+    public IEnumerable<BundleListing> Enumerate(BundleKey? prefix, BundleLimits limits) => inner.Enumerate(prefix, limits);
+    public BundleObject Read(BundleKey key, BundleObjectVersion? expected = null) => inner.Read(key, expected);
+    public bool Exists(BundleKey key) => inner.Exists(key);
+    public BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition) => inner.Write(key, content, condition);
+    public void Delete(BundleKey key, BundleWriteCondition condition) => inner.Delete(key, condition);
+
+    private sealed class Throwing(IDisposable inside) : IDisposable
+    {
+        public void Dispose()
+        {
+            inside.Dispose();
+            throw new InvalidOperationException("dispose failed");
+        }
+    }
 }

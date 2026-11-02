@@ -132,6 +132,15 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
             catch
             {
                 _debounceTimer.Dispose();
+
+                // The handles of the snapshot just built are the constructor's own: a caller
+                // never receives an instance to dispose, so a Notify handle's change
+                // subscription would outlive the failed construction.
+                foreach (var handle in _current.Handles.Values)
+                {
+                    DisposeQuietly(handle);
+                }
+
                 throw;
             }
         }
@@ -223,16 +232,34 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
             _debounceTimer?.Dispose();
             foreach (var handle in _current.Handles.Values)
             {
-                handle.Dispose();
+                DisposeQuietly(handle);
             }
+        }
+    }
+
+    /// <summary>
+    /// Disposes a handle, swallowing a non-fatal failure: a provider's subscription may throw
+    /// from its own dispose, and one such failure must neither leave the other handles
+    /// subscribed nor turn an already published reload, or a disposal, into a failure.
+    /// </summary>
+    private static void DisposeQuietly(BundleHandle handle)
+    {
+        try
+        {
+            handle.Dispose();
+        }
+        catch (Exception e) when (e is not OutOfMemoryException)
+        {
+            // Swallowed intentionally: see the summary.
         }
     }
 
     /// <summary>
     /// The effective configuration a source's handle was built for (spec §9): a handle is
     /// reused across reloads only when every point is equal, so a changed <c>path</c> (its
-    /// resolved directory), setting, policy or option rebuilds it. The load options are
-    /// compared as the record they are (the catalog hands every handle its own instance).
+    /// resolved directory), setting, policy or option rebuilds it. Every handle is built with
+    /// the catalog's one <see cref="KnowledgeCatalogOptions.LoadOptions"/> instance, which is
+    /// why comparing the record is stable from one reload to the next.
     /// </summary>
     private sealed record HandleConfiguration(string ProviderType, string? ResolvedDirectory, ProviderSettings Settings, BundleRefreshPolicy RefreshPolicy, BundleLoadOptions LoadOptions);
 
@@ -243,7 +270,7 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
         {
             if (!current.Handles.TryGetValue(id, out var kept) || !ReferenceEquals(kept, handle))
             {
-                handle.Dispose();
+                DisposeQuietly(handle);
             }
         }
     }
@@ -274,7 +301,21 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
                 continue;
             }
 
-            var policy = _options.RefreshPolicyFor?.Invoke(source) ?? _options.RefreshPolicy;
+            BundleRefreshPolicy policy;
+            try
+            {
+                policy = _options.RefreshPolicyFor?.Invoke(source) ?? _options.RefreshPolicy;
+            }
+            catch (Exception e) when (e is not OutOfMemoryException)
+            {
+                // Host code (the per-source policy callback): translated like a factory's
+                // failure, by type name only (spec §7).
+                problems.Add(new CatalogDiagnostic(
+                    CatalogDiagnosticCode.ProviderUnavailable,
+                    $"Source '{source.Id}' provider '{source.ProviderType}' could not be created ({e.GetType().Name})."));
+                continue;
+            }
+
             var configuration = new HandleConfiguration(
                 source.ProviderType,
                 source.IsFileSystem ? resolvedDirectories[source.Id] : null,
@@ -538,7 +579,20 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
         }
     }
 
-    private void FireDebouncedReload(object? state) => _ = ReloadAsync();
+    private void FireDebouncedReload(object? state)
+    {
+        // Runs on a timer thread with no caller to observe an exception: one thrown by host
+        // code (a policy callback, a factory) must not terminate the process, exactly as in
+        // OnCatalogFileEvent. A failing reload is reported through LastReloadDiagnostics.
+        try
+        {
+            _ = ReloadAsync();
+        }
+        catch (Exception e) when (e is not OutOfMemoryException)
+        {
+            // Swallowed intentionally: see above.
+        }
+    }
 
     private static string GetManifestDirectory(string catalogFilePath)
     {

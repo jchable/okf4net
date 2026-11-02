@@ -65,7 +65,8 @@ public static class KnowledgeServiceCollectionExtensions
     /// <exception cref="ArgumentException">
     /// No <see cref="KnowledgeOptions.AddCatalogFile"/> call was made inside
     /// <paramref name="configure"/>, or <see cref="KnowledgeOptions.DefaultFairnessQuota"/>
-    /// is set but not greater than zero, or the provider factories registered with
+    /// is set but not greater than zero, or <see cref="KnowledgeOptions.RefreshPolicy"/> is
+    /// <see langword="null"/>, or the provider factories registered with
     /// <see cref="KnowledgeOptions.AddProviderFactory"/> include an empty type, the built-in
     /// <c>filesystem</c> type, or two factories for one type.
     /// </exception>
@@ -84,7 +85,7 @@ public static class KnowledgeServiceCollectionExtensions
             CatalogFilePath = options.CatalogFilePath!,
             CatalogRoot = options.CatalogRoot!,
             ProviderFactories = [.. options.ProviderFactories],
-            RefreshPolicy = options.RefreshPolicy ?? throw new ArgumentException("KnowledgeOptions.RefreshPolicy must not be null."),
+            RefreshPolicy = options.RefreshPolicy,
         };
 
         services.TryAddSingleton(catalogOptions);
