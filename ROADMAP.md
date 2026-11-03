@@ -72,6 +72,16 @@ are the concrete entry points.
 
 - Ecosystem integrations driven by user demand.
 - Tracking upstream OKF spec evolution beyond v0.2.
+- **Bundle providers beyond the filesystem.** The seam (`IBundleProvider`,
+  [#139](https://github.com/jchable/okf4net/issues/139)) and the filesystem
+  reference implementation ([#140](https://github.com/jchable/okf4net/issues/140))
+  are on `dev`; what follows is tracked as issues: an embedded-resource provider
+  ([#141](https://github.com/jchable/okf4net/issues/141)), an S3 provider in its
+  own project, read-only first ([#142](https://github.com/jchable/okf4net/issues/142)),
+  an async provider contract ([#152](https://github.com/jchable/okf4net/issues/152))
+  and a per-user OS lock closing the cross-process window of the filesystem
+  provider's conditional writes, deferred
+  ([#178](https://github.com/jchable/okf4net/issues/178)).
 
 ## `producers/OkfProducer`
 
