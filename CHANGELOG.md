@@ -959,6 +959,13 @@ and this project adheres to
 
 ### Fixed
 
+- `YamlMapping` looks keys up through a lazily built key-to-position index
+  instead of scanning the entries (#198), so building or editing a mapping of
+  n keys through `Insert`/`Get`/`Remove`/`ContainsKey` is O(n) rather than
+  O(n²) (50,000 inserts and reads: about 100,000 key operations instead of
+  2.5 billion comparisons). Order, duplicate keys from the parser, in-place
+  replacement and first-occurrence semantics are unchanged; parsing never
+  builds the index. The type is still not thread-safe against mutation.
 - `samples/acme-retail-agent` builds again (NU1605: its explicit
   `Microsoft.Agents.AI` 1.20.0 pin was below the 1.24.0 that `OKF4net.Agents`
   requires). The redundant `PackageReference` is removed; the version now

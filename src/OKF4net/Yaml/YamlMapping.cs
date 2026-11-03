@@ -17,6 +17,14 @@ public sealed class YamlMapping : YamlValue
 {
     private readonly List<(YamlValue Key, YamlValue Value)> _entries = [];
     private ReadOnlyCollection<(YamlValue Key, YamlValue Value)>? _entriesView;
+    private Dictionary<string, int>? _index; // lazily built; see IndexOf
+
+    /// <summary>
+    /// Test seam (#198): units of key-lookup work done so far, one per entry
+    /// examined by a search plus one per entry visited by an index build.
+    /// Counted, never timed.
+    /// </summary>
+    internal long KeyProbes { get; private set; }
 
     /// <summary>Creates an empty mapping.</summary>
     public YamlMapping()
@@ -34,17 +42,7 @@ public sealed class YamlMapping : YamlValue
     /// <see cref="YamlString"/> equal to <paramref name="key"/>.
     /// </summary>
     public YamlValue? Get(string key)
-    {
-        foreach (var entry in _entries)
-        {
-            if (string.Equals(entry.Key.AsString(), key, StringComparison.Ordinal))
-            {
-                return entry.Value;
-            }
-        }
-
-        return null;
-    }
+        => IndexOf(key) is var i and >= 0 ? _entries[i].Value : null;
 
     /// <summary>True if <see cref="Get"/> would find the given string key.</summary>
     public bool ContainsKey(string key) => Get(key) is not null;
@@ -58,17 +56,16 @@ public sealed class YamlMapping : YamlValue
     /// </summary>
     public YamlValue? Insert(string key, YamlValue value)
     {
-        for (var i = 0; i < _entries.Count; i++)
+        var i = IndexOf(key);
+        if (i >= 0)
         {
-            if (string.Equals(_entries[i].Key.AsString(), key, StringComparison.Ordinal))
-            {
-                var previous = _entries[i].Value;
-                _entries[i] = (_entries[i].Key, value);
-                return previous;
-            }
+            var previous = _entries[i].Value;
+            _entries[i] = (_entries[i].Key, value);
+            return previous;
         }
 
         _entries.Add((new YamlString(key), value));
+        _index?.TryAdd(key, _entries.Count - 1);
         return null;
     }
 
@@ -78,17 +75,51 @@ public sealed class YamlMapping : YamlValue
     /// </summary>
     public YamlValue? Remove(string key)
     {
-        for (var i = 0; i < _entries.Count; i++)
+        var i = IndexOf(key);
+        if (i < 0)
         {
-            if (string.Equals(_entries[i].Key.AsString(), key, StringComparison.Ordinal))
-            {
-                var removed = _entries[i].Value;
-                _entries.RemoveAt(i);
-                return removed;
-            }
+            return null;
         }
 
-        return null;
+        var removed = _entries[i].Value;
+        _entries.RemoveAt(i);
+
+        // Every later position shifted, and a later duplicate of the key may
+        // now be its first occurrence: drop the index, it is rebuilt on demand.
+        _index = null;
+        return removed;
+    }
+
+    /// <summary>
+    /// Position of the first entry whose key is a <see cref="YamlString"/>
+    /// equal (ordinal) to <paramref name="key"/>, or -1. Served from a
+    /// key → first-position dictionary built on the first lookup, so a mapping
+    /// that is only parsed and emitted never pays for it. Not thread-safe
+    /// against mutation (like the rest of the type); concurrent readers of a
+    /// mapping nobody mutates are safe: each builds the same dictionary
+    /// privately and publishes it with one reference write, so the worst case
+    /// is a duplicated build.
+    /// </summary>
+    private int IndexOf(string key)
+    {
+        var index = _index;
+        if (index is null)
+        {
+            index = new Dictionary<string, int>(_entries.Count, StringComparer.Ordinal);
+            for (var i = 0; i < _entries.Count; i++)
+            {
+                KeyProbes++;
+                if (_entries[i].Key is YamlString s)
+                {
+                    index.TryAdd(s.Value, i);
+                }
+            }
+
+            _index = index;
+        }
+
+        KeyProbes++;
+        return index.TryGetValue(key, out var found) ? found : -1;
     }
 
     /// <summary>
@@ -96,7 +127,17 @@ public sealed class YamlMapping : YamlValue
     /// need not be a string. Used only by the parser, which must preserve
     /// duplicate keys and non-string keys verbatim; hence <c>internal</c>.
     /// </summary>
-    internal void PushRaw(YamlValue key, YamlValue value) => _entries.Add((key, value));
+    internal void PushRaw(YamlValue key, YamlValue value)
+    {
+        _entries.Add((key, value));
+
+        // Append-only: never builds the index, only keeps an existing one
+        // current (a duplicate leaves the first position in place).
+        if (_index is not null && key is YamlString s)
+        {
+            _index.TryAdd(s.Value, _entries.Count - 1);
+        }
+    }
 
     /// <summary>
     /// ALL <c>(key, value)</c> pairs in insertion order, including duplicate
