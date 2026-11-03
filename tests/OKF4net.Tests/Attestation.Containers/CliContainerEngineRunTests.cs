@@ -373,17 +373,22 @@ public class CliContainerEngineRunTests
             dones == 0,
             $"the hung kill wrote its done line: it ran out its {HungKillSeconds} s sleep instead of being killed with its process tree");
         Assert.Equal(1, kills);
+        // The hung kill used up the whole budget: no removal and no check was started.
+        Assert.Empty(Invocations(marker, "rm"));
+        Assert.Empty(Invocations(marker, "inspect"));
     }
 
     /// <summary>
     /// The other half of the same budget: a <c>kill</c> that answers -- slowly, and
-    /// with failure -- must still get its retry, because the retry exists for a
-    /// container whose creation was still in flight, not only for a dead engine. The
-    /// "engine" here targets roughly 750 ms then exits non-zero on every <c>kill</c>
-    /// call (a real <c>sleep 0.75</c> on POSIX; an approximate <c>ping</c>-based wait
-    /// on Windows that in practice can run notably shorter, measured 275-485 ms) and
-    /// records one marker line per call, so this test can assert the retry actually
-    /// happened (two lines).
+    /// with failure -- must not stop the removal rounds that follow it (#110): they are
+    /// what verifies the container is gone, and they exist for a container whose
+    /// creation was still in flight, not only for a dead engine. The "engine" here
+    /// targets roughly 750 ms then exits non-zero on <c>kill</c> (a real
+    /// <c>sleep 0.75</c> on POSIX; an approximate <c>ping</c>-based wait on Windows that
+    /// in practice can run notably shorter, measured 275-485 ms), answers <c>rm -f</c>
+    /// with 0 and <c>inspect</c> with 1 (absent), and records one marker line per call.
+    /// Expected: one <c>kill</c> (not retried: once the local client is dead the removal
+    /// subsumes it), then at least two rounds of <c>rm -f</c> + <c>inspect</c>.
     /// <para>
     /// <see cref="CliContainerEngine.TeardownBudget"/> is widened here rather than
     /// shrunk, unlike the sibling <see cref="A_hung_engine_kill_does_not_hang_the_timed_out_run"/>:
@@ -410,12 +415,11 @@ public class CliContainerEngineRunTests
     /// <para>
     /// What each assertion catches, and what it cannot:
     /// <list type="bullet">
-    /// <item><b>Exactly two <c>kill</c> lines</b> -- the guarantee itself. Catches a
-    /// retry that was dropped or made to need more budget than a slow <c>kill</c>
-    /// leaves, and a third attempt. It fails correct code only if the first attempt
-    /// takes over 4.5 s (the 5 s budget less <c>RetryThreshold</c>). Even in the
-    /// starved runs described on the class, where the whole run took up to 9.5 s,
-    /// every run made both attempts.</item>
+    /// <item><b>One <c>kill</c> line, at least two <c>rm</c> and two <c>inspect</c>
+    /// lines</b> -- the guarantee itself. Catches removal rounds that were dropped or
+    /// made to need more budget than a slow <c>kill</c> leaves, and a retried
+    /// <c>kill</c>. It fails correct code only if the first round cannot start within
+    /// the 5 s budget less <c>RetryThreshold</c>.</item>
     /// <item><b>Teardown (first <c>kill</c> line to return) under the budget + 3 s.</b>
     /// This used to be timed from before <see cref="CliContainerEngine.RunAsync"/> was
     /// called, and that is what failed
@@ -433,13 +437,13 @@ public class CliContainerEngineRunTests
     /// </para>
     /// </summary>
     [Fact]
-    public async Task A_slow_failing_kill_still_gets_retried_within_the_budget()
+    public async Task A_slow_failing_kill_does_not_stop_the_removal_rounds_within_the_budget()
     {
         EnsureThreadPoolHeadroom();
         using var tmp = new TempDir();
         var marker = System.IO.Path.Combine(tmp.Path, "kill-calls.txt");
         var budget = TimeSpan.FromSeconds(5);
-        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, killMode: KillMode.SlowFail))
+        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, killMode: KillMode.SlowFail, rmExitCode: 0, inspectExitCode: 1))
         {
             TeardownBudget = budget,
         };
@@ -454,7 +458,9 @@ public class CliContainerEngineRunTests
         var firstKill = await killLineSeen;
 
         Assert.Contains("exceeded its timeout", ex.Message);
-        Assert.Equal(2, ReadMarker(marker).Kills);
+        Assert.Equal(1, ReadMarker(marker).Kills);
+        Assert.True(Invocations(marker, "rm").Count >= 2);
+        Assert.True(Invocations(marker, "inspect").Count >= 2);
         Assert.True(firstKill.HasValue, "the fake engine's kill never wrote its kill line");
         var teardown = returnedAt - firstKill.Value;
         var bound = budget + TimeSpan.FromSeconds(3);
@@ -504,6 +510,166 @@ public class CliContainerEngineRunTests
         }
     }
 
+    private static readonly System.Text.RegularExpressions.Regex EngineContainerName =
+        new("^okf-[0-9a-f]{32}$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// #110: a run cancelled or timed out while its container is created but not
+    /// started leaves one <c>kill</c> cannot touch (it is not running) and <c>--rm</c>
+    /// never fires for (it never ran). The teardown therefore issues <c>rm -f</c> for the
+    /// run's container -- its exact name, not a pattern -- and then <c>inspect</c> of the
+    /// same name to check it is gone. Absence has to be seen in two rounds, and -- as
+    /// <c>kill</c> never confirmed the container existed, so its <c>create</c> may still
+    /// be in flight -- to hold for a further 1.5 s (the lower bound asserted on the
+    /// elapsed time below; the code's own <c>AbsentWindow</c>). The CI-visible half only:
+    /// whether the engine really has no such container is <c>ContainerIntegrationTests</c>'
+    /// to say.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task The_teardown_removes_the_container_by_name_and_checks_it_is_gone(bool callerCancels)
+    {
+        EnsureThreadPoolHeadroom();
+        using var tmp = new TempDir();
+        var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
+        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 0, inspectExitCode: 1))
+        {
+            TeardownBudget = TimeSpan.FromSeconds(5),
+        };
+        var clock = Stopwatch.StartNew();
+
+        await AssertRunEndsAsync(engine, callerCancels);
+
+        var kill = Assert.Single(Invocations(marker, "kill"));
+        var name = kill.Single();
+        Assert.Matches(EngineContainerName, name);
+        // `rm -f <name>` and `inspect <name>`, the surface Docker, Podman and nerdctl
+        // share, both aimed at the very container `kill` was just refused for.
+        Assert.True(Invocations(marker, "rm").Count >= 2);
+        Assert.All(Invocations(marker, "rm"), removal => Assert.Equal(["-f", name], removal));
+        Assert.True(Invocations(marker, "inspect").Count >= 2);
+        Assert.All(Invocations(marker, "inspect"), inspection => Assert.Equal([name], inspection));
+        // The run alone is ~0.3 s (the timeout / the cancel delay); the 1.5 s hold on
+        // top of it is what keeps teardown watching for a late create.
+        Assert.True(clock.Elapsed >= TimeSpan.FromMilliseconds(1500), $"teardown gave up after {clock.Elapsed}");
+    }
+
+    /// <summary>
+    /// A <c>kill</c> that succeeded does not end the teardown: <c>--rm</c> may well have
+    /// removed the container, but nothing here has checked, and that is the whole point.
+    /// The removal rounds run exactly as when <c>kill</c> failed (and, the container
+    /// having been confirmed to exist, two rounds are enough).
+    /// </summary>
+    [Fact]
+    public async Task A_successful_kill_does_not_end_the_teardown_before_the_container_is_checked()
+    {
+        EnsureThreadPoolHeadroom();
+        using var tmp = new TempDir();
+        var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
+        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Succeed, rmExitCode: 1, inspectExitCode: 1))
+        {
+            TeardownBudget = TimeSpan.FromSeconds(5),
+        };
+
+        await AssertRunEndsAsync(engine, callerCancels: false);
+
+        Assert.Single(Invocations(marker, "kill"));
+        Assert.Equal(2, Invocations(marker, "rm").Count);
+        Assert.Equal(2, Invocations(marker, "inspect").Count);
+    }
+
+    /// <summary>
+    /// <c>rm -f</c> of a name the engine does not know exits 0 on Docker (29.4.1), so its
+    /// exit code is no evidence that the container is gone, and teardown must not stop on
+    /// it. Here <c>rm -f</c> exits 0 every time but <c>inspect</c> keeps finding the
+    /// container: the rounds repeat until the budget is spent -- more than the two a clean
+    /// check needs -- and the outcome is still the one the run was going to report.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_removal_that_exits_zero_is_not_taken_as_proof_the_container_is_gone(bool callerCancels)
+    {
+        EnsureThreadPoolHeadroom();
+        using var tmp = new TempDir();
+        var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
+        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 0, inspectExitCode: 0))
+        {
+            // Wide enough that a loaded machine still gets two rounds in: each round is
+            // two process spawns plus a 250 ms delay, and a round only starts while at
+            // least RetryThreshold of the budget remains.
+            TeardownBudget = TimeSpan.FromSeconds(4),
+        };
+
+        await AssertRunEndsAsync(engine, callerCancels);
+
+        Assert.True(Invocations(marker, "rm").Count >= 2, "teardown stopped after one removal although the container was still there");
+        Assert.True(Invocations(marker, "inspect").Count >= 2);
+    }
+
+    /// <summary>
+    /// A <c>rm -f</c> or <c>inspect</c> that fails -- as one does on an engine that is
+    /// down or odd -- must neither replace the outcome the run was already going to
+    /// report (the caller's <see cref="OperationCanceledException"/>, or the timeout's
+    /// <see cref="ContainerExecutionException"/>) nor escape as an exception of its own;
+    /// teardown never throws. A non-zero <c>inspect</c> is read as "absent".
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_failing_removal_does_not_change_the_outcome(bool callerCancels)
+    {
+        EnsureThreadPoolHeadroom();
+        using var tmp = new TempDir();
+        var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
+        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 1, inspectExitCode: 1))
+        {
+            TeardownBudget = TimeSpan.FromSeconds(5),
+        };
+
+        await AssertRunEndsAsync(engine, callerCancels);
+
+        Assert.Single(Invocations(marker, "kill"));
+        Assert.True(Invocations(marker, "rm").Count >= 2);
+        Assert.True(Invocations(marker, "inspect").Count >= 2);
+    }
+
+    /// <summary>
+    /// Runs <paramref name="engine"/> (whose "run" hangs) until it is cancelled by the
+    /// caller's token or timed out by the spec's own deadline, and asserts the exception
+    /// that tells which -- the shape the teardown must never disturb.
+    /// </summary>
+    private static async Task AssertRunEndsAsync(CliContainerEngine engine, bool callerCancels)
+    {
+        if (callerCancels)
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                async () => await engine.RunAsync(Spec(TimeSpan.FromSeconds(60)), cts.Token));
+        }
+        else
+        {
+            var ex = await Assert.ThrowsAsync<ContainerExecutionException>(
+                async () => await engine.RunAsync(Spec(TimeSpan.FromMilliseconds(300))));
+            Assert.Contains("exceeded its timeout", ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// The arguments (after the subcommand) of every invocation of <paramref name="subcommand"/>
+    /// the fake engine recorded, in order.
+    /// </summary>
+    private static List<string[]> Invocations(string markerFile, string subcommand) =>
+        (File.Exists(markerFile) ? File.ReadAllLines(markerFile) : [])
+            .Select(static line => line.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            .Where(parts => parts.Length > 0 && parts[0] == subcommand)
+            .Select(static parts => parts[1..])
+            .ToList();
+
+    private static string FirstToken(string line) =>
+        line.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
+
     /// <summary>
     /// Counts the <c>kill</c> and <c>done</c> lines of one snapshot of the marker file.
     /// Each line is trimmed before it is compared: cmd's <c>echo kill &gt;&gt; file</c>
@@ -523,8 +689,8 @@ public class CliContainerEngineRunTests
 
                 var lines = File.ReadAllLines(markerFile);
                 return (
-                    lines.Count(static line => line.Trim() == "kill"),
-                    lines.Count(static line => line.Trim() == "done"));
+                    lines.Count(static line => FirstToken(line) == "kill"),
+                    lines.Count(static line => FirstToken(line) == "done"));
             }
             catch (IOException) when (attempt < 50)
             {
@@ -577,6 +743,12 @@ public class CliContainerEngineRunTests
 
         /// <summary>Targets roughly 750 ms then exits non-zero -- the slow-but-responsive, still-failing case.</summary>
         SlowFail,
+
+        /// <summary>Exits 1 at once -- what <c>kill</c> does for a container that was created but never started, or does not exist.</summary>
+        Fail,
+
+        /// <summary>Exits 0 at once -- <c>kill</c> of a running container.</summary>
+        Succeed,
     }
 
     /// <summary>
@@ -587,32 +759,54 @@ public class CliContainerEngineRunTests
     /// <paramref name="markerFile"/> -- so a test can count how many kill attempts
     /// actually ran -- and then behaves per <paramref name="killMode"/>.
     /// </summary>
-    private static string DispatchingEngine(TempDir tmp, string markerFile, int runHangSeconds, KillMode killMode)
+    private static string DispatchingEngine(TempDir tmp, string markerFile, int runHangSeconds, KillMode killMode, int rmExitCode = 1, int inspectExitCode = 1)
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            var killBody = killMode == KillMode.Hang
-                ? $"ping -n {HungKillSeconds + 1} 127.0.0.1 >nul\r\necho done >> \"{markerFile}\"\r\nexit /b 1\r\n"
-                : "ping -n 1 -w 750 192.0.2.1 >nul\r\nexit /b 1\r\n";
+            var killBody = killMode switch
+            {
+                KillMode.Hang => $"ping -n {HungKillSeconds + 1} 127.0.0.1 >nul\r\necho done >> \"{markerFile}\"\r\nexit /b 1\r\n",
+                KillMode.SlowFail => "ping -n 1 -w 750 192.0.2.1 >nul\r\nexit /b 1\r\n",
+                KillMode.Succeed => "exit /b 0\r\n",
+                _ => "exit /b 1\r\n",
+            };
             return tmp.Write(
                 "engine.cmd",
                 "@echo off\r\n"
                 + "if \"%1\"==\"kill\" goto kill\r\n"
+                + "if \"%1\"==\"rm\" goto rm\r\n"
+                + "if \"%1\"==\"inspect\" goto inspect\r\n"
                 + $"ping -n {runHangSeconds + 1} 127.0.0.1 >nul\r\n"
                 + "exit /b 0\r\n"
+                + ":rm\r\n"
+                + $"echo %* >> \"{markerFile}\"\r\n"
+                + $"exit /b {rmExitCode}\r\n"
+                + ":inspect\r\n"
+                + $"echo %* >> \"{markerFile}\"\r\n"
+                + $"exit /b {inspectExitCode}\r\n"
                 + ":kill\r\n"
-                + $"echo kill >> \"{markerFile}\"\r\n"
+                + $"echo kill %2 >> \"{markerFile}\"\r\n"
                 + killBody);
         }
 
-        var killBodySh = killMode == KillMode.Hang
-            ? $"sleep {HungKillSeconds}\n  echo done >> '{markerFile}'\n  exit 1\n"
-            : "sleep 0.75\nexit 1\n";
+        var killBodySh = killMode switch
+        {
+            KillMode.Hang => $"sleep {HungKillSeconds}\n  echo done >> '{markerFile}'\n  exit 1\n",
+            KillMode.SlowFail => "sleep 0.75\nexit 1\n",
+            KillMode.Succeed => "exit 0\n",
+            _ => "exit 1\n",
+        };
         var path = tmp.Write(
             "engine.sh",
             "#!/bin/sh\n"
-            + "if [ \"$1\" = \"kill\" ]; then\n"
-            + $"  echo kill >> '{markerFile}'\n"
+            + "if [ \"$1\" = \"rm\" ]; then\n"
+            + $"  echo \"$*\" >> '{markerFile}'\n"
+            + $"  exit {rmExitCode}\n"
+            + "elif [ \"$1\" = \"inspect\" ]; then\n"
+            + $"  echo \"$*\" >> '{markerFile}'\n"
+            + $"  exit {inspectExitCode}\n"
+            + "elif [ \"$1\" = \"kill\" ]; then\n"
+            + $"  echo \"kill $2\" >> '{markerFile}'\n"
             + $"  {killBodySh}"
             + "else\n"
             + $"  sleep {runHangSeconds}\n"
