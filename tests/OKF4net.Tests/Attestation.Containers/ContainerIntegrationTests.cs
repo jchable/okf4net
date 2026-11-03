@@ -833,9 +833,12 @@ public class ContainerIntegrationTests
     /// 50 runs, each cancelled after a different delay in a 0-100 ms sweep (so some land
     /// before the CLI has even started, some during <c>create</c>, some after it), each
     /// through a shim that records the <c>--name</c> it was handed -- so the assertion is
-    /// about the engine's own containers, never "any okf-guid". After the last run the
-    /// test waits 3 s for a late-committed create to show, then asks <c>docker ps -a</c>
-    /// which of the recorded names still exist. Measured on this machine (Docker 29.4.1
+    /// about the engine's own containers, never "any okf-guid". The sweep counts as having
+    /// reached the race only for the names the daemon's own live <c>docker events</c> stream
+    /// shows as created (half the runs at least): a recorded name proves just that the shim
+    /// ran, not that the daemon got as far as a create. After the last run the test waits 3 s
+    /// for a late-committed create to show, then asks <c>docker ps -a</c> which of the
+    /// recorded names still exist. Measured on this machine (Docker 29.4.1
     /// on Windows): see CHANGELOG.md. A residual late create the budget cannot see would
     /// show up here as a flake, not be hidden.
     /// </para>
@@ -851,6 +854,23 @@ public class ContainerIntegrationTests
         const int Runs = 50;
         // Pre-pulled, so every run reaches the daemon's create rather than being cancelled mid-pull.
         DockerOrThrow("pull python:3.12-slim", timeoutMs: 600_000);
+
+        // The daemon's own event stream, opened before the first run and read live. Not a
+        // `docker events --since` replay: the daemon keeps only the last few hundred events
+        // for replay, and on a daemon with healthchecks running that is a minute or two, so
+        // a replay after a 2-minute sweep only saw the last five runs.
+        var createdByDaemon = new System.Collections.Concurrent.ConcurrentDictionary<string, byte>();
+        using var events = Process.Start(new ProcessStartInfo("docker", "events --filter type=container --filter event=create --format " + "{{.Actor.Attributes.name}}") { RedirectStandardOutput = true, RedirectStandardError = true })!;
+        events.OutputDataReceived += (_, e) =>
+        {
+            if (!string.IsNullOrWhiteSpace(e.Data))
+            {
+                createdByDaemon[e.Data.Trim()] = 0;
+            }
+        };
+        events.BeginOutputReadLine();
+        _ = events.StandardError.ReadToEndAsync();
+        await Task.Delay(TimeSpan.FromSeconds(1));
         try
         {
             for (var i = 0; i < Runs; i++)
@@ -866,13 +886,28 @@ public class ContainerIntegrationTests
             var leaked = names.Where(existing.ContainsKey)
                 .Select(name => $"{name} ({existing[name]}, created/started {RunDocker("inspect -f {{.Created}}/{{.State.StartedAt}} " + name)})")
                 .ToArray();
+
+            // Evidence from the daemon, not from the shim: a recorded --name only proves the
+            // CLI was invoked. The event stream says which of those names the daemon
+            // actually created, whether or not teardown has removed them since.
+            Assert.False(events.HasExited, "the `docker events` stream ended during the sweep, so creation evidence is incomplete");
+            var reached = names.Count(createdByDaemon.ContainsKey);
             Assert.True(
-                names.Count >= Runs / 2,
-                $"only {names.Count} of {Runs} runs got as far as telling the engine to create a container, so the window this test is about was mostly not reached");
+                reached >= Runs / 2,
+                $"the daemon created a container for only {reached} of {Runs} runs ({names.Count} reached the shim), so the window this test is about was mostly not reached");
             Assert.True(leaked.Length == 0, $"{leaked.Length} of {Runs} early-cancelled runs left a container behind: {string.Join(", ", leaked)}");
         }
         finally
         {
+            try
+            {
+                events.Kill(entireProcessTree: true);
+            }
+            catch (Exception)
+            {
+                // Already gone: nothing left to stop.
+            }
+
             RemoveAll(RecordedNames(nameFile));
         }
     }
