@@ -103,12 +103,14 @@ public static class OkfBundleDiscovery
         try
         {
             using var stream = new FileStream(Path.Combine(directory, IndexFilename), FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            if (stream.Length > MaxRootIndexBytes)
+            var length = stream.Length;
+            if (length > MaxRootIndexBytes)
             {
                 return null;
             }
 
-            using var buffer = new MemoryStream((int)stream.Length);
+            // The cached length, never a second read: the file is open with write sharing.
+            using var buffer = new MemoryStream((int)length);
             var chunk = new byte[81920];
             long total = 0;
             int read;
