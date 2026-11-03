@@ -15,6 +15,7 @@ using Xunit;
 
 namespace OKF4net.Tests.Agents;
 
+[Collection(TokenIgnoringStageTimingCollection.Name)]
 public class OkfComputationToolsTests
 {
     /// <summary>
@@ -277,10 +278,12 @@ public class OkfComputationToolsTests
         // Not disposed: the abandoned attester may still be waiting on it when
         // the test ends, and Set() in finally is what releases it.
         var gate = new ManualResetEventSlim(false);
+        long enteredAt = 0;
         if (shape == "async")
         {
             runtime.AttestFunc = async (_, _) =>
             {
+                Volatile.Write(ref enteredAt, System.Diagnostics.Stopwatch.GetTimestamp());
                 await Task.Delay(TimeSpan.FromSeconds(30), CancellationToken.None);
                 return new AttestationVerdict(true, null);
             };
@@ -289,6 +292,7 @@ public class OkfComputationToolsTests
         {
             runtime.AttestFunc = (_, _) =>
             {
+                Volatile.Write(ref enteredAt, System.Diagnostics.Stopwatch.GetTimestamp());
                 gate.Wait(TimeSpan.FromSeconds(30));
                 return ValueTask.FromResult(new AttestationVerdict(true, null));
             };
@@ -301,13 +305,25 @@ public class OkfComputationToolsTests
 
         try
         {
-            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            TokenIgnoringStageTimingCollection.EnsureThreadPoolHeadroom();
             var rendered = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>());
-            stopwatch.Stop();
+            var returnedAt = System.Diagnostics.Stopwatch.GetTimestamp();
 
             Assert.StartsWith("displayable: no", rendered, StringComparison.Ordinal);
             Assert.Contains("timed out", rendered, StringComparison.Ordinal);
-            Assert.True(stopwatch.ElapsedMilliseconds < 5_000, $"the tool returned after {stopwatch.ElapsedMilliseconds} ms under a 30 ms ComputationTimeout; the {shape} attester would have finished at 30 s");
+
+            // Timed from the moment the attester was entered, not from the call: the
+            // timeout is armed before the attester starts, and starting it takes pool
+            // hops that starvation can delay by seconds (#197), which is not what this
+            // test is about. The timeout is due at most 30 ms after enteredAt, so this
+            // is how long the tool took to react to it.
+            // Catches: the tool waiting for the abandoned attester (it would return at
+            // ~30 s), in both shapes. Cannot catch: a delay under ~5 s after the
+            // timeout, nor a delay before the attester is entered.
+            var enteredTimestamp = Volatile.Read(ref enteredAt);
+            Assert.NotEqual(0, enteredTimestamp);
+            var elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(enteredTimestamp, returnedAt);
+            Assert.True(elapsed < TimeSpan.FromSeconds(5), $"the tool returned {elapsed.TotalMilliseconds:F0} ms after the attester was entered under a 30 ms ComputationTimeout; the {shape} attester would have finished at 30 s");
         }
         finally
         {
