@@ -849,6 +849,8 @@ public class ContainerIntegrationTests
         var nameFile = System.IO.Path.Combine(tmp.Path, "names.txt");
         var engine = new CliContainerEngine(NameRecordingEngine(tmp, nameFile, createWithoutStarting: false));
         const int Runs = 50;
+        // Pre-pulled, so every run reaches the daemon's create rather than being cancelled mid-pull.
+        DockerOrThrow("pull python:3.12-slim", timeoutMs: 600_000);
         try
         {
             for (var i = 0; i < Runs; i++)
@@ -875,9 +877,12 @@ public class ContainerIntegrationTests
         }
     }
 
+    // The payload outlives the early-cancellation sweep (about 100 s for its 50 runs, plus the
+    // 3 s wait): a container a run leaked while still running is then still running at the check,
+    // not already exited and removed by --rm.
     private static ContainerRunSpec SleepingSpec(TimeSpan timeout) => new(
         Image: "python:3.12-slim",
-        Command: ["sleep", "60"],
+        Command: ["sleep", "600"],
         Stdin: null,
         Environment: new Dictionary<string, string>(),
         NetworkMode: "none",
@@ -993,7 +998,7 @@ public class ContainerIntegrationTests
 
     /// <summary>Every <c>okf-&lt;guid&gt;</c>-named container (any state) mapped to its state (<c>created</c>, <c>running</c>, ...).</summary>
     private static Dictionary<string, string> ContainerStates() =>
-        RunDocker("ps -a --filter name=okf- --format {{.Names}}|{{.State}}")
+        DockerOrThrow("ps -a --filter name=okf- --format {{.Names}}|{{.State}}")
             .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(line => line.Split('|', 2))
             .Where(parts => parts.Length == 2 && EngineContainerName.IsMatch(parts[0]))
@@ -1004,7 +1009,7 @@ public class ContainerIntegrationTests
         var deadline = DateTime.UtcNow + budget;
         while (DateTime.UtcNow < deadline)
         {
-            if (RunDocker("ps -a --filter name=" + name + " --format {{.Names}}").Length == 0)
+            if (DockerOrThrow("ps -a --filter name=" + name + " --format {{.Names}}").Length == 0)
             {
                 return true;
             }
@@ -1012,7 +1017,7 @@ public class ContainerIntegrationTests
             await Task.Delay(250);
         }
 
-        return RunDocker("ps -a --filter name=" + name + " --format {{.Names}}").Length == 0;
+        return DockerOrThrow("ps -a --filter name=" + name + " --format {{.Names}}").Length == 0;
     }
 
     /// <summary>
@@ -1026,7 +1031,7 @@ public class ContainerIntegrationTests
         new("^okf-[0-9a-f]{32}$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     private static string[] EngineContainers() =>
-        RunDocker("ps -a --filter name=okf- --format {{.Names}}")
+        DockerOrThrow("ps -a --filter name=okf- --format {{.Names}}")
             .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(name => EngineContainerName.IsMatch(name))
             .ToArray();
@@ -1052,6 +1057,31 @@ public class ContainerIntegrationTests
         using var p = Process.Start(new ProcessStartInfo("docker", arguments) { RedirectStandardOutput = true, RedirectStandardError = true })!;
         var output = p.StandardOutput.ReadToEnd();
         p.WaitForExit(10_000);
+        return output.Trim();
+    }
+
+    /// <summary>
+    /// Runs docker for a listing or a pull and returns its trimmed stdout, but THROWS when it
+    /// exits non-zero or does not finish within <paramref name="timeoutMs"/>. A failed query
+    /// must never read as "no containers": <see cref="RunDocker"/> ignores the exit code, which
+    /// let a daemon that stopped answering pass the leak checks.
+    /// </summary>
+    private static string DockerOrThrow(string arguments, int timeoutMs = 10_000)
+    {
+        using var p = Process.Start(new ProcessStartInfo("docker", arguments) { RedirectStandardOutput = true, RedirectStandardError = true })!;
+        var error = p.StandardError.ReadToEndAsync();
+        var output = p.StandardOutput.ReadToEnd();
+        if (!p.WaitForExit(timeoutMs))
+        {
+            p.Kill(entireProcessTree: true);
+            throw new InvalidOperationException($"docker {arguments} did not finish within {timeoutMs} ms");
+        }
+
+        if (p.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"docker {arguments} exited {p.ExitCode}: {error.Result.Trim()}");
+        }
+
         return output.Trim();
     }
 
