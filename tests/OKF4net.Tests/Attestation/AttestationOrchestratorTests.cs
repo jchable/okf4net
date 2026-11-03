@@ -21,6 +21,7 @@ namespace OKF4net.Tests.Attestation;
 /// <see cref="FakeRuntime"/> (shared with <c>AttestationValuesTests</c>), never
 /// touching <c>tests/fixtures</c>.
 /// </summary>
+[Collection(TokenIgnoringStageTimingCollection.Name)]
 public class AttestationOrchestratorTests
 {
     private static (Bundle, ConceptId) InlineComputation(TempDir tmp)
@@ -200,10 +201,12 @@ public class AttestationOrchestratorTests
         // Not disposed: the abandoned stage may still be waiting on it when the
         // test ends, and Set() in finally is what releases it.
         var gate = new ManualResetEventSlim(false);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         if (shape == "async")
         {
             runtime.AttestFunc = async (_, _) =>
             {
+                entered.TrySetResult();
                 // Ignores its token, like a client with no cancellation support.
                 await Task.Delay(TimeSpan.FromSeconds(30), CancellationToken.None);
                 return new AttestationVerdict(true, null);
@@ -213,6 +216,7 @@ public class AttestationOrchestratorTests
         {
             runtime.AttestFunc = (_, _) =>
             {
+                entered.TrySetResult();
                 // Blocks its calling thread before returning anything.
                 gate.Wait(TimeSpan.FromSeconds(30));
                 return ValueTask.FromResult(new AttestationVerdict(true, null));
@@ -220,16 +224,29 @@ public class AttestationOrchestratorTests
         }
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
         var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
-        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(30));
+        using var cts = new CancellationTokenSource();
+        TokenIgnoringStageTimingCollection.EnsureThreadPoolHeadroom();
 
         try
         {
-            var stopwatch = Stopwatch.StartNew();
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(
-                async () => await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 }, cancellationToken: cts.Token));
-            stopwatch.Stop();
+            var run = orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 }, cancellationToken: cts.Token);
 
-            Assert.True(stopwatch.ElapsedMilliseconds < 5_000, $"RunAsync returned after {stopwatch.ElapsedMilliseconds} ms; the token fired at 30 ms and the {shape} stage would have finished at 30 s");
+            // The bound is timed from the token firing, not from the call: starting the
+            // stage takes a pool hop that starvation can delay by seconds (#197), and
+            // that delay is not what this test is about. The token is fired by hand
+            // once the stage is really running, so the clock starts at the event the
+            // product must react to.
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            var firedAt = Stopwatch.GetTimestamp();
+            cts.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await run);
+            var elapsed = Stopwatch.GetElapsedTime(firedAt);
+
+            // Catches: RunAsync waiting for the abandoned stage (it would return at ~30 s),
+            // in both shapes. Cannot catch: a delay under ~5 s between the token firing
+            // and the return (30 s stage vs 5 s bound is the discriminator, far above
+            // scheduling noise), nor anything that happens before the token fires.
+            Assert.True(elapsed < TimeSpan.FromSeconds(5), $"RunAsync returned {elapsed.TotalMilliseconds:F0} ms after the token fired; the {shape} stage would have finished at 30 s");
         }
         finally
         {
