@@ -349,8 +349,9 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     /// but its exit code proves nothing: Docker exits 0 for a name that does not exist
     /// (observed on Docker 29.4.1), so "succeeded" cannot be told from "never existed
     /// yet". <c>inspect</c> exits non-zero for a name the engine does not know (Docker
-    /// 29.4.1: exit 1); that, seen after the client has exited, is the only signal taken
-    /// as absence. Absence has to be seen in <see cref="AbsentRoundsRequired"/>
+    /// 29.4.1: exit 1, "No such object" on stderr); that, seen after the client has exited,
+    /// is the only signal taken as absence. A non-zero exit without that text (daemon down,
+    /// permission error) is unknown and restarts the count. Absence has to be seen in <see cref="AbsentRoundsRequired"/>
     /// consecutive rounds, a <see cref="RetryDelay"/> apart, to catch a <c>create</c> the
     /// daemon commits late -- and, for as long as the engine has not once confirmed the
     /// container exists (<c>kill</c> exiting 0, or <c>inspect</c> finding it), to hold for
@@ -384,7 +385,7 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
         int? killed = null;
         if (Remaining() > TimeSpan.Zero)
         {
-            killed = await TryEngineCommandOnceAsync(Remaining(), "kill", containerName).ConfigureAwait(false);
+            killed = (await TryEngineCommandOnceAsync(Remaining(), "kill", containerName).ConfigureAwait(false))?.ExitCode;
         }
 
         await StopClientAsync(client, Remaining()).ConfigureAwait(false);
@@ -409,7 +410,13 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             }
 
             var inspected = await TryEngineCommandOnceAsync(Remaining(), "inspect", containerName).ConfigureAwait(false);
-            if (inspected is { } code && code != 0)
+            if (inspected is { ExitCode: 0 })
+            {
+                existed = true;
+                absentRounds = 0;
+                firstAbsent = null;
+            }
+            else if (inspected is { } reply && IsNotFound(reply.Error))
             {
                 absentRounds++;
                 firstAbsent ??= elapsed.Elapsed;
@@ -420,7 +427,8 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             }
             else
             {
-                existed |= inspected == 0;
+                // Unknown: no answer, or a non-zero exit that does not say "no such"
+                // (daemon down, transport or permission error). Not evidence of absence.
                 absentRounds = 0;
                 firstAbsent = null;
             }
@@ -465,14 +473,30 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     }
 
     /// <summary>
+    /// The exit code and standard error of one engine command the teardown issued.
+    /// </summary>
+    private readonly record struct EngineReply(int ExitCode, string Error);
+
+    /// <summary>
+    /// True when an engine's error text says the name is unknown to it. Docker's
+    /// <c>inspect</c> of a missing name says "No such object" (29.4.1) or "No such
+    /// container"; a daemon that is down, or a permission error, says neither, so it is
+    /// never taken as absence. Podman's and nerdctl's wording is NOT verified by this repo.
+    /// </summary>
+    private static bool IsNotFound(string error) =>
+        error.Contains("no such", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Runs one <c>binaryName &lt;arguments&gt;</c> (<c>kill</c>, <c>rm -f</c> or
     /// <c>inspect</c> of the run's container -- the only three the teardown issues),
     /// bounded by <paramref name="bound"/> (a slice of <see cref="TearDownContainerAsync"/>'s
     /// overall <see cref="TeardownBudget"/>, never negative -- the caller clamps).
-    /// Returns the exit code, or <see langword="null"/> when the command gave no
-    /// answer: it could not be started, threw, or hit <paramref name="bound"/>.
+    /// Returns the exit code and standard error, or <see langword="null"/> when the command gave no
+    /// answer: it could not be started, threw, or hit <paramref name="bound"/>. The
+    /// output drains share that bound, so a child whose descendant keeps a pipe open
+    /// cannot hold the teardown past its budget.
     /// </summary>
-    private async Task<int?> TryEngineCommandOnceAsync(TimeSpan bound, params string[] arguments)
+    private async Task<EngineReply?> TryEngineCommandOnceAsync(TimeSpan bound, params string[] arguments)
     {
         using var command = new Process
         {
@@ -525,7 +549,7 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             }
 
             await Task.WhenAll(drainOut, drainErr).ConfigureAwait(false);
-            return command.ExitCode;
+            return new EngineReply(command.ExitCode, drainErr.Result);
         }
         catch (Exception)
         {
