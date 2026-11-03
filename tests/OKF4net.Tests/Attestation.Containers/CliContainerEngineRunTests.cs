@@ -613,7 +613,8 @@ public class CliContainerEngineRunTests
     /// down or odd -- must neither replace the outcome the run was already going to
     /// report (the caller's <see cref="OperationCanceledException"/>, or the timeout's
     /// <see cref="ContainerExecutionException"/>) nor escape as an exception of its own;
-    /// teardown never throws. A non-zero <c>inspect</c> is read as "absent".
+    /// teardown never throws. A non-zero <c>inspect</c> that says "no such" is read as
+    /// "absent" (the fake engine's default); see the test below for one that does not.
     /// </summary>
     [Theory]
     [InlineData(false)]
@@ -633,6 +634,32 @@ public class CliContainerEngineRunTests
         Assert.Single(Invocations(marker, "kill"));
         Assert.True(Invocations(marker, "rm").Count >= 2);
         Assert.True(Invocations(marker, "inspect").Count >= 2);
+    }
+
+    /// <summary>
+    /// A non-zero <c>inspect</c> that does NOT say the name is unknown -- a daemon that is
+    /// down, say -- is no evidence of absence. Teardown must keep retrying until its budget
+    /// runs out: with a 3 s budget, the absence verdict (two rounds, 1.5 s apart) would end
+    /// it at about 1.5 s, so a teardown that returns before 2.5 s took the failure for absence.
+    /// </summary>
+    [Fact]
+    public async Task An_inspect_failure_that_is_not_not_found_is_not_taken_as_absence()
+    {
+        EnsureThreadPoolHeadroom();
+        using var tmp = new TempDir();
+        var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
+        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 1, inspectExitCode: 1, inspectStderr: "Cannot connect to the Docker daemon"))
+        {
+            TeardownBudget = TimeSpan.FromSeconds(3),
+        };
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await engine.RunAsync(Spec(TimeSpan.FromSeconds(60)), cts.Token));
+        stopwatch.Stop();
+
+        Assert.True(stopwatch.Elapsed >= TimeSpan.FromSeconds(2.5), $"teardown returned after {stopwatch.Elapsed.TotalSeconds:F1} s with a 3 s budget: an inspect the daemon could not answer was taken as absence");
+        Assert.True(Invocations(marker, "inspect").Count >= 4);
     }
 
     /// <summary>
@@ -759,7 +786,7 @@ public class CliContainerEngineRunTests
     /// <paramref name="markerFile"/> -- so a test can count how many kill attempts
     /// actually ran -- and then behaves per <paramref name="killMode"/>.
     /// </summary>
-    private static string DispatchingEngine(TempDir tmp, string markerFile, int runHangSeconds, KillMode killMode, int rmExitCode = 1, int inspectExitCode = 1)
+    private static string DispatchingEngine(TempDir tmp, string markerFile, int runHangSeconds, KillMode killMode, int rmExitCode = 1, int inspectExitCode = 1, string inspectStderr = "Error: No such object")
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
@@ -783,6 +810,7 @@ public class CliContainerEngineRunTests
                 + $"exit /b {rmExitCode}\r\n"
                 + ":inspect\r\n"
                 + $"echo %* >> \"{markerFile}\"\r\n"
+                + $"echo {inspectStderr}: %2 1>&2\r\n"
                 + $"exit /b {inspectExitCode}\r\n"
                 + ":kill\r\n"
                 + $"echo kill %2 >> \"{markerFile}\"\r\n"
@@ -804,6 +832,7 @@ public class CliContainerEngineRunTests
             + $"  exit {rmExitCode}\n"
             + "elif [ \"$1\" = \"inspect\" ]; then\n"
             + $"  echo \"$*\" >> '{markerFile}'\n"
+            + $"  echo \"{inspectStderr}: $2\" >&2\n"
             + $"  exit {inspectExitCode}\n"
             + "elif [ \"$1\" = \"kill\" ]; then\n"
             + $"  echo \"kill $2\" >> '{markerFile}'\n"

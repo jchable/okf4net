@@ -17,7 +17,7 @@ public sealed class YamlMapping : YamlValue
 {
     private readonly List<(YamlValue Key, YamlValue Value)> _entries = [];
     private ReadOnlyCollection<(YamlValue Key, YamlValue Value)>? _entriesView;
-    private Dictionary<string, int>? _index; // lazily built; see IndexOf
+    private volatile Dictionary<string, int>? _index; // lazily built; see IndexOf
 
     /// <summary>
     /// Test seam (#198): units of key-lookup work done so far, one per entry
@@ -97,7 +97,8 @@ public sealed class YamlMapping : YamlValue
     /// that is only parsed and emitted never pays for it. Not thread-safe
     /// against mutation (like the rest of the type); concurrent readers of a
     /// mapping nobody mutates are safe: each builds the same dictionary
-    /// privately and publishes it with one reference write, so the worst case
+    /// privately and publishes it through the <c>volatile</c> field, a release
+    /// store that a reader's acquire load sees fully built, so the worst case
     /// is a duplicated build.
     /// </summary>
     private int IndexOf(string key)
