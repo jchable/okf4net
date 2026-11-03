@@ -275,59 +275,73 @@ public class OkfComputationToolsTests
         tmp.Write("att.py", "def attest(**_):\n    return {}\n");
         var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
 
-        // Not disposed: the abandoned attester may still be waiting on it when
-        // the test ends, and Set() in finally is what releases it.
-        var gate = new ManualResetEventSlim(false);
-        long enteredAt = 0;
-        if (shape == "async")
+        // The timeout is armed before the attester is entered, and that setup (bundle
+        // load, binder and executor pool hops) can outlast 30 ms on a loaded runner. An
+        // attempt that times out before entry never exercised the attester, so it proves
+        // nothing about it: retry, and require at least one attempt that entered it.
+        const int maxAttempts = 5;
+        for (var attempt = 1; ; attempt++)
         {
-            runtime.AttestFunc = async (_, _) =>
+            // Per attempt and not disposed: the abandoned attester may still be waiting
+            // on its gate when the attempt ends, and Set() in finally is what releases it.
+            var gate = new ManualResetEventSlim(false);
+            long enteredAt = 0;
+            if (shape == "async")
             {
-                Volatile.Write(ref enteredAt, System.Diagnostics.Stopwatch.GetTimestamp());
-                await Task.Delay(TimeSpan.FromSeconds(30), CancellationToken.None);
-                return new AttestationVerdict(true, null);
-            };
-        }
-        else
-        {
-            runtime.AttestFunc = (_, _) =>
+                runtime.AttestFunc = async (_, _) =>
+                {
+                    Volatile.Write(ref enteredAt, System.Diagnostics.Stopwatch.GetTimestamp());
+                    await Task.Delay(TimeSpan.FromSeconds(30), CancellationToken.None);
+                    return new AttestationVerdict(true, null);
+                };
+            }
+            else
             {
-                Volatile.Write(ref enteredAt, System.Diagnostics.Stopwatch.GetTimestamp());
-                gate.Wait(TimeSpan.FromSeconds(30));
-                return ValueTask.FromResult(new AttestationVerdict(true, null));
+                runtime.AttestFunc = (_, _) =>
+                {
+                    Volatile.Write(ref enteredAt, System.Diagnostics.Stopwatch.GetTimestamp());
+                    gate.Wait(TimeSpan.FromSeconds(30));
+                    return ValueTask.FromResult(new AttestationVerdict(true, null));
+                };
+            }
+            var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+            var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg))
+            {
+                ComputationTimeout = TimeSpan.FromMilliseconds(30),
             };
-        }
-        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
-        var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg))
-        {
-            ComputationTimeout = TimeSpan.FromMilliseconds(30),
-        };
 
-        try
-        {
-            TokenIgnoringStageTimingCollection.EnsureThreadPoolHeadroom();
-            var rendered = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>());
-            var returnedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+            try
+            {
+                TokenIgnoringStageTimingCollection.EnsureThreadPoolHeadroom();
+                var rendered = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>());
+                var returnedAt = System.Diagnostics.Stopwatch.GetTimestamp();
 
-            Assert.StartsWith("displayable: no", rendered, StringComparison.Ordinal);
-            Assert.Contains("timed out", rendered, StringComparison.Ordinal);
+                Assert.StartsWith("displayable: no", rendered, StringComparison.Ordinal);
+                Assert.Contains("timed out", rendered, StringComparison.Ordinal);
 
-            // Timed from the moment the attester was entered, not from the call: the
-            // timeout is armed before the attester starts, and starting it takes pool
-            // hops that starvation can delay by seconds (#197), which is not what this
-            // test is about. The timeout is due at most 30 ms after enteredAt, so this
-            // is how long the tool took to react to it.
-            // Catches: the tool waiting for the abandoned attester (it would return at
-            // ~30 s), in both shapes. Cannot catch: a delay under ~5 s after the
-            // timeout, nor a delay before the attester is entered.
-            var enteredTimestamp = Volatile.Read(ref enteredAt);
-            Assert.NotEqual(0, enteredTimestamp);
-            var elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(enteredTimestamp, returnedAt);
-            Assert.True(elapsed < TimeSpan.FromSeconds(5), $"the tool returned {elapsed.TotalMilliseconds:F0} ms after the attester was entered under a 30 ms ComputationTimeout; the {shape} attester would have finished at 30 s");
-        }
-        finally
-        {
-            gate.Set();
+                // Timed from the moment the attester was entered, not from the call: starting
+                // it takes pool hops that starvation can delay by seconds (#197), which is not
+                // what this test is about. The timeout is due at most 30 ms after enteredAt,
+                // so this is how long the tool took to react to it.
+                // Catches: the tool waiting for the abandoned attester (it would return at
+                // ~30 s), in both shapes. Cannot catch: a delay under ~5 s after the
+                // timeout, nor a delay before the attester is entered.
+                var enteredTimestamp = Volatile.Read(ref enteredAt);
+                if (enteredTimestamp == 0)
+                {
+                    // Timed out before the attester started: this attempt did not exercise it.
+                    Assert.True(attempt < maxAttempts, $"the attester was never entered in {maxAttempts} attempts under a 30 ms ComputationTimeout; the {shape} attester was not exercised");
+                    continue;
+                }
+
+                var elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(enteredTimestamp, returnedAt);
+                Assert.True(elapsed < TimeSpan.FromSeconds(5), $"the tool returned {elapsed.TotalMilliseconds:F0} ms after the attester was entered under a 30 ms ComputationTimeout; the {shape} attester would have finished at 30 s");
+                return;
+            }
+            finally
+            {
+                gate.Set();
+            }
         }
     }
 
