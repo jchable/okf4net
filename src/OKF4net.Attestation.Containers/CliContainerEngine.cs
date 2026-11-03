@@ -531,6 +531,7 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             try
             {
                 await command.WaitForExitAsync(cts.Token).ConfigureAwait(false);
+                await Task.WhenAll(drainOut, drainErr).WaitAsync(cts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -548,7 +549,6 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
                 return null;
             }
 
-            await Task.WhenAll(drainOut, drainErr).ConfigureAwait(false);
             return new EngineReply(command.ExitCode, drainErr.Result);
         }
         catch (Exception)
