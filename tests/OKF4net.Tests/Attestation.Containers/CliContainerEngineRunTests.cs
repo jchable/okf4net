@@ -596,7 +596,10 @@ public class CliContainerEngineRunTests
         var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
         var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 0, inspectExitCode: 0))
         {
-            TeardownBudget = TimeSpan.FromSeconds(2),
+            // Wide enough that a loaded machine still gets two rounds in: each round is
+            // two process spawns plus a 250 ms delay, and a round only starts while at
+            // least RetryThreshold of the budget remains.
+            TeardownBudget = TimeSpan.FromSeconds(4),
         };
 
         await AssertRunEndsAsync(engine, callerCancels);
