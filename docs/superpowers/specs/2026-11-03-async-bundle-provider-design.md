@@ -292,6 +292,18 @@ STRICT/lenient tels quels : leur implémentation est synchrone, et elle le reste
   provoquer d'interblocage, quel que soit le `SynchronizationContext`. Elle ne
   sert que le provider filesystem construit par la surcharge `string`, ou un
   `Bundle` dont le provider termine en synchrone (`Validate`).
+- **Aucun effet de bord avant d'avoir la garantie de synchronisme** (retour de
+  relecture). Vérifier la complétion *après* le démarrage serait trop tard : une
+  écriture sync sur un provider async lèverait, puis committerait quand
+  l'opération abandonnée reprendrait. Donc : (1) une surcharge sync qui écrit
+  ou supprime refuse **avant** tout appel d'E/S, sur une capacité déclarée par
+  le provider (`CompletesSynchronously`, vraie pour le filesystem seul) ; un
+  provider qui ne la déclare pas voit `InvalidOperationException` sans qu'aucune
+  opération n'ait démarré. (2) Les lectures, sans effet de bord, gardent le
+  contrôle de complétion a posteriori ; une opération incomplète est abandonnée
+  sous un jeton annulé et son résultat jeté. §3.11 ajoute le test : provider
+  async-contrôlé, appel sync d'écriture rejeté, puis complétion de l'opération
+  en attente, et vérification qu'**aucun** commit n'a eu lieu.
 - **Mode d'exécution interne** (`ExecutionMode.Synchronous | Asynchronous`, non
   public), transmis par les ponts. Il ne gouverne que deux choses :
   - les **attentes du cœur** (réessais de l'écrivain et de l'index) :
@@ -358,14 +370,25 @@ Remplacement **à vol unique** (*single-flight*) :
   besoin » est **une seule** tâche. Il y a donc au plus une marche (jeton ou
   chargement) par handle à la fois : c'est la garantie « one load at a time »,
   inchangée.
-- **Annulation.** Le chargement partagé s'exécute sous le jeton **du handle**
-  (annulé par `Dispose`), jamais sous celui d'un appelant. Un appelant qui
-  annule cesse d'attendre et reçoit `OperationCanceledException`. Les autres
-  reçoivent l'image. Une annulation venue du provider qui n'est pas celle du
-  handle reste un échec de chargement, enveloppé comme aujourd'hui (`:232-257`).
+- **Annulation.** Le chargement partagé ne s'exécute sous **aucun** jeton
+  d'appelant. `Dispose` reste ce qu'il est aujourd'hui (`BundleHandle.cs:149`) :
+  il ferme l'abonnement et n'annule rien, et un chargement ultérieur reste
+  permis. Raison (retour de relecture) : `FileKnowledgeCatalog` dispose
+  aussitôt les handles remplacés alors que des requêtes sur l'ancien instantané
+  peuvent encore avoir besoin de leur premier chargement
+  (`A_catalog_reload_during_a_search_leaves_the_search_on_its_snapshots_handles`).
+  Un appelant qui annule cesse d'attendre et reçoit
+  `OperationCanceledException` ; les autres reçoivent l'image. Si tous les
+  appelants ont renoncé, le chargement va à son terme (borné par le provider)
+  et son image sert le suivant. Une annulation venue du provider reste un échec
+  de chargement, enveloppé comme aujourd'hui (`:232-257`).
 - **L'obligation de rechargement** (compteur de générations, `:19-23`, `:221`)
-  est inchangée. Un `Invalidate()` pendant un chargement en cours n'est pas
-  acquitté par lui.
+  est inchangée, et **la jonction en tient compte** : un appelant ne rejoint
+  une opération en cours que si elle a démarré à une génération ≥ celle qu'il
+  exige. Un accès postérieur à `Invalidate()` mais antérieur à la fin de
+  l'ancienne opération attend celle-ci, puis démarre ou rejoint une opération
+  couvrant sa génération (comme le recontrôle sous le verrou de
+  `BundleHandle.Current` aujourd'hui). Test dédié à cet ordre en §3.11.
 - **`RefreshAsync`.** Si une opération est en cours, il l'attend, puis en lance
   une nouvelle, comme le `lock` sérialisé d'aujourd'hui.
 - **Changement observable (bénin).** Sous `OnAccess`, N appelants concurrents
@@ -414,6 +437,18 @@ Proposition :
   devient structurelle : rien ne tient deux bundles (§1.4), et une seconde
   acquisition sur un bail tenu est une erreur de programmation, détectée en
   debug.
+- **Le rappel `onWriteCommitted`** (retour de relecture, absent de l'inventaire
+  §1.4) s'exécute aujourd'hui sous le verrou (`BundleConceptWriter.cs:296-299`)
+  et un hôte peut y appeler `OkfBundleTools.ReadConcept` sur la même racine : le
+  moniteur réentrant l'admet, un sémaphore attendrait sur lui-même. Les
+  paramètres de bail internes ne protègent pas du code hôte. Règle proposée :
+  le rappel est **notifié après la libération du bail**, jamais dessous (la
+  durée de ce verrou n'est plus liée au code de l'hôte). Cela change le
+  moment du rappel (après le verrou, avant le retour de l'appel d'écriture) ;
+  c'est un point à arbitrer, car un hôte qui compterait sur l'exclusion
+  pendant le rappel la perd. À défaut, une politique de non-réentrance
+  explicite en version Release : lever `InvalidOperationException` plutôt que
+  se bloquer.
 - **Les ponts synchrones** prennent le sémaphore par `Wait()`. C'est une attente
   de verrou, pas du sync-sur-async : le détenteur async n'a pas besoin du
   thread bloqué pour avancer, à condition que la bibliothèque utilise partout
@@ -514,6 +549,21 @@ jamais par un délai.
 - **Verrou.** #131 en boucle. Les tests d'alias #86. Un test structurel : une
   seconde acquisition attend tant que le bail est tenu (sa tâche n'est pas
   terminée), puis se termine après la libération.
+- **Écriture sync sur provider async (retour de relecture).** Un provider dont
+  les opérations sont pilotées par le test : l'appel sync d'écriture est
+  rejeté, on complète ensuite l'opération en attente, et on vérifie qu'aucun
+  commit n'a eu lieu.
+- **Jonction consciente de la génération.** `Invalidate()` pendant un
+  chargement, puis un accès avant sa fin : l'accès attend, puis obtient une
+  image qui couvre sa génération (ordre forcé par événements).
+- **`Dispose` sans annulation.** Un handle disposé, dont un chargement est en
+  cours pour une requête sur l'ancien instantané du catalogue, termine et sert
+  cette requête.
+- **Rappel `onWriteCommitted` réentrant.** Le rappel appelle `ReadConcept` sur
+  la même racine : il ne se bloque pas (selon la règle retenue en Q7).
+- **Liaison des outils.** `GetTools` reste lié aux wrappers `*Tool` : une
+  écriture sans observation est refusée, un appel public `WriteConcept` ne
+  l'est pas.
 - **Scope de listing à travers `await`.** Un chargement async sur le provider
   filesystem liste chaque répertoire une fois (`DirectoryListings`, `:81`),
   comme en synchrone.
@@ -542,9 +592,15 @@ jamais par un délai.
    « (#152) ». `RunComputation` sync, obsolète depuis 0.7.0, part avec #152.
 3. **Méthodes outils publiques d'`OkfBundleTools`** (`string`, publiées en
    0.7.0). Faut-il les changer en place (rupture), ou ajouter des `…Async` ?
-   *Recommandation :* ajouter `ReadConceptAsync` & co (`Task<string>`) et
-   brancher `GetTools` dessus, avec les noms d'outils inchangés (ils sont
-   explicites dans `AIFunctionFactory.Create`). Garder les versions `string`
+   *Recommandation :* ajouter `ReadConceptAsync` & co (`Task<string>`) pour les
+   hôtes, **sans** y brancher `GetTools` : celui-ci continue de lier les
+   wrappers internes `*Tool` (`ReadConceptTool`, `GetComputationTool`,
+   `WriteConceptTool`, `RunComputationToolAsync`), qui portent les observations
+   et la porte de §5.4. Les méthodes publiques n'enregistrent ni n'exigent rien,
+   par construction (une injection de `OkfContextProvider` n'est pas une
+   observation) ; les lier ou y mettre le contrôle casserait l'une des deux
+   règles. Ces wrappers deviennent asynchrones (`Task<string>`), noms d'outils
+   inchangés (explicites dans `AIFunctionFactory.Create`). Garder les versions `string`
    `[Obsolete]` une version, servies par le pont non bloquant : elles marchent
    sur le filesystem et lèvent sur un provider async.
 4. **Validation.** `ValidateAsync`, ou préchargement au chargement
@@ -570,3 +626,8 @@ jamais par un délai.
    aujourd'hui, aucune image ne mélange une régénération d'index à moitié faite
    par ce même jeu d'outils. La relâcher avec #179 (mise à jour incrémentale),
    qui redéfinit de toute façon ce qu'une écriture fait à l'image.
+7. **Rappel `onWriteCommitted` (retour de relecture).** Notifier après la
+   libération du bail (§3.7), ou exiger la non-réentrance en Release ?
+   *Recommandation :* notifier après la libération. C'est un changement de
+   moment observable pour un hôte qui comptait sur l'exclusion pendant le
+   rappel ; le CHANGELOG le dira.
