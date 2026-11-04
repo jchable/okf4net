@@ -29,6 +29,42 @@ internal static class SyncBridge
         return task.GetAwaiter().GetResult();
     }
 
+    /// <summary>
+    /// Starts <paramref name="start"/> with a token this call owns and returns its result, which
+    /// must be complete when it returns. A pending operation is cancelled through that token and
+    /// abandoned, and the call throws <see cref="InvalidOperationException"/>: for the reads that
+    /// have no side effect to protect, completion is checked after the start, and what was
+    /// started stops as soon as the provider next looks at its token.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The operation was still pending.</exception>
+    internal static T RunCancellable<T>(Func<CancellationToken, ValueTask<T>> start)
+    {
+        using var cts = new CancellationTokenSource();
+        var task = start(cts.Token);
+        if (!task.IsCompleted)
+        {
+            cts.Cancel();
+            throw new InvalidOperationException(IncompleteMessage);
+        }
+
+        return task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// For an operation that WRITES: the provider must declare
+    /// <see cref="BundleProviderCapabilities.CompletesSynchronously"/>, or the call is refused
+    /// before any I/O starts. Checking completion afterwards would be too late: the abandoned
+    /// operation would commit when it resumed.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The provider does not complete synchronously; nothing was started.</exception>
+    internal static void RequireSynchronousProvider(IBundleProvider provider)
+    {
+        if (!provider.Capabilities.CompletesSynchronously)
+        {
+            throw new InvalidOperationException(IncompleteMessage);
+        }
+    }
+
     /// <summary>Observes <paramref name="task"/>, which must already be complete.</summary>
     /// <exception cref="InvalidOperationException">The task is still pending.</exception>
     internal static void Run(ValueTask task)

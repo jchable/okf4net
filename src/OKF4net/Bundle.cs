@@ -225,8 +225,11 @@ public sealed class Bundle
     /// rejected name, an oversized or unparseable concept goes to <see cref="ParseProblems"/>;
     /// only a provider failure or a global bound (entries, depth) throws.
     /// </summary>
+    /// <param name="provider">Where the bundle is read.</param>
+    /// <param name="options">The key policy, extra validators and bounds, or <see langword="null"/> for <see cref="BundleLoadOptions.Default"/>.</param>
+    /// <param name="ct">Cancels the load: it ends with an <see cref="OperationCanceledException"/>, never a <see cref="BundleLoadException"/>.</param>
     /// <exception cref="BundleLoadException">The provider failed, refused the access, or a global bound was exceeded. The raw cause is the inner exception.</exception>
-    public static Bundle Load(IBundleProvider provider, BundleLoadOptions? options = null)
+    public static async ValueTask<Bundle> LoadAsync(IBundleProvider provider, BundleLoadOptions? options = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(provider);
         options ??= BundleLoadOptions.Default;
@@ -242,7 +245,7 @@ public sealed class Bundle
         List<string> overLength;
         try
         {
-            (treeInput, overLength) = ListNames(provider, limits);
+            (treeInput, overLength) = await ListNamesAsync(provider, limits, ct).ConfigureAwait(false);
         }
         catch (BundleProviderException e)
         {
@@ -272,7 +275,7 @@ public sealed class Bundle
         BundleVersion version;
         try
         {
-            version = provider.GetVersion(limits);
+            version = await provider.GetVersionAsync(limits, ct).ConfigureAwait(false);
         }
         catch (BundleProviderException e)
         {
@@ -323,8 +326,10 @@ public sealed class Bundle
                         string text;
                         try
                         {
-                            text = ReadText(provider, key, limits, chunk, out var objectVersion);
-                            objectVersions[key] = objectVersion;
+                            ct.ThrowIfCancellationRequested();
+                            var read = await ReadTextAtAsync(provider, key, limits, chunk, null, ct).ConfigureAwait(false);
+                            text = read.Text;
+                            objectVersions[key] = read.Version;
                         }
                         catch (BundleObjectTooLargeException e)
                         {
@@ -377,7 +382,7 @@ public sealed class Bundle
         }
 
         var (outbound, backlinks) = BuildGraph(concepts, index);
-        var okfVersion = ComputeOkfVersion(provider, limits, indexKeys, chunk);
+        var okfVersion = await ComputeOkfVersionAsync(provider, limits, indexKeys, chunk, ct).ConfigureAwait(false);
 
         // One path order for every problem, whatever stage found it (a bound, the tree
         // validation, the read, the parse): the order the loader before the seam reported its
@@ -391,9 +396,19 @@ public sealed class Bundle
         // The executable resources of every §10 concept are read and hashed now (spec §5.1),
         // inside the load's scope, so that an execution can later be pinned to the version
         // this image was loaded with. A resource's own problem is a state, never a load failure.
-        bundle.SurveyExecutableResources(chunk);
+        await bundle.SurveyExecutableResourcesAsync(chunk, ct).ConfigureAwait(false);
         return bundle;
     }
+
+    /// <summary>
+    /// The synchronous load over a provider: <see cref="LoadAsync"/> through the non-blocking
+    /// bridge (#152), for the code that has not become asynchronous. It never waits: a load that
+    /// is still pending when it returns is cancelled and abandoned, and the call throws
+    /// <see cref="InvalidOperationException"/> naming the async overload. Not public API: a host
+    /// loads through <see cref="LoadAsync"/>, or <see cref="Load(string)"/> for a directory.
+    /// </summary>
+    internal static Bundle Load(IBundleProvider provider, BundleLoadOptions? options = null) =>
+        SyncBridge.RunCancellable(ct => LoadAsync(provider, options, ct));
 
     /// <summary>
     /// Surveys the <c>computation</c> file and the <c>attester.resource</c> of every Attested
@@ -404,7 +419,7 @@ public sealed class Bundle
     /// provider refusal that is not the resource's own path) still fails the load, as it would
     /// without the survey (spec §5.1, revision 6).
     /// </summary>
-    private void SurveyExecutableResources(byte[] chunk)
+    private async ValueTask SurveyExecutableResourcesAsync(byte[] chunk, CancellationToken ct)
     {
         // One read per KEY per load (design decision 17): N concepts sharing one file cost one read.
         var readKeys = new Dictionary<BundleKey, (ExecutableResourceState State, BundleObjectVersion? Version)>();
@@ -418,21 +433,21 @@ public sealed class Bundle
 
             var contract = frontmatter.ComputationContract;
             _executableResources[concept.Id] = new ExecutableResourceSurvey(
-                SurveyResource(concept, "computation", contract.ComputationPath, chunk, readKeys),
-                SurveyResource(concept, "attester.resource", contract.Attester?.Resource, chunk, readKeys));
+                await SurveyResourceAsync(concept, "computation", contract.ComputationPath, chunk, readKeys, ct).ConfigureAwait(false),
+                await SurveyResourceAsync(concept, "attester.resource", contract.Attester?.Resource, chunk, readKeys, ct).ConfigureAwait(false));
         }
 
         ExecutableResources = new ReadOnlyDictionary<ConceptId, ExecutableResourceSurvey>(_executableResources);
     }
 
-    private ExecutableResource SurveyResource(Concept concept, string field, string? rawPath, byte[] chunk, Dictionary<BundleKey, (ExecutableResourceState State, BundleObjectVersion? Version)> readKeys)
+    private async ValueTask<ExecutableResource> SurveyResourceAsync(Concept concept, string field, string? rawPath, byte[] chunk, Dictionary<BundleKey, (ExecutableResourceState State, BundleObjectVersion? Version)> readKeys, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(rawPath))
         {
             return new ExecutableResource(field, null, ExecutableResourceState.Undeclared, null, null);
         }
 
-        TryResolveResourceKey(concept, rawPath, out var key, out var status);
+        var (key, status) = await ResolveResourceKeyAsync(concept, rawPath, ct).ConfigureAwait(false);
         switch (status)
         {
             case ResourceResolutionStatus.Url:
@@ -448,17 +463,17 @@ public sealed class Bundle
             return new ExecutableResource(field, rawPath, known.State, key, known.Version);
         }
 
-        var result = ReadForSurvey(key!, chunk);
+        var result = await ReadForSurveyAsync(key!, chunk, ct).ConfigureAwait(false);
         readKeys[key!] = (result.State, result.Version);
         return new ExecutableResource(field, rawPath, result.State, key, result.Version);
     }
 
-    private (ExecutableResourceState State, BundleObjectVersion? Version) ReadForSurvey(BundleKey key, byte[] chunk)
+    private async ValueTask<(ExecutableResourceState State, BundleObjectVersion? Version)> ReadForSurveyAsync(BundleKey key, byte[] chunk, CancellationToken ct)
     {
         try
         {
-            ReadTextAt(Provider, key, Options.Limits, chunk, null, out var version);
-            return (ExecutableResourceState.Pinned, version);
+            var read = await ReadTextAtAsync(Provider, key, Options.Limits, chunk, null, ct).ConfigureAwait(false);
+            return (ExecutableResourceState.Pinned, read.Version);
         }
         catch (BundleObjectTooLargeException)
         {
@@ -549,12 +564,12 @@ public sealed class Bundle
     /// The one listing of the whole bundle that applies every bound (entries, depth, key length) for a load or a regeneration: <see cref="Load(IBundleProvider, BundleLoadOptions?)"/>
     /// and <see cref="IndexGenerator"/> both list through it.
     /// </summary>
-    internal static (List<string> TreeInput, List<string> OverLength) ListNames(IBundleProvider provider, BundleLimits limits)
+    internal static async ValueTask<(List<string> TreeInput, List<string> OverLength)> ListNamesAsync(IBundleProvider provider, BundleLimits limits, CancellationToken ct)
     {
         var treeInput = new List<string>();
         var overLength = new List<string>();
         var count = 0;
-        foreach (var listing in provider.Enumerate(null, limits))
+        await foreach (var listing in provider.EnumerateAsync(null, limits, ct).WithCancellation(ct).ConfigureAwait(false))
         {
             if (++count > limits.MaxEntries)
             {
@@ -579,6 +594,13 @@ public sealed class Bundle
         return (treeInput, overLength);
     }
 
+    /// <summary>
+    /// <see cref="ListNamesAsync"/> through the non-blocking bridge (#152), for the writer and the
+    /// index generator until they have their own asynchronous form.
+    /// </summary>
+    internal static (List<string> TreeInput, List<string> OverLength) ListNames(IBundleProvider provider, BundleLimits limits) =>
+        SyncBridge.RunCancellable(ct => ListNamesAsync(provider, limits, ct));
+
     /// <summary>The size of the copy buffer <see cref="ReadText"/> reads through.</summary>
     internal const int ReadChunkBytes = 81920;
 
@@ -596,25 +618,44 @@ public sealed class Bundle
     /// <summary>As <see cref="ReadText"/>, pinned: with <paramref name="expected"/>, the provider reads only the object at that version (spec §5.4) and throws <see cref="BundleVersionMismatchException"/> otherwise.</summary>
     internal static string ReadTextAt(IBundleProvider provider, BundleKey key, BundleLimits limits, byte[] chunk, BundleObjectVersion? expected, out BundleObjectVersion version)
     {
-        using var obj = provider.Read(key, expected);
-        version = obj.Version;
-        using var buffer = obj.Length is { } declared && declared >= 0 && declared <= limits.MaxObjectBytes && declared <= Array.MaxLength
-            ? new MemoryStream((int)declared)
-            : new MemoryStream();
-        long total = 0;
-        int read;
-        while ((read = obj.Content.Read(chunk, 0, chunk.Length)) > 0)
+        var read = SyncBridge.RunCancellable(ct => ReadTextAtAsync(provider, key, limits, chunk, expected, ct));
+        version = read.Version;
+        return read.Text;
+    }
+
+    /// <summary>
+    /// The asynchronous bounded reader (#152): the same reading as <see cref="ReadText"/> — strict
+    /// UTF-8, bytes counted against the bound whatever the provider says, destination pre-sized from
+    /// a declared length within the bound — and, with <paramref name="expected"/>, pinned (spec §5.4).
+    /// Returns the text with the version of the object read. The one bounded reader of the core.
+    /// </summary>
+    internal static async ValueTask<(string Text, BundleObjectVersion Version)> ReadTextAtAsync(IBundleProvider provider, BundleKey key, BundleLimits limits, byte[] chunk, BundleObjectVersion? expected, CancellationToken ct)
+    {
+        var obj = await provider.ReadAsync(key, expected, ct).ConfigureAwait(false);
+        try
         {
-            total += read;
-            if (total > limits.MaxObjectBytes)
+            using var buffer = obj.Length is { } declared && declared >= 0 && declared <= limits.MaxObjectBytes && declared <= Array.MaxLength
+                ? new MemoryStream((int)declared)
+                : new MemoryStream();
+            long total = 0;
+            int read;
+            while ((read = await obj.Content.ReadAsync(chunk.AsMemory(), ct).ConfigureAwait(false)) > 0)
             {
-                throw new BundleObjectTooLargeException(key, total, limits.MaxObjectBytes);
+                total += read;
+                if (total > limits.MaxObjectBytes)
+                {
+                    throw new BundleObjectTooLargeException(key, total, limits.MaxObjectBytes);
+                }
+
+                buffer.Write(chunk, 0, read);
             }
 
-            buffer.Write(chunk, 0, read);
+            return (OkfEncodings.Strict.GetString(buffer.GetBuffer(), 0, (int)buffer.Length), obj.Version);
         }
-
-        return OkfEncodings.Strict.GetString(buffer.GetBuffer(), 0, (int)buffer.Length);
+        finally
+        {
+            await obj.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     /// <summary>The bundle's root: the provider's displayable location (the root directory for the filesystem). Obsolete: the same string as <see cref="Location"/>.</summary>
@@ -802,7 +843,7 @@ public sealed class Bundle
     /// </summary>
     public string? OkfVersion => _okfVersion;
 
-    private static string? ComputeOkfVersion(IBundleProvider provider, BundleLimits limits, List<BundleKey> indexKeys, byte[] chunk)
+    private static async ValueTask<string?> ComputeOkfVersionAsync(IBundleProvider provider, BundleLimits limits, List<BundleKey> indexKeys, byte[] chunk, CancellationToken ct)
     {
         var key = BundleKey.Parse(IndexFilename);
         if (!indexKeys.Contains(key))
@@ -813,7 +854,7 @@ public sealed class Bundle
         string text;
         try
         {
-            text = ReadText(provider, key, limits, chunk, out _);
+            text = (await ReadTextAtAsync(provider, key, limits, chunk, null, ct).ConfigureAwait(false)).Text;
         }
         catch (Exception e) when (e is BundleObjectNotFoundException or BundleObjectTooLargeException or IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
         {
@@ -1029,6 +1070,18 @@ public sealed class Bundle
     /// </summary>
     public bool TryResolveResourceKey(Concept concept, string rawPath, out BundleKey? key, out ResourceResolutionStatus status)
     {
+        (key, status) = SyncBridge.RunCancellable(ct => ResolveResourceKeyAsync(concept, rawPath, ct));
+        return true;
+    }
+
+    /// <summary>
+    /// <see cref="TryResolveResourceKey"/> without the blocking: the same resolution, the provider
+    /// asked asynchronously (#152). Never throws for a provider's refusal (§11, permissive): that
+    /// reads as <see cref="ResourceResolutionStatus.Unsafe"/>; only a cancellation propagates.
+    /// </summary>
+    /// <returns>The key (non-<see langword="null"/> only for <see cref="ResourceResolutionStatus.Resolved"/>) and the status.</returns>
+    public async ValueTask<(BundleKey? Key, ResourceResolutionStatus Status)> ResolveResourceKeyAsync(Concept concept, string rawPath, CancellationToken ct = default)
+    {
         ArgumentNullException.ThrowIfNull(concept);
         ArgumentNullException.ThrowIfNull(rawPath);
         var conceptKey = concept.Key ?? concept.Id.ToKey();
@@ -1036,49 +1089,31 @@ public sealed class Bundle
         switch (outcome)
         {
             case ResourceKeyOutcome.Url:
-                key = null;
-                status = ResourceResolutionStatus.Url;
-                return true;
+                return (null, ResourceResolutionStatus.Url);
             case ResourceKeyOutcome.Unsafe:
-                key = null;
-                status = ResourceResolutionStatus.Unsafe;
-                return true;
+                return (null, ResourceResolutionStatus.Unsafe);
             case ResourceKeyOutcome.Root:
-                key = null;
-                status = ResourceResolutionStatus.Missing;
-                return true;
+                return (null, ResourceResolutionStatus.Missing);
         }
 
         if (!IsKeyAllowed(candidate!, out _))
         {
-            key = null;
-            status = ResourceResolutionStatus.Unsafe;
-            return true;
+            return (null, ResourceResolutionStatus.Unsafe);
         }
 
-        key = null;
         try
         {
             // A prefix is asked about too, for the provider's refusal only: a path through a
             // reparse point is Unsafe whether or not it ends with '/'.
-            var exists = Provider.Exists(candidate!);
-            if (exists && outcome == ResourceKeyOutcome.Candidate)
-            {
-                key = candidate;
-                status = ResourceResolutionStatus.Resolved;
-            }
-            else
-            {
-                status = ResourceResolutionStatus.Missing;
-            }
+            var exists = await Provider.ExistsAsync(candidate!, ct).ConfigureAwait(false);
+            return exists && outcome == ResourceKeyOutcome.Candidate
+                ? (candidate, ResourceResolutionStatus.Resolved)
+                : (null, ResourceResolutionStatus.Missing);
         }
         catch (Exception e) when (e is BundleProviderException or IOException or UnauthorizedAccessException)
         {
-            key = null;
-            status = ResourceResolutionStatus.Unsafe;
+            return (null, ResourceResolutionStatus.Unsafe);
         }
-
-        return true;
     }
 
     /// <summary>
@@ -1109,6 +1144,22 @@ public sealed class Bundle
     /// <exception cref="System.Text.DecoderFallbackException">The content is not valid UTF-8.</exception>
     public string ReadResourceText(BundleKey key, BundleObjectVersion? expected, out BundleObjectVersion version)
     {
+        var read = SyncBridge.RunCancellable(ct => ReadResourceTextAsync(key, expected, ct));
+        version = read.Version;
+        return read.Text;
+    }
+
+    /// <summary>
+    /// <see cref="ReadResourceText(BundleKey, BundleObjectVersion?, out BundleObjectVersion)"/>
+    /// without the blocking (#152): the same bounds, pinning and exception mapping, the provider
+    /// read asynchronously. Returns the text and the version of the object read.
+    /// </summary>
+    /// <exception cref="BundleVersionMismatchException">The object's version is not <paramref name="expected"/>; nothing is returned.</exception>
+    /// <exception cref="UnauthorizedAccessException">The key is not allowed, or the provider refused the access.</exception>
+    /// <exception cref="IOException">The object is missing, too large, or cannot be read.</exception>
+    /// <exception cref="System.Text.DecoderFallbackException">The content is not valid UTF-8.</exception>
+    public async ValueTask<(string Text, BundleObjectVersion Version)> ReadResourceTextAsync(BundleKey key, BundleObjectVersion? expected = null, CancellationToken ct = default)
+    {
         ArgumentNullException.ThrowIfNull(key);
         if (!IsKeyAllowed(key, out var reason))
         {
@@ -1117,7 +1168,7 @@ public sealed class Bundle
 
         try
         {
-            return ReadTextAt(Provider, key, Options.Limits, new byte[ReadChunkBytes], expected, out version);
+            return await ReadTextAtAsync(Provider, key, Options.Limits, new byte[ReadChunkBytes], expected, ct).ConfigureAwait(false);
         }
         catch (BundleVersionMismatchException)
         {

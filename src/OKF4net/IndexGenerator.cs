@@ -254,6 +254,9 @@ public static class IndexGenerator
     /// </summary>
     internal static BundleWriteReport Regenerate(IBundleProvider provider, Synthesize synthesize, BundleLoadOptions options, bool legacy)
     {
+        // The synchronous regeneration serves only a provider that completes before it returns
+        // (#152); refused before any listing or write.
+        SyncBridge.RequireSynchronousProvider(provider);
         var limits = options.Limits;
         var validator = new BundleKeyValidator(provider.NativeConstraints, options.KeyPolicy, options.ExtraKeyValidators);
         var tree = new Dictionary<string, Dictionary<string, Child>>(StringComparer.Ordinal);

@@ -2265,6 +2265,11 @@ public sealed class BundleConceptWriter
         {
             throw new BundleReadOnlyException(_provider.Id);
         }
+
+        // The synchronous writer serves only a provider that completes before it returns (#152):
+        // refused here, before any I/O, because a write started on another kind would commit
+        // when the abandoned operation resumed.
+        SyncBridge.RequireSynchronousProvider(_provider);
     }
 
     /// <summary>

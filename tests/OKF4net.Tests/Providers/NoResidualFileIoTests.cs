@@ -72,9 +72,9 @@ public class NoResidualFileIoTests
         var t = new Dictionary<string, Func<Ctx, Task>>(StringComparer.Ordinal);
 
         // ----- read side -----
-        Add(t, "Bundle.Load(IBundleProvider,BundleLoadOptions)", c =>
+        Add(t, "Bundle.LoadAsync(IBundleProvider,BundleLoadOptions,CancellationToken)", async c =>
         {
-            var b = Bundle.Load(c.Mem);
+            var b = await Bundle.LoadAsync(c.Mem);
             Assert.Equal("memory://x", b.Location);
             Assert.True(b.Count > 0);
         });
