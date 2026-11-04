@@ -35,4 +35,16 @@ else
 }
 ```
 
+## Sanctioned files are read through the provider
+
+The `computation` file and the `attester.resource` a concept names are never
+opened with `System.IO`. `Bundle.ExecutableResources` surveys them once per
+load, by key, through the bundle's `IBundleProvider`, recording each as
+`Pinned` (with its version) or in a state that forbids running it.
+`AttestationOrchestrator.Capture` is the single place sanctioned code is read
+for a run: it reads only the keys the survey found `Pinned`, and only at that
+version (`Bundle.ReadResourceText(BundleKey, expected, out version)`), so a file
+replaced after the load is refused rather than run. This holds for any provider,
+including one whose `Location` is not a path.
+
 Licensed LGPL-3.0-or-later.

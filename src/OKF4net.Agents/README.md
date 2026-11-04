@@ -26,6 +26,25 @@ AIAgent agent = chatClient.AsAIAgent(
 var response = await agent.RunAsync("Summarize the concepts in this bundle.");
 ```
 
+## Sharing a `BundleHandle`, and what can write
+
+`new OkfBundleTools(string root)` builds its own `BundleHandle` over a
+`FileSystemBundleProvider`. To serve a bundle from another `IBundleProvider`, or
+to share one in-memory image between consumers, build the handle yourself and
+pass it to `new OkfBundleTools(handle)`; the tool set exposes it as `Handle`.
+Hand the **same** handle to the `OkfContextProvider` built over the tools and to
+anything else that reads the source: they then see one image, and a committed
+write by any of them (`BundleConceptWriter` over the handle) invalidates it for
+all. A consumer built from a root string makes its own handle, hence its own
+image.
+
+Whether the write tools are offered combines the provider and the mode:
+effective write = `provider.Capabilities.CanWrite && mode != OkfToolMode.ReadOnly`.
+`GetTools(OkfToolMode.ReadOnly)` omits the write tools, and so does any mode over
+a provider whose `CanWrite` is false (it is treated as `ReadOnly`);
+`RequireApprovalForWrites` wraps them in an approval gate. A direct call to a
+public write method over a read-only provider throws `BundleReadOnlyException`.
+
 ## The twelve tools
 
 `okf_read_concept`, `okf_browse`, `okf_graph`, `okf_search`, `okf_audit`,

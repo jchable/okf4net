@@ -320,6 +320,15 @@ above it (`memory-session/<tenant>-<hash>/<user>-<hash>/` after that user's
 sessions are deleted, `memory-user/<tenant>-<hash>/` after the last user), so do
 not describe it to a data subject as a complete erasure of their identifier.
 
+That directory cleanup belongs to the store built from tier roots (the one
+`AddMemory()` registers). A host that builds `FileMemoryStore` from its own
+providers (`new FileMemoryStore(IReadOnlyDictionary<MemoryTier, IBundleProvider>)`,
+one per tier, each scope being the view of its key prefix) gets key deletion
+only, even over a `FileSystemBundleProvider`: the emptied directories, and the
+ids in their names, stay. Over such a provider a refused write or deletion is
+reported as data (`MemoryWriteResult.Error`, the tier's `MemoryTierDeletion`),
+a read-only one included.
+
 ### Migration: memory scope names with a reserved base
 
 A tenant, user or session identifier whose part before its first `.` is a

@@ -27,7 +27,7 @@ public sealed record MemoryWriteResult(bool Written, string? Error);
 /// longer than <see cref="OKF4net.Providers.BundleKey.MaxUtf8Bytes"/> bytes) has no key to
 /// file a failure under: its tier appears all the same, with one failure filed under the
 /// tier's fixed first segment (<c>memory-user</c>, ...), which is never an object. Once every object of a scope is deleted its now-empty
-/// directories are removed too: the scope's own directory, named for its own id, does not
+/// directories are removed too, by a <see cref="FileMemoryStore"/> built from tier roots (one built from providers deletes keys only): the scope's own directory, named for its own id, does not
 /// outlive it, but its parent directories are kept and still carry the ids above it
 /// (<c>memory-session/&lt;tenant&gt;-&lt;hash&gt;/&lt;user&gt;-&lt;hash&gt;/</c> after a user's sessions are erased,
 /// <c>memory-user/&lt;tenant&gt;-&lt;hash&gt;/</c> after the last user).

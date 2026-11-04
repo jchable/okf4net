@@ -188,6 +188,20 @@ and this project adheres to
   `DirectoryNotFoundException`, …), never its message.
 - **`MemoryTierDeletion`** (#139, lot D; spec §1, §9): what deleting one tier's
   scope did, as a `BundleWriteReport` (see Changed (breaking)).
+- **`FileMemoryStore(IReadOnlyDictionary<MemoryTier, IBundleProvider>)`**
+  (#140; spec §3, §9): a host can give the store one provider per tier instead
+  of a tier root (one provider can back several tiers: the keys are the same
+  `memory-<tier>/…` as under a root). A scope is the view of its key prefix in
+  the tier's provider, read, enumerated, written and deleted through that
+  provider on the full key. A write the provider refuses is a failed
+  `MemoryWriteResult`, never an exception — over a provider that cannot write
+  (`AsReadOnly()`), `Error: Memory tier '<tier>' could not be written: the
+  provider is read-only; …`, nothing written — and a deletion reports each key
+  it could not delete in its tier's `MemoryTierDeletion`. **Limit**: a deletion
+  through a given provider deletes keys only, even when the provider is a
+  `FileSystemBundleProvider`; removing a scope's emptied directories, whose
+  names carry the lowercased ids, stays the directory constructor's alone.
+  The directory constructor is unchanged.
 
 ### Changed (breaking)
 
