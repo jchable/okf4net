@@ -15,7 +15,9 @@ namespace OKF4net.Catalog;
 /// (producer validation + per-path lock + the provider's guards) over the tier's provider.
 /// Read/write/delete/enumerate are all generic over <see cref="MemoryTier"/> -- a tier
 /// absent from the configured roots is simply treated as "no source configured"
-/// (errors-as-data), not a special case per tier.
+/// (errors-as-data), not a special case per tier. A host can instead give one
+/// <see cref="IBundleProvider"/> per tier (the second constructor): a scope is then the view of
+/// its key prefix in that provider, and a deletion removes its keys only (no directory).
 /// </summary>
 /// <remarks>
 /// <para><b>A scope exists while it holds a key</b> (spec §9, decision 14): a scope whose
@@ -46,7 +48,7 @@ public sealed class FileMemoryStore : IMemoryStore
     /// <summary>Any key: <see cref="IBundleProvider.Exists"/> on it runs the scope provider's boundary check before anything is listed.</summary>
     private static readonly BundleKey ProbeKey = BundleKey.Parse("index.md");
 
-    private readonly Dictionary<MemoryTier, FileSystemBundleProvider> _tierProviders;
+    private readonly Dictionary<MemoryTier, TierStorage> _tierProviders;
 
     /// <summary>Test seam, after the provider's <c>*ForTest</c> precedent: called with a scope directory (or one of its descendants) right before each of its two guards in <see cref="RemoveScopeDirectories"/> (before it is listed, and again before it is removed), so a test can swap a directory for a link between the inspection and the system call.</summary>
     internal Action<string>? BeforeScopeDirectoriesRemovedForTest { get; set; }
@@ -57,12 +59,47 @@ public sealed class FileMemoryStore : IMemoryStore
     /// <summary>Test seam: the depth bound of <see cref="RemoveScopeDirectories"/>, <see cref="MaxScopeDirectoryDepth"/> unless a test lowers it.</summary>
     internal int ScopeDirectoryDepthBoundForTest { get; set; } = MaxScopeDirectoryDepth;
 
-    /// <summary>Creates a store over the given per-tier, resolved absolute source roots.</summary>
+    /// <summary>Creates a store over the given per-tier, resolved absolute source roots: one <see cref="FileSystemBundleProvider"/> per tier root, each scope read through a provider rooted at its directory and confined to the tier root, and a deleted scope's emptied directories removed (see <see cref="RemoveScopeDirectories"/>).</summary>
     public FileMemoryStore(IReadOnlyDictionary<MemoryTier, string> tierRoots)
     {
         ArgumentNullException.ThrowIfNull(tierRoots);
-        _tierProviders = tierRoots.ToDictionary(pair => pair.Key, pair => new FileSystemBundleProvider(pair.Value));
+        _tierProviders = tierRoots.ToDictionary(pair => pair.Key, pair =>
+        {
+            var provider = new FileSystemBundleProvider(pair.Value);
+            return new TierStorage(provider, provider);
+        });
     }
+
+    /// <summary>
+    /// Creates a store over one provider per tier, given by the host (spec §9): a tier absent from
+    /// <paramref name="tierProviders"/> has no source configured, exactly as with the directory
+    /// constructor. The keys of a tier are the same as under a tier root (<see cref="MemoryPath.For"/>,
+    /// <c>memory-session/…</c> and so on), so one provider can back several tiers. A scope is the view of its
+    /// key prefix in the tier's provider: it is read, enumerated and written through that provider on the
+    /// full key, under whatever guards the provider applies, and a write the provider refuses is a failed
+    /// <see cref="MemoryWriteResult"/>, never an exception (a provider that cannot write, such as
+    /// <see cref="BundleProviderExtensions.AsReadOnly"/>, included).
+    /// </summary>
+    /// <remarks>
+    /// Deleting a scope deletes its keys only. Even when a provider is a
+    /// <see cref="FileSystemBundleProvider"/>, the store does not remove the directories a deletion
+    /// empties, whose names carry the lowercased tenant, user and session ids: that cleanup is the
+    /// directory constructor's alone, the one place the store reaches the filesystem directly. A host that
+    /// needs a scope's directories gone with it builds the store from its tier roots instead.
+    /// </remarks>
+    /// <param name="tierProviders">The provider of each configured tier; the dictionary is copied, so a later change to it is not seen.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="tierProviders"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">A provider in <paramref name="tierProviders"/> is <see langword="null"/>.</exception>
+    public FileMemoryStore(IReadOnlyDictionary<MemoryTier, IBundleProvider> tierProviders)
+    {
+        ArgumentNullException.ThrowIfNull(tierProviders);
+        _tierProviders = tierProviders.ToDictionary(
+            pair => pair.Key,
+            pair => new TierStorage(pair.Value ?? throw new ArgumentException($"The provider of memory tier '{pair.Key}' is null.", nameof(tierProviders)), null));
+    }
+
+    /// <summary>A tier's provider, and the same provider as a <see cref="FileSystemBundleProvider"/> when the store built it from a tier root (the directory constructor), which alone gives a scope its own filesystem provider and the removal of its emptied directories.</summary>
+    private sealed record TierStorage(IBundleProvider Provider, FileSystemBundleProvider? FileSystem);
 
     private enum ScopeState
     {
@@ -94,7 +131,7 @@ public sealed class FileMemoryStore : IMemoryStore
         foreach (var tier in ReadOrder)
         {
             ct.ThrowIfCancellationRequested();
-            if (!IsApplicable(tier, scope) || !_tierProviders.TryGetValue(tier, out var tierProvider))
+            if (!IsApplicable(tier, scope) || !_tierProviders.TryGetValue(tier, out var tierStorage))
             {
                 continue;
             }
@@ -110,8 +147,8 @@ public sealed class FileMemoryStore : IMemoryStore
                 continue;
             }
 
-            var scopeProvider = ScopeProvider(tierProvider, prefix);
-            var probe = Probe(tierProvider, scopeProvider, prefix);
+            var scopeProvider = ScopeProvider(tierStorage, prefix);
+            var probe = Probe(tierStorage.Provider, scopeProvider, prefix);
             switch (probe.State)
             {
                 case ScopeState.Absent:
@@ -164,18 +201,27 @@ public sealed class FileMemoryStore : IMemoryStore
         ArgumentNullException.ThrowIfNull(entry);
         ct.ThrowIfCancellationRequested();
 
-        if (!_tierProviders.TryGetValue(tier, out var tierProvider))
+        if (!_tierProviders.TryGetValue(tier, out var tierStorage))
         {
             return new ValueTask<MemoryWriteResult>(new MemoryWriteResult(false, $"No memory source configured for tier '{tier}'."));
         }
 
         var conceptId = $"{MemoryPath.For(tier, scope)}/{entry.ConceptName}";
-        var writer = new BundleConceptWriter(tierProvider);
+        var writer = new BundleConceptWriter(tierStorage.Provider);
         var section = entry.SectionMarkdown;
-        var result = writer.AppendToConceptAtomic(
-            conceptId,
-            entry.FrontmatterYamlIfCreating,
-            current => current is null ? section : current.TrimEnd('\n') + "\n\n" + section);
+        string result;
+        try
+        {
+            result = writer.AppendToConceptAtomic(
+                conceptId,
+                entry.FrontmatterYamlIfCreating,
+                current => current is null ? section : current.TrimEnd('\n') + "\n\n" + section);
+        }
+        catch (BundleReadOnlyException e)
+        {
+            // The writer leaves a read-only provider to its caller (a host mistake for it); a memory write fails as data.
+            return new ValueTask<MemoryWriteResult>(new MemoryWriteResult(false, $"Error: Memory tier '{tier}' could not be written: {e.Message}"));
+        }
 
         return result.StartsWith("Error:", StringComparison.Ordinal)
             ? new ValueTask<MemoryWriteResult>(new MemoryWriteResult(false, result))
@@ -194,10 +240,12 @@ public sealed class FileMemoryStore : IMemoryStore
         foreach (var currentTier in tiers)
         {
             ct.ThrowIfCancellationRequested();
-            if (!_tierProviders.TryGetValue(currentTier, out var tierProvider))
+            if (!_tierProviders.TryGetValue(currentTier, out var tierStorage))
             {
                 continue;
             }
+
+            var tierProvider = tierStorage.Provider;
 
             var conceptIdPrefix = MemoryPath.For(currentTier, scope);
             if (!BundleKey.TryParse(conceptIdPrefix, out var prefix, out var keyFailure))
@@ -210,12 +258,12 @@ public sealed class FileMemoryStore : IMemoryStore
                 continue;
             }
 
-            var probe = Probe(tierProvider, ScopeProvider(tierProvider, prefix), prefix);
+            var probe = Probe(tierProvider, ScopeProvider(tierStorage, prefix), prefix);
             switch (probe.State)
             {
                 case ScopeState.Absent:
                     // No key, but directories may be left (a previous deletion that could not remove them).
-                    if (RemoveScopeDirectories(tierProvider, prefix) is { } leftover)
+                    if (RemoveScopeDirectories(tierStorage, prefix) is { } leftover)
                     {
                         errors.Add($"Memory tier '{currentTier}' subtree could not be deleted: {leftover}");
                         deletions.Add(new MemoryTierDeletion(currentTier, new BundleWriteReport([], [], [new BundleWriteFailure(prefix, leftover)])));
@@ -261,7 +309,7 @@ public sealed class FileMemoryStore : IMemoryStore
                 }
             }
 
-            if (failed.Count == 0 && RemoveScopeDirectories(tierProvider, prefix) is { } kept)
+            if (failed.Count == 0 && RemoveScopeDirectories(tierStorage, prefix) is { } kept)
             {
                 failed.Add(new BundleWriteFailure(prefix, kept));
             }
@@ -287,7 +335,7 @@ public sealed class FileMemoryStore : IMemoryStore
         foreach (var tier in ReadOrder)
         {
             ct.ThrowIfCancellationRequested();
-            if (!IsApplicable(tier, scope) || !_tierProviders.TryGetValue(tier, out var tierProvider))
+            if (!IsApplicable(tier, scope) || !_tierProviders.TryGetValue(tier, out var tierStorage))
             {
                 continue;
             }
@@ -298,8 +346,8 @@ public sealed class FileMemoryStore : IMemoryStore
                 continue;
             }
 
-            var scopeProvider = ScopeProvider(tierProvider, prefix);
-            if (Probe(tierProvider, scopeProvider, prefix).State != ScopeState.Present)
+            var scopeProvider = ScopeProvider(tierStorage, prefix);
+            if (Probe(tierStorage.Provider, scopeProvider, prefix).State != ScopeState.Present)
             {
                 continue;
             }
@@ -339,8 +387,11 @@ public sealed class FileMemoryStore : IMemoryStore
     /// rooted there has, as before. Derived from the tier provider, never from the dictionary
     /// the host passed, so a host that mutates its dictionary cannot make two operations disagree.
     /// </summary>
-    private static FileSystemBundleProvider ScopeProvider(FileSystemBundleProvider tierProvider, BundleKey prefix) =>
-        new(Path.Combine([tierProvider.Root, .. prefix.Segments]), confinementBoundary: tierProvider.Root);
+    /// <remarks>A tier whose provider the host gave (no <see cref="TierStorage.FileSystem"/>) is viewed through its key prefix instead (<see cref="PrefixedBundleProvider"/>): every access goes through the tier's provider on the full key.</remarks>
+    private static IBundleProvider ScopeProvider(TierStorage tier, BundleKey prefix) =>
+        tier.FileSystem is { } tierProvider
+            ? new FileSystemBundleProvider(Path.Combine([tierProvider.Root, .. prefix.Segments]), confinementBoundary: tierProvider.Root)
+            : new PrefixedBundleProvider(tier.Provider, prefix);
 
     /// <summary>
     /// The scope's state and keys: the chain from the tier root to the scope is checked first
@@ -351,7 +402,7 @@ public sealed class FileMemoryStore : IMemoryStore
     /// listing, an I/O failure, a bound of the limits): that is <see cref="ScopeState.Unavailable"/>,
     /// reported by the exception's type only. Nothing here throws for a storage condition.
     /// </summary>
-    private static ScopeProbe Probe(FileSystemBundleProvider tierProvider, FileSystemBundleProvider scopeProvider, BundleKey prefix)
+    private static ScopeProbe Probe(IBundleProvider tierProvider, IBundleProvider scopeProvider, BundleKey prefix)
     {
         try
         {
@@ -393,8 +444,13 @@ public sealed class FileMemoryStore : IMemoryStore
     /// process between them is not excluded by this code (the cross-process window, #178). The
     /// non-recursive delete bounds what such a swap can cost: an EMPTY directory of the link's target.</para>
     /// </remarks>
-    private string? RemoveScopeDirectories(FileSystemBundleProvider tierProvider, BundleKey prefix)
+    private string? RemoveScopeDirectories(TierStorage tier, BundleKey prefix)
     {
+        if (tier.FileSystem is not { } tierProvider)
+        {
+            return null; // a provider the host gave: its keys are deleted, nothing else is touched
+        }
+
         var tierRoot = ReparsePoints.CanonicalizeRoot(tierProvider.Root);
         var scopeDir = Path.GetFullPath(Path.Combine([tierRoot, .. prefix.Segments]));
         if (!Directory.Exists(scopeDir))
