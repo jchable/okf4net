@@ -630,4 +630,26 @@ public class OkfContextProviderMemoryTests
         Assert.DoesNotContain("nonce-df92k1", text, StringComparison.Ordinal);
         Assert.DoesNotContain("<okf-context id=\"memory", text, StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// #140 (the part of "FileMemoryStore writes over a read-only provider" that is reachable:
+    /// <c>FileMemoryStore</c> takes tier root paths and has no provider-accepting constructor):
+    /// memory capture over a handle whose provider cannot write must not write anything and must
+    /// not throw into the invocation pipeline — the refusal lands in <c>LastMemoryError</c>.
+    /// </summary>
+    [Fact]
+    public async Task Memory_capture_over_a_read_only_handle_writes_nothing_and_reports_the_refusal()
+    {
+        var storage = new OKF4net.Tests.Providers.InMemoryBundleProvider(canWrite: true)
+            .Add("a.md", "---\ntype: Note\ntitle: A\ndescription: a.\n---\n\nbody\n");
+        using var handle = new OKF4net.Providers.BundleHandle(OKF4net.Providers.BundleProviderExtensions.AsReadOnly(storage));
+        var tools = new OkfBundleTools(handle);
+        var provider = new OkfContextProvider(tools, new OkfContextProviderOptions { MemoryCapture = MemoryCaptureMode.Enabled });
+        storage.ClearCalls();
+
+        await provider.StoreForTest(BuildInvokedContext("What tables exist?", "There is tables/orders."));
+
+        Assert.DoesNotContain(storage.Calls, c => c.StartsWith("write", StringComparison.Ordinal));
+        Assert.NotNull(provider.LastMemoryError);
+    }
 }

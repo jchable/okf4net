@@ -194,7 +194,6 @@ var text = doc.Serialize();
 Reading and appending to a bundle's `log.md` change history (§9):
 
 ```csharp
-using System.Globalization;
 using OKF4net;
 
 var log = ChangeLog.Parse(File.ReadAllText("./my_bundle/log.md"));
@@ -206,14 +205,12 @@ foreach (var day in log.Days) // newest first, by convention
     }
 }
 
-// Days are immutable records: build the new list, then re-render.
-var today = DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-var added = new LogEntry("Update", "Documented the refunds table.");
-var days = log.Days.ToList();
-var i = days.FindIndex(d => d.Date == today);
-if (i >= 0) days[i] = days[i] with { Entries = [.. days[i].Entries, added] };
-else days.Insert(0, new LogDay(today, [added]));
-File.WriteAllText("./my_bundle/log.md", new ChangeLog(log.Title, days).ToMarkdown());
+// Appending goes through the writer, not through File.WriteAllText: it writes
+// through the bundle's provider, under the write lock, conditioned on the
+// version it read, and throws BundleReadOnlyException over a read-only provider.
+// (ChangeLog, LogDay and LogEntry remain the immutable model to parse and render.)
+var writer = new BundleConceptWriter("./my_bundle");
+Console.WriteLine(writer.AppendLog("Update", "Documented the refunds table."));
 ```
 
 ### Loading through a provider
@@ -255,7 +252,8 @@ Every rejected `.md` name is a `Bundle.ParseProblems` entry
 (`bundle.DisplayPath(problem)` gives the path to print; the obsolete
 `ParseErrors` projects the same list); other rejected names are skipped silently. The
 filesystem provider is writable (see "Writing through a provider" below); no
-other provider ships yet, and the first remote providers are tracked in #139.
+other provider ships yet; the first ones beyond it are tracked in #141 (embedded
+resources) and #142 (S3).
 
 The historical members `Bundle.TryResolveResource` and
 `Bundle.ReadResourceText(string)` still resolve through the OS filesystem, so
