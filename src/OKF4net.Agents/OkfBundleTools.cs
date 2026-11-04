@@ -298,13 +298,7 @@ public sealed class OkfBundleTools
     /// Obliges the handle to reload at the next <see cref="GetBundle"/>
     /// (<see cref="BundleHandle.Invalidate"/>). Call after any write to the bundle.
     /// </summary>
-    internal void InvalidateBundle()
-    {
-        using (_writer.EnterWriteLock())
-        {
-            _handle.Invalidate();
-        }
-    }
+    internal void InvalidateBundle() => _handle.Invalidate();
 
     /// <summary>
     /// The result of an asynchronous tool for a synchronous caller (the obsolete <c>string</c> methods,
@@ -337,11 +331,13 @@ public sealed class OkfBundleTools
     }
 
     /// <summary><see cref="InvalidateBundle"/> without the blocking (#152).</summary>
-    internal async Task InvalidateBundleAsync(CancellationToken ct)
+    internal Task InvalidateBundleAsync(CancellationToken ct)
     {
-        var lease = await _writer.EnterWriteLockAsync(ct).ConfigureAwait(false);
-        lease.Dispose();
+        // Never waits and never honours the token: the invalidation of a write that came back
+        // with an error (or was cancelled after a commit) is what keeps the handle from serving
+        // what the storage no longer holds, and BundleHandle.Invalidate is a lock-free increment.
         _handle.Invalidate();
+        return Task.CompletedTask;
     }
 
     /// <summary>
@@ -1627,8 +1623,8 @@ public sealed class OkfBundleTools
             switch (computation)
             {
                 case { Source: ComputationSource.File, Path.Length: > 0 } file:
-                    if (!bundle.TryResolveResourceKey(concept, file.Path!, out var resolvedKey, out var status)
-                        || status != ResourceResolutionStatus.Resolved)
+                    var (resolvedKey, status) = await bundle.ResolveResourceKeyAsync(concept, file.Path!, ct).ConfigureAwait(false);
+                    if (status != ResourceResolutionStatus.Resolved)
                     {
                         // OneLine on file.Path here and on the two lines below:
                         // it is the frontmatter `computation` field, so a block
@@ -1850,7 +1846,7 @@ public sealed class OkfBundleTools
                 // be behind on invalidates it, so that the next attempt starts from a fresh
                 // survey (spec §5.1) -- whatever the handle's policy, and for a direct caller
                 // of RunComputationAsync too.
-                var captured = AttestationOrchestrator.Capture(bundle, concept, fileVersion);
+                var captured = await AttestationOrchestrator.CaptureAsync(bundle, concept, fileVersion, cancellationToken).ConfigureAwait(false);
                 if (captured.Capture is null)
                 {
                     if (captured.ImageOutdated)

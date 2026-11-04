@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Collections.ObjectModel;
+using System.Runtime.ExceptionServices;
 using OKF4net.Internal;
 using OKF4net.Providers;
 
@@ -437,7 +438,7 @@ public sealed class Bundle
     }
 
     /// <summary>What reading one concept object gave: its text and version, or the failure the loop will meet at its rank.</summary>
-    private readonly record struct PrefetchedRead(string? Text, BundleObjectVersion Version, System.Runtime.ExceptionServices.ExceptionDispatchInfo? Failure);
+    private readonly record struct PrefetchedRead(string? Text, BundleObjectVersion Version, ExceptionDispatchInfo? Failure);
 
     /// <summary>
     /// Reads the concept objects with at most <paramref name="degree"/> reads in flight, each into the
@@ -460,32 +461,41 @@ public sealed class Bundle
         using var slots = new SemaphoreSlim(Math.Min(degree, keys.Count));
         var lowestFailed = int.MaxValue;
         var started = new List<(BundleKey Key, Task<PrefetchedRead> Read)>(keys.Count);
-        for (var rank = 0; rank < keys.Count; rank++)
-        {
-            await slots.WaitAsync(ct).ConfigureAwait(false);
-            if (Volatile.Read(ref lowestFailed) < rank)
-            {
-                slots.Release();
-                break;
-            }
-
-            started.Add((keys[rank], ReadOneAsync(keys[rank], rank)));
-        }
-
+        ExceptionDispatchInfo? cancelled = null;
         try
         {
-            await Task.WhenAll(started.Select(s => s.Read)).ConfigureAwait(false);
+            for (var rank = 0; rank < keys.Count; rank++)
+            {
+                await slots.WaitAsync(ct).ConfigureAwait(false);
+                if (Volatile.Read(ref lowestFailed) < rank)
+                {
+                    slots.Release();
+                    break;
+                }
+
+                started.Add((keys[rank], ReadOneAsync(keys[rank], rank)));
+            }
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (OperationCanceledException e) when (ct.IsCancellationRequested)
         {
-            throw;
+            cancelled = ExceptionDispatchInfo.Capture(e);
         }
 
+        // Every started read ends before this method returns or throws: the provider scope and the
+        // semaphore outlive them, and the caller never sees the load come back while the host's reads still run.
         foreach (var (key, read) in started)
         {
-            outcomes[key] = await read.ConfigureAwait(false);
+            try
+            {
+                outcomes[key] = await read.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException e) when (ct.IsCancellationRequested)
+            {
+                cancelled ??= ExceptionDispatchInfo.Capture(e);
+            }
         }
 
+        cancelled?.Throw();
         return outcomes;
 
         async Task<PrefetchedRead> ReadOneAsync(BundleKey key, int rank)
@@ -506,7 +516,7 @@ public sealed class Bundle
                     }
                 }
 
-                return new PrefetchedRead(null, default, System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e));
+                return new PrefetchedRead(null, default, ExceptionDispatchInfo.Capture(e));
             }
             finally
             {

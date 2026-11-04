@@ -23,6 +23,9 @@ public class ParallelLoadTests
 
         public int Peak => Volatile.Read(ref _peak);
 
+        /// <summary>The reads started and not yet ended.</summary>
+        public int InFlight => Volatile.Read(ref _inFlight);
+
         public string Id => "controlled";
 
         public string Location => "memory://controlled";
@@ -49,7 +52,8 @@ public class ParallelLoadTests
             {
                 if (Gates.TryGetValue(key.ToString(), out var gate))
                 {
-                    await gate.Task.WaitAsync(ct).ConfigureAwait(false);
+                    // Deliberately ignores the caller's token: a read that cannot be interrupted, so the test can see the load wait for it.
+                    await gate.Task.ConfigureAwait(false);
                 }
 
                 if (Failures.TryGetValue(key.ToString(), out var failure))
@@ -135,7 +139,7 @@ public class ParallelLoadTests
     }
 
     [Fact]
-    public async Task A_cancelled_parallel_load_ends_with_a_cancellation_after_every_started_read_has_ended()
+    public async Task A_cancelled_parallel_load_ends_with_a_cancellation_only_after_every_started_read_has_ended()
     {
         var controlled = new ControlledReads(Store(6));
         var gate = new TaskCompletionSource();
@@ -149,6 +153,10 @@ public class ParallelLoadTests
         SpinWait.SpinUntil(() => controlled.Peak >= 4, TimeSpan.FromSeconds(30));
         await cts.CancelAsync();
 
+        // The four started reads cannot be interrupted: the load must not return while they run.
+        Assert.False(load.IsCompleted);
+        gate.SetResult();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => load);
+        Assert.Equal(0, controlled.InFlight);
     }
 }

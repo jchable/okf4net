@@ -26,7 +26,7 @@ public class BundleConceptWriterAsyncTests
     }
 
     /// <summary>Delegates to an inner provider and cancels a token once its Nth write has committed.</summary>
-    private sealed class CancelAfterWrites(InMemoryBundleProvider inner, CancellationTokenSource cts, int writes) : SyncTestProvider
+    internal sealed class CancelAfterWrites(InMemoryBundleProvider inner, CancellationTokenSource cts, int writes) : SyncTestProvider
     {
         private int _committed;
 

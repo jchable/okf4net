@@ -1225,6 +1225,10 @@ public sealed class BundleConceptWriter
                         return $"Error: cancelled after {records.Count} of {prepared.Count} verification(s); the rest were not attempted — already written: {string.Join(", ", records.Select(r => r.ConceptId))}";
                     }
 
+                    // Once something has committed, the object in flight is finished whatever the token
+                    // says: a cancellation then stops the batch BETWEEN objects (the check above), never
+                    // in the middle of one, so what landed is always reported and notified.
+                    var stepRun = written.Count > 0 ? new WriteRun(CancellationToken.None, run.Synchronous) : run;
                     var name = $"'{stamp.Target.Id}'";
                     subject = name;
                     var committed = false;
@@ -1240,7 +1244,7 @@ public sealed class BundleConceptWriter
                         {
                             if (++attempt > 1)
                             {
-                                var (prepareError, fresh) = await PrepareStampAsync(stamp.Target, stamp.ConceptId, by, stampedAt, run).ConfigureAwait(false);
+                                var (prepareError, fresh) = await PrepareStampAsync(stamp.Target, stamp.ConceptId, by, stampedAt, stepRun).ConfigureAwait(false);
                                 if (prepareError is not null)
                                 {
                                     return prepareError;
@@ -1249,8 +1253,8 @@ public sealed class BundleConceptWriter
                                 stamp = fresh;
                             }
 
-                            return await WriteValidatedContentLockedAsync(stamp.Target, stamp.Content, BundleWriteCondition.IfMatch(stamp.Version), () => committed = true, run, existedBefore: true).ConfigureAwait(false);
-                        }, run).ConfigureAwait(false);
+                            return await WriteValidatedContentLockedAsync(stamp.Target, stamp.Content, BundleWriteCondition.IfMatch(stamp.Version), () => committed = true, stepRun, existedBefore: true).ConfigureAwait(false);
+                        }, stepRun).ConfigureAwait(false);
                     }
                     catch (Exception ex) when (IsExpectedFailure(ex))
                     {

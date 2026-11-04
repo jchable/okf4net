@@ -402,7 +402,7 @@ public static class IndexGenerator
             BeforeLateReparseCheckForTest?.Invoke(directory.Length == 0 ? provider.Location : BundleDisplayPath.Compose(provider.Location, BundleKey.Parse(directory)));
 
             var indexKey = BundleKey.Parse(directory.Length == 0 ? IndexFile : directory + "/" + IndexFile);
-            var failure = await WriteIndexAsync(provider, validator, limits, indexKey, isRoot: directory.Length == 0, BuildIndexText(entries), legacy, synchronous, ct).ConfigureAwait(false);
+            var failure = await WriteIndexAsync(provider, validator, limits, indexKey, isRoot: directory.Length == 0, BuildIndexText(entries), legacy, synchronous, written.Count > 0 ? CancellationToken.None : ct).ConfigureAwait(false);
             if (failure is not null)
             {
                 if (failure.Length > 0)
