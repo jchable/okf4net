@@ -1,7 +1,7 @@
 # Contrat asynchrone du provider de bundle — design
 
 Date : 2026-11-03
-Statut : proposé, à arbitrer
+Statut : **arbitré par le mainteneur le 2026-11-04** (voir « Décisions » en tête du §4) ; plan : [`../plans/2026-11-04-async-bundle-provider.md`](../plans/2026-11-04-async-bundle-provider.md)
 Ticket : [#152](https://github.com/jchable/okf4net/issues/152). Le ticket
 consigne déjà un « design décidé » (2026-10-06) et un commentaire du 2026-10-07
 sur le verrou d'écriture. Ce document les confronte au code de `dev`
@@ -572,6 +572,8 @@ jamais par un délai.
   `producers/OkfProducer.sln` vert en local.
 
 ## 4. Questions ouvertes (au mainteneur)
+
+**Décisions (2026-11-04).** Les questions 1 à 7 sont tranchées **selon la recommandation de chacune**, sans modification : Q1 #152 avant le tag 0.8.0 ; Q2 retrait des membres `[Obsolete]` une version plus tard (ticket #224) ; Q3 méthodes `…Async` ajoutées, `GetTools` lié aux wrappers `*Tool` ; Q4 `ValidateAsync` sans préchargement ; Q5 annulation : lever seulement si rien n'est commité, sinon rapport ; Q6 sérialisation des lectures d'outils conservée ; Q7 rappel `onWriteCommitted` notifié après la libération du bail. Le texte ci-dessous est conservé tel que débattu.
 
 1. **Ordre avec la publication.** Faut-il sortir 0.8.0 (lots A–D) **avant**
    #152, avec un contrat sync qui sera cassé, ou après ?
