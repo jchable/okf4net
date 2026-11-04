@@ -976,7 +976,10 @@ and this project adheres to
   but this is a reduction, not a guarantee. Teardown now issues `kill` once,
   kills and waits for the local engine client, and only then repeats
   `rm -f <name>` followed by `inspect <name>` until `inspect` reports the name
-  absent in two consecutive rounds 250 ms apart — and, as long as the engine
+  unknown (a non-zero exit with "no such" on stderr; any other failure, such
+  as a daemon that is down or a permission error, is no evidence of absence
+  and is retried within the budget) in two consecutive rounds 250 ms apart —
+  and, as long as the engine
   has not once confirmed the container exists, for 1.5 s in all. It does not
   take an exit code of `rm -f` as proof, because Docker (29.4.1) exits 0 for a
   name it does not know yet. All of it stays inside the existing 3 s teardown
@@ -994,7 +997,32 @@ and this project adheres to
   check, or after the budget is spent, is not seen. Podman and nerdctl
   have not been run; their `rm -f` exit code for an unknown name is
   unverified, and the design assumes only that `inspect` of an unknown name
-  exits non-zero.
+  exits non-zero and says "no such" (case-insensitively) on stderr — Docker
+  29.4.1 does; Podman's and nerdctl's wording is unverified, and an engine
+  that words it otherwise makes teardown run to the end of its budget instead
+  of returning early. The engine commands' output reads share that budget
+  too, so a descendant holding a pipe open cannot hold teardown past it. The
+  measurements above were taken before the "no such" rule and the live
+  `docker events` check in the early-cancellation test.
+- `OKF4net.Attestation.Containers`: `CliContainerEngine` now runs a container as
+  `create` followed by `start -a -i`, not as one `run` (#110). A client killed
+  while it was mid-`create` left the daemon free to commit that create afterwards,
+  unseen, and no count of absent rounds could rule it out. A run cancelled during
+  `create` now waits for that client to exit (within two thirds of the teardown
+  budget) instead of killing it, so the daemon's outcome is known before the
+  removal and absence needs only the two rounds, not the 1.5 s hold. Only a
+  `create` slower than that (a cold image pull, a daemon that has stopped
+  answering) is killed, and a create the daemon commits after that is still not
+  seen — that residual remains, now limited to that case. A refused `create`
+  (image not found, bad flag) is reported as the failed result `run` gave, with
+  the engine's exit code and message. The change costs one more engine process
+  per run. Isolation flags are unchanged (they now go to `create`; `start`
+  carries only `-a -i`). Measured on Docker 29.4.1 on Windows: `start -a -i`
+  propagates the container's exit code and carries stdin, stdout and stderr, and
+  15 containers that exit at once showed no attach race under `--rm`; three
+  50-run early-cancellation sweeps left no container behind. Podman and nerdctl
+  have not been run; that their `create`/`start -a -i` behave alike is assumed.
+  The leak figures in the previous entry describe the old single-`run` client.
 
 ## [0.7.0] - 2026-10-14
 

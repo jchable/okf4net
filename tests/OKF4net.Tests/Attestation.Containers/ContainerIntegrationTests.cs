@@ -755,10 +755,10 @@ public class ContainerIntegrationTests
     /// whether a container still exists.
     /// <para>
     /// The window is hit deterministically, not by racing it: the "engine" is a shim that
-    /// turns <c>run</c> into <c>create</c> (same arguments, so the same <c>--name</c> and
-    /// <c>--rm</c>) and then hangs without ever starting the container, and passes every
-    /// other subcommand -- the teardown's <c>kill</c>, <c>rm</c> and <c>inspect</c> -- to
-    /// the real <c>docker</c>. The shim writes down the <c>--name</c> it was handed, and
+    /// passes <c>create</c> to the real <c>docker</c> (so the container really is created,
+    /// with its <c>--name</c> and <c>--rm</c>) and then turns <c>start</c> into a hang that
+    /// never starts the container, and passes every other subcommand -- the teardown's
+    /// <c>kill</c>, <c>rm</c> and <c>inspect</c> -- to the real <c>docker</c>. The shim writes down the <c>--name</c> it was handed, and
     /// this test looks at THAT container only: the daemon is shared with whatever else
     /// runs on the machine, so "any new okf-guid" would be someone else's. It waits until
     /// the engine reports that container as <c>created</c> before the caller cancels (or,
@@ -827,8 +827,9 @@ public class ContainerIntegrationTests
     /// client is gone, and a teardown that stopped at the first <c>rm -f</c> exiting 0
     /// (Docker exits 0 for a name it does not know yet) left the container behind in 24
     /// of 35 early cancellations measured on Docker 29.4.1 -- more than the code before
-    /// the #110 fix. The teardown now verifies instead: it kills the client first, then
-    /// removes and <c>inspect</c>s until the name is absent twice.
+    /// the #110 fix. The teardown now verifies instead: it settles the client first (a
+    /// <c>create</c> still running is waited for, not killed, so the daemon's outcome is
+    /// known), then removes and <c>inspect</c>s until the name is absent twice.
     /// <para>
     /// 50 runs, each cancelled after a different delay in a 0-100 ms sweep (so some land
     /// before the CLI has even started, some during <c>create</c>, some after it), each
@@ -927,12 +928,13 @@ public class ContainerIntegrationTests
         Timeout: timeout);
 
     /// <summary>
-    /// An "engine" that is <c>docker</c>, except that on <c>run</c> it first appends the
+    /// An "engine" that is <c>docker</c>, except that on <c>create</c> it first appends the
     /// value of <c>--name</c> to <paramref name="nameFile"/> -- the one name the engine
-    /// under test asked for -- and, when <paramref name="createWithoutStarting"/>, performs
-    /// <c>run</c> as <c>create</c> with the same arguments and then never follows with a
-    /// <c>start</c>: it just waits, as a <c>docker run</c> stuck between creating and
-    /// starting would. Everything else is handed to the real <c>docker</c> unchanged.
+    /// under test asked for -- and, when <paramref name="createWithoutStarting"/>, turns
+    /// <c>start</c> into a wait that never starts anything: the container stays in the
+    /// <c>created</c> state while its client is alive, as a <c>start</c> stuck before it
+    /// reaches the daemon would leave it. Everything else is handed to the real
+    /// <c>docker</c> unchanged.
     /// </summary>
     private static string NameRecordingEngine(TempDir tmp, string nameFile, bool createWithoutStarting)
     {
@@ -944,18 +946,19 @@ public class ContainerIntegrationTests
                 "engine.cmd",
                 "@echo off\r\n"
                 + "setlocal enabledelayedexpansion\r\n"
-                + "if not \"%1\"==\"run\" goto passthrough\r\n"
+                + "if not \"%1\"==\"create\" goto notcreate\r\n"
                 + "set \"prev=\"\r\n"
                 + "for %%a in (%*) do (\r\n"
                 + $"  if \"!prev!\"==\"--name\" >> \"{nameFile}\" echo %%a\r\n"
                 + "  set \"prev=%%a\"\r\n"
                 + ")\r\n"
+                + "goto passthrough\r\n"
+                + ":notcreate\r\n"
                 + (createWithoutStarting
-                    ? "set \"args=%*\"\r\n"
-                      + "set \"args=!args:*run =!\"\r\n"
-                      + "docker create !args!\r\n"
-                      + "ping -n 61 127.0.0.1 >nul\r\n"
-                      + "exit /b 0\r\n"
+                    ? "if \"%1\"==\"start\" (\r\n"
+                      + "  ping -n 61 127.0.0.1 >nul\r\n"
+                      + "  exit /b 0\r\n"
+                      + ")\r\n"
                     : "")
                 + ":passthrough\r\n"
                 + "docker %*\r\n"
@@ -965,16 +968,16 @@ public class ContainerIntegrationTests
         var path = tmp.Write(
             "engine.sh",
             "#!/bin/sh\n"
-            + "if [ \"$1\" = \"run\" ]; then\n"
+            + "if [ \"$1\" = \"create\" ]; then\n"
             + "  prev=\"\"\n"
             + "  for a in \"$@\"; do\n"
             + $"    if [ \"$prev\" = \"--name\" ]; then echo \"$a\" >> '{nameFile}'; fi\n"
             + "    prev=\"$a\"\n"
             + "  done\n"
-            + (createWithoutStarting
-                ? "  shift\n  docker create \"$@\"\n  sleep 60\n  exit 0\n"
-                : "")
             + "fi\n"
+            + (createWithoutStarting
+                ? "if [ \"$1\" = \"start\" ]; then\n  sleep 60\n  exit 0\nfi\n"
+                : "")
             + "exec docker \"$@\"\n");
         File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         return path;
