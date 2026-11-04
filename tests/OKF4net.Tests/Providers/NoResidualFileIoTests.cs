@@ -109,6 +109,13 @@ public class NoResidualFileIoTests
         });
         Add(t, "IndexGenerator.RegenerateIndexesWith(IBundleProvider,Synthesize,BundleLoadOptions)", c =>
             Assert.NotNull(IndexGenerator.RegenerateIndexesWith(c.Mem, IndexGenerator.DefaultSynthesize)));
+        Add(t, "IndexGenerator.RegenerateIndexesAsync(IBundleProvider,BundleLoadOptions,CancellationToken)", async c =>
+        {
+            Assert.NotNull(await IndexGenerator.RegenerateIndexesAsync(c.Mem));
+            Assert.Contains(c.Mem.Calls, call => call.StartsWith("enumerate", StringComparison.Ordinal));
+        });
+        Add(t, "IndexGenerator.RegenerateIndexesWithAsync(IBundleProvider,Synthesize,BundleLoadOptions,CancellationToken)", async c =>
+            Assert.NotNull(await IndexGenerator.RegenerateIndexesWithAsync(c.Mem, IndexGenerator.DefaultSynthesize)));
 
         // ----- the writer -----
         Add(t, "BundleConceptWriter..ctor(BundleHandle,Action)", c => Written(c, new BundleConceptWriter(c.Handle).WriteConcept("p/h", Fm, "b\n"), "p/h"));
@@ -130,6 +137,28 @@ public class NoResidualFileIoTests
         Add(t, "BundleConceptWriter.AppendLog(String,String,Nullable`1)", c =>
         {
             Assert.StartsWith("Appended", Writer(c).AppendLog("Update", "probe"), StringComparison.Ordinal);
+            Assert.Contains(c.Mem.Calls, call => call.StartsWith("write log.md", StringComparison.Ordinal));
+        });
+
+        // ----- the writer, asynchronous spellings (#152) -----
+        Add(t, "BundleConceptWriter.WriteConceptAsync(String,String,String,CancellationToken)", async c =>
+            Written(c, await Writer(c).WriteConceptAsync("p/aw1", Fm, "b\n"), "p/aw1"));
+        Add(t, "BundleConceptWriter.WriteConceptAsync(String,String,String,BundleWriteCondition,CancellationToken)", async c =>
+            Written(c, await Writer(c).WriteConceptAsync("p/aw2", Fm, "b\n", BundleWriteCondition.MustNotExist), "p/aw2"));
+        Add(t, "BundleConceptWriter.WriteConceptAsync(String,Frontmatter,String,CancellationToken)", async c =>
+            Written(c, await Writer(c).WriteConceptAsync("p/aw3", Doc().Frontmatter, "b\n"), "p/aw3"));
+        Add(t, "BundleConceptWriter.WriteConceptAsync(String,Frontmatter,String,BundleWriteCondition,CancellationToken)", async c =>
+            Written(c, await Writer(c).WriteConceptAsync("p/aw4", Doc().Frontmatter, "b\n", BundleWriteCondition.MustNotExist), "p/aw4"));
+        Add(t, "BundleConceptWriter.AppendToConceptAtomicAsync(String,String,Func`2,CancellationToken)", async c =>
+            Written(c, await Writer(c).AppendToConceptAtomicAsync("p/aa", Fm, existing => (existing ?? string.Empty) + "line\n"), "p/aa"));
+        Add(t, "BundleConceptWriter.RecordVerificationsAsync(IReadOnlyList`1,String,String,CancellationToken)", async c =>
+        {
+            _ = await Writer(c).RecordVerificationsAsync(["metrics/revenue"], "human:ada");
+            Assert.Contains(c.Mem.Calls, call => call.StartsWith("write metrics/revenue.md", StringComparison.Ordinal));
+        });
+        Add(t, "BundleConceptWriter.AppendLogAsync(String,String,Nullable`1,CancellationToken)", async c =>
+        {
+            Assert.StartsWith("Appended", await Writer(c).AppendLogAsync("Update", "probe"), StringComparison.Ordinal);
             Assert.Contains(c.Mem.Calls, call => call.StartsWith("write log.md", StringComparison.Ordinal));
         });
 

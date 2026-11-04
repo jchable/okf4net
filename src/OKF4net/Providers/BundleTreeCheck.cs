@@ -44,7 +44,12 @@ internal static class BundleTreeCheck
     /// </summary>
     /// <returns><see langword="null"/> when the tree that results is valid; otherwise a
     /// library-authored sentence (no final period) naming the key and the conflicting name.</returns>
-    internal static string? CheckCreation(IBundleProvider provider, BundleKeyValidator validator, BundleKey key, BundleLimits limits)
+    /// <summary><see cref="CheckCreationAsync"/> through the non-blocking bridge (#152), for the synchronous callers.</summary>
+    internal static string? CheckCreation(IBundleProvider provider, BundleKeyValidator validator, BundleKey key, BundleLimits limits) =>
+        SyncBridge.RunCancellable(ct => CheckCreationAsync(provider, validator, key, limits, ct));
+
+    /// <summary>The asynchronous creation check: the same rules, the provider asked asynchronously (#152).</summary>
+    internal static async ValueTask<string?> CheckCreationAsync(IBundleProvider provider, BundleKeyValidator validator, BundleKey key, BundleLimits limits, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(provider);
         ArgumentNullException.ThrowIfNull(validator);
@@ -55,25 +60,25 @@ internal static class BundleTreeCheck
         var fileDirectory = validator.Effective.HasFlag(BundleKeyConstraints.FileDirectoryConflict);
         if (folds)
         {
-            return CheckAgainstListing(provider, validator, key, limits, fileDirectory);
+            return await CheckAgainstListingAsync(provider, validator, key, limits, fileDirectory, ct).ConfigureAwait(false);
         }
 
-        return fileDirectory ? CheckPrefixes(provider, key, limits) : null;
+        return fileDirectory ? await CheckPrefixesAsync(provider, key, limits, ct).ConfigureAwait(false) : null;
     }
 
     /// <summary>Without folding: an exact object on a proper prefix, or an object under the key.</summary>
-    private static string? CheckPrefixes(IBundleProvider provider, BundleKey key, BundleLimits limits)
+    private static async ValueTask<string?> CheckPrefixesAsync(IBundleProvider provider, BundleKey key, BundleLimits limits, CancellationToken ct)
     {
         for (var depth = 1; depth < key.Segments.Count; depth++)
         {
             var prefix = BundleKey.FromSegments([.. key.Segments.Take(depth)]);
-            if (provider.Exists(prefix))
+            if (await provider.ExistsAsync(prefix, ct).ConfigureAwait(false))
             {
                 return PrefixIsObject(key, prefix.ToString());
             }
         }
 
-        foreach (var listing in provider.Enumerate(key, limits))
+        await foreach (var listing in provider.EnumerateAsync(key, limits, ct).WithCancellation(ct).ConfigureAwait(false))
         {
             return ObjectsUnder(key, listing.RawName); // the first one is enough
         }
@@ -82,13 +87,13 @@ internal static class BundleTreeCheck
     }
 
     /// <summary>With folding: one listing of the bundle answers the three questions; the shallowest conflict is reported.</summary>
-    private static string? CheckAgainstListing(IBundleProvider provider, BundleKeyValidator validator, BundleKey key, BundleLimits limits, bool fileDirectory)
+    private static async ValueTask<string?> CheckAgainstListingAsync(IBundleProvider provider, BundleKeyValidator validator, BundleKey key, BundleLimits limits, bool fileDirectory, CancellationToken ct)
     {
         var segments = key.Segments;
         var folded = segments.Select(validator.FoldSegment).ToArray();
         (int Level, int Kind, string Name)? found = null;
         var count = 0;
-        foreach (var listing in provider.Enumerate(null, limits))
+        await foreach (var listing in provider.EnumerateAsync(null, limits, ct).WithCancellation(ct).ConfigureAwait(false))
         {
             if (++count > limits.MaxEntries)
             {

@@ -257,6 +257,45 @@ public static class IndexGenerator
         // The synchronous regeneration serves only a provider that completes before it returns
         // (#152); refused before any listing or write.
         SyncBridge.RequireSynchronousProvider(provider);
+        return SyncBridge.Run(RegenerateAsync(provider, synthesize, options, legacy, synchronous: true, CancellationToken.None));
+    }
+
+    /// <summary>
+    /// <see cref="RegenerateIndexes(IBundleProvider, BundleLoadOptions?)"/> without the blocking
+    /// (#152): the same regeneration, the provider asked asynchronously. A cancellation before the
+    /// first index is written ends with an <see cref="OperationCanceledException"/>; one that
+    /// arrives after stops the run between two indexes and returns the report: what was written,
+    /// and the directories not attempted as failures (<c>not attempted (cancelled)</c>).
+    /// </summary>
+    /// <param name="provider">Where the bundle is read and the indexes are written.</param>
+    /// <param name="options">The key policy, extra validators and bounds, or <see langword="null"/> for the defaults.</param>
+    /// <param name="ct">Cancels the run, as above.</param>
+    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
+    public static ValueTask<BundleWriteReport> RegenerateIndexesAsync(IBundleProvider provider, BundleLoadOptions? options = null, CancellationToken ct = default) =>
+        RegenerateIndexesWithAsync(provider, DefaultSynthesize, options, ct);
+
+    /// <summary>
+    /// <see cref="RegenerateIndexesWith(IBundleProvider, Synthesize, BundleLoadOptions?)"/> without the blocking (#152), cancellable as <see cref="RegenerateIndexesAsync"/>.
+    /// </summary>
+    /// <param name="provider">Where the bundle is read and the indexes are written.</param>
+    /// <param name="synthesize">Produces the description of a directory with several entries.</param>
+    /// <param name="options">The key policy, extra validators and bounds, or <see langword="null"/> for the defaults.</param>
+    /// <param name="ct">Cancels the run, as <see cref="RegenerateIndexesAsync"/> says.</param>
+    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
+    public static ValueTask<BundleWriteReport> RegenerateIndexesWithAsync(IBundleProvider provider, Synthesize synthesize, BundleLoadOptions? options = null, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        if (!provider.Capabilities.CanWrite)
+        {
+            throw new BundleReadOnlyException(provider.Id);
+        }
+
+        ArgumentNullException.ThrowIfNull(synthesize);
+        return RegenerateAsync(provider, synthesize, options ?? BundleLoadOptions.Default, legacy: false, synchronous: false, ct);
+    }
+
+    internal static async ValueTask<BundleWriteReport> RegenerateAsync(IBundleProvider provider, Synthesize synthesize, BundleLoadOptions options, bool legacy, bool synchronous, CancellationToken ct)
+    {
         var limits = options.Limits;
         var validator = new BundleKeyValidator(provider.NativeConstraints, options.KeyPolicy, options.ExtraKeyValidators);
         var tree = new Dictionary<string, Dictionary<string, Child>>(StringComparer.Ordinal);
@@ -267,7 +306,7 @@ public static class IndexGenerator
         // keys a load would accept, then every .md child's entry. Nothing is written yet.
         using (ProviderScopes.Begin(provider))
         {
-            var (treeInput, overLength) = Bundle.ListNames(provider, limits);
+            var (treeInput, overLength) = await Bundle.ListNamesAsync(provider, limits, ct).ConfigureAwait(false);
             var chunk = new byte[Bundle.ReadChunkBytes];
             foreach (var key in validator.ValidateTree(treeInput, overLength).Accepted)
             {
@@ -290,7 +329,7 @@ public static class IndexGenerator
                     }
                 }
 
-                if (key.IsMarkdown && key.Name != IndexFile && ReadEntry(provider, key, limits, chunk) is { } entry)
+                if (key.IsMarkdown && key.Name != IndexFile && await ReadEntryAsync(provider, key, limits, chunk, ct).ConfigureAwait(false) is { } entry)
                 {
                     documents[key.ToString()] = entry;
                 }
@@ -308,8 +347,27 @@ public static class IndexGenerator
         var written = new List<BundleKey>();
         var failed = new List<BundleWriteFailure>();
         var dirDescriptions = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var directory in order)
+        for (var position = 0; position < order.Count; position++)
         {
+            var directory = order[position];
+            if (ct.IsCancellationRequested)
+            {
+                // Cancelled: with nothing written it is an ordinary cancellation; after a first
+                // index the run stops BETWEEN two indexes and says what it did not attempt.
+                if (written.Count == 0)
+                {
+                    ct.ThrowIfCancellationRequested();
+                }
+
+                for (var rest = position; rest < order.Count; rest++)
+                {
+                    var restKey = BundleKey.Parse(order[rest].Length == 0 ? IndexFile : order[rest] + "/" + IndexFile);
+                    failed.Add(new BundleWriteFailure(restKey, "not attempted (cancelled)"));
+                }
+
+                break;
+            }
+
             var entries = new List<IndexEntry>();
             var names = tree[directory].Keys.ToList();
             names.Sort(PathOrdering.CompareComponentWise);
@@ -344,7 +402,7 @@ public static class IndexGenerator
             BeforeLateReparseCheckForTest?.Invoke(directory.Length == 0 ? provider.Location : BundleDisplayPath.Compose(provider.Location, BundleKey.Parse(directory)));
 
             var indexKey = BundleKey.Parse(directory.Length == 0 ? IndexFile : directory + "/" + IndexFile);
-            var failure = WriteIndex(provider, validator, limits, indexKey, isRoot: directory.Length == 0, BuildIndexText(entries), legacy);
+            var failure = await WriteIndexAsync(provider, validator, limits, indexKey, isRoot: directory.Length == 0, BuildIndexText(entries), legacy, synchronous, ct).ConfigureAwait(false);
             if (failure is not null)
             {
                 if (failure.Length > 0)
@@ -385,7 +443,7 @@ public static class IndexGenerator
     /// string for a silent skip (<paramref name="legacy"/>: a key the policy refuses, a provider
     /// refusal, an unreadable root). In <paramref name="legacy"/> mode every other failure is thrown.
     /// </summary>
-    private static string? WriteIndex(IBundleProvider provider, BundleKeyValidator validator, BundleLimits limits, BundleKey key, bool isRoot, string body, bool legacy)
+    private static async ValueTask<string?> WriteIndexAsync(IBundleProvider provider, BundleKeyValidator validator, BundleLimits limits, BundleKey key, bool isRoot, string body, bool legacy, bool synchronous, CancellationToken ct)
     {
         // The run's key policy covers the index keys it produces, as it covers every concept the
         // writer writes (spec §2, decision B2): an index.md the validator refuses — a host's own
@@ -399,7 +457,7 @@ public static class IndexGenerator
         {
             try
             {
-                var (current, unreadable) = ReadCurrentIndex(provider, key, isRoot, limits);
+                var (current, unreadable) = await ReadCurrentIndexAsync(provider, key, isRoot, limits, ct).ConfigureAwait(false);
                 if (unreadable)
                 {
                     // A pre-existing root index.md that fails to read or parse (locked by
@@ -424,17 +482,24 @@ public static class IndexGenerator
                     content = new OkfDocument(rootFrontmatter, body).Serialize();
                 }
 
-                if (current is null && BundleTreeCheck.CheckCreation(provider, validator, key, limits) is { } conflict)
+                if (current is null && await BundleTreeCheck.CheckCreationAsync(provider, validator, key, limits, ct).ConfigureAwait(false) is { } conflict)
                 {
                     return legacy ? throw new BundleWriteConflictException(key, BundleWriteConflictReason.NameUnavailable) : conflict;
                 }
 
-                provider.Write(key, OkfEncodings.NoBom.GetBytes(content), current is { } c ? BundleWriteCondition.IfMatch(c.Version) : BundleWriteCondition.MustNotExist);
+                await provider.WriteAsync(key, OkfEncodings.NoBom.GetBytes(content), current is { } c ? BundleWriteCondition.IfMatch(c.Version) : BundleWriteCondition.MustNotExist, ct).ConfigureAwait(false);
                 return null;
             }
             catch (BundleWriteConflictException e) when (e.Reason == BundleWriteConflictReason.ConditionFailed && attempt < BundleConceptWriter.MaxAttempts)
             {
-                Thread.Sleep(BundleConceptWriter.RetryDelay(attempt));
+                if (synchronous)
+                {
+                    Thread.Sleep(BundleConceptWriter.RetryDelay(attempt));
+                }
+                else
+                {
+                    await Task.Delay(BundleConceptWriter.RetryDelay(attempt), ct).ConfigureAwait(false);
+                }
             }
             catch (BundleWriteConflictException e) when (e.Reason == BundleWriteConflictReason.ConditionFailed && !legacy)
             {
@@ -457,18 +522,25 @@ public static class IndexGenerator
     /// (strict UTF-8, the core's one bounded reader). <c>Unreadable</c> is set for a root
     /// <c>index.md</c> that exists but cannot be read, decoded or parsed.
     /// </summary>
-    private static ((BundleObjectVersion Version, OkfDocument? Document)? Current, bool Unreadable) ReadCurrentIndex(IBundleProvider provider, BundleKey key, bool isRoot, BundleLimits limits)
+    private static async ValueTask<((BundleObjectVersion Version, OkfDocument? Document)? Current, bool Unreadable)> ReadCurrentIndexAsync(IBundleProvider provider, BundleKey key, bool isRoot, BundleLimits limits, CancellationToken ct)
     {
         try
         {
             if (!isRoot)
             {
-                using var obj = provider.Read(key);
-                return ((obj.Version, null), false);
+                var obj = await provider.ReadAsync(key, null, ct).ConfigureAwait(false);
+                try
+                {
+                    return ((obj.Version, null), false);
+                }
+                finally
+                {
+                    await obj.DisposeAsync().ConfigureAwait(false);
+                }
             }
 
-            var text = Bundle.ReadText(provider, key, limits, new byte[Bundle.ReadChunkBytes], out var version);
-            return ((version, OkfDocument.Parse(text)), false);
+            var read = await Bundle.ReadTextAtAsync(provider, key, limits, new byte[Bundle.ReadChunkBytes], null, ct).ConfigureAwait(false);
+            return ((read.Version, OkfDocument.Parse(read.Text)), false);
         }
         catch (BundleObjectNotFoundException)
         {
@@ -485,12 +557,12 @@ public static class IndexGenerator
     /// decoded or parsed — such a document is left out of its directory's index, as before. The
     /// title is the frontmatter's, or the file stem; the link is the file name.
     /// </summary>
-    private static IndexEntry? ReadEntry(IBundleProvider provider, BundleKey key, BundleLimits limits, byte[] chunk)
+    private static async ValueTask<IndexEntry?> ReadEntryAsync(IBundleProvider provider, BundleKey key, BundleLimits limits, byte[] chunk, CancellationToken ct)
     {
         OkfDocument doc;
         try
         {
-            doc = OkfDocument.Parse(Bundle.ReadText(provider, key, limits, chunk, out _));
+            doc = OkfDocument.Parse((await Bundle.ReadTextAtAsync(provider, key, limits, chunk, null, ct).ConfigureAwait(false)).Text);
         }
         catch (Exception e) when (e is BundleProviderException or IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException or DocumentParseException)
         {

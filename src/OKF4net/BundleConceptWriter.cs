@@ -410,6 +410,64 @@ public sealed class BundleConceptWriter
     }
 
     /// <summary>
+    /// <see cref="EnterWriteLock"/> without the blocking (#152): the same acquisition, the waits
+    /// asynchronous and cancellable. A cancelled wait leaves nothing held.
+    /// </summary>
+    internal async ValueTask<WriteLease> EnterWriteLockAsync(CancellationToken ct)
+    {
+        var gate = LexicalLocks.GetOrAdd(_lexicalRoot, static _ => new SemaphoreSlim(1, 1));
+        while (true)
+        {
+            SemaphoreSlim? resolved = null;
+            var gateTaken = false;
+            var resolvedTaken = false;
+            try
+            {
+                await gate.WaitAsync(ct).ConfigureAwait(false);
+                gateTaken = true;
+
+                // Resolve AFTER the gate, including after each wait (see EnterWriteLock).
+                resolved = ResolveLockObject();
+                if (resolved.Wait(0))
+                {
+                    resolvedTaken = true;
+                    var lease = new WriteLease(gate, resolved);
+                    gateTaken = false;
+                    resolvedTaken = false;
+                    return lease;
+                }
+            }
+            finally
+            {
+                if (resolvedTaken)
+                {
+                    resolved!.Release();
+                }
+
+                if (gateTaken)
+                {
+                    gate.Release();
+                }
+            }
+
+            BeforeContendedWaitForTest?.Invoke();
+            await resolved!.WaitAsync(ct).ConfigureAwait(false);
+            resolved.Release();
+        }
+    }
+
+    /// <summary>How one write operation runs: the token it honours, and whether it is the synchronous spelling (its lock wait and its retry waits block; it never awaits anything that is not already complete).</summary>
+    private readonly record struct WriteRun(CancellationToken Ct, bool Synchronous)
+    {
+        internal static WriteRun Sync => new(CancellationToken.None, true);
+
+        internal static WriteRun Async(CancellationToken ct) => new(ct, false);
+    }
+
+    private async ValueTask<WriteLease> AcquireLeaseAsync(WriteRun run) =>
+        run.Synchronous ? EnterWriteLock() : await EnterWriteLockAsync(run.Ct).ConfigureAwait(false);
+
+    /// <summary>
     /// Test-only hook, invoked (if set) on the acquiring thread in
     /// <see cref="EnterWriteLock"/> after it found the resolved lock busy
     /// and released the gate, immediately before it waits for that lock.
@@ -493,9 +551,31 @@ public sealed class BundleConceptWriter
     /// <param name="body">The markdown body.</param>
     /// <param name="condition">The condition on the concept's current version.</param>
     /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
-    public string WriteConcept(string conceptId, string frontmatterYaml, string body, BundleWriteCondition condition)
+    public string WriteConcept(string conceptId, string frontmatterYaml, string body, BundleWriteCondition condition) =>
+        SyncBridge.Run(WriteConceptCoreAsync(conceptId, frontmatterYaml, body, condition, WriteRun.Sync));
+
+    /// <summary>The asynchronous <see cref="WriteConcept(string, string, string)"/> (#152): the same writing, the provider asked asynchronously; cancellable until the provider commits.</summary>
+    /// <param name="conceptId">The concept id (path without <c>.md</c>).</param>
+    /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines.</param>
+    /// <param name="body">The markdown body.</param>
+    /// <param name="ct">Cancels the write before its commit: nothing is written, and the call ends with an <see cref="OperationCanceledException"/>. After the commit the result is returned and the write notification runs.</param>
+    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
+    public ValueTask<string> WriteConceptAsync(string conceptId, string frontmatterYaml, string body, CancellationToken ct = default) =>
+        WriteConceptCoreAsync(conceptId, frontmatterYaml, body, BundleWriteCondition.None, WriteRun.Async(ct));
+
+    /// <summary>The asynchronous <see cref="WriteConcept(string, string, string, BundleWriteCondition)"/> (#152).</summary>
+    /// <param name="conceptId">The concept id (path without <c>.md</c>).</param>
+    /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines.</param>
+    /// <param name="body">The markdown body.</param>
+    /// <param name="condition">The condition on the concept's current version.</param>
+    /// <param name="ct">Cancels the write before its commit.</param>
+    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
+    public ValueTask<string> WriteConceptAsync(string conceptId, string frontmatterYaml, string body, BundleWriteCondition condition, CancellationToken ct = default) =>
+        WriteConceptCoreAsync(conceptId, frontmatterYaml, body, condition, WriteRun.Async(ct));
+
+    private async ValueTask<string> WriteConceptCoreAsync(string conceptId, string frontmatterYaml, string body, BundleWriteCondition condition, WriteRun run)
     {
-        GuardWritable();
+        GuardWritable(run);
         if (string.IsNullOrWhiteSpace(conceptId))
         {
             return "Error: invalid concept id — it must not be empty.";
@@ -527,8 +607,8 @@ public sealed class BundleConceptWriter
         }
 
         string? subject = null;
-        return RunTool(
-            () =>
+        return await RunToolAsync(
+            async () =>
             {
                 var targetError = ValidateConceptTarget(conceptId, out var target);
                 if (targetError is not null)
@@ -551,9 +631,9 @@ public sealed class BundleConceptWriter
                 // concurrent writers can't interleave an
                 // existence check with another writer's write. The committed
                 // callback runs after the lock is released (#152).
-                return WriteThenNotify(committed => WriteConditionedLocked(target, content!, condition, committed));
+                return await WriteThenNotifyAsync(committed => WriteConditionedLockedAsync(target, content!, condition, committed, run), run).ConfigureAwait(false);
             },
-            () => subject);
+            () => subject).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -562,7 +642,7 @@ public sealed class BundleConceptWriter
     /// round trip for a programmatic caller (e.g. the forthcoming <c>OkfDocumentBuilder</c>). Same
     /// producer-grade validation, per-bundle lock, and reparse-point guards as the string overload
     /// (both share <see cref="ValidateConceptTarget"/>, <see cref="BuildValidatedContent(YamlValue, string)"/>,
-    /// and <see cref="WriteValidatedContentLocked"/>).
+    /// and <see cref="WriteValidatedContentLockedAsync"/>).
     ///
     /// Operates on a shallow copy of <paramref name="frontmatter"/>'s underlying mapping, never the
     /// caller's own <see cref="YamlMapping"/> instance — <see cref="Frontmatter.AsMapping"/> returns
@@ -586,9 +666,31 @@ public sealed class BundleConceptWriter
     /// <param name="body">The markdown body.</param>
     /// <param name="condition">The condition on the concept's current version.</param>
     /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
-    public string WriteConcept(string conceptId, Frontmatter frontmatter, string body, BundleWriteCondition condition)
+    public string WriteConcept(string conceptId, Frontmatter frontmatter, string body, BundleWriteCondition condition) =>
+        SyncBridge.Run(WriteConceptCoreAsync(conceptId, frontmatter, body, condition, WriteRun.Sync));
+
+    /// <summary>The asynchronous <see cref="WriteConcept(string, Frontmatter, string)"/> (#152).</summary>
+    /// <param name="conceptId">The concept id (path without <c>.md</c>).</param>
+    /// <param name="frontmatter">The frontmatter to write. Not mutated by this call.</param>
+    /// <param name="body">The markdown body.</param>
+    /// <param name="ct">Cancels the write before its commit.</param>
+    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
+    public ValueTask<string> WriteConceptAsync(string conceptId, Frontmatter frontmatter, string body, CancellationToken ct = default) =>
+        WriteConceptCoreAsync(conceptId, frontmatter, body, BundleWriteCondition.None, WriteRun.Async(ct));
+
+    /// <summary>The asynchronous <see cref="WriteConcept(string, Frontmatter, string, BundleWriteCondition)"/> (#152).</summary>
+    /// <param name="conceptId">The concept id (path without <c>.md</c>).</param>
+    /// <param name="frontmatter">The frontmatter to write. Not mutated by this call.</param>
+    /// <param name="body">The markdown body.</param>
+    /// <param name="condition">The condition on the concept's current version.</param>
+    /// <param name="ct">Cancels the write before its commit.</param>
+    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
+    public ValueTask<string> WriteConceptAsync(string conceptId, Frontmatter frontmatter, string body, BundleWriteCondition condition, CancellationToken ct = default) =>
+        WriteConceptCoreAsync(conceptId, frontmatter, body, condition, WriteRun.Async(ct));
+
+    private async ValueTask<string> WriteConceptCoreAsync(string conceptId, Frontmatter frontmatter, string body, BundleWriteCondition condition, WriteRun run)
     {
-        GuardWritable();
+        GuardWritable(run);
         if (string.IsNullOrWhiteSpace(conceptId))
         {
             return "Error: invalid concept id — it must not be empty.";
@@ -612,8 +714,8 @@ public sealed class BundleConceptWriter
         }
 
         string? subject = null;
-        return RunTool(
-            () =>
+        return await RunToolAsync(
+            async () =>
             {
                 var targetError = ValidateConceptTarget(conceptId, out var target);
                 if (targetError is not null)
@@ -631,9 +733,9 @@ public sealed class BundleConceptWriter
                     return buildError;
                 }
 
-                return WriteThenNotify(committed => WriteConditionedLocked(target, content!, condition, committed));
+                return await WriteThenNotifyAsync(committed => WriteConditionedLockedAsync(target, content!, condition, committed, run), run).ConfigureAwait(false);
             },
-            () => subject);
+            () => subject).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -698,7 +800,7 @@ public sealed class BundleConceptWriter
     /// between them (spec §4) — and after the last one the conflict is
     /// returned as an <c>Error: ...</c> message. Reuses the exact same target validation (<see cref="ValidateConceptTarget"/>),
     /// producer-grade validation and serialization (<see cref="BuildValidatedContent(string, string)"/>),
-    /// and write (<see cref="WriteValidatedContentLocked"/>) and notification (<see cref="WriteThenNotify"/>)
+    /// and write (<see cref="WriteValidatedContentLockedAsync"/>) and notification (<see cref="WriteThenNotifyAsync"/>)
     /// steps <see cref="WriteConcept(string, string, string)"/> itself uses — this is a locked
     /// read-modify-write wrapped AROUND that same core, not a divergent
     /// second write path.
@@ -728,9 +830,29 @@ public sealed class BundleConceptWriter
     public string AppendToConceptAtomic(
         string conceptId,
         string frontmatterYamlIfCreating,
-        Func<string?, string> buildBody)
+        Func<string?, string> buildBody) =>
+        SyncBridge.Run(AppendToConceptAtomicCoreAsync(conceptId, frontmatterYamlIfCreating, buildBody, WriteRun.Sync));
+
+    /// <summary>The asynchronous <see cref="AppendToConceptAtomic"/> (#152): the same read-modify-write under the bundle's write lock, the provider asked asynchronously. <paramref name="buildBody"/> stays synchronous: it is called with the current body, once per attempt.</summary>
+    /// <param name="conceptId">The concept id (path without <c>.md</c>).</param>
+    /// <param name="frontmatterYamlIfCreating">The frontmatter used only when the concept does not exist yet.</param>
+    /// <param name="buildBody">Gets the current body (<see langword="null"/> for a new concept) and returns the new one.</param>
+    /// <param name="ct">Cancels the operation before its commit; a cancelled wait for the lock leaves nothing held.</param>
+    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
+    public ValueTask<string> AppendToConceptAtomicAsync(
+        string conceptId,
+        string frontmatterYamlIfCreating,
+        Func<string?, string> buildBody,
+        CancellationToken ct = default) =>
+        AppendToConceptAtomicCoreAsync(conceptId, frontmatterYamlIfCreating, buildBody, WriteRun.Async(ct));
+
+    private async ValueTask<string> AppendToConceptAtomicCoreAsync(
+        string conceptId,
+        string frontmatterYamlIfCreating,
+        Func<string?, string> buildBody,
+        WriteRun run)
     {
-        GuardWritable();
+        GuardWritable(run);
         if (string.IsNullOrWhiteSpace(conceptId))
         {
             return "Error: invalid concept id — it must not be empty.";
@@ -752,8 +874,8 @@ public sealed class BundleConceptWriter
         }
 
         string? subject = null;
-        return RunTool(
-            () =>
+        return await RunToolAsync(
+            async () =>
             {
                 var targetError = ValidateConceptTarget(conceptId, out var target);
                 if (targetError is not null)
@@ -774,7 +896,7 @@ public sealed class BundleConceptWriter
                 // buildBody again (WithRetries). Another process is excluded
                 // only up to the provider's last check: the window before the
                 // commit is open (issue #178).
-                return WriteThenNotify(committed => WithRetries(subject, () =>
+                return await WriteThenNotifyAsync(committed => WithRetriesAsync(subject, async () =>
                 {
                     string frontmatterYaml;
                     string? currentBody;
@@ -782,7 +904,7 @@ public sealed class BundleConceptWriter
                     // Strict UTF-8: a non-UTF-8 concept file throws
                     // DecoderFallbackException (caught by RunTool below)
                     // rather than being silently re-decoded and rewritten.
-                    var current = ReadCurrent(target.Key);
+                    var current = await ReadCurrentAsync(target.Key, run).ConfigureAwait(false);
                     if (current is { } existing)
                     {
                         // Fail-closed: if the existing concept has malformed
@@ -820,10 +942,10 @@ public sealed class BundleConceptWriter
                         return buildError;
                     }
 
-                    return WriteValidatedContentLocked(target, content!, ConditionFor(current), committed, existedBefore: current is not null);
-                }));
+                    return await WriteValidatedContentLockedAsync(target, content!, ConditionFor(current), committed, run, existedBefore: current is not null).ConfigureAwait(false);
+                }, run), run).ConfigureAwait(false);
             },
-            () => subject);
+            () => subject).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -882,9 +1004,29 @@ public sealed class BundleConceptWriter
     /// null uses <see cref="UtcNow"/>.
     /// </param>
     /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
-    public VerificationOutcome RecordVerifications(IReadOnlyList<string> conceptIds, string by, string? at = null)
+    public VerificationOutcome RecordVerifications(IReadOnlyList<string> conceptIds, string by, string? at = null) =>
+        SyncBridge.Run(RecordVerificationsCoreAsync(conceptIds, by, at, WriteRun.Sync));
+
+    /// <summary>
+    /// The asynchronous <see cref="RecordVerifications"/> (#152): the same batch, under one hold of
+    /// the bundle's write lock, the provider asked asynchronously. A cancellation before anything
+    /// is written ends with an <see cref="OperationCanceledException"/>; one that arrives after the
+    /// first commit stops the batch between two objects and returns the outcome: the stamps that
+    /// landed in <see cref="VerificationOutcome.Records"/>, the objects not attempted in
+    /// <see cref="VerificationOutcome.Report"/>'s <c>Failed</c> list, and the write notification still run
+    /// for each stamp that landed (the handle's image is invalidated).
+    /// </summary>
+    /// <param name="conceptIds">The concepts to stamp.</param>
+    /// <param name="by">The §7 actor.</param>
+    /// <param name="at">A UTC timestamp of the form <c>yyyy-MM-ddTHH:mm:ssZ</c>, or <see langword="null"/> for now.</param>
+    /// <param name="ct">Cancels the batch, as above.</param>
+    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
+    public ValueTask<VerificationOutcome> RecordVerificationsAsync(IReadOnlyList<string> conceptIds, string by, string? at = null, CancellationToken ct = default) =>
+        RecordVerificationsCoreAsync(conceptIds, by, at, WriteRun.Async(ct));
+
+    private async ValueTask<VerificationOutcome> RecordVerificationsCoreAsync(IReadOnlyList<string> conceptIds, string by, string? at, WriteRun run)
     {
-        GuardWritable();
+        GuardWritable(run);
         if (conceptIds is null || conceptIds.Count == 0)
         {
             return Failed("Error: no concept id given.");
@@ -960,15 +1102,15 @@ public sealed class BundleConceptWriter
 
         var records = new List<VerificationRecord>(conceptIds.Count);
         var written = new List<BundleKey>(conceptIds.Count);
-        BundleWriteFailure? failure = null;
+        var failures = new List<BundleWriteFailure>();
         string? subject = null;
-        var message = RunTool(() =>
+        var message = await RunToolAsync(async () =>
         {
             // Target validation also reads the files. Keep it in the same
             // lock hold as prepare/write: otherwise a cooperating writer can
             // expose a sharing violation or a partially written document (#131).
             string? recordedPrefix = null;
-            string RecordLocked()
+            async ValueTask<string> RecordLockedAsync()
             {
                 // Checked FIRST for five of its six kinds, so THIS method's own
                 // refusal names the offender: before this call existed, an
@@ -1003,7 +1145,7 @@ public sealed class BundleConceptWriter
                 // runs its OWN passes over every id before this method's prepare
                 // loop ever starts. Both are correct refusals of the same batch;
                 // which one is named first can move.
-                var targetProblem = CheckVerificationTargetsLocked(conceptIds);
+                var targetProblem = await CheckVerificationTargetsLockedAsync(conceptIds, run).ConfigureAwait(false);
                 if (targetProblem is { Kind: not VerificationTargetProblemKind.NotConformant } problem)
                 {
                     return FormatVerificationTargetProblem(problem);
@@ -1040,7 +1182,7 @@ public sealed class BundleConceptWriter
                 for (var i = 0; i < targets.Count; i++)
                 {
                     subject = $"'{targets[i].Id}'";
-                    var prepareError = PrepareStamp(targets[i], conceptIds[i], by, stampedAt, out var stamp);
+                    var (prepareError, stamp) = await PrepareStampAsync(targets[i], conceptIds[i], by, stampedAt, run).ConfigureAwait(false);
                     if (prepareError is not null)
                     {
                         return prepareError;
@@ -1065,6 +1207,24 @@ public sealed class BundleConceptWriter
                 for (var i = 0; i < prepared.Count; i++)
                 {
                     var stamp = prepared[i];
+                    if (run.Ct.IsCancellationRequested)
+                    {
+                        // Cancelled (Q5 of the design): with nothing committed it is an ordinary
+                        // cancellation; after a first commit the batch stops BETWEEN two objects and
+                        // says exactly what landed and what was not attempted.
+                        if (written.Count == 0)
+                        {
+                            run.Ct.ThrowIfCancellationRequested();
+                        }
+
+                        for (var j = i; j < prepared.Count; j++)
+                        {
+                            failures.Add(new BundleWriteFailure(prepared[j].Target.Key, "not attempted (cancelled)"));
+                        }
+
+                        return $"Error: cancelled after {records.Count} of {prepared.Count} verification(s); the rest were not attempted — already written: {string.Join(", ", records.Select(r => r.ConceptId))}";
+                    }
+
                     var name = $"'{stamp.Target.Id}'";
                     subject = name;
                     var committed = false;
@@ -1076,11 +1236,11 @@ public sealed class BundleConceptWriter
                         // THIS concept again from what is there now and retries;
                         // the concepts already written stay written.
                         var attempt = 0;
-                        writeResult = WithRetries(name, () =>
+                        writeResult = await WithRetriesAsync(name, async () =>
                         {
                             if (++attempt > 1)
                             {
-                                var prepareError = PrepareStamp(stamp.Target, stamp.ConceptId, by, stampedAt, out var fresh);
+                                var (prepareError, fresh) = await PrepareStampAsync(stamp.Target, stamp.ConceptId, by, stampedAt, run).ConfigureAwait(false);
                                 if (prepareError is not null)
                                 {
                                     return prepareError;
@@ -1089,8 +1249,8 @@ public sealed class BundleConceptWriter
                                 stamp = fresh;
                             }
 
-                            return WriteValidatedContentLocked(stamp.Target, stamp.Content, BundleWriteCondition.IfMatch(stamp.Version), () => committed = true, existedBefore: true);
-                        });
+                            return await WriteValidatedContentLockedAsync(stamp.Target, stamp.Content, BundleWriteCondition.IfMatch(stamp.Version), () => committed = true, run, existedBefore: true).ConfigureAwait(false);
+                        }, run).ConfigureAwait(false);
                     }
                     catch (Exception ex) when (IsExpectedFailure(ex))
                     {
@@ -1114,9 +1274,9 @@ public sealed class BundleConceptWriter
                     var reason = writeResult.StartsWith("Error: ", StringComparison.Ordinal)
                         ? writeResult["Error: ".Length..]
                         : writeResult;
-                    failure = new BundleWriteFailure(
+                    failures.Add(new BundleWriteFailure(
                         stamp.Target.Key,
-                        string.IsNullOrWhiteSpace(reason) ? "the write failed without giving a reason." : reason);
+                        string.IsNullOrWhiteSpace(reason) ? "the write failed without giving a reason." : reason));
                     return records.Count == 0
                         ? writeResult
                         : $"{writeResult} — already written: {string.Join(", ", records.Select(r => r.ConceptId))}";
@@ -1127,9 +1287,14 @@ public sealed class BundleConceptWriter
             }
 
             string locked;
-            using (EnterWriteLock())
+            var lease = await AcquireLeaseAsync(run).ConfigureAwait(false);
+            try
             {
-                locked = RecordLocked();
+                locked = await RecordLockedAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                lease.Dispose();
             }
 
             // The write notification runs once per committed write, after the lease is released
@@ -1147,14 +1312,14 @@ public sealed class BundleConceptWriter
             return recordedPrefix is not null && notificationFailure is not null
                 ? $"{recordedPrefix}; the write notification failed: {notificationFailure}"
                 : locked;
-        }, () => subject);
+        }, () => subject).ConfigureAwait(false);
 
         // On failure, Records is NOT emptied: it carries whatever reached disk
         // before the failure, so a caller can tell "nothing happened" from
         // "three of five were stamped and then it broke".
-        var report = written.Count == 0 && failure is null
+        var report = written.Count == 0 && failures.Count == 0
             ? BundleWriteReport.Empty
-            : new BundleWriteReport(written, [], failure is null ? [] : [failure]);
+            : new BundleWriteReport(written, [], failures);
         return message.StartsWith("Error:", StringComparison.Ordinal)
             ? new VerificationOutcome(false, message, records) { Report = report }
             : new VerificationOutcome(true, message, records) { Report = report };
@@ -1162,23 +1327,35 @@ public sealed class BundleConceptWriter
         static VerificationOutcome Failed(string message) => new(false, message, []) { Report = BundleWriteReport.Empty };
     }
 
-    /// <summary>A concept <see cref="PrepareStamp"/> read, stamped and checked, ready to be written: its new content and the version that content was built from.</summary>
+    /// <summary>A concept <see cref="PrepareStampFrom"/> read, stamped and checked, ready to be written: its new content and the version that content was built from.</summary>
     private readonly record struct PreparedStamp(ConceptTarget Target, string ConceptId, string Content, BundleObjectVersion Version, string? ReplacedAt);
 
     /// <summary>
     /// Reads <paramref name="target"/>'s current text through the provider, upserts
     /// <paramref name="by"/>'s stamp into its <c>verified</c> block in place and checks the
     /// result, exactly as <see cref="RecordVerifications"/> describes: <see langword="null"/> and
-    /// <paramref name="prepared"/>, or the <c>Error: ...</c> refusal. Writes nothing. CALLER
-    /// MUST hold the write lock.
+    /// the prepared stamp, or the <c>Error: ...</c> refusal. Writes nothing. CALLER MUST hold the
+    /// write lock.
     /// </summary>
-    private string? PrepareStamp(ConceptTarget target, string conceptId, string by, string stampedAt, out PreparedStamp prepared)
+    /// <param name="target">The concept to stamp.</param>
+    /// <param name="conceptId">The id as the caller gave it, for the refusals.</param>
+    /// <param name="by">The §7 actor.</param>
+    /// <param name="stampedAt">The UTC timestamp.</param>
+    /// <param name="run">How the operation runs (token, synchronous or not).</param>
+    private async ValueTask<(string? Error, PreparedStamp Stamp)> PrepareStampAsync(ConceptTarget target, string conceptId, string by, string stampedAt, WriteRun run)
+    {
+        if (await ReadCurrentAsync(target.Key, run).ConfigureAwait(false) is not { } current)
+        {
+            return ($"Error: concept {DebugQuote.Quote(conceptId)} does not exist.", default);
+        }
+
+        var error = PrepareStampFrom(current, target, conceptId, by, stampedAt, out var prepared);
+        return (error, prepared);
+    }
+
+    private string? PrepareStampFrom((string Text, BundleObjectVersion Version) current, ConceptTarget target, string conceptId, string by, string stampedAt, out PreparedStamp prepared)
     {
         prepared = default;
-        if (ReadCurrent(target.Key) is not { } current)
-        {
-            return $"Error: concept {DebugQuote.Quote(conceptId)} does not exist.";
-        }
 
         var text = current.Text;
         var document = OkfDocument.Parse(text);
@@ -1315,9 +1492,21 @@ public sealed class BundleConceptWriter
     /// <param name="date">The day the entry goes under; <see langword="null"/>: the UTC date of <see cref="UtcNow"/>.</param>
     /// <returns><c>Appended a '{kind}' entry under {date} in log.md.</c>, with the folded kind, or an <c>Error: ...</c> message.</returns>
     /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
-    public string AppendLog(string kind, string text, DateOnly? date = null)
+    public string AppendLog(string kind, string text, DateOnly? date = null) =>
+        SyncBridge.Run(AppendLogCoreAsync(kind, text, date, WriteRun.Sync));
+
+    /// <summary>The asynchronous <see cref="AppendLog"/> (#152): the same entry appended to <c>log.md</c> under the bundle's write lock, the provider asked asynchronously.</summary>
+    /// <param name="kind">The entry's kind.</param>
+    /// <param name="text">The entry's text.</param>
+    /// <param name="date">The day of the entry, or <see langword="null"/> for today (UTC).</param>
+    /// <param name="ct">Cancels the operation before its commit.</param>
+    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
+    public ValueTask<string> AppendLogAsync(string kind, string text, DateOnly? date = null, CancellationToken ct = default) =>
+        AppendLogCoreAsync(kind, text, date, WriteRun.Async(ct));
+
+    private async ValueTask<string> AppendLogCoreAsync(string kind, string text, DateOnly? date, WriteRun run)
     {
-        GuardWritable();
+        GuardWritable(run);
         if (GuardLogField(kind, "kind") is { } kindError)
         {
             return kindError;
@@ -1332,8 +1521,8 @@ public sealed class BundleConceptWriter
         var foldedKind = FoldLogField(kind);
         var entry = new LogEntry(foldedKind, FoldLogField(text));
         var key = BundleKey.Parse(LogKey);
-        return RunTool(
-            () =>
+        return await RunToolAsync(
+            async () =>
             {
                 if (_validator.CheckKey(key) is { } refused)
                 {
@@ -1347,13 +1536,13 @@ public sealed class BundleConceptWriter
                 // silently clobber the first (a lost update). A writer outside
                 // the lock in this process is met by the version condition; another
                 // process only up to the provider's last check (issue #178).
-                return WriteThenNotify(committed => WithRetries(LogKey, () =>
+                return await WriteThenNotifyAsync(committed => WithRetriesAsync(LogKey, async () =>
                 {
                     // Strict UTF-8, matching ChangesSince: a non-UTF-8
                     // log.md throws DecoderFallbackException (caught by
                     // RunTool) instead of being silently re-decoded with
                     // U+FFFD replacement characters and rewritten that way.
-                    var current = ReadCurrent(key);
+                    var current = await ReadCurrentAsync(key, run).ConfigureAwait(false);
 
                     // ChangeLog.Parse is permissive (never throws); used here
                     // only to locate the day (if any) among the existing entries.
@@ -1371,7 +1560,7 @@ public sealed class BundleConceptWriter
                         days.Insert(0, new LogDay(day, [entry]));
                     }
 
-                    if (current is null && BundleTreeCheck.CheckCreation(_provider, _validator, key, _limits) is { } conflict)
+                    if (current is null && await BundleTreeCheck.CheckCreationAsync(_provider, _validator, key, _limits, run.Ct).ConfigureAwait(false) is { } conflict)
                     {
                         return $"Error: {conflict}.";
                     }
@@ -1381,7 +1570,7 @@ public sealed class BundleConceptWriter
                     // conditioned Write of its own. Its commit is reported to
                     // WriteThenNotify, as AppendToConceptAtomic's is, so the
                     // notification runs once, after the retries (decision B48).
-                    _provider.Write(key, OkfEncodings.NoBom.GetBytes(new ChangeLog(changeLog.Title, days).ToMarkdown()), ConditionFor(current));
+                    await _provider.WriteAsync(key, OkfEncodings.NoBom.GetBytes(new ChangeLog(changeLog.Title, days).ToMarkdown()), ConditionFor(current), run.Ct).ConfigureAwait(false);
                     committed();
 
                     // The FOLDED kind, not the raw argument: this message is
@@ -1389,9 +1578,9 @@ public sealed class BundleConceptWriter
                     // argument verbatim would put back the separator the
                     // write just removed.
                     return $"Appended a '{foldedKind}' entry under {day} in log.md.";
-                }));
+                }, run), run).ConfigureAwait(false);
             },
-            () => LogKey);
+            () => LogKey).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1823,13 +2012,28 @@ public sealed class BundleConceptWriter
         // CLI/agent callers also use this preflight on its own. Serialize its
         // reads against writers; RecordVerifications runs the Locked body under
         // its own lease through the subsequent prepare/write as well.
-        using (EnterWriteLock())
+        SyncBridge.RequireSynchronousProvider(_provider);
+        return SyncBridge.Run(CheckVerificationTargetsAsync(conceptIds, WriteRun.Sync));
+    }
+
+    /// <summary>The asynchronous <see cref="CheckVerificationTargets"/> (#152), for <c>OkfBundleTools</c>.</summary>
+    internal ValueTask<VerificationTargetProblem?> CheckVerificationTargetsAsync(IReadOnlyList<string> conceptIds, CancellationToken ct) =>
+        CheckVerificationTargetsAsync(conceptIds, WriteRun.Async(ct));
+
+    private async ValueTask<VerificationTargetProblem?> CheckVerificationTargetsAsync(IReadOnlyList<string> conceptIds, WriteRun run)
+    {
+        var lease = await AcquireLeaseAsync(run).ConfigureAwait(false);
+        try
         {
-            return CheckVerificationTargetsLocked(conceptIds);
+            return await CheckVerificationTargetsLockedAsync(conceptIds, run).ConfigureAwait(false);
+        }
+        finally
+        {
+            lease.Dispose();
         }
     }
 
-    private VerificationTargetProblem? CheckVerificationTargetsLocked(IReadOnlyList<string> conceptIds)
+    private async ValueTask<VerificationTargetProblem?> CheckVerificationTargetsLockedAsync(IReadOnlyList<string> conceptIds, WriteRun run)
     {
         var targets = new List<ConceptTarget>(conceptIds.Count);
         for (var i = 0; i < conceptIds.Count; i++)
@@ -1886,14 +2090,14 @@ public sealed class BundleConceptWriter
                 // on-disk metrics/dau.md on any OS or volume, the same answer
                 // Bundle.Load gives — it builds each concept's id from the
                 // stored names, and ConceptId equality is ordinal.
-                if (!_provider.Exists(target.Key))
+                if (!await _provider.ExistsAsync(target.Key, run.Ct).ConfigureAwait(false))
                 {
                     return new VerificationTargetProblem(VerificationTargetProblemKind.NotFound, conceptIds[i]);
                 }
 
                 // One spelling of §11 conformance (OkfDocument.ValidateConformance
                 // itself), not a second hand-rolled `Get("type")` check beside it.
-                OkfDocument.Parse(Bundle.ReadText(_provider, target.Key, _limits, new byte[Bundle.ReadChunkBytes], out _)).ValidateConformance();
+                OkfDocument.Parse((await Bundle.ReadTextAtAsync(_provider, target.Key, _limits, new byte[Bundle.ReadChunkBytes], null, run.Ct).ConfigureAwait(false)).Text).ValidateConformance();
             }
             catch (BundleAccessRefusedException ex)
             {
@@ -1972,7 +2176,7 @@ public sealed class BundleConceptWriter
     /// for <see cref="BuildValidatedContent(YamlValue, string)"/> to validate and serialize directly —
     /// so the write path parses exactly once, never re-serializing and re-parsing a stamped mapping.
     /// Throws <see cref="Yaml.YamlParseException"/> on malformed frontmatter, caught by the caller's
-    /// <see cref="RunTool"/> wrapper before anything is written.
+    /// <see cref="RunToolAsync"/> wrapper before anything is written.
     /// </summary>
     private YamlValue ParseFrontmatterAndMaybeStamp(string frontmatterYaml)
     {
@@ -2014,7 +2218,7 @@ public sealed class BundleConceptWriter
     /// <see cref="ParseFrontmatterAndMaybeStamp"/> and enters the overload
     /// directly. Throws <see cref="Yaml.YamlParseException"/> (line-tagged
     /// message) on malformed input, caught by the caller's
-    /// <see cref="RunTool"/> wrapper before anything is written.
+    /// <see cref="RunToolAsync"/> wrapper before anything is written.
     /// </summary>
     private static (string? Content, string? Error) BuildValidatedContent(string frontmatterYaml, string body) =>
         BuildValidatedContent(YamlValue.Parse(frontmatterYaml), body);
@@ -2026,7 +2230,7 @@ public sealed class BundleConceptWriter
     /// <see cref="WriteConcept(string, string, string)"/> performs, shared verbatim with
     /// <see cref="AppendToConceptAtomic"/> so the two can never validate
     /// divergently. Throws <see cref="DocumentValidationException"/> (failed
-    /// producer validation), caught by the caller's <see cref="RunTool"/>
+    /// producer validation), caught by the caller's <see cref="RunToolAsync"/>
     /// wrapper, rather than returning an error for that case; only
     /// "frontmatter parses but isn't a mapping" is reported via the returned
     /// <c>Error</c> string.
@@ -2072,7 +2276,7 @@ public sealed class BundleConceptWriter
     /// Unicode-form twin under a policy that folds names, an object on a proper prefix, or
     /// objects under the key, is refused here with a message naming the conflicting name,
     /// before anything is written. An update skips it.</para>
-    /// <para>Provider exceptions propagate (the caller's <see cref="RunTool(Func{string}, Func{string?}?)"/>
+    /// <para>Provider exceptions propagate (the caller's <see cref="RunToolAsync"/>
     /// translates them, or the caller retries a conflict): nothing has then been written
     /// and <paramref name="committed"/> is not called, except for an outcome the
     /// provider could not establish (<see cref="BundleWriteOutcomeUnknownException"/>).</para>
@@ -2080,7 +2284,7 @@ public sealed class BundleConceptWriter
     /// method calls <paramref name="committed"/> and returns its confirmation, and nothing it
     /// does after the commit can throw. It never invokes <see cref="_onWriteCommitted"/>: the
     /// caller does, once its whole write operation — every attempt of a read-modify-write
-    /// included — has returned (<see cref="WriteThenNotify"/>, <see cref="NotifyCommitted"/>), so
+    /// included — has returned (<see cref="WriteThenNotifyAsync"/>, <see cref="NotifyCommitted"/>), so
     /// that nothing the notification throws can be taken for a failure of the storage
     /// operation (decision B48).</para>
     /// </remarks>
@@ -2093,18 +2297,19 @@ public sealed class BundleConceptWriter
     /// method asks the provider (<see cref="IBundleProvider.ExistsAsync"/>).
     /// </param>
     /// <param name="committed">Called once the provider has committed the write: the caller then notifies (<see cref="NotifyCommitted"/>).</param>
-    private string WriteValidatedContentLocked(ConceptTarget target, string content, BundleWriteCondition condition, Action committed, bool? existedBefore = null)
+    /// <param name="run">How the operation runs (token, synchronous or not).</param>
+    private async ValueTask<string> WriteValidatedContentLockedAsync(ConceptTarget target, string content, BundleWriteCondition condition, Action committed, WriteRun run, bool? existedBefore = null)
     {
-        var existed = existedBefore ?? _provider.Exists(target.Key);
+        var existed = existedBefore ?? await _provider.ExistsAsync(target.Key, run.Ct).ConfigureAwait(false);
         if (!existed
             && condition.Kind != BundleWriteConditionKind.IfMatch // never a creation
-            && BundleTreeCheck.CheckCreation(_provider, _validator, target.Key, _limits) is { } conflict)
+            && await BundleTreeCheck.CheckCreationAsync(_provider, _validator, target.Key, _limits, run.Ct).ConfigureAwait(false) is { } conflict)
         {
             return $"Error: {conflict}.";
         }
 
         var bytes = OkfEncodings.NoBom.GetBytes(content);
-        _provider.Write(target.Key, bytes, condition);
+        await _provider.WriteAsync(target.Key, bytes, condition, run.Ct).ConfigureAwait(false);
         committed();
 
         var status = existed ? "updated" : "new";
@@ -2119,14 +2324,20 @@ public sealed class BundleConceptWriter
     /// lease is released (#152), so a callback may call back into the same bundle.
     /// </summary>
     /// <param name="write">The operation; it calls the action it is given once the provider has committed.</param>
+    /// <param name="run">How the operation runs (token, synchronous or not).</param>
     /// <returns>What <paramref name="write"/> returned, or the <c>Error: …</c> text of a notification that failed.</returns>
-    private string WriteThenNotify(Func<Action, string> write)
+    private async ValueTask<string> WriteThenNotifyAsync(Func<Action, ValueTask<string>> write, WriteRun run)
     {
         var committed = false;
         string result;
-        using (EnterWriteLock())
+        var lease = await AcquireLeaseAsync(run).ConfigureAwait(false);
+        try
         {
-            result = write(() => committed = true);
+            result = await write(() => committed = true).ConfigureAwait(false);
+        }
+        finally
+        {
+            lease.Dispose();
         }
 
         return committed && NotifyCommitted() is { } failure ? failure : result;
@@ -2165,12 +2376,12 @@ public sealed class BundleConceptWriter
     /// object throws <see cref="System.Text.DecoderFallbackException"/> rather than being
     /// silently re-decoded and rewritten.
     /// </summary>
-    private (string Text, BundleObjectVersion Version)? ReadCurrent(BundleKey key)
+    private async ValueTask<(string Text, BundleObjectVersion Version)?> ReadCurrentAsync(BundleKey key, WriteRun run)
     {
         try
         {
-            var text = Bundle.ReadText(_provider, key, _limits, new byte[Bundle.ReadChunkBytes], out var version);
-            return (text, version);
+            var read = await Bundle.ReadTextAtAsync(_provider, key, _limits, new byte[Bundle.ReadChunkBytes], null, run.Ct).ConfigureAwait(false);
+            return (read.Text, read.Version);
         }
         catch (BundleObjectNotFoundException)
         {
@@ -2186,14 +2397,14 @@ public sealed class BundleConceptWriter
     /// A write under a caller's condition (<see cref="WriteConcept(string, string, string, BundleWriteCondition)"/>):
     /// never retried, and a condition that does not hold becomes the writer's own message. CALLER
     /// MUST hold the write lock. The conflict caught here can only be the provider's refusal of the
-    /// write: the notification runs after this method has returned (<see cref="WriteThenNotify"/>,
+    /// write: the notification runs after this method has returned (<see cref="WriteThenNotifyAsync"/>,
     /// decision B48).
     /// </summary>
-    private string WriteConditionedLocked(ConceptTarget target, string content, BundleWriteCondition condition, Action committed)
+    private async ValueTask<string> WriteConditionedLockedAsync(ConceptTarget target, string content, BundleWriteCondition condition, Action committed, WriteRun run)
     {
         try
         {
-            return WriteValidatedContentLocked(target, content, condition, committed);
+            return await WriteValidatedContentLockedAsync(target, content, condition, committed, run).ConfigureAwait(false);
         }
         catch (BundleWriteConflictException e) when (e.Reason == BundleWriteConflictReason.ConditionFailed && condition.Kind != BundleWriteConditionKind.None)
         {
@@ -2213,6 +2424,20 @@ public sealed class BundleConceptWriter
     /// </summary>
     internal Action<TimeSpan> Sleep { get; set; } = Thread.Sleep;
 
+    /// <summary>How an asynchronous read-modify-write waits before its next attempt; <see cref="Task.Delay(TimeSpan, CancellationToken)"/>, cancellable. A test replaces it to record the delays instead of waiting.</summary>
+    internal Func<TimeSpan, CancellationToken, Task> DelayAsync { get; set; } = static (delay, ct) => Task.Delay(delay, ct);
+
+    private Task WaitBeforeRetryAsync(TimeSpan delay, WriteRun run)
+    {
+        if (run.Synchronous)
+        {
+            Sleep(delay);
+            return Task.CompletedTask;
+        }
+
+        return DelayAsync(delay, run.Ct);
+    }
+
     /// <summary>The random, growing delay after failed attempt <paramref name="attempt"/>: 10–40 ms after the first, 30–120 ms after the second (decision B5).</summary>
     internal static TimeSpan RetryDelay(int attempt) =>
         TimeSpan.FromMilliseconds(attempt == 1 ? Random.Shared.Next(10, 41) : Random.Shared.Next(30, 121));
@@ -2229,13 +2454,13 @@ public sealed class BundleConceptWriter
     /// caller invokes once this method has returned (decision B48) — so a conflict caught here is
     /// always a refused write, never something that happened after a commit.
     /// </summary>
-    private string WithRetries(string subject, Func<string> attempt)
+    private async ValueTask<string> WithRetriesAsync(string subject, Func<ValueTask<string>> attempt, WriteRun run)
     {
         for (var n = 1; ; n++)
         {
             try
             {
-                return attempt();
+                return await attempt().ConfigureAwait(false);
             }
             catch (BundleWriteConflictException e) when (e.Reason == BundleWriteConflictReason.ConditionFailed)
             {
@@ -2244,7 +2469,7 @@ public sealed class BundleConceptWriter
                     return KeptChanging(subject);
                 }
 
-                Sleep(RetryDelay(n));
+                await WaitBeforeRetryAsync(RetryDelay(n), run).ConfigureAwait(false);
             }
         }
     }
@@ -2259,7 +2484,7 @@ public sealed class BundleConceptWriter
     /// A read-only provider is a host mistake, not a content error: the exception is thrown,
     /// never returned as an <c>Error:</c> string.
     /// </summary>
-    private void GuardWritable()
+    private void GuardWritable(WriteRun run)
     {
         if (!_provider.Capabilities.CanWrite)
         {
@@ -2269,7 +2494,10 @@ public sealed class BundleConceptWriter
         // The synchronous writer serves only a provider that completes before it returns (#152):
         // refused here, before any I/O, because a write started on another kind would commit
         // when the abandoned operation resumed.
-        SyncBridge.RequireSynchronousProvider(_provider);
+        if (run.Synchronous)
+        {
+            SyncBridge.RequireSynchronousProvider(_provider);
+        }
     }
 
     /// <summary>
@@ -2287,11 +2515,11 @@ public sealed class BundleConceptWriter
     /// </summary>
     /// <param name="body">The method body.</param>
     /// <param name="subject">How the message names the object being written, read when an exception is converted (<c>'tables/x'</c>, <c>log.md</c>); <see langword="null"/>, or returning <see langword="null"/>, before the body knows it.</param>
-    private static string RunTool(Func<string> body, Func<string?>? subject = null)
+    private static async ValueTask<string> RunToolAsync(Func<ValueTask<string>> body, Func<string?>? subject = null)
     {
         try
         {
-            return body();
+            return await body().ConfigureAwait(false);
         }
         catch (Exception ex) when (IsExpectedFailure(ex))
         {
@@ -2299,7 +2527,7 @@ public sealed class BundleConceptWriter
         }
     }
 
-    /// <summary>The exceptions <see cref="RunTool"/> converts into an <c>Error:</c> string.</summary>
+    /// <summary>The exceptions <see cref="RunToolAsync"/> converts into an <c>Error:</c> string.</summary>
     private static bool IsExpectedFailure(Exception ex) =>
         ex is not BundleReadOnlyException
         && ex is OkfException or ArgumentException or IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException;
