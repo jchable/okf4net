@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+#pragma warning disable CS0618 // the obsolete synchronous tool methods are the subject (#152): kept one version, bridged over a provider that completes synchronously
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using OKF4net.Agents;
@@ -76,31 +77,31 @@ public class ObservationTests
     {
         var (storage, tools) = ToolsOver(("notes/a.md", Doc));
 
-        Assert.Equal(Refusal, tools.WriteConceptTool("notes/a", Fm, "Changed.\n"));
+        Assert.Equal(Refusal, tools.WriteConceptTool("notes/a", Fm, "Changed.\n").Sync());
         Assert.DoesNotContain(storage.Calls, c => c.StartsWith("write ", StringComparison.Ordinal));
 
-        Assert.Contains("A.", tools.ReadConceptTool("notes/a"), StringComparison.Ordinal);
-        var written = tools.WriteConceptTool("notes/a", Fm, "Changed.\n");
+        Assert.Contains("A.", tools.ReadConceptTool("notes/a").Sync(), StringComparison.Ordinal);
+        var written = tools.WriteConceptTool("notes/a", Fm, "Changed.\n").Sync();
         Assert.StartsWith("Written", written, StringComparison.Ordinal);
         Assert.Contains(storage.Calls, c => c == "write notes/a.md IfMatch");
 
-        Assert.Equal(Refusal, tools.WriteConceptTool("notes/a", Fm, "Changed twice.\n"));
-        Assert.Contains("Changed.", tools.ReadConceptTool("notes/a"), StringComparison.Ordinal);
-        Assert.StartsWith("Written", tools.WriteConceptTool("notes/a", Fm, "Changed twice.\n"), StringComparison.Ordinal);
+        Assert.Equal(Refusal, tools.WriteConceptTool("notes/a", Fm, "Changed twice.\n").Sync());
+        Assert.Contains("Changed.", tools.ReadConceptTool("notes/a").Sync(), StringComparison.Ordinal);
+        Assert.StartsWith("Written", tools.WriteConceptTool("notes/a", Fm, "Changed twice.\n").Sync(), StringComparison.Ordinal);
     }
 
     [Fact]
     public void A_concept_changed_since_it_was_read_is_a_conflict_and_the_image_is_refreshed()
     {
         var (storage, tools) = ToolsOver(("notes/a.md", Doc));
-        tools.ReadConceptTool("notes/a");
+        tools.ReadConceptTool("notes/a").Sync();
         storage.Add("notes/a.md", "---\n" + Fm + "---\n\nChanged elsewhere.\n");
 
-        var refused = tools.WriteConceptTool("notes/a", Fm, "Mine.\n");
+        var refused = tools.WriteConceptTool("notes/a", Fm, "Mine.\n").Sync();
 
         Assert.Equal("Error: 'notes/a' changed since it was read, or no longer exists; the write was refused. Read it again before writing it.", refused);
-        Assert.Contains("Changed elsewhere.", tools.ReadConceptTool("notes/a"), StringComparison.Ordinal); // the image was refreshed
-        Assert.StartsWith("Written", tools.WriteConceptTool("notes/a", Fm, "Mine.\n"), StringComparison.Ordinal);
+        Assert.Contains("Changed elsewhere.", tools.ReadConceptTool("notes/a").Sync(), StringComparison.Ordinal); // the image was refreshed
+        Assert.StartsWith("Written", tools.WriteConceptTool("notes/a", Fm, "Mine.\n").Sync(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -108,16 +109,16 @@ public class ObservationTests
     {
         var (storage, tools) = ToolsOver(("notes/a.md", Doc));
 
-        Assert.Equal(Refusal.Replace("notes/a", "notes/b", StringComparison.Ordinal), tools.WriteConceptTool("notes/b", Fm, "B.\n"));
-        Assert.Contains("not found", tools.ReadConceptTool("notes/b"), StringComparison.Ordinal);
-        Assert.StartsWith("Written", tools.WriteConceptTool("notes/b", Fm, "B.\n"), StringComparison.Ordinal);
+        Assert.Equal(Refusal.Replace("notes/a", "notes/b", StringComparison.Ordinal), tools.WriteConceptTool("notes/b", Fm, "B.\n").Sync());
+        Assert.Contains("not found", tools.ReadConceptTool("notes/b").Sync(), StringComparison.Ordinal);
+        Assert.StartsWith("Written", tools.WriteConceptTool("notes/b", Fm, "B.\n").Sync(), StringComparison.Ordinal);
         Assert.Contains(storage.Calls, c => c == "write notes/b.md MustNotExist");
 
-        tools.ReadConceptTool("notes/a");
+        tools.ReadConceptTool("notes/a").Sync();
         storage.Delete(K("notes/a.md"), BundleWriteCondition.None);
-        Assert.StartsWith("Error: 'notes/a' changed since it was read, or no longer exists", tools.WriteConceptTool("notes/a", Fm, "Again.\n"), StringComparison.Ordinal);
-        Assert.Contains("not found", tools.ReadConceptTool("notes/a"), StringComparison.Ordinal);
-        Assert.StartsWith("Written", tools.WriteConceptTool("notes/a", Fm, "Again.\n"), StringComparison.Ordinal);
+        Assert.StartsWith("Error: 'notes/a' changed since it was read, or no longer exists", tools.WriteConceptTool("notes/a", Fm, "Again.\n").Sync(), StringComparison.Ordinal);
+        Assert.Contains("not found", tools.ReadConceptTool("notes/a").Sync(), StringComparison.Ordinal);
+        Assert.StartsWith("Written", tools.WriteConceptTool("notes/a", Fm, "Again.\n").Sync(), StringComparison.Ordinal);
         Assert.Contains(storage.Calls, c => c == "write notes/a.md MustNotExist");
     }
 
@@ -130,15 +131,15 @@ public class ObservationTests
             ("att.py", "def attest(**_):\n    return {}\n"));
 
         Assert.Contains("A.", tools.ReadConcept("notes/a"), StringComparison.Ordinal); // the public method, as a host calls it
-        Assert.Equal(Refusal, tools.WriteConceptTool("notes/a", Fm, "Changed.\n"));
+        Assert.Equal(Refusal, tools.WriteConceptTool("notes/a", Fm, "Changed.\n").Sync());
         Assert.Equal(0, tools.Observations.Count);
 
-        Assert.Contains("SELECT 1", tools.GetComputationTool("c/rev"), StringComparison.Ordinal);
+        Assert.Contains("SELECT 1", tools.GetComputationTool("c/rev").Sync(), StringComparison.Ordinal);
         Assert.True(tools.Observations.TryGetCode(K("c/rev.md"), out _)); // the exposed function recorded the code it showed
         Assert.False(tools.Observations.TryGetFullConcept(K("c/rev.md"), out _)); // ... and that is no full-concept observation
-        Assert.Equal(Refusal.Replace("notes/a", "c/rev", StringComparison.Ordinal), tools.WriteConceptTool("c/rev", "type: Attested Computation\ntitle: R\ndescription: r.\n", "Rewritten.\n"));
+        Assert.Equal(Refusal.Replace("notes/a", "c/rev", StringComparison.Ordinal), tools.WriteConceptTool("c/rev", "type: Attested Computation\ntitle: R\ndescription: r.\n", "Rewritten.\n").Sync());
 
-        Assert.Equal(Refusal, tools.WriteConceptTool("notes/a", Fm, "Changed.\n"));
+        Assert.Equal(Refusal, tools.WriteConceptTool("notes/a", Fm, "Changed.\n").Sync());
     }
 
     /// <summary>D5: a concept the context provider injects, whole or truncated, is not an observation.</summary>
@@ -153,7 +154,7 @@ public class ObservationTests
         var injected = Assert.Single(context.Messages!).Text;
         Assert.Contains("A.", injected, StringComparison.Ordinal); // the whole concept was injected
         Assert.Equal(0, tools.Observations.Count);
-        Assert.Equal(Refusal, tools.WriteConceptTool("notes/a", Fm, "Changed.\n"));
+        Assert.Equal(Refusal, tools.WriteConceptTool("notes/a", Fm, "Changed.\n").Sync());
     }
 
     [Fact]
@@ -164,13 +165,13 @@ public class ObservationTests
         var first = new OkfBundleTools(handle);
         var second = new OkfBundleTools(handle);
 
-        first.ReadConceptTool("notes/a");
+        first.ReadConceptTool("notes/a").Sync();
         storage.Add("notes/a.md", "---\n" + Fm + "---\n\nv2.\n");
         handle.Invalidate();
-        Assert.Contains("v2.", second.ReadConceptTool("notes/a"), StringComparison.Ordinal);
+        Assert.Contains("v2.", second.ReadConceptTool("notes/a").Sync(), StringComparison.Ordinal);
 
-        Assert.StartsWith("Error: 'notes/a' changed since it was read", first.WriteConceptTool("notes/a", Fm, "From first.\n"), StringComparison.Ordinal);
-        Assert.StartsWith("Written", second.WriteConceptTool("notes/a", Fm, "From second.\n"), StringComparison.Ordinal);
+        Assert.StartsWith("Error: 'notes/a' changed since it was read", first.WriteConceptTool("notes/a", Fm, "From first.\n").Sync(), StringComparison.Ordinal);
+        Assert.StartsWith("Written", second.WriteConceptTool("notes/a", Fm, "From second.\n").Sync(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -183,16 +184,16 @@ public class ObservationTests
         }
 
         var tools = new OkfBundleTools(new BundleHandle(storage));
-        tools.ReadConceptTool("n/c0");
+        tools.ReadConceptTool("n/c0").Sync();
         for (var i = 1; i <= ObservationRegistry.DefaultCapacity; i++)
         {
-            tools.ReadConceptTool($"n/c{i}");
+            tools.ReadConceptTool($"n/c{i}").Sync();
         }
 
         Assert.Equal(ObservationRegistry.DefaultCapacity, tools.Observations.Count);
-        Assert.StartsWith("Error: 'n/c0' has not been read by this session", tools.WriteConceptTool("n/c0", Fm, "Changed.\n"), StringComparison.Ordinal);
-        tools.ReadConceptTool("n/c0");
-        Assert.StartsWith("Written", tools.WriteConceptTool("n/c0", Fm, "Changed.\n"), StringComparison.Ordinal);
+        Assert.StartsWith("Error: 'n/c0' has not been read by this session", tools.WriteConceptTool("n/c0", Fm, "Changed.\n").Sync(), StringComparison.Ordinal);
+        tools.ReadConceptTool("n/c0").Sync();
+        Assert.StartsWith("Written", tools.WriteConceptTool("n/c0", Fm, "Changed.\n").Sync(), StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -205,7 +206,7 @@ public class ObservationTests
     {
         var (storage, tools) = ToolsOver(("notes/broken.md", "---\ntype: Note\ntitle: B\n\nno closing fence\n"));
 
-        var shown = tools.ReadConceptTool("notes/broken");
+        var shown = tools.ReadConceptTool("notes/broken").Sync();
 
         Assert.StartsWith("Concept 'notes/broken' exists but could not be read as a concept: ", shown, StringComparison.Ordinal);
         Assert.EndsWith("It can be rewritten with okf_write_concept.", shown, StringComparison.Ordinal);
@@ -213,12 +214,12 @@ public class ObservationTests
         Assert.False(tools.Observations.IsAbsent(K("notes/broken.md")));
         Assert.True(tools.Observations.TryGetFullConcept(K("notes/broken.md"), out _));
 
-        var written = tools.WriteConceptTool("notes/broken", Fm, "Repaired.\n");
+        var written = tools.WriteConceptTool("notes/broken", Fm, "Repaired.\n").Sync();
 
         Assert.StartsWith("Written", written, StringComparison.Ordinal);
         Assert.Contains(storage.Calls, c => c == "write notes/broken.md IfMatch");
         Assert.DoesNotContain(storage.Calls, c => c == "write notes/broken.md MustNotExist");
-        Assert.Contains("Repaired.", tools.ReadConceptTool("notes/broken"), StringComparison.Ordinal); // the loop is closed: now a concept
+        Assert.Contains("Repaired.", tools.ReadConceptTool("notes/broken").Sync(), StringComparison.Ordinal); // the loop is closed: now a concept
     }
 
     [Fact]
@@ -227,13 +228,13 @@ public class ObservationTests
         var storage = new InMemoryBundleProvider(canWrite: true).Add("notes/big.md", "---\n" + Fm + "---\n\n" + new string('x', 600) + "\n");
         var tools = new OkfBundleTools(new BundleHandle(storage, new BundleLoadOptions { Limits = new BundleLimits { MaxObjectBytes = 300 } }));
 
-        var shown = tools.ReadConceptTool("notes/big");
+        var shown = tools.ReadConceptTool("notes/big").Sync();
 
         Assert.StartsWith("Concept 'notes/big' exists but could not be read as a concept: ", shown, StringComparison.Ordinal);
         Assert.EndsWith("It cannot be rewritten through this tool.", shown, StringComparison.Ordinal);
         Assert.DoesNotContain("not found", shown, StringComparison.Ordinal);
         Assert.Equal(0, tools.Observations.Count); // not absent, not read: nothing recorded
-        Assert.Equal(Refusal.Replace("notes/a", "notes/big", StringComparison.Ordinal), tools.WriteConceptTool("notes/big", Fm, "Changed.\n"));
+        Assert.Equal(Refusal.Replace("notes/a", "notes/big", StringComparison.Ordinal), tools.WriteConceptTool("notes/big", Fm, "Changed.\n").Sync());
         Assert.DoesNotContain(storage.Calls, c => c.StartsWith("write ", StringComparison.Ordinal));
     }
 
@@ -242,10 +243,10 @@ public class ObservationTests
     {
         var (storage, tools) = ToolsOver(("notes/a.md", Doc), ("notes/index.md", "# Notes\n"));
 
-        Assert.Equal("'notes/index' is not a concept: that name is a bundle index or log file.", tools.ReadConceptTool("notes/index"));
+        Assert.Equal("'notes/index' is not a concept: that name is a bundle index or log file.", tools.ReadConceptTool("notes/index").Sync());
 
         Assert.Equal(0, tools.Observations.Count);
-        Assert.Equal(Refusal.Replace("notes/a", "notes/index", StringComparison.Ordinal), tools.WriteConceptTool("notes/index", Fm, "Changed.\n"));
+        Assert.Equal(Refusal.Replace("notes/a", "notes/index", StringComparison.Ordinal), tools.WriteConceptTool("notes/index", Fm, "Changed.\n").Sync());
         Assert.DoesNotContain(storage.Calls, c => c.StartsWith("write ", StringComparison.Ordinal));
     }
 
@@ -269,9 +270,9 @@ public class ObservationTests
         }
 
         Assert.Equal(0, tools.Observations.Count); // the public method records nothing
-        Assert.StartsWith("Concept 'notes/broken' exists but could not be read as a concept: ", tools.ReadConceptTool("notes/broken"), StringComparison.Ordinal);
-        Assert.Contains("It cannot be rewritten through this tool.", tools.ReadConceptTool("notes/big"), StringComparison.Ordinal);
-        Assert.Equal("'notes/index' is not a concept: that name is a bundle index or log file.", tools.ReadConceptTool("notes/index"));
+        Assert.StartsWith("Concept 'notes/broken' exists but could not be read as a concept: ", tools.ReadConceptTool("notes/broken").Sync(), StringComparison.Ordinal);
+        Assert.Contains("It cannot be rewritten through this tool.", tools.ReadConceptTool("notes/big").Sync(), StringComparison.Ordinal);
+        Assert.Equal("'notes/index' is not a concept: that name is a bundle index or log file.", tools.ReadConceptTool("notes/index").Sync());
         Assert.Equal("Concept 'notes/broken' not found. Use okf_browse to list available concepts.", tools.ReadConcept("notes/broken"));
         Assert.Equal(1, tools.Observations.Count); // only the exposed function recorded (notes/broken, with its version)
     }
@@ -281,14 +282,14 @@ public class ObservationTests
     public void A_write_that_answers_an_error_keeps_the_observation()
     {
         var (storage, tools) = ToolsOver(("notes/a.md", Doc));
-        tools.ReadConceptTool("notes/a");
+        tools.ReadConceptTool("notes/a").Sync();
 
-        var refused = tools.WriteConceptTool("notes/a", "type: Note\ntitle: A\n", "Changed.\n"); // no description: refused before any write
+        var refused = tools.WriteConceptTool("notes/a", "type: Note\ntitle: A\n", "Changed.\n").Sync(); // no description: refused before any write
 
         Assert.StartsWith("Error:", refused, StringComparison.Ordinal);
         Assert.DoesNotContain(storage.Calls, c => c.StartsWith("write ", StringComparison.Ordinal));
         Assert.True(tools.Observations.TryGetFullConcept(K("notes/a.md"), out _));
-        Assert.StartsWith("Written", tools.WriteConceptTool("notes/a", Fm, "Changed.\n"), StringComparison.Ordinal); // no new read needed
+        Assert.StartsWith("Written", tools.WriteConceptTool("notes/a", Fm, "Changed.\n").Sync(), StringComparison.Ordinal); // no new read needed
     }
 
     /// <summary>A smoke test of the lock, deterministic in what it asserts: the bound holds and nothing throws.</summary>
@@ -317,9 +318,10 @@ public class ObservationTests
         Assert.Equal(nameof(OkfBundleTools.ReadConceptTool), functions["okf_read_concept"].UnderlyingMethod!.Name);
         Assert.Equal(nameof(OkfBundleTools.WriteConceptTool), functions["okf_write_concept"].UnderlyingMethod!.Name);
         Assert.Equal(nameof(OkfBundleTools.GetComputationTool), functions["okf_get_computation"].UnderlyingMethod!.Name);
-        Assert.Equal(AIFunctionFactory.Create(tools.ReadConcept, "okf_read_concept").JsonSchema.GetRawText(), functions["okf_read_concept"].JsonSchema.GetRawText());
-        Assert.Equal(AIFunctionFactory.Create(tools.WriteConcept, "okf_write_concept").JsonSchema.GetRawText(), functions["okf_write_concept"].JsonSchema.GetRawText());
-        Assert.Equal(AIFunctionFactory.Create(tools.GetComputation, "okf_get_computation").Description, functions["okf_get_computation"].Description);
+        // The model sees what the public asynchronous methods say (the recording wrappers only add the observation).
+        Assert.Equal(AIFunctionFactory.Create(tools.ReadConceptAsync, "okf_read_concept").JsonSchema.GetRawText(), functions["okf_read_concept"].JsonSchema.GetRawText());
+        Assert.Equal(AIFunctionFactory.Create(tools.WriteConceptAsync, "okf_write_concept").JsonSchema.GetRawText(), functions["okf_write_concept"].JsonSchema.GetRawText());
+        Assert.Equal(AIFunctionFactory.Create(tools.GetComputationAsync, "okf_get_computation").Description, functions["okf_get_computation"].Description);
     }
 
     private static AIContextProvider.InvokingContext InvokingContext(string userMessageText)

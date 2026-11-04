@@ -178,9 +178,21 @@ public class NoResidualFileIoTests
         Add(t, "OkfBundleTools.ChangesSince(String)", c => NotError(Tools(c).ChangesSince("2020-01-01")));
         Add(t, "OkfBundleTools.GetComputation(String)", c => Assert.Contains("SELECT", Tools(c).GetComputation("computations/revenue"), StringComparison.Ordinal));
 
+        // ----- the tool set, asynchronous spellings (#152) -----
+        Add(t, "OkfBundleTools.ReadConceptAsync(String,CancellationToken)", async c => Assert.Contains("Revenue", await Tools(c).ReadConceptAsync("computations/revenue"), StringComparison.Ordinal));
+        Add(t, "OkfBundleTools.BrowseAsync(String,CancellationToken)", async c => NotError(await Tools(c).BrowseAsync()));
+        Add(t, "OkfBundleTools.GraphAsync(String,CancellationToken)", async c => NotError(await Tools(c).GraphAsync()));
+        Add(t, "OkfBundleTools.SearchAsync(String,String,CancellationToken)", async c => NotError(await Tools(c).SearchAsync("revenue")));
+        Add(t, "OkfBundleTools.AuditAsync(Nullable`1,String,String,String,CancellationToken)", async c => NotError(await Tools(c).AuditAsync()));
+        Add(t, "OkfBundleTools.WriteConceptAsync(String,String,String,CancellationToken)", async c => Written(c, await Tools(c).WriteConceptAsync("p/ta", Fm, "b\n"), "p/ta"));
+        Add(t, "OkfBundleTools.VerifyAsync(String,String,String,CancellationToken)", async c => NotError(await Tools(c).VerifyAsync("metrics/revenue", "human:ada")));
+        Add(t, "OkfBundleTools.AppendLogAsync(String,String,CancellationToken)", async c => NotError(await Tools(c).AppendLogAsync("Update", "probe")));
+        Add(t, "OkfBundleTools.RegenerateIndexesAsync(CancellationToken)", async c => NotError(await Tools(c).RegenerateIndexesAsync()));
+        Add(t, "OkfBundleTools.ValidateBundleAsync(CancellationToken)", async c => NotError(await Tools(c).ValidateBundleAsync()));
+        Add(t, "OkfBundleTools.ChangesSinceAsync(String,CancellationToken)", async c => NotError(await Tools(c).ChangesSinceAsync("2020-01-01")));
+        Add(t, "OkfBundleTools.GetComputationAsync(String,CancellationToken)", async c => Assert.Contains("SELECT", await Tools(c).GetComputationAsync("computations/revenue"), StringComparison.Ordinal));
+
         // ----- attestation: the attester is read through the provider, by key -----
-        Add(t, "OkfBundleTools.RunComputation(String,IReadOnlyDictionary`2)", c =>
-            AssertRan(c, Tools(c).RunComputation("computations/revenue", Year)));
         Add(t, "OkfBundleTools.RunComputationAsync(String,IReadOnlyDictionary`2,CancellationToken)", async c =>
             AssertRan(c, await Tools(c).RunComputationAsync("computations/revenue", Year)));
         Add(t, "AttestationOrchestrator.RunAsync(Bundle,ConceptId,IReadOnlyDictionary`2,Nullable`1,CancellationToken)", async c =>

@@ -130,7 +130,7 @@ public sealed class OkfBundleTools
     /// The §10.5 attestation orchestrator, if one has been wired for this tool
     /// set. <see langword="null"/> unless the <see cref="OkfBundleTools(string, AttestationOrchestrator?)"/>
     /// overload was used with a non-null orchestrator — in that case,
-    /// <see cref="RunComputation"/> is a no-op error and <see cref="GetTools()"/>
+    /// <see cref="RunComputationAsync"/> is a no-op error and <see cref="GetTools()"/>
     /// omits <c>okf_run_computation</c> entirely (§10.5 requires a host-supplied
     /// runtime; there is nothing sane to expose without one). <see cref="GetComputation"/>
     /// never depends on this field: reading a computation's contract and
@@ -182,7 +182,7 @@ public sealed class OkfBundleTools
     /// equivalent to <see cref="OkfBundleTools(string)"/>: <c>okf_get_computation</c>
     /// is still exposed (it is read-only and needs no runtime), but
     /// <c>okf_run_computation</c> is omitted from <see cref="GetTools()"/> and
-    /// <see cref="RunComputation"/> reports a plain-text error instead of
+    /// <see cref="RunComputationAsync"/> reports a plain-text error instead of
     /// running anything.
     /// </summary>
     /// <param name="bundleRoot">Path to the bundle's root directory.</param>
@@ -307,6 +307,44 @@ public sealed class OkfBundleTools
     }
 
     /// <summary>
+    /// The result of an asynchronous tool for a synchronous caller (the obsolete <c>string</c> methods,
+    /// #152): only over a provider that completes synchronously — refused before anything starts
+    /// otherwise — and waiting, if need be, for this tool set's own lock, never for the provider.
+    /// </summary>
+    private string RunSync(Func<Task<string>> tool)
+    {
+        // Refused BEFORE the tool starts: an asynchronous tool begins its I/O as soon as it is called.
+        SyncBridge.RequireSynchronousProvider(_handle.Provider);
+        return tool().GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// <see cref="GetBundle"/> without the blocking (#152): the handle's image, loaded asynchronously
+    /// (<see cref="BundleHandle.GetCurrentAsync"/>) while the tool set's write lock is held, so that a
+    /// read still never interleaves with this tool set's own writes (decision Q6 of the design).
+    /// </summary>
+    internal async Task<Bundle> GetBundleAsync(CancellationToken ct)
+    {
+        var lease = await _writer.EnterWriteLockAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return await _handle.GetCurrentAsync(ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            lease.Dispose();
+        }
+    }
+
+    /// <summary><see cref="InvalidateBundle"/> without the blocking (#152).</summary>
+    internal async Task InvalidateBundleAsync(CancellationToken ct)
+    {
+        var lease = await _writer.EnterWriteLockAsync(ct).ConfigureAwait(false);
+        lease.Dispose();
+        _handle.Invalidate();
+    }
+
+    /// <summary>
     /// A write tool's result, passed on: an <c>Error:</c> text invalidates the handle's image. The
     /// writer's notification (which does that after a committed write) never runs for a write
     /// whose outcome is unknown — the content may have landed all the same — so a failed write
@@ -318,6 +356,17 @@ public sealed class OkfBundleTools
         if (result.StartsWith("Error:", StringComparison.Ordinal))
         {
             InvalidateBundle();
+        }
+
+        return result;
+    }
+
+    /// <summary><see cref="DropBundleOnError"/> without the blocking (#152).</summary>
+    private async Task<string> DropBundleOnErrorAsync(string result, CancellationToken ct)
+    {
+        if (result.StartsWith("Error:", StringComparison.Ordinal))
+        {
+            await InvalidateBundleAsync(ct).ConfigureAwait(false);
         }
 
         return result;
@@ -399,16 +448,16 @@ public sealed class OkfBundleTools
         var tools = new List<AITool>
         {
             AIFunctionFactory.Create(ReadConceptTool, "okf_read_concept"),
-            AIFunctionFactory.Create(Browse, "okf_browse"),
-            AIFunctionFactory.Create(Graph, "okf_graph"),
-            AIFunctionFactory.Create(Search, "okf_search"),
-            AIFunctionFactory.Create(Audit, "okf_audit"),
+            AIFunctionFactory.Create(BrowseAsync, "okf_browse"),
+            AIFunctionFactory.Create(GraphAsync, "okf_graph"),
+            AIFunctionFactory.Create(SearchAsync, "okf_search"),
+            AIFunctionFactory.Create(AuditAsync, "okf_audit"),
             AIFunctionFactory.Create(WriteConceptTool, "okf_write_concept"),
-            AIFunctionFactory.Create(Verify, "okf_verify"),
-            AIFunctionFactory.Create(AppendLog, "okf_append_log"),
-            AIFunctionFactory.Create(RegenerateIndexes, "okf_regenerate_indexes"),
-            AIFunctionFactory.Create(ValidateBundle, "okf_validate_bundle"),
-            AIFunctionFactory.Create(ChangesSince, "okf_changes_since"),
+            AIFunctionFactory.Create(VerifyAsync, "okf_verify"),
+            AIFunctionFactory.Create(AppendLogAsync, "okf_append_log"),
+            AIFunctionFactory.Create(RegenerateIndexesAsync, "okf_regenerate_indexes"),
+            AIFunctionFactory.Create(ValidateBundleAsync, "okf_validate_bundle"),
+            AIFunctionFactory.Create(ChangesSinceAsync, "okf_changes_since"),
             AIFunctionFactory.Create(GetComputationTool, "okf_get_computation"),
         };
 
@@ -453,7 +502,18 @@ public sealed class OkfBundleTools
     /// </summary>
     /// <param name="conceptId">The concept id, e.g. <c>tables/orders</c>.</param>
     [Description(ReadConceptDescription)]
-    public string ReadConcept([Description(ConceptIdDescription)] string conceptId) => ReadConceptCore(conceptId, describeUnreadable: false, out _, out _);
+    [Obsolete("Use ReadConceptAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string ReadConcept([Description(ConceptIdDescription)] string conceptId) => RunSync(() => ReadConceptAsync(conceptId));
+
+    /// <summary>
+    /// The asynchronous <see cref="ReadConcept"/> (#152): the same text, the image loaded asynchronously.
+    /// A host method: it records no observation (an injection of context is not one).
+    /// </summary>
+    /// <param name="conceptId">The concept id.</param>
+    /// <param name="ct">Stops the wait for the image.</param>
+    [Description(ReadConceptDescription)]
+    public async Task<string> ReadConceptAsync([Description(ConceptIdDescription)] string conceptId, CancellationToken ct = default) =>
+        (await ReadConceptCoreAsync(conceptId, describeUnreadable: false, ct).ConfigureAwait(false)).Result;
 
     /// <summary>
     /// <c>okf_read_concept</c>: <see cref="ReadConcept"/>, then the observation (spec §5.4):
@@ -462,9 +522,9 @@ public sealed class OkfBundleTools
     /// calls (D5). Internal so that tests reach the exposed function without the AI plumbing.
     /// </summary>
     [Description(ReadConceptDescription)]
-    internal string ReadConceptTool([Description(ConceptIdDescription)] string conceptId)
+    internal async Task<string> ReadConceptTool([Description(ConceptIdDescription)] string conceptId, CancellationToken ct = default)
     {
-        var result = ReadConceptCore(conceptId, describeUnreadable: true, out var key, out var version);
+        var (result, key, version) = await ReadConceptCoreAsync(conceptId, describeUnreadable: true, ct).ConfigureAwait(false);
         if (key is not null)
         {
             if (version is { } shown)
@@ -481,9 +541,9 @@ public sealed class OkfBundleTools
     }
 
     /// <summary>
-    /// <see cref="ReadConcept"/>, reporting what the rendering showed: <paramref name="key"/>
-    /// with its <paramref name="version"/> when the whole concept was rendered, the
-    /// <paramref name="key"/> alone when the id parsed and nothing exists under it (shown
+    /// <see cref="ReadConcept"/>, reporting what the rendering showed: the key
+    /// with its version when the whole concept was rendered, the
+    /// the key alone when the id parsed and nothing exists under it (shown
     /// absent), neither otherwise (an invalid id, a bundle that failed to load, an object that
     /// exists without a known version). An object that exists but is no concept (a parse
     /// failure) is never reported absent to the observation: with <paramref name="describeUnreadable"/>
@@ -491,20 +551,18 @@ public sealed class OkfBundleTools
     /// its version; without it (the public method, whose text is what it always was) the message
     /// is the plain not-found one and nothing is reported.
     /// </summary>
-    private string ReadConceptCore(string conceptId, bool describeUnreadable, out BundleKey? key, out BundleObjectVersion? version)
+    private async Task<(string Result, BundleKey? Key, BundleObjectVersion? Version)> ReadConceptCoreAsync(string conceptId, bool describeUnreadable, CancellationToken ct)
     {
-        key = null;
-        version = null;
         if (GuardConceptId(conceptId) is { } err)
         {
-            return err;
+            return (err, null, null);
         }
 
         BundleKey? shownKey = null;
         BundleObjectVersion? shownVersion = null;
-        var result = RunTool(() =>
+        var result = await RunToolAsync(async () =>
         {
-            var bundle = GetBundle();
+            var bundle = await GetBundleAsync(ct).ConfigureAwait(false);
             if (!ConceptId.TryParse(conceptId, out var id))
             {
                 return ConceptNotFoundMessage(conceptId);
@@ -587,10 +645,8 @@ public sealed class OkfBundleTools
             }
 
             return sb.ToString();
-        });
-        key = shownKey;
-        version = shownVersion;
-        return result;
+        }).ConfigureAwait(false);
+        return (result, shownKey, shownVersion);
     }
 
     /// <summary>
@@ -615,15 +671,21 @@ public sealed class OkfBundleTools
     /// instead.
     /// </summary>
     /// <param name="path">Optional directory path within the bundle, e.g. <c>tables</c>. Omit to list the bundle root.</param>
+    [Obsolete("Use BrowseAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string Browse(string? path = null) => RunSync(() => BrowseAsync(path));
+
+    /// <summary>The asynchronous <see cref="Browse"/> (#152): the same text, the image and the index read asynchronously.</summary>
+    /// <param name="path">Optional directory path within the bundle, e.g. <c>tables</c>. Omit to list the bundle root.</param>
+    /// <param name="ct">Stops the wait for the image and the reads.</param>
     [Description("Browse the bundle via its index files (progressive disclosure). Without a path, lists the bundle root.")]
-    public string Browse([Description("Optional directory path within the bundle, e.g. 'tables'.")] string? path = null)
+    public async Task<string> BrowseAsync([Description("Optional directory path within the bundle, e.g. 'tables'.")] string? path = null, CancellationToken ct = default)
     {
         if (path is not null && path.Contains('\0'))
         {
             return "Error: invalid path — it must not contain a null character.";
         }
 
-        return RunTool(() =>
+        return await RunToolAsync(async () =>
         {
             var relPath = path?.Trim() ?? string.Empty;
             var segments = relPath.Length == 0
@@ -637,7 +699,7 @@ public sealed class OkfBundleTools
                 return $"Error: invalid path '{OneLine(path ?? string.Empty)}' — '..' segments and absolute paths are not allowed.";
             }
 
-            var bundle = GetBundle();
+            var bundle = await GetBundleAsync(ct).ConfigureAwait(false);
 
             // A directory is a prefix of the key space (spec §2): it exists while an object
             // lies under it, and its key must pass the load's policy. The provider answers
@@ -648,7 +710,7 @@ public sealed class OkfBundleTools
             if (segments.Length > 0
                 && (!BundleKey.TryParse(string.Join('/', segments), out prefix, out _)
                     || !bundle.IsKeyAllowed(prefix, out _)
-                    || !PrefixExists(bundle, prefix)))
+                    || !await PrefixExistsAsync(bundle, prefix, ct).ConfigureAwait(false)))
             {
                 // Folded, same reason as the invalid-path line above: this is
                 // the one Browse message an arbitrary string reaches, since
@@ -666,14 +728,14 @@ public sealed class OkfBundleTools
                 // used to drop; the strict reader keeps it as a character. Browse is the
                 // one producer of an index text, for the tool and for the context provider
                 // (its root block is Browse(null)).
-                var index = bundle.ReadResourceText(indexKey);
+                var index = (await bundle.ReadResourceTextAsync(indexKey, null, ct).ConfigureAwait(false)).Text;
                 return index.Length > 0 && index[0] == (char)0xFEFF ? index[1..] : index;
             }
             catch (FileNotFoundException)
             {
                 return BuildLevelListing(bundle, segments, relPath);
             }
-        });
+        }).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -683,17 +745,23 @@ public sealed class OkfBundleTools
     /// whose first load fails) — reported as a plain-text message instead.
     /// </summary>
     /// <param name="conceptId">Optional concept id to focus on.</param>
+    [Obsolete("Use GraphAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string Graph(string? conceptId = null) => RunSync(() => GraphAsync(conceptId));
+
+    /// <summary>The asynchronous <see cref="Graph"/> (#152).</summary>
+    /// <param name="conceptId">Optional concept id to focus on.</param>
+    /// <param name="ct">Stops the wait for the image.</param>
     [Description("Inspect the cross-link graph. With a concept id: its outgoing links, backlinks and broken links. Without: bundle-wide stats.")]
-    public string Graph([Description("Optional concept id to focus on.")] string? conceptId = null)
+    public async Task<string> GraphAsync([Description("Optional concept id to focus on.")] string? conceptId = null, CancellationToken ct = default)
     {
         if (conceptId is not null && conceptId.Contains('\0'))
         {
             return "Error: invalid concept id — it must not contain a null character.";
         }
 
-        return RunTool(() =>
+        return await RunToolAsync(async () =>
         {
-            var bundle = GetBundle();
+            var bundle = await GetBundleAsync(ct).ConfigureAwait(false);
 
             if (string.IsNullOrWhiteSpace(conceptId))
             {
@@ -706,7 +774,7 @@ public sealed class OkfBundleTools
             }
 
             return BuildConceptGraphDetail(bundle, id);
-        });
+        }).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -729,10 +797,18 @@ public sealed class OkfBundleTools
     /// </summary>
     /// <param name="query">The search query (case-insensitive substring terms).</param>
     /// <param name="tag">Optional tag filter: only concepts carrying this tag.</param>
+    [Obsolete("Use SearchAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string Search(string query, string? tag = null) => RunSync(() => SearchAsync(query, tag));
+
+    /// <summary>The asynchronous <see cref="Search"/> (#152).</summary>
+    /// <param name="query">The search query (case-insensitive substring terms).</param>
+    /// <param name="tag">Optional tag filter: only concepts carrying this tag.</param>
+    /// <param name="ct">Stops the wait for the image.</param>
     [Description("Full-text search across concept titles, descriptions, tags and bodies. Returns the best-matching concept id first, then spreads the remaining results across top-level id families, so the list is not in descending score order.")]
-    public string Search(
+    public async Task<string> SearchAsync(
         [Description("The search query (case-insensitive substring terms).")] string query,
-        [Description("Optional tag filter: only concepts carrying this tag.")] string? tag = null)
+        [Description("Optional tag filter: only concepts carrying this tag.")] string? tag = null,
+        CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(query))
         {
@@ -749,7 +825,7 @@ public sealed class OkfBundleTools
             return "Error: invalid tag — it must not contain a null character.";
         }
 
-        return RunTool(() =>
+        return await RunToolAsync(async () =>
         {
             var terms = query.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
             if (terms.Length == 0)
@@ -758,7 +834,7 @@ public sealed class OkfBundleTools
             }
 
             var effectiveTag = string.IsNullOrWhiteSpace(tag) ? null : tag;
-            var scored = ScoreConceptsFor(query, tag);
+            var scored = await ScoreConceptsForAsync(query, tag, ct).ConfigureAwait(false);
 
             if (scored.Count == 0)
             {
@@ -771,7 +847,7 @@ public sealed class OkfBundleTools
             }
 
             return FormatSearchResults(query, effectiveTag, scored, Now);
-        });
+        }).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -789,6 +865,10 @@ public sealed class OkfBundleTools
     /// </summary>
     internal IReadOnlyList<ScoredConcept> ScoreConceptsFor(string query, string? tag = null) =>
         ConceptSearch.Search(GetBundle().Concepts, query, tag);
+
+    /// <summary><see cref="ScoreConceptsFor"/> without the blocking (#152): the image loaded asynchronously, the one shared scorer.</summary>
+    internal async Task<IReadOnlyList<ScoredConcept>> ScoreConceptsForAsync(string query, string? tag, CancellationToken ct) =>
+        ConceptSearch.Search((await GetBundleAsync(ct).ConfigureAwait(false)).Concepts, query, tag);
 
     /// <summary>
     /// Audits the bundle's trust, freshness and lifecycle signals (§5.3–§5.5):
@@ -810,12 +890,23 @@ public sealed class OkfBundleTools
     /// <param name="trust">Comma-separated trust tiers to keep.</param>
     /// <param name="status">Keep only concepts with this lifecycle status.</param>
     /// <param name="type">Keep only concepts with this frontmatter type (exact match).</param>
+    [Obsolete("Use AuditAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string Audit(bool? stale = null, string? trust = null, string? status = null, string? type = null) =>
+        RunSync(() => AuditAsync(stale, trust, status, type));
+
+    /// <summary>The asynchronous <see cref="Audit"/> (#152).</summary>
+    /// <param name="stale">Only concepts past their stale_after instant.</param>
+    /// <param name="trust">Comma-separated trust tiers to include.</param>
+    /// <param name="status">Only concepts with this lifecycle status.</param>
+    /// <param name="type">Only concepts with this frontmatter type (exact match).</param>
+    /// <param name="ct">Stops the wait for the image.</param>
     [Description("Audit the bundle's trust, freshness and lifecycle signals: counts by trust tier and status over the whole bundle, plus the concepts the filters select. Called bare it returns the stale worklist; combined with trust/status/type it stops constraining staleness unless you pass stale explicitly.")]
-    public string Audit(
+    public async Task<string> AuditAsync(
         [Description("Only concepts past their stale_after instant. Leave unset for the default: the stale worklist when no other filter is given, no staleness constraint when one is.")] bool? stale = null,
         [Description("Comma-separated trust tiers to include: unverified, machine-confirmed, human-reviewed.")] string? trust = null,
         [Description("Only concepts with this lifecycle status: draft, stable or deprecated.")] string? status = null,
-        [Description("Only concepts with this frontmatter type (exact match).")] string? type = null)
+        [Description("Only concepts with this frontmatter type (exact match).")] string? type = null,
+        CancellationToken ct = default)
     {
         HashSet<TrustTier>? tiers = null;
         if (trust is not null)
@@ -858,10 +949,10 @@ public sealed class OkfBundleTools
         // "Error: ..." string. A function tool must return an error, not throw
         // one -- a directory deleted after construction would otherwise escape
         // as an exception into the agent runtime.
-        return RunTool(() =>
+        return await RunToolAsync(async () =>
         {
             var report = ConceptAudit.Run(
-                GetBundle(),
+                await GetBundleAsync(ct).ConfigureAwait(false),
                 new AuditQuery(staleOnly, tiers, parsedStatus, trimmedType),
 
                 // Pinned to Now -- the same UtcNow seam ReadConcept and
@@ -870,7 +961,7 @@ public sealed class OkfBundleTools
                 new FixedClock(Now));
 
             return RenderAudit(report, staleOnly);
-        });
+        }).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -886,12 +977,25 @@ public sealed class OkfBundleTools
     /// <param name="conceptId">The concept id (path without <c>.md</c>), e.g. <c>tables/refunds</c>.</param>
     /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines (the same YAML subset used inside a document's frontmatter block, without the <c>---</c> delimiters).</param>
     /// <param name="body">The markdown body.</param>
+    [Obsolete("Use WriteConceptAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string WriteConcept(string conceptId, string frontmatterYaml, string body) =>
+        DropBundleOnError(_writer.WriteConcept(conceptId, frontmatterYaml, body));
+
+    /// <summary>
+    /// The asynchronous <see cref="WriteConcept"/> (#152): the same write, the provider asked
+    /// asynchronously. A host method: it requires and records no observation.
+    /// </summary>
+    /// <param name="conceptId">The concept id (path without <c>.md</c>).</param>
+    /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines.</param>
+    /// <param name="body">The markdown body.</param>
+    /// <param name="ct">Cancels the write before its commit.</param>
     [Description(WriteConceptDescription)]
-    public string WriteConcept(
+    public async Task<string> WriteConceptAsync(
         [Description(WriteConceptIdDescription)] string conceptId,
         [Description(FrontmatterYamlDescription)] string frontmatterYaml,
-        [Description(BodyDescription)] string body) =>
-        DropBundleOnError(_writer.WriteConcept(conceptId, frontmatterYaml, body));
+        [Description(BodyDescription)] string body,
+        CancellationToken ct = default) =>
+        await DropBundleOnErrorAsync(await _writer.WriteConceptAsync(conceptId, frontmatterYaml, body, ct).ConfigureAwait(false), ct).ConfigureAwait(false);
 
     /// <summary>
     /// <c>okf_write_concept</c>: <see cref="WriteConcept"/> conditioned on what this session
@@ -910,14 +1014,15 @@ public sealed class OkfBundleTools
     /// writer, whose refusal is unchanged.
     /// </summary>
     [Description(WriteConceptDescription)]
-    internal string WriteConceptTool(
+    internal async Task<string> WriteConceptTool(
         [Description(WriteConceptIdDescription)] string conceptId,
         [Description(FrontmatterYamlDescription)] string frontmatterYaml,
-        [Description(BodyDescription)] string body)
+        [Description(BodyDescription)] string body,
+        CancellationToken ct = default)
     {
         if (!ConceptId.TryParse(conceptId, out var id))
         {
-            return WriteConcept(conceptId, frontmatterYaml, body);
+            return await WriteConceptAsync(conceptId, frontmatterYaml, body, ct).ConfigureAwait(false);
         }
 
         var key = id.ToKey();
@@ -935,7 +1040,7 @@ public sealed class OkfBundleTools
             return $"Error: '{id}' has not been read by this session; read it first with okf_read_concept (a context block injected for you, or okf_get_computation, does not count), then write it.";
         }
 
-        var result = DropBundleOnError(_writer.WriteConcept(conceptId, frontmatterYaml, body, condition));
+        var result = await DropBundleOnErrorAsync(await _writer.WriteConceptAsync(conceptId, frontmatterYaml, body, condition, ct).ConfigureAwait(false), ct).ConfigureAwait(false);
         if (!result.StartsWith("Error:", StringComparison.Ordinal))
         {
             _observations.Forget(key);
@@ -957,11 +1062,20 @@ public sealed class OkfBundleTools
     /// <see cref="BundleConceptWriter.RecordVerifications"/> rejects fractional
     /// seconds, a numeric offset, and a bare date); omit for now.
     /// </param>
+    [Obsolete("Use VerifyAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string Verify(string conceptIds, string by, string? at = null) => RunSync(() => VerifyAsync(conceptIds, by, at));
+
+    /// <summary>The asynchronous <see cref="Verify"/> (#152).</summary>
+    /// <param name="conceptIds">Comma-separated concept ids (paths without .md).</param>
+    /// <param name="by">The §7 actor recording the review.</param>
+    /// <param name="at">UTC timestamp in the exact form yyyy-MM-ddTHH:mm:ssZ; omit for now.</param>
+    /// <param name="ct">Cancels the batch before its first commit; after it, the batch stops between two objects and says what landed.</param>
     [Description("Record a review of one or more concepts: adds or replaces the caller's { by, at } entry in each concept's `verified` list. The stamp is a dated declaration, not a proof — the same rules as the okf verify CLI verb.")]
-    public string Verify(
+    public async Task<string> VerifyAsync(
         [Description("Comma-separated concept ids (paths without .md). Explicit ids only — there is no whole-bundle form.")] string conceptIds,
         [Description("The §7 actor recording the review — one of exactly three forms: human:<id> (e.g. human:ada), process:<id> (e.g. process:nightly), or <producer>/<version> for an agent or tool (e.g. assistant/1.0). There is no agent: prefix: writing agent:assistant/1.0 stores the producer name \"agent:assistant\". Must not contain control characters.")] string by,
-        [Description("UTC timestamp in the exact form yyyy-MM-ddTHH:mm:ssZ, e.g. 2026-08-28T09:14:00Z — no fractional seconds, no offset, no bare date. Omit for now.")] string? at = null)
+        [Description("UTC timestamp in the exact form yyyy-MM-ddTHH:mm:ssZ, e.g. 2026-08-28T09:14:00Z — no fractional seconds, no offset, no bare date. Omit for now.")] string? at = null,
+        CancellationToken ct = default)
     {
         var ids = (conceptIds ?? string.Empty)
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -983,7 +1097,7 @@ public sealed class OkfBundleTools
             return VerifyUsageMessage;
         }
 
-        return DropBundleOnError(RunTool(() =>
+        return await DropBundleOnErrorAsync(await RunToolAsync(async () =>
         {
             // The single governed §11 floor (BundleConceptWriter.CheckVerificationTargets,
             // also called first thing inside RecordVerifications itself, same
@@ -995,7 +1109,7 @@ public sealed class OkfBundleTools
             // message shape, and it reads the k named files directly rather
             // than going through the tool's cached bundle (unaffected by
             // whether that cache is stale).
-            var targetProblem = _writer.CheckVerificationTargets(ids);
+            var targetProblem = await _writer.CheckVerificationTargetsAsync(ids, ct).ConfigureAwait(false);
             if (targetProblem is { } problem)
             {
                 return problem.Kind switch
@@ -1049,13 +1163,13 @@ public sealed class OkfBundleTools
             // `at` is passed through untouched, null included: the writer owns
             // the clock seam and reports the timestamp it used, so the tool
             // never dates anything itself.
-            var outcome = _writer.RecordVerifications(ids, by, at);
+            var outcome = await _writer.RecordVerificationsAsync(ids, by, at, ct).ConfigureAwait(false);
 
             // A batch that failed part-way (an unknown outcome included) may have written
             // concepts the writer's notification did not report: drop the cache.
             if (!outcome.Recorded)
             {
-                InvalidateBundle();
+                await InvalidateBundleAsync(ct).ConfigureAwait(false);
             }
 
             // No OneLine here: AuditText.FormatVerificationRecord makes every
@@ -1090,12 +1204,12 @@ public sealed class OkfBundleTools
             }
 
             return lines.ToString();
-        }));
+        }).ConfigureAwait(false), ct).ConfigureAwait(false);
     }
 
     /// <summary>
     /// Atomically reads, transforms, and rewrites one concept's body — the
-    /// seam <see cref="OKF4net.Agents.OkfContextProvider.CaptureMemory"/> uses
+    /// seam <see cref="OKF4net.Agents.OkfContextProvider.CaptureMemoryAsync"/> uses
     /// to close the same-day memory-capture race (E2). A thin delegate onto
     /// <see cref="BundleConceptWriter.AppendToConceptAtomic"/>, whose remarks
     /// describe the full atomicity guarantee (and its residual TOCTOU
@@ -1130,6 +1244,14 @@ public sealed class OkfBundleTools
         string frontmatterYamlIfCreating,
         Func<string?, string> buildBody) =>
         DropBundleOnError(_writer.AppendToConceptAtomic(conceptId, frontmatterYamlIfCreating, buildBody));
+
+    /// <summary><see cref="AppendToConceptAtomic"/> without the blocking (#152), for the context provider's memory capture.</summary>
+    internal async Task<string> AppendToConceptAtomicAsync(
+        string conceptId,
+        string frontmatterYamlIfCreating,
+        Func<string?, string> buildBody,
+        CancellationToken ct) =>
+        await DropBundleOnErrorAsync(await _writer.AppendToConceptAtomicAsync(conceptId, frontmatterYamlIfCreating, buildBody, ct).ConfigureAwait(false), ct).ConfigureAwait(false);
 
     /// <summary>
     /// Test-only hook, forwarded to <see cref="BundleConceptWriter.BeforeLateReparseCheckForTest"/>
@@ -1176,11 +1298,19 @@ public sealed class OkfBundleTools
     /// </summary>
     /// <param name="kind">Entry kind, e.g. <c>Update</c> or <c>Creation</c>.</param>
     /// <param name="text">The entry text.</param>
+    [Obsolete("Use AppendLogAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string AppendLog(string kind, string text) => OneLine(DropBundleOnError(_writer.AppendLog(kind, text)));
+
+    /// <summary>The asynchronous <see cref="AppendLog"/> (#152).</summary>
+    /// <param name="kind">Entry kind, e.g. 'Update' or 'Creation'.</param>
+    /// <param name="text">The entry text.</param>
+    /// <param name="ct">Cancels the append before its commit.</param>
     [Description("Append an entry to the bundle root log.md under today's date (ISO). Note: log.md is re-rendered through the strict §9 model, so non-conforming prose or comments in a hand-authored log.md are not preserved.")]
-    public string AppendLog(
+    public async Task<string> AppendLogAsync(
         [Description("Entry kind, e.g. 'Update' or 'Creation'.")] string kind,
-        [Description("The entry text.")] string text) =>
-        OneLine(DropBundleOnError(_writer.AppendLog(kind, text)));
+        [Description("The entry text.")] string text,
+        CancellationToken ct = default) =>
+        OneLine(await DropBundleOnErrorAsync(await _writer.AppendLogAsync(kind, text, null, ct).ConfigureAwait(false), ct).ConfigureAwait(false));
 
     /// <summary>
     /// Regenerates every <c>index.md</c> in the bundle (progressive
@@ -1191,8 +1321,13 @@ public sealed class OkfBundleTools
     /// Never throws for expected errors (a bundle root that disappeared out
     /// from under it) — reported as a plain-text message instead.
     /// </summary>
+    [Obsolete("Use RegenerateIndexesAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string RegenerateIndexes() => RunSync(() => RegenerateIndexesAsync());
+
+    /// <summary>The asynchronous <see cref="RegenerateIndexes"/> (#152).</summary>
+    /// <param name="ct">Cancels the run: before the first index it is an <see cref="OperationCanceledException"/>; after, the run stops between two indexes.</param>
     [Description("Regenerate every index.md in the bundle (progressive-disclosure listings). Run after adding or changing concepts.")]
-    public string RegenerateIndexes()
+    public async Task<string> RegenerateIndexesAsync(CancellationToken ct = default)
     {
         // The capability guard of every write entry point (spec §3), outside RunTool like
         // the writer's own: a read-only provider is a host mistake, not a content error.
@@ -1201,10 +1336,11 @@ public sealed class OkfBundleTools
             throw new BundleReadOnlyException(_handle.Provider.Id);
         }
 
-        return RunTool(() =>
+        return await RunToolAsync(async () =>
         {
             IReadOnlyList<BundleKey> written;
-            using (_writer.EnterWriteLock())
+            var lease = await _writer.EnterWriteLockAsync(ct).ConfigureAwait(false);
+            try
             {
                 try
                 {
@@ -1213,7 +1349,7 @@ public sealed class OkfBundleTools
                     // second provider built from the root: the output of this tool does
                     // not change, and a confinement boundary the host gave the provider
                     // still applies.
-                    written = IndexGenerator.Regenerate(_handle.Provider, IndexGenerator.DefaultSynthesize, _handle.Options, legacy: true).Written;
+                    written = (await IndexGenerator.RegenerateAsync(_handle.Provider, IndexGenerator.DefaultSynthesize, _handle.Options, legacy: true, synchronous: false, ct).ConfigureAwait(false)).Written;
                 }
                 finally
                 {
@@ -1221,6 +1357,10 @@ public sealed class OkfBundleTools
                     // indexes it did write are on disk and no notification reports them.
                     _handle.Invalidate();
                 }
+            }
+            finally
+            {
+                lease.Dispose();
             }
 
             if (written.Count == 0)
@@ -1232,7 +1372,7 @@ public sealed class OkfBundleTools
             sb.Append("Regenerated ").Append(written.Count).Append(" index file(s):").Append('\n');
             foreach (var key in written)
             {
-                // Same sink shape as AppendLogFileChanges's "## {rel}" and
+                // Same sink shape as AppendLogFileChangesAsync's "## {rel}" and
                 // "> Skipped {rel}": a key is the '/'-joined path under the
                 // root, and a directory name may carry a line terminator. One
                 // index file, one "- " line.
@@ -1240,7 +1380,7 @@ public sealed class OkfBundleTools
             }
 
             return sb.ToString();
-        });
+        }).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1251,13 +1391,18 @@ public sealed class OkfBundleTools
     /// conformant ✓/✗ verdict. Never throws for expected errors (a bundle
     /// whose first load fails) — reported as a plain-text message instead.
     /// </summary>
+    [Obsolete("Use ValidateBundleAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string ValidateBundle() => RunSync(() => ValidateBundleAsync());
+
+    /// <summary>The asynchronous <see cref="ValidateBundle"/> (#152): the validator asks the provider asynchronously.</summary>
+    /// <param name="ct">Stops the wait for the image and the validation.</param>
     [Description("Validate the bundle against OKF v0.2 conformance (§11). Returns the diagnostics report.")]
-    public string ValidateBundle()
+    public async Task<string> ValidateBundleAsync(CancellationToken ct = default)
     {
-        return RunTool(() =>
+        return await RunToolAsync(async () =>
         {
-            var bundle = GetBundle();
-            var report = BundleValidator.Validate(bundle);
+            var bundle = await GetBundleAsync(ct).ConfigureAwait(false);
+            var report = await BundleValidator.ValidateAsync(bundle, null, ct).ConfigureAwait(false);
 
             var sb = new StringBuilder();
             foreach (var diagnostic in report.Diagnostics)
@@ -1284,7 +1429,7 @@ public sealed class OkfBundleTools
                 : $"✗ not conformant with OKF v{OkfSpec.Version}").Append('\n');
 
             return sb.ToString();
-        });
+        }).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1307,8 +1452,14 @@ public sealed class OkfBundleTools
     /// load fails) — those are reported as a plain-text message instead.
     /// </summary>
     /// <param name="sinceDate">ISO date (<c>yyyy-MM-dd</c>), inclusive.</param>
+    [Obsolete("Use ChangesSinceAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string ChangesSince(string sinceDate) => RunSync(() => ChangesSinceAsync(sinceDate));
+
+    /// <summary>The asynchronous <see cref="ChangesSince"/> (#152).</summary>
+    /// <param name="sinceDate">ISO date (yyyy-MM-dd), inclusive.</param>
+    /// <param name="ct">Stops the wait for the image and the reads of the logs.</param>
     [Description("Summarize bundle changes since a given ISO date, aggregated from every log.md in the bundle.")]
-    public string ChangesSince([Description("ISO date (yyyy-MM-dd), inclusive.")] string sinceDate)
+    public async Task<string> ChangesSinceAsync([Description("ISO date (yyyy-MM-dd), inclusive.")] string sinceDate, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(sinceDate))
         {
@@ -1333,16 +1484,16 @@ public sealed class OkfBundleTools
             return ChangesSinceUsageMessage;
         }
 
-        return RunTool(() =>
+        return await RunToolAsync(async () =>
         {
-            var bundle = GetBundle();
+            var bundle = await GetBundleAsync(ct).ConfigureAwait(false);
             var notes = new StringBuilder();
             var changes = new StringBuilder();
             var any = false;
 
             foreach (var logKey in bundle.LogKeys)
             {
-                any |= AppendLogFileChanges(bundle, logKey, date, notes, changes);
+                any |= await AppendLogFileChangesAsync(bundle, logKey, date, notes, changes, ct).ConfigureAwait(false);
             }
 
             if (!any)
@@ -1358,7 +1509,7 @@ public sealed class OkfBundleTools
             sb.Append(notes);
             sb.Append(changes);
             return sb.ToString();
-        });
+        }).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1368,7 +1519,7 @@ public sealed class OkfBundleTools
     /// and read with <see cref="Bundle.ReadResourceText(BundleKey)"/>),
     /// rendered as agent-friendly markdown. Always available — it is
     /// read-only and needs no attestation runtime (unlike
-    /// <see cref="RunComputation"/>). Never throws for expected errors (a
+    /// <see cref="RunComputationAsync"/>). Never throws for expected errors (a
     /// null/blank/malformed/unknown concept id, a concept that is not an
     /// Attested Computation, an unresolved or unreadable computation file, or
     /// a bundle whose first load fails) — those are reported as a plain-text
@@ -1376,7 +1527,17 @@ public sealed class OkfBundleTools
     /// </summary>
     /// <param name="conceptId">The concept id, e.g. <c>computations/monthly-revenue</c>.</param>
     [Description(GetComputationDescription)]
-    public string GetComputation([Description(ComputationIdDescription)] string conceptId) => GetComputationCore(conceptId, out _, out _, out _, out _, out _);
+    [Obsolete("Use GetComputationAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string GetComputation(string conceptId) => RunSync(() => GetComputationAsync(conceptId));
+
+    /// <summary>
+    /// The asynchronous <see cref="GetComputation"/> (#152). A host method: it records no observation.
+    /// </summary>
+    /// <param name="conceptId">The attested computation's concept id.</param>
+    /// <param name="ct">Stops the wait for the image and the read of the computation file.</param>
+    [Description(GetComputationDescription)]
+    public async Task<string> GetComputationAsync([Description(ComputationIdDescription)] string conceptId, CancellationToken ct = default) =>
+        (await GetComputationCoreAsync(conceptId, ct).ConfigureAwait(false)).Result;
 
     /// <summary>
     /// <c>okf_get_computation</c>: <see cref="GetComputation"/>, then the code observation
@@ -1389,9 +1550,9 @@ public sealed class OkfBundleTools
     /// function without the AI plumbing.
     /// </summary>
     [Description(GetComputationDescription)]
-    internal string GetComputationTool([Description(ComputationIdDescription)] string conceptId)
+    internal async Task<string> GetComputationTool([Description(ComputationIdDescription)] string conceptId, CancellationToken ct = default)
     {
-        var result = GetComputationCore(conceptId, out var conceptKey, out var conceptVersion, out var fileKey, out var fileVersion, out var fileFailed);
+        var (result, conceptKey, conceptVersion, fileKey, fileVersion, fileFailed) = await GetComputationCoreAsync(conceptId, ct).ConfigureAwait(false);
         if (fileFailed)
         {
             // The image says the file is there (or does not say), the provider now says it is not
@@ -1399,7 +1560,7 @@ public sealed class OkfBundleTools
             // handle must reload, or a Manual host would see the model told to "read it first" with
             // a tool that cannot show it, for ever; after the reload the capture's own refusal
             // names the state.
-            InvalidateBundle();
+            await InvalidateBundleAsync(ct).ConfigureAwait(false);
         }
 
         if (conceptKey is not null && conceptVersion is { } shown)
@@ -1419,16 +1580,11 @@ public sealed class OkfBundleTools
     /// code: the concept's key and version, and the computation file's when the code came
     /// from one; all <see langword="null"/> otherwise.
     /// </summary>
-    private string GetComputationCore(string conceptId, out BundleKey? conceptKey, out BundleObjectVersion? conceptVersion, out BundleKey? fileKey, out BundleObjectVersion? fileVersion, out bool fileFailed)
+    private async Task<(string Result, BundleKey? ConceptKey, BundleObjectVersion? ConceptVersion, BundleKey? FileKey, BundleObjectVersion? FileVersion, bool FileFailed)> GetComputationCoreAsync(string conceptId, CancellationToken ct)
     {
-        fileFailed = false;
-        conceptKey = null;
-        conceptVersion = null;
-        fileKey = null;
-        fileVersion = null;
         if (GuardConceptId(conceptId) is { } err)
         {
-            return err;
+            return (err, null, null, null, null, false);
         }
 
         BundleKey? shownConcept = null;
@@ -1436,9 +1592,9 @@ public sealed class OkfBundleTools
         BundleKey? shownFile = null;
         BundleObjectVersion? shownFileVersion = null;
         var failedFile = false;
-        var result = RunTool(() =>
+        var result = await RunToolAsync(async () =>
         {
-            var bundle = GetBundle();
+            var bundle = await GetBundleAsync(ct).ConfigureAwait(false);
             if (!ConceptId.TryParse(conceptId, out var id) || bundle.Get(id) is not { } concept)
             {
                 return ConceptNotFoundMessage(conceptId);
@@ -1492,7 +1648,9 @@ public sealed class OkfBundleTools
                         // object may still fail to read (I/O error, refused path,
                         // non-UTF-8 content), same lesson as the orchestrator's
                         // own file-computation capture.
-                        text = bundle.ReadResourceText(resolvedKey!, null, out readVersion);
+                        var read = await bundle.ReadResourceTextAsync(resolvedKey!, null, ct).ConfigureAwait(false);
+                        text = read.Text;
+                        readVersion = read.Version;
                     }
                     catch (Exception e) when (e is IOException or UnauthorizedAccessException or DecoderFallbackException)
                     {
@@ -1530,74 +1688,8 @@ public sealed class OkfBundleTools
                     shownConceptVersion = objectVersion;
                 }
             }
-        });
-        conceptKey = shownConcept;
-        conceptVersion = shownConceptVersion;
-        fileKey = shownFile;
-        fileVersion = shownFileVersion;
-        fileFailed = failedFile;
-        return result;
-    }
-
-    /// <summary>
-    /// Runs the §10.5 attested-computation workflow (load → resolve
-    /// computation → resolve runtime → validate parameters → bind → execute →
-    /// validate receipt shape → attest → gate on staleness) for one concept,
-    /// via the <see cref="AttestationOrchestrator"/> this tool set was
-    /// constructed with (see <see cref="OkfBundleTools(string, AttestationOrchestrator?)"/>),
-    /// and renders the resulting <see cref="AttestationOutcome"/> as
-    /// agent-friendly markdown. If no orchestrator was wired, returns a
-    /// plain-text error rather than being omitted silently (mirroring
-    /// <see cref="GetTools()"/>, which omits <c>okf_run_computation</c>
-    /// entirely in that case — this direct-call path exists for callers that
-    /// invoke the method itself rather than through the tool list). Synchronous
-    /// like every other tool method here: the orchestrator's async workflow is
-    /// awaited to completion at this boundary. Never throws for expected
-    /// errors (a null/blank/malformed concept id, or any §10.5 failure the
-    /// orchestrator reports as a non-displayable <see cref="AttestationOutcome"/>)
-    /// — those are reported as plain text (an <c>Error: ...</c> message, or an
-    /// outcome whose <c>displayable: no</c>) instead.
-    /// </summary>
-    /// <param name="conceptId">The Attested Computation concept id to run.</param>
-    /// <param name="parameterValues">
-    /// The parameter values for this run (§10.3: values only, never
-    /// computation code). A <see langword="null"/> value — reachable despite
-    /// the non-nullable static type when a host/LLM binds the call with the
-    /// property omitted — is treated as an empty dictionary rather than
-    /// dereferenced, so a computation with no required parameters still runs,
-    /// and one that does simply degrades to the orchestrator's normal
-    /// "missing required parameter" non-displayable outcome instead of
-    /// throwing.
-    /// </param>
-    [Obsolete("Use RunComputationAsync: this overload blocks the calling thread and passes no cancellation token, so a slow or wedged host runtime pins the caller with no way out. Kept for one version.")]
-    [Description("Run an Attested Computation (§10.5: bind, execute, attest, gate on staleness) via the configured attestation runtime, and return the resulting outcome (displayable, verdict, receipt, reasons).")]
-    public string RunComputation(
-        [Description("The concept id, e.g. 'computations/monthly-revenue'.")] string conceptId,
-        [Description("Parameter values for this run, by name (§10.3: values only, never computation code).")] IReadOnlyDictionary<string, object?> parameterValues)
-    {
-        if (GuardConceptId(conceptId) is { } err)
-        {
-            return err;
-        }
-
-        if (_orchestrator is null)
-        {
-            return "Error: no attestation runtime configured.";
-        }
-
-        // A reflection/AIFunction-bound call can pass null here despite the
-        // non-nullable static type (same convention as the conceptId guards
-        // above) -- e.g. a host/LLM that omits the parameterValues property
-        // entirely. Without this guard, AttestationOrchestrator.RunAsync's
-        // own required-parameter gate (parameterValues.ContainsKey(...))
-        // would throw a NullReferenceException that RunTool's catch filter
-        // does not cover, breaking the "tools never throw toward the LLM"
-        // invariant. Treating null as "no values supplied" lets the
-        // orchestrator's existing missing-required-parameter handling take
-        // over instead.
-        parameterValues ??= new Dictionary<string, object?>();
-
-        return RunComputationAsync(conceptId, parameterValues).GetAwaiter().GetResult();
+        }).ConfigureAwait(false);
+        return (result, shownConcept, shownConceptVersion, shownFile, shownFileVersion, failedFile);
     }
 
     /// <summary>
@@ -1611,7 +1703,7 @@ public sealed class OkfBundleTools
     /// This is the only tool here that hands control to host-plugged code
     /// (<c>IParameterBinder</c>/<c>IComputationExecutor</c>/<c>IAttester</c>),
     /// which may do real I/O of unbounded duration. The synchronous
-    /// <see cref="RunComputation"/> blocked its thread and passed no token at
+    /// <see cref="RunComputationAsync"/> blocked its thread and passed no token at
     /// all, so a slow or wedged executor pinned an Agent Framework worker with
     /// no way out.
     ///
@@ -1735,7 +1827,7 @@ public sealed class OkfBundleTools
 
         try
         {
-            var bundle = GetBundle();
+            var bundle = await GetBundleAsync(cancellationToken).ConfigureAwait(false);
             var id = ConceptId.Parse(conceptId);
             AttestationOutcome outcome;
             if (bundle.Get(id) is not { } concept || !concept.Document.Frontmatter.IsAttestedComputation)
@@ -1904,7 +1996,7 @@ public sealed class OkfBundleTools
     /// matched — appends a <c>## {relative path}</c> section to <paramref name="changes"/>
     /// and returns <c>true</c>.
     /// </summary>
-    private static bool AppendLogFileChanges(Bundle bundle, BundleKey logKey, string date, StringBuilder notes, StringBuilder changes)
+    private static async Task<bool> AppendLogFileChangesAsync(Bundle bundle, BundleKey logKey, string date, StringBuilder notes, StringBuilder changes, CancellationToken ct)
     {
         var rel = logKey.ToString();
 
@@ -1913,7 +2005,7 @@ public sealed class OkfBundleTools
         {
             // Through the provider, strict UTF-8, bounded (spec §6, §9): a missing, refused,
             // oversized or non-UTF-8 log is the skip note below, as the direct read's was.
-            text = bundle.ReadResourceText(logKey);
+            text = (await bundle.ReadResourceTextAsync(logKey, null, ct).ConfigureAwait(false)).Text;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DecoderFallbackException)
         {
@@ -2130,7 +2222,7 @@ public sealed class OkfBundleTools
     /// prefix's path, the confinement boundary — or that fails is "not found": nothing is
     /// read through it, which is what the old strict ancestor walk refused too.
     /// </summary>
-    private static bool PrefixExists(Bundle bundle, BundleKey prefix)
+    private static async Task<bool> PrefixExistsAsync(Bundle bundle, BundleKey prefix, CancellationToken ct)
     {
         // Strictly under the prefix: an object stored under the prefix's own key (a
         // provider may list it) is not a directory, and the old Directory.Exists said so.
@@ -2149,7 +2241,15 @@ public sealed class OkfBundleTools
 
         try
         {
-            return bundle.Provider.Enumerate(prefix, bundle.Options.Limits).Any(l => l.RawName.StartsWith(under, StringComparison.Ordinal));
+            await foreach (var listing in bundle.Provider.EnumerateAsync(prefix, bundle.Options.Limits, ct).WithCancellation(ct).ConfigureAwait(false))
+            {
+                if (listing.RawName.StartsWith(under, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
         catch (Exception e) when (e is BundleProviderException or IOException or UnauthorizedAccessException)
         {
@@ -2337,7 +2437,7 @@ public sealed class OkfBundleTools
     ///
     /// <para>Scoped to the <c>log.md</c> readers this round — which, as of
     /// the post-audit re-review's Important 1, includes the relative path
-    /// <see cref="AppendLogFileChanges"/> prints in its own <c>## {path}</c>
+    /// <see cref="AppendLogFileChangesAsync"/> prints in its own <c>## {path}</c>
     /// heading and <c>&gt; Skipped {path}</c> note: a path is text this
     /// library did not write either, so it needs the same treatment as entry
     /// content, not a new escaper. The same exposure still exists wherever
@@ -2525,7 +2625,7 @@ public sealed class OkfBundleTools
 
     /// <summary>
     /// Renders an <see cref="AttestationOutcome"/> (§10.5's gated result) as
-    /// agent-friendly markdown for <see cref="RunComputation"/>: whether it is
+    /// agent-friendly markdown for <see cref="RunComputationAsync"/>: whether it is
     /// <c>displayable</c>, the attester's verdict, staleness, whether the
     /// receipt shape matched the contract's declared fields, the receipt's own
     /// fields, and every reason (if any) that kept the run from being
@@ -2678,11 +2778,11 @@ public sealed class OkfBundleTools
     /// <c>Error:</c> report into two (executed). This is the last catch-all in
     /// this file that still rendered an outside string raw.</para>
     /// </summary>
-    private static string RunTool(Func<string> body)
+    private static async Task<string> RunToolAsync(Func<Task<string>> body)
     {
         try
         {
-            return body();
+            return await body().ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is OkfException or ArgumentException or IOException or UnauthorizedAccessException or DecoderFallbackException)
         {
@@ -2707,7 +2807,7 @@ public sealed class OkfBundleTools
 
     /// <summary>
     /// The common conceptId guard shared by <see cref="ReadConcept"/>,
-    /// <see cref="GetComputation"/> and <see cref="RunComputation"/>: blank
+    /// <see cref="GetComputation"/> and <see cref="RunComputationAsync"/>: blank
     /// (or <c>null</c>) is "not found", an embedded null character is
     /// rejected outright. Returns the error message to return verbatim, or
     /// <c>null</c> if <paramref name="conceptId"/> is fit to parse.

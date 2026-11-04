@@ -120,7 +120,7 @@ public sealed class FileMemoryStore : IMemoryStore
     private readonly record struct ScopeProbe(ScopeState State, string? Failure, IReadOnlyList<BundleListing> Listings);
 
     /// <inheritdoc/>
-    public ValueTask<MemoryReadResult> ReadAsync(KnowledgeAccessScope scope, KnowledgeQuery query, CancellationToken ct = default)
+    public async ValueTask<MemoryReadResult> ReadAsync(KnowledgeAccessScope scope, KnowledgeQuery query, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(scope);
         ArgumentNullException.ThrowIfNull(query);
@@ -164,7 +164,7 @@ public sealed class FileMemoryStore : IMemoryStore
             Bundle bundle;
             try
             {
-                bundle = Bundle.Load(scopeProvider);
+                bundle = await Bundle.LoadAsync(scopeProvider, null, ct).ConfigureAwait(false);
             }
             catch (OkfException e)
             {
@@ -191,7 +191,7 @@ public sealed class FileMemoryStore : IMemoryStore
             }
         }
 
-        return new ValueTask<MemoryReadResult>(new MemoryReadResult(passages.AsReadOnly(), diagnostics.AsReadOnly()));
+        return new MemoryReadResult(passages.AsReadOnly(), diagnostics.AsReadOnly());
     }
 
     /// <inheritdoc/>
@@ -327,7 +327,7 @@ public sealed class FileMemoryStore : IMemoryStore
     }
 
     /// <inheritdoc/>
-    public ValueTask<IReadOnlyList<MemoryConcept>> EnumerateAsync(KnowledgeAccessScope scope, CancellationToken ct = default)
+    public async ValueTask<IReadOnlyList<MemoryConcept>> EnumerateAsync(KnowledgeAccessScope scope, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(scope);
         var concepts = new List<MemoryConcept>();
@@ -355,7 +355,7 @@ public sealed class FileMemoryStore : IMemoryStore
             Bundle bundle;
             try
             {
-                bundle = Bundle.Load(scopeProvider);
+                bundle = await Bundle.LoadAsync(scopeProvider, null, ct).ConfigureAwait(false);
             }
             catch (OkfException)
             {
@@ -368,7 +368,7 @@ public sealed class FileMemoryStore : IMemoryStore
             }
         }
 
-        return new ValueTask<IReadOnlyList<MemoryConcept>>(concepts.AsReadOnly());
+        return concepts.AsReadOnly();
     }
 
     private static bool IsApplicable(MemoryTier tier, KnowledgeAccessScope scope) => scope.IsLocal || tier switch

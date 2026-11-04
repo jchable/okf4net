@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+#pragma warning disable CS0618 // the obsolete synchronous tool methods are the subject (#152): kept one version, bridged over a provider that completes synchronously
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using OKF4net.Agents;
@@ -83,14 +84,14 @@ public class RunComputationObservationTests
         Assert.Equal("Error: 'c/rev' has not been shown to this session; read it first with okf_get_computation, then run it.", await Run(tools));
         Assert.Equal(0, runs.Stages);
 
-        Assert.Contains("SELECT 1", tools.GetComputationTool("c/rev"), StringComparison.Ordinal);
+        Assert.Contains("SELECT 1", tools.GetComputationTool("c/rev").Sync(), StringComparison.Ordinal);
         Assert.Contains("displayable: yes", await Run(tools), StringComparison.Ordinal);
         Assert.Equal(2, runs.Stages);
         Assert.Equal(Attester, runs.AttesterSeen);
 
         // A whole-concept observation authorises an inline run too (spec §5.4).
         var (_, other, otherRuns) = ToolsOver(Inline);
-        other.ReadConceptTool("c/rev");
+        other.ReadConceptTool("c/rev").Sync();
         Assert.Contains("displayable: yes", await Run(other), StringComparison.Ordinal);
         Assert.Equal(2, otherRuns.Stages);
     }
@@ -111,7 +112,7 @@ public class RunComputationObservationTests
     public async Task A_concept_whose_contract_changed_since_it_was_shown_is_refused_and_the_image_refreshed()
     {
         var (storage, tools, runs) = ToolsOver(FromFile);
-        tools.GetComputationTool("c/rev");
+        tools.GetComputationTool("c/rev").Sync();
 
         // The contract changes and the handle is refreshed (spec §11, revision 4): the file is
         // unchanged, yet the concept the session was shown is not the one the image holds.
@@ -122,7 +123,7 @@ public class RunComputationObservationTests
         Assert.Equal(0, runs.Stages);
         Assert.True(tools.Handle.IsStale); // the refusal itself obliged the reload (the test's own Invalidate was acknowledged by the load of that run)
 
-        Assert.Contains("year", tools.GetComputationTool("c/rev"), StringComparison.Ordinal); // the refreshed image
+        Assert.Contains("year", tools.GetComputationTool("c/rev").Sync(), StringComparison.Ordinal); // the refreshed image
         var refused = await Run(tools); // the required parameter is missing: the run reached the orchestrator
         Assert.Contains("missing required parameter 'year'", refused, StringComparison.Ordinal);
     }
@@ -131,9 +132,9 @@ public class RunComputationObservationTests
     public async Task A_computation_file_changed_since_it_was_shown_is_refused_at_its_pinned_read()
     {
         var (storage, tools, runs) = ToolsOver(FromFile);
-        tools.ReadConceptTool("c/rev"); // a whole-concept observation does not show the file
+        tools.ReadConceptTool("c/rev").Sync(); // a whole-concept observation does not show the file
         Assert.Equal("Error: the computation file 'q.sql' of 'c/rev' has not been shown to this session; read it first with okf_get_computation, then run it.", await Run(tools));
-        Assert.Contains("SELECT 2", tools.GetComputationTool("c/rev"), StringComparison.Ordinal);
+        Assert.Contains("SELECT 2", tools.GetComputationTool("c/rev").Sync(), StringComparison.Ordinal);
         Assert.Contains("displayable: yes", await Run(tools), StringComparison.Ordinal);
         Assert.Equal("SELECT 2\n", runs.CodeSeen);
 
@@ -144,7 +145,7 @@ public class RunComputationObservationTests
         Assert.Equal(2, runs.Stages);
         Assert.True(tools.Handle.IsStale);
 
-        Assert.Contains("SELECT 3", tools.GetComputationTool("c/rev"), StringComparison.Ordinal);
+        Assert.Contains("SELECT 3", tools.GetComputationTool("c/rev").Sync(), StringComparison.Ordinal);
         Assert.Contains("displayable: yes", await Run(tools), StringComparison.Ordinal);
         Assert.Equal("SELECT 3\n", runs.CodeSeen);
     }
@@ -170,7 +171,7 @@ public class RunComputationObservationTests
     {
         var (storage, tools, runs) = ToolsOver(Inline);
         Assert.StartsWith("Error: 'c/rev' has not been shown", await Run(tools), StringComparison.Ordinal);
-        tools.GetComputationTool("c/rev");
+        tools.GetComputationTool("c/rev").Sync();
         storage.Add("notes/other.md", "---\ntype: Note\ntitle: O\ndescription: o.\n---\n\nO.\n");
         tools.Handle.Invalidate();
 
@@ -187,11 +188,11 @@ public class RunComputationObservationTests
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" })) });
         var first = new OkfBundleTools(handle, new AttestationOrchestrator(reg));
         var second = new OkfBundleTools(handle, new AttestationOrchestrator(reg));
-        first.GetComputationTool("c/rev");
+        first.GetComputationTool("c/rev").Sync();
 
         storage.Add("c/rev.md", Inline.Replace("SELECT 1", "SELECT 9", StringComparison.Ordinal));
         handle.Invalidate();
-        second.GetComputationTool("c/rev");
+        second.GetComputationTool("c/rev").Sync();
 
         Assert.StartsWith("Error: 'c/rev' changed since it was shown", await Run(first), StringComparison.Ordinal);
         Assert.Contains("displayable: yes", await Run(second), StringComparison.Ordinal);
@@ -206,14 +207,14 @@ public class RunComputationObservationTests
     public async Task A_fresh_code_observation_recovers_from_a_stale_full_concept_observation()
     {
         var (storage, tools, runs) = ToolsOver(Inline);
-        tools.ReadConceptTool("c/rev"); // full, at v1
+        tools.ReadConceptTool("c/rev").Sync(); // full, at v1
         storage.Add("c/rev.md", Inline.Replace("SELECT 1", "SELECT 9", StringComparison.Ordinal));
         tools.Handle.Invalidate();
 
         Assert.StartsWith("Error: 'c/rev' changed since it was shown", await Run(tools), StringComparison.Ordinal);
         Assert.Equal(0, runs.Stages);
 
-        Assert.Contains("SELECT 9", tools.GetComputationTool("c/rev"), StringComparison.Ordinal); // code, at v2
+        Assert.Contains("SELECT 9", tools.GetComputationTool("c/rev").Sync(), StringComparison.Ordinal); // code, at v2
         Assert.Contains("displayable: yes", await Run(tools), StringComparison.Ordinal);
         Assert.Equal("SELECT 9", runs.CodeSeen!.Trim());
 
@@ -221,7 +222,7 @@ public class RunComputationObservationTests
         storage.Add("c/rev.md", Inline.Replace("SELECT 1", "SELECT 8", StringComparison.Ordinal));
         tools.Handle.Invalidate();
         Assert.StartsWith("Error: 'c/rev' changed since it was shown", await Run(tools), StringComparison.Ordinal);
-        tools.ReadConceptTool("c/rev");
+        tools.ReadConceptTool("c/rev").Sync();
         Assert.Contains("displayable: yes", await Run(tools), StringComparison.Ordinal);
     }
 
@@ -237,7 +238,7 @@ public class RunComputationObservationTests
     {
         FlakyExists? flaky = null;
         var (_, tools, runs) = ToolsOver(FromFile, wrap: storage => flaky = new FlakyExists(storage));
-        tools.ReadConceptTool("c/rev"); // the concept in full, but never the file
+        tools.ReadConceptTool("c/rev").Sync(); // the concept in full, but never the file
         void Fail()
         {
             flaky!.Answer = failure == "false" ? false : null;
@@ -253,7 +254,7 @@ public class RunComputationObservationTests
         flaky!.Answer = null;
         flaky.Throw = false;
         Assert.Equal("Error: the computation file 'q.sql' of 'c/rev' has not been shown to this session; read it first with okf_get_computation, then run it.", await Run(tools));
-        Assert.Contains("SELECT 2", tools.GetComputationTool("c/rev"), StringComparison.Ordinal);
+        Assert.Contains("SELECT 2", tools.GetComputationTool("c/rev").Sync(), StringComparison.Ordinal);
 
         Fail(); // the file was shown: the lookup failing now refuses nothing
         Assert.Contains("displayable: yes", await Run(tools), StringComparison.Ordinal);
@@ -270,13 +271,13 @@ public class RunComputationObservationTests
         var (storage, tools, runs) = ToolsOver(FromFile.Replace("computation: q.sql", "computation: a.md", StringComparison.Ordinal));
         storage.Add("a.md", Inline);
         tools.Handle.Invalidate();
-        tools.ReadConceptTool("c/rev");
-        Assert.Contains("SELECT 1", tools.GetComputationTool("a"), StringComparison.Ordinal); // a.md as a concept: its code, not the file c/rev runs
+        tools.ReadConceptTool("c/rev").Sync();
+        Assert.Contains("SELECT 1", tools.GetComputationTool("a").Sync(), StringComparison.Ordinal); // a.md as a concept: its code, not the file c/rev runs
 
         Assert.Equal("Error: the computation file 'a.md' of 'c/rev' has not been shown to this session; read it first with okf_get_computation, then run it.", await Run(tools));
         Assert.Equal(0, runs.Stages);
 
-        tools.GetComputationTool("c/rev");
+        tools.GetComputationTool("c/rev").Sync();
         Assert.Contains("displayable: yes", await Run(tools), StringComparison.Ordinal);
     }
 
@@ -334,12 +335,12 @@ public class RunComputationObservationTests
     public async Task A_file_that_disappears_after_the_load_does_not_leave_the_model_looping_under_Manual()
     {
         var (storage, tools, runs) = ToolsOver(FromFile, BundleRefreshPolicy.Manual);
-        tools.ReadConceptTool("c/rev"); // the concept in full, never the file
+        tools.ReadConceptTool("c/rev").Sync(); // the concept in full, never the file
         storage.Delete(BundleKey.Parse("q.sql"), BundleWriteCondition.None);
 
         Assert.StartsWith("Error: the computation file 'q.sql' of 'c/rev' has not been shown", await Run(tools), StringComparison.Ordinal);
 
-        Assert.Contains("could not be resolved (Missing)", tools.GetComputationTool("c/rev"), StringComparison.Ordinal);
+        Assert.Contains("could not be resolved (Missing)", tools.GetComputationTool("c/rev").Sync(), StringComparison.Ordinal);
         Assert.True(tools.Handle.IsStale);
 
         var refused = await Run(tools);
@@ -363,7 +364,7 @@ public class RunComputationObservationTests
         Assert.Equal("Error: 'c/rev' was not gated by this session's observations (a defect in the run gate); it is not run.", refused);
         Assert.Equal(0, runs.Stages);
 
-        tools.GetComputationTool("c/rev"); // shown, too: still refused, the gate's judgement is what failed
+        tools.GetComputationTool("c/rev").Sync(); // shown, too: still refused, the gate's judgement is what failed
         Assert.StartsWith("Error: 'c/rev' was not gated", await Run(tools), StringComparison.Ordinal);
         Assert.Equal(0, runs.Stages);
 
@@ -412,7 +413,7 @@ public class RunComputationObservationTests
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
         using var handle = new BundleHandle(notifying, refreshPolicy: refresh);
         var tools = new OkfBundleTools(handle, new AttestationOrchestrator(reg));
-        tools.GetComputationTool("c/rev");
+        tools.GetComputationTool("c/rev").Sync();
         var loaded = handle.Current;
         Assert.Equal(missingFirst ? ExecutableResourceState.Missing : ExecutableResourceState.Pinned, loaded.ExecutableResources[ConceptId.Parse("c/rev")].Attester.State);
 
