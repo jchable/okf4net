@@ -17,31 +17,31 @@ public class OkfBundleToolsUnknownOutcomeTests
     private const string Fm = "type: Metric\ntitle: DAU\ndescription: Daily active users.\n";
 
     /// <summary>A filesystem provider whose every write commits and then fails with an unknown outcome, as a commit that took effect but whose success could not be established.</summary>
-    private sealed class CommitThenUnknown(FileSystemBundleProvider inner) : IBundleProvider
+    private sealed class CommitThenUnknown(FileSystemBundleProvider inner) : SyncTestProvider
     {
-        public string Id => inner.Id;
+        public override string Id => inner.Id;
 
-        public string Location => inner.Location;
+        public override string Location => inner.Location;
 
-        public BundleProviderCapabilities Capabilities => inner.Capabilities;
+        public override BundleProviderCapabilities Capabilities => inner.Capabilities;
 
-        public BundleKeyConstraints NativeConstraints => inner.NativeConstraints;
+        public override BundleKeyConstraints NativeConstraints => inner.NativeConstraints;
 
-        public BundleVersion GetVersion(BundleLimits limits) => inner.GetVersion(limits);
+        protected override BundleVersion GetVersionSync(BundleLimits limits) => inner.GetVersion(limits);
 
-        public IEnumerable<BundleListing> Enumerate(BundleKey? prefix, BundleLimits limits) => inner.Enumerate(prefix, limits);
+        protected override IEnumerable<BundleListing> EnumerateSync(BundleKey? prefix, BundleLimits limits) => inner.Enumerate(prefix, limits);
 
-        public BundleObject Read(BundleKey key, BundleObjectVersion? expected = null) => inner.Read(key, expected);
+        protected override BundleObject ReadSync(BundleKey key, BundleObjectVersion? expected) => inner.Read(key, expected);
 
-        public bool Exists(BundleKey key) => inner.Exists(key);
+        protected override bool ExistsSync(BundleKey key) => inner.Exists(key);
 
-        public BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition)
+        protected override BundleObjectVersion WriteSync(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition)
         {
             inner.Write(key, content, condition);
             throw new BundleWriteOutcomeUnknownException(key, new IOException("simulated: the commit's outcome could not be read back"));
         }
 
-        public void Delete(BundleKey key, BundleWriteCondition condition) => inner.Delete(key, condition);
+        protected override void DeleteSync(BundleKey key, BundleWriteCondition condition) => inner.Delete(key, condition);
     }
 
     private static OkfBundleTools ToolsOver(TempDir tmp)

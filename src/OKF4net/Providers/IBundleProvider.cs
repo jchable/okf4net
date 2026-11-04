@@ -7,6 +7,13 @@ namespace OKF4net.Providers;
 /// reads and writes bytes under keys the core has already validated, and declares
 /// what it can do. There are no directories: a prefix exists only while an object
 /// lives under it. Reading is mandatory; writing is a declared capability.
+/// <para>The contract is asynchronous at the I/O edges (#152): every member that touches the
+/// storage takes a <see cref="CancellationToken"/> (required, so that a decorator cannot forget
+/// it) and returns a <see cref="ValueTask"/>, or an <see cref="IAsyncEnumerable{T}"/> for a
+/// listing. A provider whose operations always complete before they return, such as the
+/// filesystem one, says so with <see cref="BundleProviderCapabilities.CompletesSynchronously"/>:
+/// only such a provider can serve the library's synchronous entry points, which never wait.
+/// Failures are delivered through the returned task, not thrown at the call.</para>
 /// </summary>
 public interface IBundleProvider
 {
@@ -23,14 +30,14 @@ public interface IBundleProvider
     BundleKeyConstraints NativeConstraints { get; }
 
     /// <summary>A cheap token for the whole bundle; its internal walk respects <paramref name="limits"/>.</summary>
-    BundleVersion GetVersion(BundleLimits limits);
+    ValueTask<BundleVersion> GetVersionAsync(BundleLimits limits, CancellationToken ct);
 
     /// <summary>Lists raw names under the root, or under <paramref name="prefix"/> at a segment boundary (<c>a</c> covers <c>a/…</c>, never <c>ab/…</c>). The core validates them; the provider does not.</summary>
-    IEnumerable<BundleListing> Enumerate(BundleKey? prefix, BundleLimits limits);
+    IAsyncEnumerable<BundleListing> EnumerateAsync(BundleKey? prefix, BundleLimits limits, CancellationToken ct);
 
     /// <summary>Reads one object. With <paramref name="expected"/>, succeeds only if the current version matches, else throws <see cref="BundleVersionMismatchException"/>.</summary>
     /// <exception cref="BundleObjectNotFoundException">No object under the key.</exception>
-    BundleObject Read(BundleKey key, BundleObjectVersion? expected = null);
+    ValueTask<BundleObject> ReadAsync(BundleKey key, BundleObjectVersion? expected, CancellationToken ct);
 
     /// <summary>
     /// Whether an object exists under the key, matching it exactly (case and Unicode form).
@@ -40,15 +47,15 @@ public interface IBundleProvider
     /// object is read and nothing outside the root is reached. When the key's path is refused
     /// at an entry the provider reached — a reparse point, an entry that cannot be inspected,
     /// the confinement boundary — a provider throws
-    /// <see cref="BundleAccessRefusedException"/>, exactly as <see cref="Read"/> would, and
+    /// <see cref="BundleAccessRefusedException"/>, exactly as <see cref="ReadAsync"/> would, and
     /// never answers <see langword="false"/>: a refused path is not an absent one.
     /// </summary>
     /// <exception cref="BundleAccessRefusedException">The key's path is refused.</exception>
-    bool Exists(BundleKey key);
+    ValueTask<bool> ExistsAsync(BundleKey key, CancellationToken ct);
 
     /// <summary>
     /// Stores <paramref name="content"/> under <paramref name="key"/> if
-    /// <paramref name="condition"/> holds, and returns the version a later <see cref="Read"/> of
+    /// <paramref name="condition"/> holds, and returns the version a later <see cref="ReadAsync"/> of
     /// these bytes reports (spec §1, §4).
     /// <para><b>Conditions</b>, checked against the stored state before the replacement. A
     /// provider documents how far that check is atomic with the replacement:
@@ -60,7 +67,7 @@ public interface IBundleProvider
     /// <see cref="BundleWriteConflictException"/>: on the filesystem, a <c>None</c> creation can be
     /// reported as a conflict when another process creates the name between the provider's last
     /// check and its commit, see the conflicts under <c>None</c> in
-    /// <see cref="FileSystemBundleProvider.Write"/>);
+    /// <see cref="FileSystemBundleProvider.WriteAsync"/>);
     /// <see cref="BundleWriteCondition.MustNotExist"/> holds while no object exists under the key;
     /// <see cref="BundleWriteCondition.IfMatch"/> holds while an object exists under the key and
     /// its current version is the expected one — never for an absent object, so that an
@@ -89,11 +96,11 @@ public interface IBundleProvider
     /// <exception cref="BundleObjectTooLargeException">An <see cref="BundleWriteCondition.IfMatch"/> write found the existing object longer than <see cref="BundleLimits.MaxObjectBytes"/>, whose version cannot be established; nothing was changed.</exception>
     /// <exception cref="IOException">The storage failed before the commit, or at a commit that changed nothing (the filesystem provider passes a raw <see cref="IOException"/> or <see cref="UnauthorizedAccessException"/> up as it is: its message may name a host path, decision B15, issue #211); the object is unchanged.</exception>
     /// <exception cref="UnauthorizedAccessException">The storage denied an access before the commit, as above; the object is unchanged.</exception>
-    BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition);
+    ValueTask<BundleObjectVersion> WriteAsync(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition, CancellationToken ct);
 
     /// <summary>
     /// Removes the object under <paramref name="key"/> if <paramref name="condition"/> holds
-    /// (spec §1, §4), atomically. The conditions read as for <see cref="Write"/>:
+    /// (spec §1, §4), atomically. The conditions read as for <see cref="WriteAsync"/>:
     /// <see cref="BundleWriteCondition.None"/> always holds,
     /// <see cref="BundleWriteCondition.MustNotExist"/> only when there is nothing to delete, and
     /// <see cref="BundleWriteCondition.IfMatch"/> only while the object exists at that version.
@@ -107,5 +114,5 @@ public interface IBundleProvider
     /// <exception cref="BundleObjectTooLargeException">An <see cref="BundleWriteCondition.IfMatch"/> delete found the object longer than <see cref="BundleLimits.MaxObjectBytes"/>, whose version cannot be established; nothing was changed.</exception>
     /// <exception cref="IOException">The storage failed (the filesystem provider passes a raw <see cref="IOException"/> or <see cref="UnauthorizedAccessException"/> up as it is: a denied listing of a directory on the key's path, a failed removal; its message may name a host path, decision B15, issue #211).</exception>
     /// <exception cref="UnauthorizedAccessException">The storage denied an access, as above.</exception>
-    void Delete(BundleKey key, BundleWriteCondition condition);
+    ValueTask DeleteAsync(BundleKey key, BundleWriteCondition condition, CancellationToken ct);
 }

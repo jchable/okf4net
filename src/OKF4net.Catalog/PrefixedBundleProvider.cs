@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Runtime.CompilerServices;
 using OKF4net.Providers;
 
 namespace OKF4net.Catalog;
@@ -13,7 +14,7 @@ namespace OKF4net.Catalog;
 /// path (a boundary, a link refusal) still run, on the whole path from its own root.
 /// </summary>
 /// <remarks>
-/// <para><see cref="GetVersion"/> is the inner provider's token for its whole key space: a
+/// <para><see cref="IBundleProvider.GetVersionAsync"/> is the inner provider's token for its whole key space: a
 /// change anywhere in it changes the view's token, so the token can change when the scope did
 /// not, never the reverse. A key whose full form is no valid key of the inner provider (over
 /// <see cref="BundleKey.MaxUtf8Bytes"/>) holds nothing there: it is read as absent, and a write
@@ -49,10 +50,10 @@ internal sealed class PrefixedBundleProvider : IBundleProvider, IProviderScope
     IDisposable IProviderScope.BeginScope() => ProviderScopes.Begin(_inner) ?? ProviderScopes.None;
 
     /// <inheritdoc/>
-    public BundleVersion GetVersion(BundleLimits limits) => _inner.GetVersion(limits);
+    public ValueTask<BundleVersion> GetVersionAsync(BundleLimits limits, CancellationToken ct) => _inner.GetVersionAsync(limits, ct);
 
     /// <inheritdoc/>
-    public IEnumerable<BundleListing> Enumerate(BundleKey? prefix, BundleLimits limits)
+    public IAsyncEnumerable<BundleListing> EnumerateAsync(BundleKey? prefix, BundleLimits limits, CancellationToken ct)
     {
         BundleKey start;
         if (prefix is null)
@@ -65,35 +66,40 @@ internal sealed class PrefixedBundleProvider : IBundleProvider, IProviderScope
         }
         else
         {
-            return [];
+            return SyncAsyncEnumerable.Create<BundleListing>(static () => [], ct);
         }
 
-        // Called here, not inside the iterator, so a refusal surfaces at the call, as the inner provider's would.
-        return Strip(_inner.Enumerate(start, limits));
+        return Strip(_inner.EnumerateAsync(start, limits, ct), ct);
     }
 
     /// <inheritdoc/>
-    public BundleObject Read(BundleKey key, BundleObjectVersion? expected = null) =>
-        _inner.Read(Full(key) ?? throw new BundleObjectNotFoundException(key), expected);
+    public ValueTask<BundleObject> ReadAsync(BundleKey key, BundleObjectVersion? expected, CancellationToken ct) =>
+        Full(key) is { } full
+            ? _inner.ReadAsync(full, expected, ct)
+            : ValueTask.FromException<BundleObject>(new BundleObjectNotFoundException(key));
 
     /// <inheritdoc/>
-    public bool Exists(BundleKey key) => Full(key) is { } full && _inner.Exists(full);
+    public ValueTask<bool> ExistsAsync(BundleKey key, CancellationToken ct) =>
+        Full(key) is { } full ? _inner.ExistsAsync(full, ct) : ValueTask.FromResult(false);
 
     /// <inheritdoc/>
-    public BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition) =>
-        _inner.Write(Full(key) ?? throw new BundleWriteConflictException(key, BundleWriteConflictReason.NameUnavailable), content, condition);
+    public ValueTask<BundleObjectVersion> WriteAsync(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition, CancellationToken ct) =>
+        Full(key) is { } full
+            ? _inner.WriteAsync(full, content, condition, ct)
+            : ValueTask.FromException<BundleObjectVersion>(new BundleWriteConflictException(key, BundleWriteConflictReason.NameUnavailable));
 
     /// <inheritdoc/>
-    public void Delete(BundleKey key, BundleWriteCondition condition)
+    public ValueTask DeleteAsync(BundleKey key, BundleWriteCondition condition, CancellationToken ct)
     {
         if (Full(key) is { } full)
         {
-            _inner.Delete(full, condition);
+            return _inner.DeleteAsync(full, condition, ct);
         }
-        else if (condition.Kind == BundleWriteConditionKind.IfMatch)
-        {
-            throw new BundleWriteConflictException(key); // nothing exists there, so no version can match
-        }
+
+        // Nothing exists there, so no version can match.
+        return condition.Kind == BundleWriteConditionKind.IfMatch
+            ? ValueTask.FromException(new BundleWriteConflictException(key))
+            : ValueTask.CompletedTask;
     }
 
     /// <summary>The inner key of <paramref name="key"/>, or <see langword="null"/> when the joined name is no valid key.</summary>
@@ -103,9 +109,9 @@ internal sealed class PrefixedBundleProvider : IBundleProvider, IProviderScope
         return BundleKey.TryParse(_strip + key, out var full, out _) ? full : null;
     }
 
-    private IEnumerable<BundleListing> Strip(IEnumerable<BundleListing> listings)
+    private async IAsyncEnumerable<BundleListing> Strip(IAsyncEnumerable<BundleListing> listings, [EnumeratorCancellation] CancellationToken ct)
     {
-        foreach (var listing in listings)
+        await foreach (var listing in listings.WithCancellation(ct).ConfigureAwait(false))
         {
             // An object under the prefix key itself, or a name a buggy provider listed outside it, is not in the view.
             if (listing.RawName.Length > _strip.Length && listing.RawName.StartsWith(_strip, StringComparison.Ordinal))

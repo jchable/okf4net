@@ -21,7 +21,7 @@ public class FileSystemBundleProviderTests
         tmp.Write("a/B.md", "B");
         tmp.Write("a/a.md", "a");
         var p = new FileSystemBundleProvider(tmp.Path);
-        var listing = p.Enumerate(null, BundleLimits.Default);
+        var listing = p.EnumerateCore(null, BundleLimits.Default);
         Assert.IsAssignableFrom<IReadOnlyList<BundleListing>>(listing); // materialised, not deferred
         Assert.Equal(["a/B.md", "a/a.md", "a/z.txt", "b.md"], listing.Select(l => l.RawName)); // 'B' < 'a' ordinally; non-.md files are listed too
         Assert.All(listing, l => Assert.Null(l.Version)); // the filesystem gives no cheap version
@@ -35,8 +35,8 @@ public class FileSystemBundleProviderTests
         tmp.Write("a/x.md", "x");
         tmp.Write("ab/y.md", "y");
         var p = new FileSystemBundleProvider(tmp.Path);
-        Assert.Equal(["a/x.md"], p.Enumerate(K("a"), BundleLimits.Default).Select(l => l.RawName));
-        Assert.Empty(p.Enumerate(K("nope"), BundleLimits.Default));
+        Assert.Equal(["a/x.md"], p.EnumerateCore(K("a"), BundleLimits.Default).Select(l => l.RawName));
+        Assert.Empty(p.EnumerateCore(K("nope"), BundleLimits.Default));
     }
 
     [Fact]
@@ -47,11 +47,11 @@ public class FileSystemBundleProviderTests
         tmp.Write("y.md", "y");
         var p = new FileSystemBundleProvider(tmp.Path);
         // Entries inspected: d (directory), d/x.md, y.md = 3.
-        var ex = Assert.Throws<BundleLimitExceededException>(() => p.Enumerate(null, new BundleLimits { MaxEntries = 2 }));
+        var ex = Assert.Throws<BundleLimitExceededException>(() => p.EnumerateCore(null, new BundleLimits { MaxEntries = 2 }));
         Assert.Equal(BundleBound.Entries, ex.Bound);
-        Assert.Equal(2, p.Enumerate(null, new BundleLimits { MaxEntries = 3 }).Count()); // 2 files listed, 3 entries counted
+        Assert.Equal(2, p.EnumerateCore(null, new BundleLimits { MaxEntries = 3 }).Count()); // 2 files listed, 3 entries counted
         tmp.Write("l1/l2/l3/deep.md", "d");
-        var depth = Assert.Throws<BundleLimitExceededException>(() => p.Enumerate(null, new BundleLimits { MaxDepth = 3 })); // l1/l2/l3/deep.md has 4 segments
+        var depth = Assert.Throws<BundleLimitExceededException>(() => p.EnumerateCore(null, new BundleLimits { MaxDepth = 3 })); // l1/l2/l3/deep.md has 4 segments
         Assert.Equal(BundleBound.Depth, depth.Bound);
     }
 
@@ -62,7 +62,7 @@ public class FileSystemBundleProviderTests
         tmp.Write("bad\u0085dir/x.md", "x"); // U+0085 is a layer-1 control character: the KEY is invalid, the DIRECTORY exists
         tmp.Write("ok.md", "o");
         var p = new FileSystemBundleProvider(tmp.Path);
-        var names = p.Enumerate(null, BundleLimits.Default).Select(l => l.RawName).ToList();
+        var names = p.EnumerateCore(null, BundleLimits.Default).Select(l => l.RawName).ToList();
         Assert.Equal(["bad\u0085dir/x.md", "ok.md"], names); // raw names, not keys: the loader rejects the first with a diagnostic (Task 6)
     }
 
@@ -73,8 +73,8 @@ public class FileSystemBundleProviderTests
         tmp.Write("real.md", "r");
         Skip.IfNot(tmp.TryCreateFileSymlink("l1.md", "real.md") && tmp.TryCreateFileSymlink("l2.md", "real.md"), "symlinks unavailable");
         var p = new FileSystemBundleProvider(tmp.Path);
-        Assert.Equal(["real.md"], p.Enumerate(null, BundleLimits.Default).Select(l => l.RawName));
-        Assert.Throws<BundleLimitExceededException>(() => p.Enumerate(null, new BundleLimits { MaxEntries = 2 }));
+        Assert.Equal(["real.md"], p.EnumerateCore(null, BundleLimits.Default).Select(l => l.RawName));
+        Assert.Throws<BundleLimitExceededException>(() => p.EnumerateCore(null, new BundleLimits { MaxEntries = 2 }));
     }
 
     [SkippableFact]
@@ -88,10 +88,10 @@ public class FileSystemBundleProviderTests
         tmp.Write("real.md", "r");
         Skip.IfNot(tmp.TryCreateJunctionToExternalDir("j1", external.Path) && tmp.TryCreateJunctionToExternalDir("j2", external.Path), "junctions unavailable");
         var p = new FileSystemBundleProvider(tmp.Path);
-        Assert.Equal(["real.md"], p.Enumerate(null, BundleLimits.Default).Select(l => l.RawName)); // both junctions skipped, nothing under them listed
-        var ex = Assert.Throws<BundleLimitExceededException>(() => p.Enumerate(null, new BundleLimits { MaxEntries = 2 })); // 3 entries inspected: j1, j2, real.md
+        Assert.Equal(["real.md"], p.EnumerateCore(null, BundleLimits.Default).Select(l => l.RawName)); // both junctions skipped, nothing under them listed
+        var ex = Assert.Throws<BundleLimitExceededException>(() => p.EnumerateCore(null, new BundleLimits { MaxEntries = 2 })); // 3 entries inspected: j1, j2, real.md
         Assert.Equal(BundleBound.Entries, ex.Bound);
-        Assert.Single(p.Enumerate(null, new BundleLimits { MaxEntries = 3 }));
+        Assert.Single(p.EnumerateCore(null, new BundleLimits { MaxEntries = 3 }));
     }
 
     [SkippableFact]
@@ -101,7 +101,7 @@ public class FileSystemBundleProviderTests
         tmp.Write("real.md", "r");
         Skip.IfNot(tmp.TryCreateFileSymlink("link.md", "real.md"), "symlinks unavailable");
         var p = new FileSystemBundleProvider(tmp.Path);
-        Assert.Equal(["real.md"], p.Enumerate(null, BundleLimits.Default).Select(l => l.RawName));
+        Assert.Equal(["real.md"], p.EnumerateCore(null, BundleLimits.Default).Select(l => l.RawName));
         Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("link.md")));
         Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("link.md")));
     }
@@ -114,15 +114,15 @@ public class FileSystemBundleProviderTests
         using var tmp = new TempDir();
         Skip.IfNot(tmp.TryCreateJunctionToExternalDir("jump", external.Path), "junctions unavailable");
         var p = new FileSystemBundleProvider(tmp.Path);
-        Assert.Throws<BundleAccessRefusedException>(() => p.Enumerate(K("jump"), BundleLimits.Default));
+        Assert.Throws<BundleAccessRefusedException>(() => p.EnumerateCore(K("jump"), BundleLimits.Default));
         Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("jump/secret.md")));
         // Present and absent names under the junction are indistinguishable: both refused
         // before the junction is ever listed (fourth review).
         Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("jump/absent.md")));
-        Assert.Throws<BundleAccessRefusedException>(() => p.Enumerate(K("jump/absent"), BundleLimits.Default));
+        Assert.Throws<BundleAccessRefusedException>(() => p.EnumerateCore(K("jump/absent"), BundleLimits.Default));
         Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("jump/secret.md")));
         Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("jump/absent.md")));
-        Assert.Empty(p.Enumerate(null, BundleLimits.Default)); // the walk skips the junction entry and lists nothing under it
+        Assert.Empty(p.EnumerateCore(null, BundleLimits.Default)); // the walk skips the junction entry and lists nothing under it
     }
 
     [SkippableFact]
@@ -143,13 +143,13 @@ public class FileSystemBundleProviderTests
         Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("a/j/x.md")));
         Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("a/j/absent.md")));
         Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("a/j/absent.md")));
-        Assert.Throws<BundleAccessRefusedException>(() => p.Enumerate(K("a/j"), BundleLimits.Default));
+        Assert.Throws<BundleAccessRefusedException>(() => p.EnumerateCore(K("a/j"), BundleLimits.Default));
         Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("a/j")));
         Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("a/j")));
         Assert.True(p.Exists(K("a/ok.md")));
         using var ok = p.Read(K("a/ok.md"));
         Assert.Equal(2, ok.Length);
-        Assert.Equal(["a/ok.md"], p.Enumerate(K("a"), BundleLimits.Default).Select(l => l.RawName)); // the walk skips the junction
+        Assert.Equal(["a/ok.md"], p.EnumerateCore(K("a"), BundleLimits.Default).Select(l => l.RawName)); // the walk skips the junction
     }
 
     [SkippableFact]
@@ -180,18 +180,18 @@ public class FileSystemBundleProviderTests
         var root = Path.Combine(tmp.Path, "src");
         var p = new FileSystemBundleProvider(root, confinementBoundary: tmp.Path);
 
-        var byPrefix = p.Enumerate(K("p"), BundleLimits.Default); // eager: already complete
+        var byPrefix = p.EnumerateCore(K("p"), BundleLimits.Default); // eager: already complete
         Directory.Delete(Path.Combine(root, "p"), recursive: true);
         Skip.IfNot(tmp.TryCreateJunctionToExternalDir(Path.Combine("src", "p"), external.Path), "junctions unavailable"); // the helper hands the path to mklink as is: native separator
         Assert.Equal(["p/a.md"], byPrefix.Select(l => l.RawName)); // what was there, not what is there now
-        Assert.Throws<BundleAccessRefusedException>(() => p.Enumerate(K("p"), BundleLimits.Default)); // a fresh call sees the junction and refuses
+        Assert.Throws<BundleAccessRefusedException>(() => p.EnumerateCore(K("p"), BundleLimits.Default)); // a fresh call sees the junction and refuses
 
-        var whole = p.Enumerate(null, BundleLimits.Default);
+        var whole = p.EnumerateCore(null, BundleLimits.Default);
         Directory.Delete(Path.Combine(root, "p")); // the junction first, non-recursively: a recursive delete refuses to traverse it
         Directory.Delete(root, recursive: true);
         Skip.IfNot(tmp.TryCreateJunctionToExternalDir("src", external.Path), "junctions unavailable");
         Assert.DoesNotContain(whole, l => l.RawName.Contains("secret"));
-        Assert.Throws<BundleAccessRefusedException>(() => p.Enumerate(null, BundleLimits.Default));
+        Assert.Throws<BundleAccessRefusedException>(() => p.EnumerateCore(null, BundleLimits.Default));
         Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("secret.md")));
     }
 
@@ -238,7 +238,7 @@ public class FileSystemBundleProviderTests
         Assert.Throws<BundleObjectNotFoundException>(() => p.Read(K("References/a.sql")));
         using var exact = p.Read(K("References/A.sql"));
         Assert.Equal(8, exact.Length);
-        Assert.Empty(p.Enumerate(K("references"), BundleLimits.Default));
+        Assert.Empty(p.EnumerateCore(K("references"), BundleLimits.Default));
     }
 
     [Fact]
@@ -258,7 +258,7 @@ public class FileSystemBundleProviderTests
         Assert.False(p.Exists(K("a/STORED.sql")));
         Assert.False(p.Exists(K("A/stored.sql")));
         Assert.Throws<BundleObjectNotFoundException>(() => p.Read(K("a/Stored.sql")));
-        Assert.Empty(p.Enumerate(K("A"), BundleLimits.Default));
+        Assert.Empty(p.EnumerateCore(K("A"), BundleLimits.Default));
     }
 
     [SkippableFact]
@@ -325,7 +325,7 @@ public class FileSystemBundleProviderTests
         tmp.Write("inside/a.md", "a");
         tmp.Write("elsewhere/b.md", "b");
         var p = new FileSystemBundleProvider(Path.Combine(tmp.Path, "elsewhere"), confinementBoundary: Path.Combine(tmp.Path, "inside"));
-        Assert.Throws<BundleAccessRefusedException>(() => p.Enumerate(null, BundleLimits.Default));
+        Assert.Throws<BundleAccessRefusedException>(() => p.EnumerateCore(null, BundleLimits.Default));
         Assert.Throws<BundleAccessRefusedException>(() => p.GetVersion(BundleLimits.Default));
         Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("b.md")));
         Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("b.md")));
@@ -360,7 +360,7 @@ public class FileSystemBundleProviderTests
         Skip.IfNot(tmp.TryCreateDirectorySymlink("link", "target"), "directory symlinks unavailable");
         var link = Path.Combine(tmp.Path, "link");
         var free = new FileSystemBundleProvider(link);
-        Assert.Equal(["a.md"], free.Enumerate(null, BundleLimits.Default).Select(l => l.RawName));
+        Assert.Equal(["a.md"], free.EnumerateCore(null, BundleLimits.Default).Select(l => l.RawName));
         using var obj = free.Read(K("a.md"));
         Assert.Equal(1, obj.Length);
         var bounded = new FileSystemBundleProvider(link, confinementBoundary: tmp.Path);
@@ -381,8 +381,8 @@ public class FileSystemBundleProviderTests
         var key = K(keyText); // layer 1 forbids no colon: the key parses
         Assert.False(p.Exists(key));
         Assert.Throws<BundleObjectNotFoundException>(() => p.Read(key));
-        Assert.Empty(p.Enumerate(key, BundleLimits.Default));
-        Assert.Equal(["a.md"], p.Enumerate(null, BundleLimits.Default).Select(l => l.RawName)); // the real entry is unaffected
+        Assert.Empty(p.EnumerateCore(key, BundleLimits.Default));
+        Assert.Equal(["a.md"], p.EnumerateCore(null, BundleLimits.Default).Select(l => l.RawName)); // the real entry is unaffected
     }
 
     /// <summary>
@@ -429,10 +429,10 @@ public class FileSystemBundleProviderTests
         var outsideDirectory = tmp.Path.Replace('\\', '/');
         foreach (var prefix in new[] { drive, outsideDirectory, outsideDirectory + "/b", driveAbsolute })
         {
-            Assert.Empty(provider.Enumerate(K(prefix), BundleLimits.Default));
+            Assert.Empty(provider.EnumerateCore(K(prefix), BundleLimits.Default));
         }
 
-        Assert.Equal(["computations/rev.md", "x.sql"], provider.Enumerate(null, BundleLimits.Default).Select(l => l.RawName).Order(StringComparer.Ordinal));
+        Assert.Equal(["computations/rev.md", "x.sql"], provider.EnumerateCore(null, BundleLimits.Default).Select(l => l.RawName).Order(StringComparer.Ordinal));
     }
 
     [SkippableFact]
@@ -445,7 +445,7 @@ public class FileSystemBundleProviderTests
         Assert.False(p.Exists(K("*")));
         Assert.False(p.Exists(K("?.md")));
         Assert.Throws<BundleObjectNotFoundException>(() => p.Read(K("*")));
-        Assert.Empty(p.Enumerate(K("?"), BundleLimits.Default));
+        Assert.Empty(p.EnumerateCore(K("?"), BundleLimits.Default));
     }
 
     [SkippableFact]
@@ -484,10 +484,10 @@ public class FileSystemBundleProviderTests
         Assert.True(p.Exists(key));
         using var obj = p.Read(key);
         Assert.Equal(5, obj.Length);
-        Assert.Equal([name], p.Enumerate(null, BundleLimits.Default).Select(l => l.RawName).Where(n => n != "decoy.sql"));
+        Assert.Equal([name], p.EnumerateCore(null, BundleLimits.Default).Select(l => l.RawName).Where(n => n != "decoy.sql"));
         if (name.Contains('/'))
         {
-            Assert.Equal([name], p.Enumerate(K(name[..name.IndexOf('/')]), BundleLimits.Default).Select(l => l.RawName));
+            Assert.Equal([name], p.EnumerateCore(K(name[..name.IndexOf('/')]), BundleLimits.Default).Select(l => l.RawName));
         }
     }
 
@@ -508,8 +508,8 @@ public class FileSystemBundleProviderTests
         Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
         var p = new FileSystemBundleProvider(Path.Combine(tmp.Path, "x", "y"), confinementBoundary: tmp.Path);
         Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("a.md")));
-        Assert.Throws<BundleAccessRefusedException>(() => p.Enumerate(null, BundleLimits.Default));
-        Assert.Throws<BundleAccessRefusedException>(() => p.Enumerate(K("z"), BundleLimits.Default));
+        Assert.Throws<BundleAccessRefusedException>(() => p.EnumerateCore(null, BundleLimits.Default));
+        Assert.Throws<BundleAccessRefusedException>(() => p.EnumerateCore(K("z"), BundleLimits.Default));
         Assert.Throws<BundleAccessRefusedException>(() => p.GetVersion(BundleLimits.Default));
         Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("a.md")));
     }
@@ -528,7 +528,7 @@ public class FileSystemBundleProviderTests
         Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
         var p = new FileSystemBundleProvider(Path.Combine(tmp.Path, "x", "y", "z"), confinementBoundary: tmp.Path);
         Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("b.md")));
-        Assert.Throws<BundleAccessRefusedException>(() => p.Enumerate(null, BundleLimits.Default));
+        Assert.Throws<BundleAccessRefusedException>(() => p.EnumerateCore(null, BundleLimits.Default));
         Assert.Throws<BundleAccessRefusedException>(() => p.GetVersion(BundleLimits.Default));
         Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("b.md")));
     }
@@ -550,11 +550,11 @@ public class FileSystemBundleProviderTests
         var p = new FileSystemBundleProvider(tmp.Path);
         Assert.False(p.Exists(K("x/y/z/b.md")));
         Assert.Throws<BundleObjectNotFoundException>(() => p.Read(K("x/y/z/b.md")));
-        Assert.Empty(p.Enumerate(K("x/y/z"), BundleLimits.Default));
-        Assert.Empty(p.Enumerate(K("x/y"), BundleLimits.Default));
+        Assert.Empty(p.EnumerateCore(K("x/y/z"), BundleLimits.Default));
+        Assert.Empty(p.EnumerateCore(K("x/y"), BundleLimits.Default));
         // The whole-bundle walk reaches "x", a plain directory, and is denied its listing: the
         // OS error ends the walk before the junction is ever seen, and the load aborts on it.
-        Assert.Throws<UnauthorizedAccessException>(() => p.Enumerate(null, BundleLimits.Default));
+        Assert.Throws<UnauthorizedAccessException>(() => p.EnumerateCore(null, BundleLimits.Default));
         var load = Assert.Throws<BundleLoadException>(() => Bundle.Load(tmp.Path));
         Assert.IsType<UnauthorizedAccessException>(load.InnerException);
     }
@@ -579,11 +579,11 @@ public class FileSystemBundleProviderTests
         tmp.Write(prefix + "real.md", "r");
         Skip.IfNot(tmp.TryCreateJunctionToExternalDir((prefix + "j").Replace('/', Path.DirectorySeparatorChar), external.Path), "junctions unavailable");
         var p = new FileSystemBundleProvider(tmp.Path);
-        Assert.Equal([prefix + "real.md"], p.Enumerate(null, BundleLimits.Default).Select(l => l.RawName));
+        Assert.Equal([prefix + "real.md"], p.EnumerateCore(null, BundleLimits.Default).Select(l => l.RawName));
         _ = p.GetVersion(BundleLimits.Default); // the version walk skips it too, without refusing
         if (depth > 1)
         {
-            Assert.Equal(["real.md"], p.Enumerate(K(parent), BundleLimits.Default).Select(l => l.RawName[(parent.Length + 1)..]));
+            Assert.Equal(["real.md"], p.EnumerateCore(K(parent), BundleLimits.Default).Select(l => l.RawName[(parent.Length + 1)..]));
         }
     }
 
@@ -633,7 +633,7 @@ public class FileSystemBundleProviderTests
 
         try
         {
-            var thrown = Record.Exception(() => p.Enumerate(null, BundleLimits.Default));
+            var thrown = Record.Exception(() => p.EnumerateCore(null, BundleLimits.Default));
             Skip.IfNot(swapped, uninspectable ? "needs Windows (a junction plus deny ACEs)" : "junctions unavailable");
             Assert.IsType<BundleAccessRefusedException>(thrown);
             Assert.DoesNotContain("OUTSIDE", thrown.Message);

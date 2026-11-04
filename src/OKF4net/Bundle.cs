@@ -1008,7 +1008,7 @@ public sealed class Bundle
     /// <summary>
     /// Resolves a §6.2 path-valued field to a key (spec §2): lexically, through
     /// <see cref="ResourceKeyResolver"/>, then <see cref="IsKeyAllowed"/>, then the provider's
-    /// <see cref="IBundleProvider.Exists"/>. Never throws (§11, permissive): a provider refusal
+    /// <see cref="IBundleProvider.ExistsAsync"/>. Never throws (§11, permissive): a provider refusal
     /// reads as <see cref="ResourceResolutionStatus.Unsafe"/>. Always returns <see langword="true"/>:
     /// resolution never fails outright, only its status varies.
     /// <para>

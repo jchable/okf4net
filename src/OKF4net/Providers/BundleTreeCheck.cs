@@ -22,14 +22,14 @@ namespace OKF4net.Providers;
 /// </list>
 /// A validator that sets none of these flags needs no check, and none is made.
 /// <para><b>What it reads.</b> When names fold, one listing of the whole bundle
-/// (<see cref="IBundleProvider.Enumerate"/> with no prefix): the children of every parent prefix
+/// (<see cref="IBundleProvider.EnumerateAsync"/> with no prefix): the children of every parent prefix
 /// of the new key are in it, and so are the objects on and under its path. Otherwise one
-/// <see cref="IBundleProvider.Exists"/> per proper prefix and one listing under the key itself.
+/// <see cref="IBundleProvider.ExistsAsync"/> per proper prefix and one listing under the key itself.
 /// Every listed entry counts against <see cref="BundleLimits.MaxEntries"/>, enforced here even
 /// when the provider ignores it (spec §6). A provider exception propagates; but a provider may
-/// answer "absent" for a listing it is denied (<see cref="IBundleProvider.Exists"/>), so this
+/// answer "absent" for a listing it is denied (<see cref="IBundleProvider.ExistsAsync"/>), so this
 /// check alone does not make a write refuse what it cannot see: the backstop is the provider's
-/// own listing inside <see cref="IBundleProvider.Write"/>, which a writable provider makes
+/// own listing inside <see cref="IBundleProvider.WriteAsync"/>, which a writable provider makes
 /// exactly (the filesystem provider throws when a directory on the key's path cannot be
 /// listed).</para>
 /// <para><b>Not atomic across processes</b> (issue #178): the check and the write that follows

@@ -567,31 +567,31 @@ public class BundleHandleTests
     }
 
     /// <summary>A provider that runs a callback at the start of every listing: the one moment a load is provably in progress.</summary>
-    private sealed class HookedProvider(InMemoryBundleProvider inner) : IBundleProvider
+    private sealed class HookedProvider(InMemoryBundleProvider inner) : SyncTestProvider
     {
         public Action? OnEnumerate { get; set; }
 
         public Action? OnGetVersion { get; set; }
 
-        public string Id => inner.Id;
-        public string Location => inner.Location;
-        public BundleProviderCapabilities Capabilities => inner.Capabilities;
-        public BundleKeyConstraints NativeConstraints => inner.NativeConstraints;
-        public BundleVersion GetVersion(BundleLimits limits)
+        public override string Id => inner.Id;
+        public override string Location => inner.Location;
+        public override BundleProviderCapabilities Capabilities => inner.Capabilities;
+        public override BundleKeyConstraints NativeConstraints => inner.NativeConstraints;
+        protected override BundleVersion GetVersionSync(BundleLimits limits)
         {
             OnGetVersion?.Invoke();
             return inner.GetVersion(limits);
         }
 
-        public IEnumerable<BundleListing> Enumerate(BundleKey? prefix, BundleLimits limits)
+        protected override IEnumerable<BundleListing> EnumerateSync(BundleKey? prefix, BundleLimits limits)
         {
             OnEnumerate?.Invoke();
             return inner.Enumerate(prefix, limits);
         }
 
-        public BundleObject Read(BundleKey key, BundleObjectVersion? expected = null) => inner.Read(key, expected);
-        public bool Exists(BundleKey key) => inner.Exists(key);
-        public BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition) => inner.Write(key, content, condition);
-        public void Delete(BundleKey key, BundleWriteCondition condition) => inner.Delete(key, condition);
+        protected override BundleObject ReadSync(BundleKey key, BundleObjectVersion? expected) => inner.Read(key, expected);
+        protected override bool ExistsSync(BundleKey key) => inner.Exists(key);
+        protected override BundleObjectVersion WriteSync(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition) => inner.Write(key, content, condition);
+        protected override void DeleteSync(BundleKey key, BundleWriteCondition condition) => inner.Delete(key, condition);
     }
 }

@@ -33,7 +33,7 @@ public readonly record struct VerificationRecord(string ConceptId, string At, st
 /// <b>The precise scope of that list.</b> An entry means "this concept's write
 /// was committed", which is stronger than "was validated" (the reason
 /// <c>Records</c> is built in the write loop, not the prepare loop). Each
-/// write is atomic per object (<see cref="Providers.IBundleProvider.Write"/>,
+/// write is atomic per object (<see cref="Providers.IBundleProvider.WriteAsync"/>,
 /// issue #157): the concept the batch stopped on holds its whole previous
 /// content, unless the provider reported an outcome it could not establish
 /// (<see cref="Providers.BundleWriteOutcomeUnknownException"/>), which the
@@ -152,7 +152,7 @@ internal readonly record struct VerificationTargetProblem(VerificationTargetProb
 /// The core, thread-safe write primitive for OKF bundles: producer-validated,
 /// serialized create/update of a concept and an atomic read-modify-write
 /// append-to-concept, over one bundle provider (spec §3, §4, §9). Every byte it
-/// writes goes through <see cref="IBundleProvider.Write"/>, which commits each
+/// writes goes through <see cref="IBundleProvider.WriteAsync"/>, which commits each
 /// object atomically under its own path guards; the writer validates every key
 /// under the same policy as a load (spec §2), refuses a creation that would make
 /// the tree invalid, and checks <see cref="BundleProviderCapabilities.CanWrite"/>
@@ -436,7 +436,7 @@ public sealed class BundleConceptWriter
     /// Test-only hook, invoked (if set) immediately before the late
     /// reparse-point re-check of a write. Over a <see cref="FileSystemBundleProvider"/>
     /// it is that provider's <c>ParentsResolvedForTest</c>: it fires inside
-    /// <see cref="IBundleProvider.Write"/> once the object's parent directories
+    /// <see cref="IBundleProvider.WriteAsync"/> once the object's parent directories
     /// exist (found, or just created), before the provider's STRICT re-check of
     /// the whole path and before its temporary is created — exactly where the
     /// writer's own <see cref="Directory.CreateDirectory(string)"/> and late
@@ -1796,7 +1796,7 @@ public sealed class BundleConceptWriter
     /// own (then-unattributed) refusal — three spellings of the same §11 floor. This is the one.
     ///
     /// Reads only the <c>k</c> concept documents named in <paramref name="conceptIds"/>, through the
-    /// provider (<see cref="IBundleProvider.Exists"/> and <see cref="IBundleProvider.Read"/>, whose
+    /// provider (<see cref="IBundleProvider.ExistsAsync"/> and <see cref="IBundleProvider.ReadAsync"/>, whose
     /// names match exactly) — never <see cref="Bundle.Load(string)"/> — so answering a k-id question
     /// costs O(k) reads, not a full bundle parse. Read-only: it is not guarded by
     /// <see cref="BundleProviderCapabilities.CanWrite"/>.
@@ -2076,7 +2076,7 @@ public sealed class BundleConceptWriter
     /// translates them, or the caller retries a conflict): nothing has then been written
     /// and <paramref name="committed"/> is not called, except for an outcome the
     /// provider could not establish (<see cref="BundleWriteOutcomeUnknownException"/>).</para>
-    /// <para>Once <see cref="IBundleProvider.Write"/> has returned, the write is final: this
+    /// <para>Once <see cref="IBundleProvider.WriteAsync"/> has returned, the write is final: this
     /// method calls <paramref name="committed"/> and returns its confirmation, and nothing it
     /// does after the commit can throw. It never invokes <see cref="_onWriteCommitted"/>: the
     /// caller does, once its whole write operation — every attempt of a read-modify-write
@@ -2090,7 +2090,7 @@ public sealed class BundleConceptWriter
     /// <param name="existedBefore">
     /// Whether the object already existed, if the caller already knows it from a read made
     /// under the same write-lock hold. <see langword="null"/> means "not checked yet": this
-    /// method asks the provider (<see cref="IBundleProvider.Exists"/>).
+    /// method asks the provider (<see cref="IBundleProvider.ExistsAsync"/>).
     /// </param>
     /// <param name="committed">Called once the provider has committed the write: the caller then notifies (<see cref="NotifyCommitted"/>).</param>
     private string WriteValidatedContentLocked(ConceptTarget target, string content, BundleWriteCondition condition, Action committed, bool? existedBefore = null)

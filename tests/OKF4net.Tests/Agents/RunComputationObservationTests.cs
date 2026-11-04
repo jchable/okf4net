@@ -31,23 +31,23 @@ public class RunComputationObservationTests
     }
 
     /// <summary>A provider whose <c>Exists</c> can be made to answer wrongly or throw after the load: the transient failure of a HEAD that a guard must not depend on.</summary>
-    private sealed class FlakyExists(IBundleProvider inner) : IBundleProvider
+    private sealed class FlakyExists(IBundleProvider inner) : SyncTestProvider
     {
         public bool? Answer { get; set; }
 
         public bool Throw { get; set; }
 
-        public string Id => inner.Id;
-        public string Location => inner.Location;
-        public BundleProviderCapabilities Capabilities => inner.Capabilities;
-        public BundleKeyConstraints NativeConstraints => inner.NativeConstraints;
-        public BundleVersion GetVersion(BundleLimits limits) => inner.GetVersion(limits);
-        public IEnumerable<BundleListing> Enumerate(BundleKey? prefix, BundleLimits limits) => inner.Enumerate(prefix, limits);
-        public BundleObject Read(BundleKey key, BundleObjectVersion? expected = null) => inner.Read(key, expected);
-        public BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition) => inner.Write(key, content, condition);
-        public void Delete(BundleKey key, BundleWriteCondition condition) => inner.Delete(key, condition);
+        public override string Id => inner.Id;
+        public override string Location => inner.Location;
+        public override BundleProviderCapabilities Capabilities => inner.Capabilities;
+        public override BundleKeyConstraints NativeConstraints => inner.NativeConstraints;
+        protected override BundleVersion GetVersionSync(BundleLimits limits) => inner.GetVersion(limits);
+        protected override IEnumerable<BundleListing> EnumerateSync(BundleKey? prefix, BundleLimits limits) => inner.Enumerate(prefix, limits);
+        protected override BundleObject ReadSync(BundleKey key, BundleObjectVersion? expected) => inner.Read(key, expected);
+        protected override BundleObjectVersion WriteSync(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition) => inner.Write(key, content, condition);
+        protected override void DeleteSync(BundleKey key, BundleWriteCondition condition) => inner.Delete(key, condition);
 
-        public bool Exists(BundleKey key) =>
+        protected override bool ExistsSync(BundleKey key) =>
             Throw ? throw new IOException("transient failure") : Answer ?? inner.Exists(key);
     }
 

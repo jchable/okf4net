@@ -24,7 +24,7 @@ namespace OKF4net.Catalog;
 /// directory is empty, or absent, is read and enumerated as nothing and deleted as a no-op.
 /// A scope is loaded at every read, as before (no <see cref="BundleHandle"/>; spec §5.3).</para>
 /// <para><b>Deleting a scope</b> enumerates the keys under its prefix and deletes each object
-/// on its own (<see cref="IBundleProvider.Delete"/>, unconditional); there is no multi-object
+/// on its own (<see cref="IBundleProvider.DeleteAsync"/>, unconditional); there is no multi-object
 /// transaction, and the result says per tier what was deleted and what failed
 /// (<see cref="MemoryTierDeletion.Report"/>), so a failed deletion can be run again. When every
 /// object was deleted, the scope's now-empty directories are removed too, bottom-up and without
@@ -45,7 +45,7 @@ public sealed class FileMemoryStore : IMemoryStore
     // Most-specific first (spec §6.1).
     private static readonly MemoryTier[] ReadOrder = [MemoryTier.Session, MemoryTier.User, MemoryTier.Tenant];
 
-    /// <summary>Any key: <see cref="IBundleProvider.Exists"/> on it runs the scope provider's boundary check before anything is listed.</summary>
+    /// <summary>Any key: <see cref="IBundleProvider.ExistsAsync"/> on it runs the scope provider's boundary check before anything is listed.</summary>
     private static readonly BundleKey ProbeKey = BundleKey.Parse("index.md");
 
     private readonly Dictionary<MemoryTier, TierStorage> _tierProviders;
@@ -395,7 +395,7 @@ public sealed class FileMemoryStore : IMemoryStore
 
     /// <summary>
     /// The scope's state and keys: the chain from the tier root to the scope is checked first
-    /// (<see cref="IBundleProvider.Exists"/> on the scope provider runs its boundary check
+    /// (<see cref="IBundleProvider.ExistsAsync"/> on the scope provider runs its boundary check
     /// before anything is listed, and answers for an absent root without throwing), then the
     /// tier provider lists the keys under the scope's prefix. The listing walks the whole
     /// subtree, so it can fail for reasons other than a refusal (a subdirectory that denies

@@ -89,31 +89,31 @@ public class CatalogResolverHandleTests
     }
 
     /// <summary>A provider whose <see cref="Id"/> starts throwing once the test says so (a host getter that is not stable).</summary>
-    private sealed class LateIdProvider(IBundleProvider inner) : IBundleProvider
+    private sealed class LateIdProvider(IBundleProvider inner) : SyncTestProvider
     {
         public bool FailId { get; set; }
 
-        public string Id => FailId ? throw new InvalidOperationException("s3://secret-bucket id") : inner.Id;
+        public override string Id => FailId ? throw new InvalidOperationException("s3://secret-bucket id") : inner.Id;
 
         public bool FailLocation { get; set; }
 
-        public string Location => FailLocation ? throw new InvalidOperationException("s3://secret-bucket location") : inner.Location;
+        public override string Location => FailLocation ? throw new InvalidOperationException("s3://secret-bucket location") : inner.Location;
 
-        public BundleProviderCapabilities Capabilities => inner.Capabilities;
+        public override BundleProviderCapabilities Capabilities => inner.Capabilities;
 
-        public BundleKeyConstraints NativeConstraints => inner.NativeConstraints;
+        public override BundleKeyConstraints NativeConstraints => inner.NativeConstraints;
 
-        public BundleVersion GetVersion(BundleLimits limits) => inner.GetVersion(limits);
+        protected override BundleVersion GetVersionSync(BundleLimits limits) => inner.GetVersion(limits);
 
-        public IEnumerable<BundleListing> Enumerate(BundleKey? prefix, BundleLimits limits) => inner.Enumerate(prefix, limits);
+        protected override IEnumerable<BundleListing> EnumerateSync(BundleKey? prefix, BundleLimits limits) => inner.Enumerate(prefix, limits);
 
-        public BundleObject Read(BundleKey key, BundleObjectVersion? expected = null) => inner.Read(key, expected);
+        protected override BundleObject ReadSync(BundleKey key, BundleObjectVersion? expected) => inner.Read(key, expected);
 
-        public bool Exists(BundleKey key) => inner.Exists(key);
+        protected override bool ExistsSync(BundleKey key) => inner.Exists(key);
 
-        public BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition) => inner.Write(key, content, condition);
+        protected override BundleObjectVersion WriteSync(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition) => inner.Write(key, content, condition);
 
-        public void Delete(BundleKey key, BundleWriteCondition condition) => inner.Delete(key, condition);
+        protected override void DeleteSync(BundleKey key, BundleWriteCondition condition) => inner.Delete(key, condition);
     }
 
     [Theory]

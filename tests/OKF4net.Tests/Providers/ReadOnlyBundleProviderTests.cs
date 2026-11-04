@@ -7,24 +7,24 @@ namespace OKF4net.Tests.Providers;
 public class ReadOnlyBundleProviderTests
 {
     /// <summary>A writable in-memory provider that records every write call; the decorator must never reach it.</summary>
-    private sealed class RecordingProvider : IBundleProvider
+    private sealed class RecordingProvider : SyncTestProvider
     {
         public List<string> Calls { get; } = [];
-        public string Id => "recording";
-        public string Location => "memory://recording";
-        public BundleProviderCapabilities Capabilities => new(CanWrite: true);
-        public BundleKeyConstraints NativeConstraints => BundleKeyConstraints.FileDirectoryConflict;
-        public BundleVersion GetVersion(BundleLimits limits) => new("v1");
-        public IEnumerable<BundleListing> Enumerate(BundleKey? prefix, BundleLimits limits) => [new BundleListing("a.md", 3, null)];
-        public BundleObject Read(BundleKey key, BundleObjectVersion? expected = null) =>
+        public override string Id => "recording";
+        public override string Location => "memory://recording";
+        public override BundleProviderCapabilities Capabilities => new(CanWrite: true, CompletesSynchronously: true);
+        public override BundleKeyConstraints NativeConstraints => BundleKeyConstraints.FileDirectoryConflict;
+        protected override BundleVersion GetVersionSync(BundleLimits limits) => new("v1");
+        protected override IEnumerable<BundleListing> EnumerateSync(BundleKey? prefix, BundleLimits limits) => [new BundleListing("a.md", 3, null)];
+        protected override BundleObject ReadSync(BundleKey key, BundleObjectVersion? expected) =>
             new(new MemoryStream(Encoding.UTF8.GetBytes("abc")), new BundleObjectVersion("sha"), 3);
-        public bool Exists(BundleKey key) => key.ToString() == "a.md";
-        public BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition)
+        protected override bool ExistsSync(BundleKey key) => key.ToString() == "a.md";
+        protected override BundleObjectVersion WriteSync(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition)
         {
             Calls.Add($"write {key}");
             return new BundleObjectVersion("sha2");
         }
-        public void Delete(BundleKey key, BundleWriteCondition condition) => Calls.Add($"delete {key}");
+        protected override void DeleteSync(BundleKey key, BundleWriteCondition condition) => Calls.Add($"delete {key}");
     }
 
     [Fact]

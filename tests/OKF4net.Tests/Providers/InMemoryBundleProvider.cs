@@ -17,7 +17,7 @@ namespace OKF4net.Tests.Providers;
 /// stores an object unconditionally, bypassing <see cref="CanWrite"/>, to model a change
 /// behind the bundle's back. Every call is recorded in <see cref="Calls"/>. Thread-safe.
 /// </summary>
-public sealed class InMemoryBundleProvider : IBundleProvider
+public sealed class InMemoryBundleProvider : SyncTestProvider
 {
     private readonly Lock _gate = new();
     private readonly SortedDictionary<string, byte[]> _objects = new(StringComparer.Ordinal);
@@ -149,12 +149,12 @@ public sealed class InMemoryBundleProvider : IBundleProvider
         return this;
     }
 
-    public string Id { get; }
-    public string Location => "memory://" + Id;
-    public BundleProviderCapabilities Capabilities => new(CanWrite);
-    public BundleKeyConstraints NativeConstraints { get; }
+    public override string Id { get; }
+    public override string Location => "memory://" + Id;
+    public override BundleProviderCapabilities Capabilities => new(CanWrite, CompletesSynchronously: true);
+    public override BundleKeyConstraints NativeConstraints { get; }
 
-    public BundleVersion GetVersion(BundleLimits limits)
+    protected override BundleVersion GetVersionSync(BundleLimits limits)
     {
         Record("version");
         if (FailVersionWith is { } failure)
@@ -174,7 +174,7 @@ public sealed class InMemoryBundleProvider : IBundleProvider
         return new BundleVersion(Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString()))));
     }
 
-    public IEnumerable<BundleListing> Enumerate(BundleKey? prefix, BundleLimits limits)
+    protected override IEnumerable<BundleListing> EnumerateSync(BundleKey? prefix, BundleLimits limits)
     {
         Record($"enumerate {prefix}");
         return EnumerateCore(prefix, limits);
@@ -216,7 +216,7 @@ public sealed class InMemoryBundleProvider : IBundleProvider
         }
     }
 
-    public BundleObject Read(BundleKey key, BundleObjectVersion? expected = null)
+    protected override BundleObject ReadSync(BundleKey key, BundleObjectVersion? expected)
     {
         Record($"read {key}");
         if (FailReadsWith is { } failure)
@@ -249,7 +249,7 @@ public sealed class InMemoryBundleProvider : IBundleProvider
         return new BundleObject(new MemoryStream(bytes, writable: false), version, bytes.Length);
     }
 
-    public bool Exists(BundleKey key)
+    protected override bool ExistsSync(BundleKey key)
     {
         Record($"exists {key}");
         lock (_gate)
@@ -260,7 +260,7 @@ public sealed class InMemoryBundleProvider : IBundleProvider
         }
     }
 
-    public BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition)
+    protected override BundleObjectVersion WriteSync(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition)
     {
         ArgumentNullException.ThrowIfNull(key);
         Record($"write {key} {condition.Kind}");
@@ -280,7 +280,7 @@ public sealed class InMemoryBundleProvider : IBundleProvider
         }
     }
 
-    public void Delete(BundleKey key, BundleWriteCondition condition)
+    protected override void DeleteSync(BundleKey key, BundleWriteCondition condition)
     {
         ArgumentNullException.ThrowIfNull(key);
         Record($"delete {key} {condition.Kind}");
