@@ -462,8 +462,10 @@ public class BundleConceptWriterProviderTests
 
         Assert.Throws<OperationCanceledException>(() => writer.RecordVerifications(["a", "b"], "human:ada", "2026-10-19T00:00:00Z"));
         Assert.Equal(3, notifications);
+        // The notification runs after the lease is released (#152), so the batch is complete when the
+        // first one throws: both stamps are on disk, and the exception still propagates.
         Assert.Single(OkfDocument.Parse(File.ReadAllText(Path.Combine(tmp.Path, "a.md"))).Frontmatter.Verified);
-        Assert.Equal(Doc, File.ReadAllText(Path.Combine(tmp.Path, "b.md")));
+        Assert.Single(OkfDocument.Parse(File.ReadAllText(Path.Combine(tmp.Path, "b.md"))).Frontmatter.Verified);
     }
 
     /// <summary>

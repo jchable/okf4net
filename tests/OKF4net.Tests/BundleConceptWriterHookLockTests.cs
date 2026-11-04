@@ -7,7 +7,7 @@ namespace OKF4net.Tests;
 /// hook to simulate a racing filesystem substitution rely on that: a competing writer must not
 /// be able to get in between the hook and the commit. This pins it, with no clock: the hook runs
 /// a probe on ANOTHER thread, joins it, and the probe only asks whether the bundle's
-/// lock object can be taken (<see cref="Monitor.TryEnter(object)"/> never blocks).
+/// lock can be taken (<see cref="SemaphoreSlim.Wait(int)"/> with a zero timeout never blocks).
 /// </summary>
 public class BundleConceptWriterHookLockTests
 {
@@ -28,15 +28,15 @@ public class BundleConceptWriterHookLockTests
         Assert.DoesNotContain("Error", result, StringComparison.Ordinal);
     }
 
-    private static bool CanTakeFromAnotherThread(object lockObject)
+    private static bool CanTakeFromAnotherThread(SemaphoreSlim lockObject)
     {
         var taken = false;
         var probe = new Thread(() =>
         {
-            if (Monitor.TryEnter(lockObject))
+            if (lockObject.Wait(0))
             {
                 taken = true;
-                Monitor.Exit(lockObject);
+                lockObject.Release();
             }
         });
         probe.Start();
@@ -53,7 +53,7 @@ public class BundleConceptWriterHookLockTests
         var writer = new BundleConceptWriter(tmp.Path);
         // A second writer over the same directory: the lock is the bundle's, not the instance's.
         var other = new BundleConceptWriter(tmp.Path);
-        var lockObject = other.CurrentLockObjectForTest();
+        var lockObject = (SemaphoreSlim)other.CurrentLockObjectForTest();
         Assert.Same(lockObject, writer.CurrentLockObjectForTest());
 
         var fired = 0;

@@ -174,8 +174,8 @@ public sealed class BundleConceptWriter
     private const string ProviderLockPrefix = "provider:";
 
     /// <summary>
-    /// One monitor per resolved bundle root, shared across writers and aliases.
-    /// Resolution happens at each outermost acquisition, through
+    /// One lock per resolved bundle root, shared across writers and aliases.
+    /// Resolution happens at each acquisition, through
     /// <see cref="ReparsePoints.ResolveLockKey"/>; failures use the normalized
     /// lexical path. Case-insensitive registry keys deliberately over-serialize
     /// case-distinct paths rather than split ordinary case-variant spellings.
@@ -187,38 +187,24 @@ public sealed class BundleConceptWriter
     /// root and one per resolved key ever observed, including new targets of a
     /// retargeted link. Hosts accepting untrusted bundle roots must bound those
     /// distinct roots and targets upstream. Entries cannot simply be evicted
-    /// while writers may still be using their monitors.
+    /// while writers may still be using their locks.
     /// </remarks>
-    private static readonly ConcurrentDictionary<string, object> BundleLocks = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> BundleLocks = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Stable gates for identical namespace-normalized lexical roots (ordinal).
     /// Case-distinct aliases must not create extra dependencies between otherwise
-    /// independent resolved bundles. An operation normally holds
-    /// its gate and its resolved monitor together, preserving same-root
-    /// serialization across topology changes. A contended resolved monitor is
-    /// waited for WITHOUT this gate, so its owner can re-enter through an alias.
-    /// A thread already holding a write lock only TRIES a gate and, when it is
-    /// busy, holds the resolved monitor alone for its whole operation (see
-    /// <see cref="EnterWriteLock"/>'s remarks for what that costs).
+    /// independent resolved bundles. An operation holds its gate and its
+    /// resolved lock together, preserving same-root serialization across
+    /// topology changes. A contended resolved lock is waited for WITHOUT this
+    /// gate (see <see cref="EnterWriteLock"/>).
     /// </summary>
-    private static readonly ConcurrentDictionary<string, object> LexicalLocks = new(StringComparer.Ordinal);
-
-    /// <summary>
-    /// The current thread's held locks, keyed ORDINALly by normalized lexical
-    /// root. Unlike registry over-coalescing, conflating two case-distinct
-    /// aliases here can substitute another bundle's resolved monitor. Each
-    /// nested acquisition of the same root re-enters what it holds (its gate
-    /// only if one was taken) without
-    /// following topology changes. Scopes are thread-affine.
-    /// </summary>
-    [ThreadStatic]
-    private static Dictionary<string, HeldLock>? t_heldLocks;
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> LexicalLocks = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Over the filesystem provider, its <see cref="FileSystemBundleProvider.Root"/> through
     /// <see cref="ReparsePoints.CanonicalizeRoot"/>, with Windows namespace forms
-    /// normalized, computed once: the key of <see cref="t_heldLocks"/>, and the
+    /// normalized, computed once: the key of the lexical gate, and the
     /// starting point <see cref="ReparsePoints.ResolveLockKey"/> resolves from.
     /// Over any other provider, <see cref="ProviderLockPrefix"/> and its
     /// <see cref="IBundleProvider.Id"/>, used as it is (nothing to resolve).
@@ -267,10 +253,10 @@ public sealed class BundleConceptWriter
     /// <summary>Creates a writer over the directory <paramref name="bundleRoot"/>, through a <see cref="FileSystemBundleProvider"/> built over it.</summary>
     /// <param name="bundleRoot">The bundle's root directory.</param>
     /// <param name="onWriteCommitted">
-    /// Optional callback invoked inside the write lock once after each
-    /// successful write, before the lock is released — the seam
-    /// <c>OkfBundleTools</c> uses to invalidate its bundle cache atomically with
-    /// the write. <see langword="null"/> (the default) for callers with no cache.
+    /// Optional callback invoked once after each successful write, after the
+    /// write lock is released (#152: a callback under the lock could not call
+    /// back into the same bundle) — the seam <c>OkfBundleTools</c> uses to
+    /// invalidate its bundle cache. <see langword="null"/> (the default) for callers with no cache.
     /// It runs once the write is final, after any retry, and never causes one:
     /// an exception it throws that the writer converts (an I/O error, an
     /// <see cref="OkfException"/>, a provider conflict included) is reported as
@@ -336,12 +322,11 @@ public sealed class BundleConceptWriter
         ?? throw new NotSupportedException("this writer is not over a filesystem provider, so it has no bundle root");
 
     /// <summary>
-    /// Enters this bundle's write lock and returns a scope whose
-    /// <see cref="WriteLockScope.Dispose"/> exits it. Every write this class
-    /// performs runs inside one, and a co-located caller
-    /// (<c>OkfBundleTools.AppendLog</c>/<c>RegenerateIndexes</c>/cache access)
-    /// takes one to serialize its own read-modify-write sequences against
-    /// this writer's writes.
+    /// Takes this bundle's write lock and returns a <see cref="WriteLease"/> whose
+    /// <see cref="WriteLease.Dispose"/> releases it. Every write this class performs
+    /// runs inside one, and a co-located caller (<c>OkfBundleTools</c>'s cache
+    /// access and index regeneration) takes one to serialize its own
+    /// read-modify-write sequences against this writer's writes.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -351,264 +336,101 @@ public sealed class BundleConceptWriter
     /// the bundle, or to one of its ancestors, is such an alias and shares the
     /// lock. If resolution fails, the key falls back to the lexical root, so
     /// the lock is then shared only by spellings of the same lexical path. A
-    /// topology change DURING an operation is not followed: the outermost
-    /// acquisition on a thread resolves the root, and every nested acquisition
-    /// on that thread for the same writer root re-enters the object it already
-    /// holds (<see cref="Monitor"/> is re-entrant) without resolving again, for
-    /// the whole operation. A stable lexical gate also prevents another thread
-    /// using the same lexical root from overlapping it, even if resolution
-    /// changes, with one exception: a thread that already holds a write lock
-    /// never waits for a gate (that wait could close a cycle with the gate's
-    /// owner, who may come to need a gate this thread holds). It only tries
-    /// the gate, retries it once (still without blocking) after resolving the
-    /// root, and, when the gate is still busy, takes the resolved monitor alone.
-    /// Ordinary contention on that root makes the gate busy, with no topology
-    /// change (an outermost writer between taking the gate and taking its
-    /// monitor, for instance). Such a NESTED acquisition then holds no gate
-    /// for its whole operation, and if the root's resolution changes while it
-    /// runs, another writer on the same lexical root resolves the new target,
-    /// takes a different monitor and overlaps it. A scope releases its gate
-    /// before its monitor, so a nested waiter woken by that release usually
-    /// finds the gate free, and the retry catches a gate released while the
-    /// root was being resolved; these narrow the case but do not close it.
-    /// Different aliases can still diverge if topology changes during an
-    /// active operation; no filesystem handles pin its target.
+    /// topology change DURING an operation is not followed: the acquisition
+    /// resolves the root once, and the lease keeps what it resolved for the
+    /// whole operation. A stable lexical gate also keeps another operation on
+    /// the same lexical root from overlapping it, even if resolution changes.
     /// </para>
     /// <para>
-    /// Deadlock: no wait cycle passes through a lexical gate, because only a
-    /// thread holding no write lock ever waits for one. Every other wait is
-    /// for a resolved monitor, made without that root's gate. Nested calls
-    /// over different resolved bundles therefore need a consistent caller lock
-    /// order, and that order is over the registry's keys, which are
-    /// CASE-FOLDED: two case-distinct bundles (<c>Foo</c> and <c>foo</c> on a
-    /// case-sensitive volume) share one monitor and count as one bundle for
-    /// ordering, so <c>Foo &lt; Bar &lt; foo</c> is not a consistent order.
-    /// Because an operation keeps the monitor it resolved first, a link on the
-    /// path retargeted during an operation -- even one that every alias
-    /// follows, so the aliases always agree with each other -- splits one
-    /// bundle into two for this purpose: aliases of it nested in opposite
-    /// order can then still deadlock between their resolved monitors (never
-    /// through a gate).
+    /// There is no ambient re-entrance (#152): a lease is not tied to a thread,
+    /// so it survives an <see langword="await"/>, and an operation that already
+    /// holds the lease must pass it to the code it calls (the <c>…Locked</c>
+    /// bodies) instead of acquiring again, which would wait for itself. No
+    /// operation in this library holds two bundles' leases at once.
     /// </para>
     /// <para>
-    /// Contention: the root is resolved (filesystem I/O) while the gate is
-    /// held (except on the busy-gate nested path above), and a waiter through
-    /// an alias, woken when the resolved monitor is released, must take the
-    /// gate and resolve again before it can enter.
-    /// The retry loop is unbounded but never busy-spins (each iteration waits
-    /// for the monitor); under constant contention, or a topology that keeps
-    /// changing, an alias waiter can be starved.
+    /// A contended resolved lock is waited for WITHOUT the gate, then the
+    /// acquisition resolves and tries again: the owner of the resolved lock
+    /// can never be waiting for a gate this caller holds, so no wait cycle
+    /// passes through a gate.
     /// </para>
     /// <para>
-    /// Still in-process only: nothing here serializes a
-    /// second process writing the same bundle, and a C# lock cannot stop an
-    /// external actor mutating the bundle's files on disk -- see
-    /// <see cref="ValidateConceptTarget"/>'s remarks for that separate,
-    /// residual TOCTOU limitation.
-    /// </para>
-    /// <para>
-    /// The scope is thread-affine, like the monitor under it: dispose it on
-    /// the thread that entered it, and never hold it across an
-    /// <see langword="await"/>.
+    /// Still in-process only: nothing here serializes a second process writing
+    /// the same bundle, and a C# lock cannot stop an external actor mutating
+    /// the bundle's files on disk -- see <see cref="ValidateConceptTarget"/>'s
+    /// remarks for that separate, residual TOCTOU limitation.
     /// </para>
     /// </remarks>
-    internal WriteLockScope EnterWriteLock()
+    internal WriteLease EnterWriteLock()
     {
-        // Case-distinct lexical aliases can resolve to DIFFERENT bundles.
-        // Reusing a held lock is therefore stricter than coalescing registry
-        // keys: an ordinal match is required here.
-        var held = t_heldLocks ??= new Dictionary<string, HeldLock>(StringComparer.Ordinal);
-        if (held.TryGetValue(_lexicalRoot, out var outer))
-        {
-            // Both are already owned by this thread: re-entry never blocks.
-            if (outer.LexicalLock is { } outerGate)
-            {
-                Monitor.Enter(outerGate);
-            }
-
-            Monitor.Enter(outer.LockObject);
-            outer.Depth++;
-            return new WriteLockScope(_lexicalRoot, outer.LockObject, outer.LexicalLock);
-        }
-
-        // A thread already holding any write lock never WAITS for a lexical
-        // gate: the gate's owner can come to need a gate this thread holds
-        // (two aliases nested in opposite order while a link on the path is
-        // retargeted), and a gate wait would close that cycle. Such a thread
-        // only tries the gate; when it is busy, it goes on with the resolved
-        // monitor alone.
-        var holdsAnotherWriteLock = held.Count > 0;
-        var lexicalLock = LexicalLocks.GetOrAdd(_lexicalRoot, static _ => new object());
+        var gate = LexicalLocks.GetOrAdd(_lexicalRoot, static _ => new SemaphoreSlim(1, 1));
         while (true)
         {
-            object? lockObject = null;
-            var lexicalTaken = false;
+            SemaphoreSlim? resolved = null;
+            var gateTaken = false;
             var resolvedTaken = false;
             try
             {
-                if (holdsAnotherWriteLock)
-                {
-                    Monitor.TryEnter(lexicalLock, ref lexicalTaken);
-                }
-                else
-                {
-                    Monitor.Enter(lexicalLock, ref lexicalTaken);
-                }
+                gate.Wait();
+                gateTaken = true;
 
-                if (!lexicalTaken)
+                // Resolve AFTER the gate, including after each wait: an earlier
+                // operation may have changed the root.
+                resolved = ResolveLockObject();
+                if (resolved.Wait(0))
                 {
-                    GateBusyForTest?.Invoke();
-                }
-
-                // Resolve AFTER the gate attempt, including after each wait.
-                // An earlier operation may have changed the root.
-                lockObject = ResolveLockObject();
-
-                // A nested acquisition retries a busy gate once, still
-                // without blocking: its owner may have released it while
-                // this thread resolved (filesystem I/O). Taken here, it is
-                // recorded and released exactly like a gate taken above.
-                if (holdsAnotherWriteLock && !lexicalTaken)
-                {
-                    Monitor.TryEnter(lexicalLock, ref lexicalTaken);
-                }
-
-                // Never blocks. Succeeds re-entrantly when this thread
-                // already holds the resolved monitor through another root.
-                Monitor.TryEnter(lockObject, ref resolvedTaken);
-                if (resolvedTaken)
-                {
-                    // null: the gate was busy and is not part of this hold.
-                    var gate = lexicalTaken ? lexicalLock : null;
-                    held.Add(_lexicalRoot, new HeldLock(lockObject, gate));
-                    // Both holds now belong to the scope.
-                    lexicalTaken = false;
+                    resolvedTaken = true;
+                    var lease = new WriteLease(gate, resolved);
+                    // Both holds now belong to the lease.
+                    gateTaken = false;
                     resolvedTaken = false;
-                    return new WriteLockScope(_lexicalRoot, lockObject, gate);
+                    return lease;
                 }
             }
             finally
             {
                 if (resolvedTaken)
                 {
-                    Monitor.Exit(lockObject!);
+                    resolved!.Release();
                 }
 
-                if (lexicalTaken)
+                if (gateTaken)
                 {
-                    Monitor.Exit(lexicalLock);
+                    gate.Release();
                 }
             }
 
-            // Never wait for another thread's resolved lock while holding
-            // the lexical gate. Its owner may need that gate to enter this
-            // alias recursively. Wait without the gate, then retry BOTH
-            // acquisition and resolution; this is not the operation's hold.
+            // Never wait for another operation's resolved lock while holding
+            // the lexical gate. Wait without it, then retry BOTH acquisition
+            // and resolution; this wait is not the operation's hold.
             BeforeContendedWaitForTest?.Invoke();
-            lock (lockObject!)
-            {
-            }
+            resolved!.Wait();
+            resolved.Release();
         }
     }
 
     /// <summary>
     /// Test-only hook, invoked (if set) on the acquiring thread in
-    /// <see cref="EnterWriteLock"/> after it found the resolved monitor busy
-    /// and released the gate, immediately before it waits for that monitor.
+    /// <see cref="EnterWriteLock"/> after it found the resolved lock busy
+    /// and released the gate, immediately before it waits for that lock.
     /// </summary>
     internal Action? BeforeContendedWaitForTest { get; set; }
 
     /// <summary>
-    /// Test-only hook, invoked (if set) on the acquiring thread in
-    /// <see cref="EnterWriteLock"/> when a nested acquisition's first,
-    /// non-blocking attempt at the lexical gate failed, before it resolves
-    /// the root.
-    /// </summary>
-    internal Action? GateBusyForTest { get; set; }
-
-    /// <summary>
     /// The registry object this writer's root resolves to NOW, without
-    /// entering it and without consulting what the current thread holds.
-    /// Test-only.
+    /// taking it. Test-only.
     /// </summary>
     internal object CurrentLockObjectForTest() => ResolveLockObject();
 
     /// <summary>
     /// This writer's lexical gate, so a test can hold it from another thread
-    /// and stand in for an outermost writer caught between taking the gate and
-    /// taking its resolved monitor. Test-only.
+    /// and stand in for a writer caught between taking the gate and taking its
+    /// resolved lock. Test-only.
     /// </summary>
-    internal object LexicalGateForTest() => LexicalLocks.GetOrAdd(_lexicalRoot, static _ => new object());
+    internal SemaphoreSlim LexicalGateForTest() => LexicalLocks.GetOrAdd(_lexicalRoot, static _ => new SemaphoreSlim(1, 1));
 
-    private object ResolveLockObject() =>
-        BundleLocks.GetOrAdd(_fileSystem is not null ? ReparsePoints.ResolveLockKey(_lexicalRoot) : _lexicalRoot, static _ => new object());
-
-    /// <summary>
-    /// One entry of <see cref="t_heldLocks"/>: the objects held and how many
-    /// scopes hold them. <see cref="LexicalLock"/> is <see langword="null"/>
-    /// when a nested acquisition proceeded without its busy gate.
-    /// </summary>
-    private sealed class HeldLock(object lockObject, object? lexicalLock)
-    {
-        public object LockObject { get; } = lockObject;
-
-        public object? LexicalLock { get; } = lexicalLock;
-
-        public int Depth { get; set; } = 1;
-    }
-
-    /// <summary>
-    /// A hold of a bundle's write lock, from <see cref="EnterWriteLock"/>.
-    /// Dispose it exactly once, on the thread that entered it.
-    /// </summary>
-    internal readonly struct WriteLockScope : IDisposable
-    {
-        private readonly string _lexicalRoot;
-
-        private readonly object? _lexicalLock;
-
-        internal WriteLockScope(string lexicalRoot, object lockObject, object? lexicalLock)
-        {
-            _lexicalRoot = lexicalRoot;
-            LockObject = lockObject;
-            _lexicalLock = lexicalLock;
-        }
-
-        /// <summary>The registry object this scope entered.</summary>
-        internal object LockObject { get; }
-
-        /// <summary>
-        /// Whether this scope holds its root's lexical gate; <see langword="false"/>
-        /// for a nested acquisition that proceeded without a busy gate. Test-only.
-        /// </summary>
-        internal bool HoldsLexicalGateForTest => _lexicalLock is not null;
-
-        /// <summary>Exits the lock, and forgets it on this thread once the outermost scope ends.</summary>
-        public void Dispose()
-        {
-            if (LockObject is null)
-            {
-                return; // default(WriteLockScope): nothing was entered.
-            }
-
-            if (t_heldLocks is { } held && held.TryGetValue(_lexicalRoot, out var entry) && --entry.Depth == 0)
-            {
-                held.Remove(_lexicalRoot);
-            }
-
-            // The gate first, then the monitor. A nested waiter blocked on
-            // the monitor, woken by its release, then usually finds the gate
-            // free and keeps it, instead of retrying a gate still held for
-            // an instant and proceeding without it. Exits never block, so
-            // the order cannot add a wait; both objects are this scope's.
-            if (_lexicalLock is not null)
-            {
-                Monitor.Exit(_lexicalLock); // null: entered without its gate.
-            }
-
-            Monitor.Exit(LockObject);
-        }
-    }
+    private SemaphoreSlim ResolveLockObject() =>
+        BundleLocks.GetOrAdd(_fileSystem is not null ? ReparsePoints.ResolveLockKey(_lexicalRoot) : _lexicalRoot, static _ => new SemaphoreSlim(1, 1));
 
     /// <summary>
     /// Test-only hook, invoked (if set) immediately before the late
@@ -727,12 +549,9 @@ public sealed class BundleConceptWriter
                 // key, with every OTHER BundleConceptWriter instance whose root
                 // resolves to this same directory, not just this instance) so
                 // concurrent writers can't interleave an
-                // existence check with another writer's write, and so the
-                // committed callback below is atomic with the write it follows.
-                using (EnterWriteLock())
-                {
-                    return WriteThenNotify(committed => WriteConditionedLocked(target, content!, condition, committed));
-                }
+                // existence check with another writer's write. The committed
+                // callback runs after the lock is released (#152).
+                return WriteThenNotify(committed => WriteConditionedLocked(target, content!, condition, committed));
             },
             () => subject);
     }
@@ -812,10 +631,7 @@ public sealed class BundleConceptWriter
                     return buildError;
                 }
 
-                using (EnterWriteLock())
-                {
-                    return WriteThenNotify(committed => WriteConditionedLocked(target, content!, condition, committed));
-                }
+                return WriteThenNotify(committed => WriteConditionedLocked(target, content!, condition, committed));
             },
             () => subject);
     }
@@ -958,57 +774,54 @@ public sealed class BundleConceptWriter
                 // buildBody again (WithRetries). Another process is excluded
                 // only up to the provider's last check: the window before the
                 // commit is open (issue #178).
-                using (EnterWriteLock())
+                return WriteThenNotify(committed => WithRetries(subject, () =>
                 {
-                    return WriteThenNotify(committed => WithRetries(subject, () =>
+                    string frontmatterYaml;
+                    string? currentBody;
+
+                    // Strict UTF-8: a non-UTF-8 concept file throws
+                    // DecoderFallbackException (caught by RunTool below)
+                    // rather than being silently re-decoded and rewritten.
+                    var current = ReadCurrent(target.Key);
+                    if (current is { } existing)
                     {
-                        string frontmatterYaml;
-                        string? currentBody;
+                        // Fail-closed: if the existing concept has malformed
+                        // frontmatter (hand-edited, or a prior partial/crashed
+                        // write), OkfDocument.Parse throws DocumentParseException
+                        // (caught by RunTool -> Error text) so this append is
+                        // dropped rather than overwriting a possibly important
+                        // file. This is stricter than a permissive bundle-load
+                        // path, which would treat an unparseable file as absent
+                        // and silently recreate it.
+                        var existingDoc = OkfDocument.Parse(existing.Text);
+                        frontmatterYaml = existingDoc.Frontmatter.AsMapping().ToYamlString();
+                        currentBody = existingDoc.Body;
+                    }
+                    else
+                    {
+                        frontmatterYaml = frontmatterYamlIfCreating;
+                        currentBody = null;
+                    }
 
-                        // Strict UTF-8: a non-UTF-8 concept file throws
-                        // DecoderFallbackException (caught by RunTool below)
-                        // rather than being silently re-decoded and rewritten.
-                        var current = ReadCurrent(target.Key);
-                        if (current is { } existing)
-                        {
-                            // Fail-closed: if the existing concept has malformed
-                            // frontmatter (hand-edited, or a prior partial/crashed
-                            // write), OkfDocument.Parse throws DocumentParseException
-                            // (caught by RunTool -> Error text) so this append is
-                            // dropped rather than overwriting a possibly important
-                            // file. This is stricter than a permissive bundle-load
-                            // path, which would treat an unparseable file as absent
-                            // and silently recreate it.
-                            var existingDoc = OkfDocument.Parse(existing.Text);
-                            frontmatterYaml = existingDoc.Frontmatter.AsMapping().ToYamlString();
-                            currentBody = existingDoc.Body;
-                        }
-                        else
-                        {
-                            frontmatterYaml = frontmatterYamlIfCreating;
-                            currentBody = null;
-                        }
+                    var newBody = buildBody(currentBody);
+                    if (newBody is null)
+                    {
+                        return "Error: body must not be null.";
+                    }
 
-                        var newBody = buildBody(currentBody);
-                        if (newBody is null)
-                        {
-                            return "Error: body must not be null.";
-                        }
+                    if (newBody.Contains('\0'))
+                    {
+                        return "Error: invalid body — it must not contain a null character.";
+                    }
 
-                        if (newBody.Contains('\0'))
-                        {
-                            return "Error: invalid body — it must not contain a null character.";
-                        }
+                    var (content, buildError) = BuildValidatedContent(frontmatterYaml, newBody);
+                    if (buildError is not null)
+                    {
+                        return buildError;
+                    }
 
-                        var (content, buildError) = BuildValidatedContent(frontmatterYaml, newBody);
-                        if (buildError is not null)
-                        {
-                            return buildError;
-                        }
-
-                        return WriteValidatedContentLocked(target, content!, ConditionFor(current), committed, existedBefore: current is not null);
-                    }));
-                }
+                    return WriteValidatedContentLocked(target, content!, ConditionFor(current), committed, existedBefore: current is not null);
+                }));
             },
             () => subject);
     }
@@ -1154,7 +967,8 @@ public sealed class BundleConceptWriter
             // Target validation also reads the files. Keep it in the same
             // lock hold as prepare/write: otherwise a cooperating writer can
             // expose a sharing violation or a partially written document (#131).
-            using (EnterWriteLock())
+            string? recordedPrefix = null;
+            string RecordLocked()
             {
                 // Checked FIRST for five of its six kinds, so THIS method's own
                 // refusal names the offender: before this call existed, an
@@ -1189,7 +1003,7 @@ public sealed class BundleConceptWriter
                 // runs its OWN passes over every id before this method's prepare
                 // loop ever starts. Both are correct refusals of the same batch;
                 // which one is named first can move.
-                var targetProblem = CheckVerificationTargets(conceptIds);
+                var targetProblem = CheckVerificationTargetsLocked(conceptIds);
                 if (targetProblem is { Kind: not VerificationTargetProblemKind.NotConformant } problem)
                 {
                     return FormatVerificationTargetProblem(problem);
@@ -1248,7 +1062,6 @@ public sealed class BundleConceptWriter
                 // actually landed — no separate trim/rollback step
                 // to keep in sync, and no way for a future early return in
                 // this loop to under- or over-report what landed.
-                string? notificationFailure = null;
                 for (var i = 0; i < prepared.Count; i++)
                 {
                     var stamp = prepared[i];
@@ -1292,11 +1105,6 @@ public sealed class BundleConceptWriter
                         // one is said once the batch ends.
                         records.Add(new VerificationRecord(stamp.ConceptId, stampedAt, stamp.ReplacedAt));
                         written.Add(stamp.Target.Key);
-                        if (NotifyCommitted() is { } notificationError)
-                        {
-                            notificationFailure ??= notificationError["Error: ".Length..];
-                        }
-
                         continue;
                     }
 
@@ -1314,10 +1122,31 @@ public sealed class BundleConceptWriter
                         : $"{writeResult} — already written: {string.Join(", ", records.Select(r => r.ConceptId))}";
                 }
 
-                return notificationFailure is null
-                    ? $"Recorded {prepared.Count} verification(s) by {by} at {stampedAt}."
-                    : $"Recorded {prepared.Count} verification(s) by {by} at {stampedAt}; the write notification failed: {notificationFailure}";
+                recordedPrefix = $"Recorded {prepared.Count} verification(s) by {by} at {stampedAt}";
+                return recordedPrefix + ".";
             }
+
+            string locked;
+            using (EnterWriteLock())
+            {
+                locked = RecordLocked();
+            }
+
+            // The write notification runs once per committed write, after the lease is released
+            // (#152): the writes are final, so nothing it throws is a failure of the batch; a failed
+            // one is said once the batch ends, and only when the batch completed.
+            string? notificationFailure = null;
+            for (var i = 0; i < written.Count; i++)
+            {
+                if (NotifyCommitted() is { } notificationError)
+                {
+                    notificationFailure ??= notificationError["Error: ".Length..];
+                }
+            }
+
+            return recordedPrefix is not null && notificationFailure is not null
+                ? $"{recordedPrefix}; the write notification failed: {notificationFailure}"
+                : locked;
         }, () => subject);
 
         // On failure, Records is NOT emptied: it carries whatever reached disk
@@ -1518,52 +1347,49 @@ public sealed class BundleConceptWriter
                 // silently clobber the first (a lost update). A writer outside
                 // the lock in this process is met by the version condition; another
                 // process only up to the provider's last check (issue #178).
-                using (EnterWriteLock())
+                return WriteThenNotify(committed => WithRetries(LogKey, () =>
                 {
-                    return WriteThenNotify(committed => WithRetries(LogKey, () =>
+                    // Strict UTF-8, matching ChangesSince: a non-UTF-8
+                    // log.md throws DecoderFallbackException (caught by
+                    // RunTool) instead of being silently re-decoded with
+                    // U+FFFD replacement characters and rewritten that way.
+                    var current = ReadCurrent(key);
+
+                    // ChangeLog.Parse is permissive (never throws); used here
+                    // only to locate the day (if any) among the existing entries.
+                    var changeLog = ChangeLog.Parse(current?.Text ?? string.Empty);
+                    var days = changeLog.Days.ToList();
+                    var dayIndex = days.FindIndex(d => string.Equals(d.Date, day, StringComparison.Ordinal));
+                    if (dayIndex >= 0)
                     {
-                        // Strict UTF-8, matching ChangesSince: a non-UTF-8
-                        // log.md throws DecoderFallbackException (caught by
-                        // RunTool) instead of being silently re-decoded with
-                        // U+FFFD replacement characters and rewritten that way.
-                        var current = ReadCurrent(key);
+                        var existing = days[dayIndex];
+                        days[dayIndex] = existing with { Entries = [.. existing.Entries, entry] };
+                    }
+                    else
+                    {
+                        // New LogDay at the head: days are newest-first (§9).
+                        days.Insert(0, new LogDay(day, [entry]));
+                    }
 
-                        // ChangeLog.Parse is permissive (never throws); used here
-                        // only to locate the day (if any) among the existing entries.
-                        var changeLog = ChangeLog.Parse(current?.Text ?? string.Empty);
-                        var days = changeLog.Days.ToList();
-                        var dayIndex = days.FindIndex(d => string.Equals(d.Date, day, StringComparison.Ordinal));
-                        if (dayIndex >= 0)
-                        {
-                            var existing = days[dayIndex];
-                            days[dayIndex] = existing with { Entries = [.. existing.Entries, entry] };
-                        }
-                        else
-                        {
-                            // New LogDay at the head: days are newest-first (§9).
-                            days.Insert(0, new LogDay(day, [entry]));
-                        }
+                    if (current is null && BundleTreeCheck.CheckCreation(_provider, _validator, key, _limits) is { } conflict)
+                    {
+                        return $"Error: {conflict}.";
+                    }
 
-                        if (current is null && BundleTreeCheck.CheckCreation(_provider, _validator, key, _limits) is { } conflict)
-                        {
-                            return $"Error: {conflict}.";
-                        }
+                    // Not WriteValidatedContentLocked, the primitive of concept
+                    // writes and verification stamps: log.md is written by this
+                    // conditioned Write of its own. Its commit is reported to
+                    // WriteThenNotify, as AppendToConceptAtomic's is, so the
+                    // notification runs once, after the retries (decision B48).
+                    _provider.Write(key, OkfEncodings.NoBom.GetBytes(new ChangeLog(changeLog.Title, days).ToMarkdown()), ConditionFor(current));
+                    committed();
 
-                        // Not WriteValidatedContentLocked, the primitive of concept
-                        // writes and verification stamps: log.md is written by this
-                        // conditioned Write of its own. Its commit is reported to
-                        // WriteThenNotify, as AppendToConceptAtomic's is, so the
-                        // notification runs once, after the retries (decision B48).
-                        _provider.Write(key, OkfEncodings.NoBom.GetBytes(new ChangeLog(changeLog.Title, days).ToMarkdown()), ConditionFor(current));
-                        committed();
-
-                        // The FOLDED kind, not the raw argument: this message is
-                        // itself a line-structured result, and echoing the
-                        // argument verbatim would put back the separator the
-                        // write just removed.
-                        return $"Appended a '{foldedKind}' entry under {day} in log.md.";
-                    }));
-                }
+                    // The FOLDED kind, not the raw argument: this message is
+                    // itself a line-structured result, and echoing the
+                    // argument verbatim would put back the separator the
+                    // write just removed.
+                    return $"Appended a '{foldedKind}' entry under {day} in log.md.";
+                }));
             },
             () => LogKey);
     }
@@ -1995,8 +1821,8 @@ public sealed class BundleConceptWriter
     internal VerificationTargetProblem? CheckVerificationTargets(IReadOnlyList<string> conceptIds)
     {
         // CLI/agent callers also use this preflight on its own. Serialize its
-        // reads against writers; RecordVerifications keeps this reentrant
-        // monitor held through the subsequent prepare/write as well.
+        // reads against writers; RecordVerifications runs the Locked body under
+        // its own lease through the subsequent prepare/write as well.
         using (EnterWriteLock())
         {
             return CheckVerificationTargetsLocked(conceptIds);
@@ -2288,15 +2114,21 @@ public sealed class BundleConceptWriter
     /// <summary>
     /// Runs one write operation of a <c>string</c> entry point — a single write, or every attempt
     /// of a read-modify-write — and, if it committed, invokes the write notification once that
-    /// operation has returned (<see cref="NotifyCommitted"/>). CALLER MUST hold the write lock:
-    /// the notification runs under it, atomically with the write it follows (#131).
+    /// operation has returned (<see cref="NotifyCommitted"/>). The operation runs under the
+    /// bundle's write lock (<see cref="EnterWriteLock"/>), and the notification runs AFTER the
+    /// lease is released (#152), so a callback may call back into the same bundle.
     /// </summary>
     /// <param name="write">The operation; it calls the action it is given once the provider has committed.</param>
     /// <returns>What <paramref name="write"/> returned, or the <c>Error: …</c> text of a notification that failed.</returns>
     private string WriteThenNotify(Func<Action, string> write)
     {
         var committed = false;
-        var result = write(() => committed = true);
+        string result;
+        using (EnterWriteLock())
+        {
+            result = write(() => committed = true);
+        }
+
         return committed && NotifyCommitted() is { } failure ? failure : result;
     }
 
@@ -2308,7 +2140,7 @@ public sealed class BundleConceptWriter
     /// I/O error, an <see cref="OkfException"/>, a conflict raised by another operation included)
     /// is returned as the writer's <c>Error: …</c> text; any other — an
     /// <see cref="OperationCanceledException"/>, a host's bug — propagates to the caller unchanged,
-    /// the write committed. CALLER MUST hold the write lock.
+    /// the write committed. Called after the write lock is released.
     /// </summary>
     /// <returns><see langword="null"/>, or the <c>Error: …</c> text of the notification's failure.</returns>
     private string? NotifyCommitted()

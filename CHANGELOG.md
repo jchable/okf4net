@@ -247,6 +247,8 @@ and this project adheres to
 
 ### Changed
 
+- **The write lock is an explicit lease, and the `onWriteCommitted` callback runs after it is released** (#152, step 1). `BundleConceptWriter`'s thread-bound `Monitor` pair (lexical gate + resolved bundle lock) became `SemaphoreSlim`s behind an internal `WriteLease`, so the lock can be held across an `await` once the writer is asynchronous. It is no longer re-entrant: code under a lease receives it instead of acquiring again. The two guarantees that mattered are kept: aliases of one directory share the lock (#86), and a contended resolved lock is waited for without the gate. Observable: the callback (`onWriteCommitted`, the `OkfBundleTools` cache invalidation) is now invoked after the lock is released, so it may call back into the same bundle; a host that relied on exclusion while the callback ran loses it. `RecordVerifications` completes its whole batch before notifying (once per committed write), so a notification that throws (a cancellation, say) no longer stops a batch half-way: the exception still propagates, with every stamp on disk.
+
 - **The path-based members are obsolete** (#139, lot D; spec §9, §10), kept
   one version with a warning (never an error, so not a break) whose message
   names the replacement: `Bundle.Root` → `Bundle.Location`;
