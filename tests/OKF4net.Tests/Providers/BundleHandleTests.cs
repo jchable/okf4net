@@ -362,7 +362,7 @@ public class BundleHandleTests
 
         var thrown = Assert.Throws<BundleLoadException>(() => handle.Refresh());
 
-        Assert.Contains("LoadLocked", thrown.StackTrace, StringComparison.Ordinal);
+        Assert.Contains("LoadAsync", thrown.StackTrace, StringComparison.Ordinal);
     }
 
     /// <summary>

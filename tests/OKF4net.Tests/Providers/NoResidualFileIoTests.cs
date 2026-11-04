@@ -79,6 +79,7 @@ public class NoResidualFileIoTests
             Assert.True(b.Count > 0);
         });
         Add(t, "BundleValidator.Validate(Bundle,IOkfClock)", c => Assert.NotNull(BundleValidator.Validate(c.Bundle)));
+        Add(t, "BundleValidator.ValidateAsync(Bundle,IOkfClock,CancellationToken)", async c => Assert.NotNull(await BundleValidator.ValidateAsync(c.Bundle)));
         Add(t, "ConceptAudit.Run(Bundle,AuditQuery,IOkfClock)", c => Assert.NotNull(ConceptAudit.Run(c.Bundle)));
         Add(t, "SiteModel.Build(Bundle)", c => Assert.NotNull(SiteModel.Build(c.Bundle)));
         Add(t, "SiteIndex.Build(Bundle)", c => Assert.NotNull(SiteIndex.Build(c.Bundle)));
@@ -192,6 +193,13 @@ public class NoResidualFileIoTests
         {
             var concept = c.Bundle.Concepts.Single(x => x.Id.ToString() == "computations/revenue");
             var captured = AttestationOrchestrator.Capture(c.Bundle, concept);
+            Assert.NotNull(captured.Capture);
+            AssertAttesterSourceRead(c);
+        });
+        Add(t, "AttestationOrchestrator.CaptureAsync(Bundle,Concept,Nullable`1,CancellationToken)", async c =>
+        {
+            var concept = c.Bundle.Concepts.Single(x => x.Id.ToString() == "computations/revenue");
+            var captured = await AttestationOrchestrator.CaptureAsync(c.Bundle, concept);
             Assert.NotNull(captured.Capture);
             AssertAttesterSourceRead(c);
         });
