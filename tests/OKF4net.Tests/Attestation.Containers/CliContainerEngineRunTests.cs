@@ -262,7 +262,7 @@ public class CliContainerEngineRunTests
     /// Teardown after a timeout runs <c>engine kill</c>, and the first version waited
     /// for that child with no bound at all: an engine whose daemon has gone away hangs
     /// on <c>kill</c>, which turned the timeout <see cref="CliContainerEngine.RunAsync"/>
-    /// promised into a hang. The "engine" here always hangs on <c>run</c> (so the
+    /// promised into a hang. The "engine" here always hangs on <c>start</c> (so the
     /// outer run genuinely times out) and hangs on <c>kill</c> too, standing in for
     /// exactly that unresponsive daemon. Its <c>kill</c> writes a <c>kill</c> line to a
     /// marker file as it starts, sleeps <see cref="HungKillSeconds"/>, then writes a
@@ -273,7 +273,7 @@ public class CliContainerEngineRunTests
     /// <para>
     /// The clock starts at the hang (#149). This test used to time the whole
     /// <see cref="CliContainerEngine.RunAsync"/> call against a fixed 4 s, so that one
-    /// number had to absorb spawning the <c>run</c> process, the 300 ms timeout,
+    /// number had to absorb spawning the <c>start</c> process, the 300 ms timeout,
     /// spawning <c>kill</c>, the 1 s budget and two process-tree kills; a GitHub Windows
     /// runner needed 4.25-4.3 s for all of that, against ~1.3 s normally. Its main
     /// bound is now measured from the moment the <c>kill</c> child writes its
@@ -290,7 +290,7 @@ public class CliContainerEngineRunTests
     /// budget only for the retry decision, not to the first attempt. The <c>kill</c>
     /// line is written after <c>Start()</c> returned (once the child's shell is up), so
     /// the cut-off lands at most 1 s after that line, and what follows it -- killing the
-    /// <c>kill</c> tree, killing the <c>run</c> tree, draining output -- is latency.
+    /// <c>kill</c> tree, killing the <c>start</c> tree, draining output -- is latency.
     /// </para>
     /// <para>
     /// What each assertion catches, and what it cannot:
@@ -308,8 +308,8 @@ public class CliContainerEngineRunTests
     /// delay before <c>kill</c> starts.</item>
     /// <item><b>End to end under 8 s</b>, from before <see cref="CliContainerEngine.RunAsync"/>
     /// is called. Catches a delay anywhere, including before teardown starts, and a
-    /// teardown that waits out the 20 s <c>run</c> hang (one that stopped killing the
-    /// <c>run</c> tree). Correct runs take 1.3-1.8 s; 8 s is close to twice the
+    /// teardown that waits out the 20 s <c>start</c> hang (one that stopped killing the
+    /// <c>start</c> tree). Correct runs take 1.3-1.8 s; 8 s is close to twice the
     /// slowest CI run ever seen (4.3 s, #149, under parallel load). Cannot catch an
     /// added delay of up to ~6 s before <c>kill</c> starts.</item>
     /// <item><b>No <c>done</c> line, checked after outliving the hang</b> (until the
@@ -518,12 +518,11 @@ public class CliContainerEngineRunTests
     /// started leaves one <c>kill</c> cannot touch (it is not running) and <c>--rm</c>
     /// never fires for (it never ran). The teardown therefore issues <c>rm -f</c> for the
     /// run's container -- its exact name, not a pattern -- and then <c>inspect</c> of the
-    /// same name to check it is gone. Absence has to be seen in two rounds, and -- as
-    /// <c>kill</c> never confirmed the container existed, so its <c>create</c> may still
-    /// be in flight -- to hold for a further 1.5 s (the lower bound asserted on the
-    /// elapsed time below; the code's own <c>AbsentWindow</c>). The CI-visible half only:
-    /// whether the engine really has no such container is <c>ContainerIntegrationTests</c>'
-    /// to say.
+    /// same name to check it is gone. The run's <c>create</c> exited 0 before <c>start</c>
+    /// ever ran, so its outcome is settled and absence needs only two rounds -- exactly two
+    /// <c>inspect</c> calls, not the 1.5 s hold an unsettled create gets (see the test
+    /// further down). The CI-visible half only: whether the engine really has no such
+    /// container is <c>ContainerIntegrationTests</c>' to say.
     /// </summary>
     [Theory]
     [InlineData(false)]
@@ -537,7 +536,6 @@ public class CliContainerEngineRunTests
         {
             TeardownBudget = TimeSpan.FromSeconds(5),
         };
-        var clock = Stopwatch.StartNew();
 
         await AssertRunEndsAsync(engine, callerCancels);
 
@@ -548,11 +546,35 @@ public class CliContainerEngineRunTests
         // share, both aimed at the very container `kill` was just refused for.
         Assert.True(Invocations(marker, "rm").Count >= 2);
         Assert.All(Invocations(marker, "rm"), removal => Assert.Equal(["-f", name], removal));
-        Assert.True(Invocations(marker, "inspect").Count >= 2);
+        Assert.Equal(2, Invocations(marker, "inspect").Count);
         Assert.All(Invocations(marker, "inspect"), inspection => Assert.Equal([name], inspection));
-        // The run alone is ~0.3 s (the timeout / the cancel delay); the 1.5 s hold on
-        // top of it is what keeps teardown watching for a late create.
-        Assert.True(clock.Elapsed >= TimeSpan.FromMilliseconds(1500), $"teardown gave up after {clock.Elapsed}");
+    }
+
+    /// <summary>
+    /// The other side of the settled create: one that has to be killed because it outlasts
+    /// two thirds of the budget (30 s here, 4 s of a 6 s budget) is unsettled -- the
+    /// daemon may yet commit it -- so absence is held for the 1.5 s window on top of the
+    /// two rounds, as it was for every cancellation before the create became its own
+    /// command. The lower bound is that wait plus the 4 s one.
+    /// </summary>
+    [Fact]
+    public async Task An_unsettled_create_gets_the_absence_window()
+    {
+        EnsureThreadPoolHeadroom();
+        using var tmp = new TempDir();
+        var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
+        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 0, inspectExitCode: 1, createSeconds: 30))
+        {
+            TeardownBudget = TimeSpan.FromSeconds(6),
+        };
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        var clock = Stopwatch.StartNew();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await engine.RunAsync(Spec(TimeSpan.FromSeconds(60)), cts.Token));
+
+        Assert.Empty(Invocations(marker, "kill"));
+        Assert.True(Invocations(marker, "inspect").Count >= 3, "teardown stopped at two absent rounds instead of holding the window");
+        Assert.True(clock.Elapsed >= TimeSpan.FromMilliseconds(5300), $"teardown gave up after {clock.Elapsed}");
     }
 
     /// <summary>
@@ -660,6 +682,90 @@ public class CliContainerEngineRunTests
 
         Assert.True(stopwatch.Elapsed >= TimeSpan.FromSeconds(2.5), $"teardown returned after {stopwatch.Elapsed.TotalSeconds:F1} s with a 3 s budget: an inspect the daemon could not answer was taken as absence");
         Assert.True(Invocations(marker, "inspect").Count >= 4);
+    }
+
+    /// <summary>
+    /// #110: a run cancelled while its <c>create</c> is still running does not kill that
+    /// client -- a <c>create</c> killed mid-flight can be committed by the daemon later,
+    /// unseen -- it waits for it to exit (2 s here, inside a 5 s budget), and only then
+    /// removes by name. Once the create has exited its outcome is settled, so absence needs
+    /// the two rounds and not the 1.5 s hold an unsettled create does: exactly two
+    /// <c>inspect</c> calls, where the hold would take six or so.
+    /// </summary>
+    [Fact]
+    public async Task A_create_still_running_at_cancellation_is_awaited_then_removed_on_settled_state()
+    {
+        EnsureThreadPoolHeadroom();
+        using var tmp = new TempDir();
+        var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
+        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 0, inspectExitCode: 1, createSeconds: 2))
+        {
+            TeardownBudget = TimeSpan.FromSeconds(5),
+        };
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await engine.RunAsync(Spec(TimeSpan.FromSeconds(60)), cts.Token));
+
+        var lines = File.ReadAllLines(marker).Select(static line => line.Trim()).ToList();
+        var createDone = lines.IndexOf("create-done");
+        Assert.True(createDone >= 0, "the create client was killed before it finished");
+        var firstRemoval = lines.FindIndex(static line => line.StartsWith("rm ", StringComparison.Ordinal));
+        Assert.True(firstRemoval > createDone, "the removal ran before the create had finished");
+        Assert.Empty(Invocations(marker, "kill"));
+        Assert.Equal(2, Invocations(marker, "inspect").Count);
+    }
+
+    /// <summary>
+    /// A <c>create</c> that outlasts the whole teardown budget (a cold pull, a daemon that
+    /// has stopped answering) is killed when the budget is spent, and the run still ends at
+    /// the budget with the caller's cancellation: waiting for it is bounded.
+    /// </summary>
+    [Fact]
+    public async Task A_create_that_outlasts_the_budget_is_killed_and_the_run_still_ends()
+    {
+        EnsureThreadPoolHeadroom();
+        using var tmp = new TempDir();
+        var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
+        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 0, inspectExitCode: 1, createSeconds: 15))
+        {
+            TeardownBudget = TimeSpan.FromSeconds(1),
+        };
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await engine.RunAsync(Spec(TimeSpan.FromSeconds(60)), cts.Token));
+        stopwatch.Stop();
+
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(6), $"the run took {stopwatch.Elapsed.TotalSeconds:F1} s: the create client was waited for past the 1 s teardown budget");
+        Assert.DoesNotContain("create-done", File.ReadAllLines(marker).Select(static line => line.Trim()));
+    }
+
+    /// <summary>
+    /// An engine that refuses the <c>create</c> (image not found, a bad flag, a daemon that
+    /// is down) leaves no container: the run reports the engine's exit code and message as
+    /// the failed result a single <c>run</c> would have, and never starts anything.
+    /// </summary>
+    [Fact]
+    public async Task A_create_the_engine_refuses_is_reported_as_a_failed_run()
+    {
+        using var tmp = new TempDir();
+        var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
+        string engineScript;
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            engineScript = tmp.Write("engine.cmd", $"@echo off\r\necho %1 >> \"{marker}\"\r\necho Unable to find image 1>&2\r\nexit /b 125\r\n");
+        }
+        else
+        {
+            engineScript = tmp.Write("engine.sh", $"#!/bin/sh\necho \"$1\" >> '{marker}'\necho 'Unable to find image' >&2\nexit 125\n");
+            File.SetUnixFileMode(engineScript, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        var result = await new CliContainerEngine(engineScript).RunAsync(Spec(TimeSpan.FromSeconds(30)));
+
+        Assert.Equal(125, result.ExitCode);
+        Assert.Contains("Unable to find image", result.Stderr);
+        Assert.Equal(["create"], File.ReadAllLines(marker).Select(static line => line.Trim()).ToArray());
     }
 
     /// <summary>
@@ -780,13 +886,17 @@ public class CliContainerEngineRunTests
 
     /// <summary>
     /// An "engine" that dispatches on its first argument the way a real one does:
-    /// <c>run</c> always hangs for <paramref name="runHangSeconds"/> (so
+    /// <c>start</c> (anything not named below) always hangs for
+    /// <paramref name="runHangSeconds"/> (so
     /// <see cref="CliContainerEngine.RunAsync"/> genuinely times out and proceeds to
     /// teardown), while <c>kill</c> appends one <c>kill</c> line to
     /// <paramref name="markerFile"/> -- so a test can count how many kill attempts
-    /// actually ran -- and then behaves per <paramref name="killMode"/>.
+    /// actually ran -- and then behaves per <paramref name="killMode"/>. <c>create</c>
+    /// takes <paramref name="createSeconds"/> (none by default) and exits 0, writing a
+    /// <c>create-begin</c> and a <c>create-done</c> line around the wait so a test can
+    /// order it against the teardown commands.
     /// </summary>
-    private static string DispatchingEngine(TempDir tmp, string markerFile, int runHangSeconds, KillMode killMode, int rmExitCode = 1, int inspectExitCode = 1, string inspectStderr = "Error: No such object")
+    private static string DispatchingEngine(TempDir tmp, string markerFile, int runHangSeconds, KillMode killMode, int rmExitCode = 1, int inspectExitCode = 1, string inspectStderr = "Error: No such object", int createSeconds = 0)
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
@@ -803,7 +913,13 @@ public class CliContainerEngineRunTests
                 + "if \"%1\"==\"kill\" goto kill\r\n"
                 + "if \"%1\"==\"rm\" goto rm\r\n"
                 + "if \"%1\"==\"inspect\" goto inspect\r\n"
+                + "if \"%1\"==\"create\" goto create\r\n"
                 + $"ping -n {runHangSeconds + 1} 127.0.0.1 >nul\r\n"
+                + "exit /b 0\r\n"
+                + ":create\r\n"
+                + $"echo create-begin >> \"{markerFile}\"\r\n"
+                + (createSeconds > 0 ? $"ping -n {createSeconds + 1} 127.0.0.1 >nul\r\n" : "")
+                + $"echo create-done >> \"{markerFile}\"\r\n"
                 + "exit /b 0\r\n"
                 + ":rm\r\n"
                 + $"echo %* >> \"{markerFile}\"\r\n"
@@ -827,7 +943,12 @@ public class CliContainerEngineRunTests
         var path = tmp.Write(
             "engine.sh",
             "#!/bin/sh\n"
-            + "if [ \"$1\" = \"rm\" ]; then\n"
+            + "if [ \"$1\" = \"create\" ]; then\n"
+            + $"  echo create-begin >> '{markerFile}'\n"
+            + (createSeconds > 0 ? $"  sleep {createSeconds}\n" : "")
+            + $"  echo create-done >> '{markerFile}'\n"
+            + "  exit 0\n"
+            + "elif [ \"$1\" = \"rm\" ]; then\n"
             + $"  echo \"$*\" >> '{markerFile}'\n"
             + $"  exit {rmExitCode}\n"
             + "elif [ \"$1\" = \"inspect\" ]; then\n"
@@ -861,10 +982,10 @@ public class CliContainerEngineRunTests
 
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            return tmp.Write("engine.cmd", $"@echo off\r\ntype \"{payload}\"{redirect}\r\nexit /b {exitCode}\r\n");
+            return tmp.Write("engine.cmd", $"@echo off\r\nif \"%1\"==\"create\" exit /b 0\r\ntype \"{payload}\"{redirect}\r\nexit /b {exitCode}\r\n");
         }
 
-        var path = tmp.Write("engine.sh", $"#!/bin/sh\ncat '{payload}'{redirect}\nexit {exitCode}\n");
+        var path = tmp.Write("engine.sh", $"#!/bin/sh\n[ \"$1\" = \"create\" ] && exit 0\ncat '{payload}'{redirect}\nexit {exitCode}\n");
         File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         return path;
     }
