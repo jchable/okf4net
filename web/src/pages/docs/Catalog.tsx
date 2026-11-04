@@ -238,6 +238,13 @@ export default function Catalog() {
             <code>MemoryDeleteResult(Tiers, Error)</code>: one <code>MemoryTierDeletion</code> per tier, a report of the
             keys deleted and those that failed, with why.
           </p>
+          <p>
+            A host that keeps its memory elsewhere can build the store from one{' '}
+            <code>IBundleProvider</code> per tier instead of tier directories; over a read-only provider every write
+            and deletion comes back as data, with nothing written. Through a provider you pass in, a deletion removes
+            keys only: the emptied directories, whose names carry the ids, stay. Only the directory constructor also
+            erases them.
+          </p>
         </Chapter>
 
         <Chapter id="hosting" title="Hosting (AddKnowledge / AddMemory)" refText="the one Microsoft.Extensions.* dependency">
