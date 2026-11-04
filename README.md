@@ -219,8 +219,19 @@ Console.WriteLine(writer.AppendLog("Update", "Documented the refunds table."));
 `FileSystemBundleProvider` (it still throws `BundleLoadException` for a root
 that is not a directory, before delegating). A host can load through any `IBundleProvider`
 (`OKF4net.Providers`) — a key space of objects, read-only unless the provider
-declares `Capabilities.CanWrite` — with `Bundle.Load(provider, new
-BundleLoadOptions { Limits = …, KeyPolicy = … })`. Keys are validated as a tree
+declares `Capabilities.CanWrite` — with `await Bundle.LoadAsync(provider, new
+BundleLoadOptions { Limits = …, KeyPolicy = … }, ct)`. The provider contract is
+asynchronous at the I/O edges (`ValueTask`, `IAsyncEnumerable`, a required
+`CancellationToken`); queries on the loaded image stay synchronous. A provider
+whose operations always complete before they return says so with
+`Capabilities.CompletesSynchronously` (the filesystem provider does): only such a
+provider serves the synchronous entry points (`Bundle.Load(string)`, the writer's
+and the index generator's `string` overloads, `BundleValidator.Validate`), which
+never wait — a pending read is cancelled and the call throws
+`InvalidOperationException` naming the async overload, and a synchronous write is
+refused before any I/O starts. `LoadAsync` reads the concepts with at most
+`BundleLimits.MaxConcurrentRequests` reads in flight, and reports the failing key
+of the smallest rank whatever finished first. Keys are validated as a tree
 under the `Native` policy by default: the loader refuses only what the
 provider's storage itself cannot hold or would alias (OKF §11 imposes no naming
 constraint), so `Orders.md` beside `orders.md` (on any volume that holds
@@ -388,16 +399,18 @@ through, where the write that preceded the provider overwrote it. The
 
 A `BundleHandle` (spec §5.2) holds one bundle's image: its provider, the
 `BundleLoadOptions` every load uses, a refresh policy and the current `Bundle`
-(`handle.Current`, loaded on first use). One load runs at a time — concurrent
-callers wait for it instead of starting their own — and the image is replaced
-as a whole, so a caller never sees two versions. A reload that fails (the
+(`await handle.GetCurrentAsync(ct)`, loaded on first use). One load runs at a time
+and is shared — concurrent callers join the operation in progress (a caller joins
+only one that started at a generation covering its own reload obligation), and one
+that cancels stops waiting without cancelling the others' load — and the image is
+replaced as a whole, so a caller never sees two versions. A reload that fails (the
 storage unreachable, a bound exceeded) keeps the previous image served:
 `handle.IsStale` is `true` and `handle.LastLoadError` holds the failure (its
 inner exception is the raw cause, for the host's log only); only the very
 first load throws. `handle.Invalidate()` obliges the next use to reload
 whatever the policy; the obligation is acknowledged only by a successful load
 started after it. The refresh policies (`BundleRefreshPolicy`) are all lazy —
-no timer, no thread: `Manual` (the default: the host calls `handle.Refresh()`),
+no timer, no thread: `Manual` (the default: the host calls `await handle.RefreshAsync()`),
 `OnAccess` (the provider's version token is compared before every use),
 `Every(interval)` (compared at most once per interval, at an access) and
 `Notify` (a provider implementing `IBundleChangeNotifier` signals a possible
