@@ -1004,6 +1004,25 @@ and this project adheres to
   too, so a descendant holding a pipe open cannot hold teardown past it. The
   measurements above were taken before the "no such" rule and the live
   `docker events` check in the early-cancellation test.
+- `OKF4net.Attestation.Containers`: `CliContainerEngine` now runs a container as
+  `create` followed by `start -a -i`, not as one `run` (#110). A client killed
+  while it was mid-`create` left the daemon free to commit that create afterwards,
+  unseen, and no count of absent rounds could rule it out. A run cancelled during
+  `create` now waits for that client to exit (within two thirds of the teardown
+  budget) instead of killing it, so the daemon's outcome is known before the
+  removal and absence needs only the two rounds, not the 1.5 s hold. Only a
+  `create` slower than that (a cold image pull, a daemon that has stopped
+  answering) is killed, and a create the daemon commits after that is still not
+  seen — that residual remains, now limited to that case. A refused `create`
+  (image not found, bad flag) is reported as the failed result `run` gave, with
+  the engine's exit code and message. The change costs one more engine process
+  per run. Isolation flags are unchanged (they now go to `create`; `start`
+  carries only `-a -i`). Measured on Docker 29.4.1 on Windows: `start -a -i`
+  propagates the container's exit code and carries stdin, stdout and stderr, and
+  15 containers that exit at once showed no attach race under `--rm`; three
+  50-run early-cancellation sweeps left no container behind. Podman and nerdctl
+  have not been run; that their `create`/`start -a -i` behave alike is assumed.
+  The leak figures in the previous entry describe the old single-`run` client.
 
 ## [0.7.0] - 2026-10-14
 
