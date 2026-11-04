@@ -229,9 +229,21 @@ public sealed class Bundle
     /// <param name="options">The key policy, extra validators and bounds, or <see langword="null"/> for <see cref="BundleLoadOptions.Default"/>.</param>
     /// <param name="ct">Cancels the load: it ends with an <see cref="OperationCanceledException"/>, never a <see cref="BundleLoadException"/>.</param>
     /// <exception cref="BundleLoadException">The provider failed, refused the access, or a global bound was exceeded. The raw cause is the inner exception.</exception>
-    public static async ValueTask<Bundle> LoadAsync(IBundleProvider provider, BundleLoadOptions? options = null, CancellationToken ct = default)
+    public static ValueTask<Bundle> LoadAsync(IBundleProvider provider, BundleLoadOptions? options = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(provider);
+        return LoadCoreAsync(provider, options, ct, (options ?? BundleLoadOptions.Default).Limits.MaxConcurrentRequests);
+    }
+
+    /// <summary>
+    /// The load, reading the concepts with at most <paramref name="readDegree"/> reads in flight (the
+    /// asynchronous spelling uses <see cref="BundleLimits.MaxConcurrentRequests"/>; the synchronous one,
+    /// 1: its path is the sequential one, so what the CLI prints never depends on a scheduler).
+    /// Whatever the degree, the outcome is the same: concepts in key order, and a failure
+    /// that ends the load names the failing key of the smallest rank.
+    /// </summary>
+    private static async ValueTask<Bundle> LoadCoreAsync(IBundleProvider provider, BundleLoadOptions? options, CancellationToken ct, int readDegree)
+    {
         options ??= BundleLoadOptions.Default;
         var limits = options.Limits;
         var validator = new BundleKeyValidator(provider.NativeConstraints, options.KeyPolicy, options.ExtraKeyValidators);
@@ -310,6 +322,7 @@ public sealed class Bundle
         var logKeys = new List<BundleKey>();
         var objectVersions = new Dictionary<BundleKey, BundleObjectVersion>();
         var chunk = new byte[ReadChunkBytes]; // one copy buffer for every object of this load
+        var prefetched = await PrefetchConceptsAsync(provider, mdKeys.Where(k => k.Name is not (IndexFilename or LogFilename)).ToList(), limits, readDegree, ct).ConfigureAwait(false);
 
         foreach (var key in mdKeys)
         {
@@ -327,7 +340,17 @@ public sealed class Bundle
                         try
                         {
                             ct.ThrowIfCancellationRequested();
-                            var read = await ReadTextAtAsync(provider, key, limits, chunk, null, ct).ConfigureAwait(false);
+                            (string Text, BundleObjectVersion Version) read;
+                            if (prefetched.TryGetValue(key, out var ahead))
+                            {
+                                ahead.Failure?.Throw(); // the failure of this object, at its own rank: the loop meets the lowest first
+                                read = (ahead.Text!, ahead.Version);
+                            }
+                            else
+                            {
+                                read = await ReadTextAtAsync(provider, key, limits, chunk, null, ct).ConfigureAwait(false);
+                            }
+
                             text = read.Text;
                             objectVersions[key] = read.Version;
                         }
@@ -407,8 +430,91 @@ public sealed class Bundle
     /// <see cref="InvalidOperationException"/> naming the async overload. Not public API: a host
     /// loads through <see cref="LoadAsync"/>, or <see cref="Load(string)"/> for a directory.
     /// </summary>
-    internal static Bundle Load(IBundleProvider provider, BundleLoadOptions? options = null) =>
-        SyncBridge.RunCancellable(ct => LoadAsync(provider, options, ct));
+    internal static Bundle Load(IBundleProvider provider, BundleLoadOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        return SyncBridge.RunCancellable(ct => LoadCoreAsync(provider, options, ct, readDegree: 1));
+    }
+
+    /// <summary>What reading one concept object gave: its text and version, or the failure the loop will meet at its rank.</summary>
+    private readonly record struct PrefetchedRead(string? Text, BundleObjectVersion Version, System.Runtime.ExceptionServices.ExceptionDispatchInfo? Failure);
+
+    /// <summary>
+    /// Reads the concept objects with at most <paramref name="degree"/> reads in flight, each into the
+    /// slot of its own key (#152). Empty — the loop reads inline, as the synchronous load always did —
+    /// when the degree is 1 or there is nothing to overlap. Reads START in key order and none is
+    /// started once a lower-ranked one has failed with a failure that ends the load, so the loop, which
+    /// meets the slots in key order, finds the smallest rank first: the error text never depends on
+    /// which read finished first. A per-object failure that is only a parse problem (an object over the
+    /// byte bound) does not stop the starting. A cancellation of the caller's token propagates once every
+    /// started read has ended.
+    /// </summary>
+    private static async ValueTask<Dictionary<BundleKey, PrefetchedRead>> PrefetchConceptsAsync(IBundleProvider provider, List<BundleKey> keys, BundleLimits limits, int degree, CancellationToken ct)
+    {
+        var outcomes = new Dictionary<BundleKey, PrefetchedRead>();
+        if (degree <= 1 || keys.Count <= 1)
+        {
+            return outcomes;
+        }
+
+        using var slots = new SemaphoreSlim(Math.Min(degree, keys.Count));
+        var lowestFailed = int.MaxValue;
+        var started = new List<(BundleKey Key, Task<PrefetchedRead> Read)>(keys.Count);
+        for (var rank = 0; rank < keys.Count; rank++)
+        {
+            await slots.WaitAsync(ct).ConfigureAwait(false);
+            if (Volatile.Read(ref lowestFailed) < rank)
+            {
+                slots.Release();
+                break;
+            }
+
+            started.Add((keys[rank], ReadOneAsync(keys[rank], rank)));
+        }
+
+        try
+        {
+            await Task.WhenAll(started.Select(s => s.Read)).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+
+        foreach (var (key, read) in started)
+        {
+            outcomes[key] = await read.ConfigureAwait(false);
+        }
+
+        return outcomes;
+
+        async Task<PrefetchedRead> ReadOneAsync(BundleKey key, int rank)
+        {
+            var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(ReadChunkBytes);
+            try
+            {
+                var read = await ReadTextAtAsync(provider, key, limits, buffer, null, ct).ConfigureAwait(false);
+                return new PrefetchedRead(read.Text, read.Version, null);
+            }
+            catch (Exception e) when (e is not OperationCanceledException && e is not OutOfMemoryException)
+            {
+                if (e is not BundleObjectTooLargeException)
+                {
+                    int seen;
+                    while (rank < (seen = Volatile.Read(ref lowestFailed)) && Interlocked.CompareExchange(ref lowestFailed, rank, seen) != seen)
+                    {
+                    }
+                }
+
+                return new PrefetchedRead(null, default, System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e));
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+                slots.Release();
+            }
+        }
+    }
 
     /// <summary>
     /// Surveys the <c>computation</c> file and the <c>attester.resource</c> of every Attested
