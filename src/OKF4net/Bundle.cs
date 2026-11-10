@@ -1184,6 +1184,7 @@ public sealed class Bundle
     /// <see langword="null"/>, so a prefix key is never handed out as an object to read.
     /// </para>
     /// </summary>
+    /// <exception cref="InvalidOperationException">The provider answers later (it does not complete synchronously): this synchronous spelling never waits, so it throws; use <see cref="ResolveResourceKeyAsync"/>.</exception>
     public bool TryResolveResourceKey(Concept concept, string rawPath, out BundleKey? key, out ResourceResolutionStatus status)
     {
         (key, status) = SyncBridge.RunCancellable(ct => ResolveResourceKeyAsync(concept, rawPath, ct));
@@ -1258,6 +1259,7 @@ public sealed class Bundle
     /// <exception cref="UnauthorizedAccessException">The key is not allowed, or the provider refused the access.</exception>
     /// <exception cref="IOException">The object is missing, too large, or cannot be read.</exception>
     /// <exception cref="System.Text.DecoderFallbackException">The content is not valid UTF-8.</exception>
+    /// <exception cref="InvalidOperationException">The provider answers later (it does not complete synchronously): this synchronous spelling never waits, so it throws; use <see cref="ReadResourceTextAsync"/>.</exception>
     public string ReadResourceText(BundleKey key, BundleObjectVersion? expected, out BundleObjectVersion version)
     {
         var read = SyncBridge.RunCancellable(ct => ReadResourceTextAsync(key, expected, ct));

@@ -28,7 +28,7 @@ namespace OKF4net.Agents;
 /// the bundle root's progressive-disclosure listing (<see cref="OkfBundleTools.Browse"/>
 /// with no path — its own <c>index.md</c> if one exists, otherwise a
 /// generated listing), then concepts scored against the last user message in
-/// the invocation's messages (the shared <see cref="OkfBundleTools.ScoreConceptsFor"/>
+/// the invocation's messages (the shared <see cref="OkfBundleTools.ScoreConceptsForAsync"/>
 /// seam also used by <see cref="OkfBundleTools.Search"/>), each rendered via
 /// <see cref="OkfBundleTools.ReadConcept"/>. Which concepts get the scarce
 /// slots is decided by <see cref="ConceptSearch.TopDiversified"/>, not by a

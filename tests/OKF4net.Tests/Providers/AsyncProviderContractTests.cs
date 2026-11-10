@@ -91,6 +91,21 @@ public class AsyncProviderContractTests
         });
     }
 
+    [Fact]
+    public async Task A_listing_honours_both_the_token_it_was_given_and_the_one_of_its_enumerator()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", $"---\n{Fm}\n---\n\nA\n");
+        var provider = new FileSystemBundleProvider(tmp.Path);
+        using var given = new CancellationTokenSource();
+        using var enumerator = new CancellationTokenSource();
+        await given.CancelAsync();
+
+        // The enumerator's own token is alive; the token EnumerateAsync was given is not: the listing must still stop.
+        await using var e = provider.EnumerateAsync(null, BundleLimits.Default, given.Token).GetAsyncEnumerator(enumerator.Token);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await e.MoveNextAsync());
+    }
+
     private sealed class EndlessListing(Action onProduced, Action onDisposed) : SyncTestProvider
     {
         public override string Id => "endless";

@@ -29,11 +29,14 @@ public sealed class BundleHandle : IDisposable
 {
     private sealed record Image(Bundle Bundle, long Generation);
 
+    /// <summary>What one operation ended with: the image it serves and, when its reload failed and the previous image is served, that failure (so a refresh reports its OWN failure, not whatever another caller's operation left in <see cref="LastLoadError"/>).</summary>
+    private sealed record Outcome(Image Image, Exception? Failure);
+
     /// <summary>Guards <see cref="_inflight"/> and <see cref="_inflightRequired"/> only: never held across I/O or an <see langword="await"/>.</summary>
     private readonly Lock _gate = new();
     private readonly TimeProvider _time;
     private readonly IDisposable? _subscription;
-    private Task<Image>? _inflight;
+    private Task<Outcome>? _inflight;
     private long _inflightRequired;
     private Image? _image;
     private long _required;
@@ -110,7 +113,7 @@ public sealed class BundleHandle : IDisposable
             var (operation, blocker) = JoinOrStart(required, force: false);
             if (operation is not null)
             {
-                return (await operation.WaitAsync(ct).ConfigureAwait(false)).Bundle;
+                return (await operation.WaitAsync(ct).ConfigureAwait(false)).Image.Bundle;
             }
 
             // An older operation is running, started before the obligation this caller must meet:
@@ -134,13 +137,13 @@ public sealed class BundleHandle : IDisposable
                 continue;
             }
 
-            var image = await operation.WaitAsync(ct).ConfigureAwait(false);
-            if (Volatile.Read(ref _lastLoadError) is { } error)
+            var outcome = await operation.WaitAsync(ct).ConfigureAwait(false);
+            if (outcome.Failure is { } error)
             {
                 ExceptionDispatchInfo.Capture(error).Throw();
             }
 
-            return image.Bundle;
+            return outcome.Image.Bundle;
         }
     }
 
@@ -199,9 +202,9 @@ public sealed class BundleHandle : IDisposable
     /// end and asks again. Starting runs the operation's first step on the calling flow, outside
     /// the gate (the gate only publishes it).
     /// </summary>
-    private (Task<Image>? Operation, Task<Image>? Blocker) JoinOrStart(long required, bool force)
+    private (Task<Outcome>? Operation, Task<Outcome>? Blocker) JoinOrStart(long required, bool force)
     {
-        TaskCompletionSource<Image> published;
+        TaskCompletionSource<Outcome> published;
         lock (_gate)
         {
             if (_inflight is { } running)
@@ -210,7 +213,7 @@ public sealed class BundleHandle : IDisposable
                 return !force && Volatile.Read(ref _inflightRequired) >= required ? (running, null) : (null, running);
             }
 
-            published = new TaskCompletionSource<Image>(TaskCreationOptions.RunContinuationsAsynchronously);
+            published = new TaskCompletionSource<Outcome>(TaskCreationOptions.RunContinuationsAsynchronously);
             _inflight = published.Task;
             _inflightRequired = required;
         }
@@ -219,29 +222,39 @@ public sealed class BundleHandle : IDisposable
         return (published.Task, null);
     }
 
-    private async Task RunOperationAsync(TaskCompletionSource<Image> published, bool force)
+    private async Task RunOperationAsync(TaskCompletionSource<Outcome> published, bool force)
     {
+        Outcome? outcome = null;
+        Exception? failure = null;
         try
         {
-            published.SetResult(await ObtainAsync(force).ConfigureAwait(false));
+            outcome = await ObtainAsync(force).ConfigureAwait(false);
         }
         catch (Exception e)
         {
-            published.SetException(e);
+            failure = e;
         }
-        finally
+
+        // The slot is freed BEFORE the result is published: a caller woken by it never finds the finished operation still joinable.
+        lock (_gate)
         {
-            lock (_gate)
+            if (ReferenceEquals(_inflight, published.Task))
             {
-                if (ReferenceEquals(_inflight, published.Task))
-                {
-                    _inflight = null;
-                }
+                _inflight = null;
             }
+        }
+
+        if (failure is not null)
+        {
+            published.SetException(failure);
+        }
+        else
+        {
+            published.SetResult(outcome!);
         }
     }
 
-    private static async Task WaitForEndAsync(Task<Image> operation, CancellationToken ct)
+    private static async Task WaitForEndAsync(Task<Outcome> operation, CancellationToken ct)
     {
         try
         {
@@ -254,12 +267,12 @@ public sealed class BundleHandle : IDisposable
     }
 
     /// <summary>The body of one operation: the token comparison the policy asks for, then the load if the image is behind (or always, when forced).</summary>
-    private async Task<Image> ObtainAsync(bool force)
+    private async Task<Outcome> ObtainAsync(bool force)
     {
         var image = _image;
         if (!force && image is not null && !await NeedsReloadAsync(image).ConfigureAwait(false))
         {
-            return image;
+            return new Outcome(image, null);
         }
 
         return await LoadAsync().ConfigureAwait(false);
@@ -333,7 +346,7 @@ public sealed class BundleHandle : IDisposable
         }
     }
 
-    private async Task<Image> LoadAsync()
+    private async Task<Outcome> LoadAsync()
     {
         var startedAt = Volatile.Read(ref _required);
         try
@@ -344,7 +357,7 @@ public sealed class BundleHandle : IDisposable
             Volatile.Write(ref _lastLoadError, null);
             Volatile.Write(ref _stale, false);
             _lastCheck = _time.GetTimestamp();
-            return image;
+            return new Outcome(image, null);
         }
         catch (Exception e) when (e is not OutOfMemoryException)
         {
@@ -370,7 +383,7 @@ public sealed class BundleHandle : IDisposable
                 Volatile.Write(ref _checkRequested, true); // the signal was consumed by the comparison: re-arm it so the next access retries
             }
 
-            return previous;
+            return new Outcome(previous, failure);
         }
     }
 }

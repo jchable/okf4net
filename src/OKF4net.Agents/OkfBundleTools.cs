@@ -58,59 +58,35 @@ public sealed class OkfBundleTools
 
     /// <summary>
     /// The core write primitive this tool set delegates every write to:
-    /// producer-validated create/update (<see cref="WriteConcept"/>) and
-    /// atomic read-modify-write append (<see cref="AppendToConceptAtomic"/>),
+    /// producer-validated create/update (<see cref="BundleConceptWriter.WriteConcept(string, string, string)"/>) and
+    /// atomic read-modify-write append (<see cref="BundleConceptWriter.AppendToConceptAtomic"/>),
     /// plus the bundle's write lock, which this class takes through
-    /// <see cref="BundleConceptWriter.EnterWriteLock"/> at each site rather
-    /// than caching a lock object. Built over <see cref="_handle"/>, so a
-    /// successful write invalidates the handle's image atomically with the
-    /// write, from inside the shared lock.
+    /// <see cref="BundleConceptWriter.EnterWriteLockAsync"/> at each site rather
+    /// than caching a lock object. Built over <see cref="_handle"/>: a committed write invalidates
+    /// the handle's image, after the write lease is released (#152).
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The write lock guards the image (<see cref="_handle"/>) and every write this class
-    /// performs to disk. Agent hosts may invoke tool methods concurrently from
-    /// multiple threads, so the lazy cache in <see cref="GetBundle"/> and the
-    /// invalidation in <see cref="InvalidateBundle"/> must not race; the same
-    /// lock also serializes <see cref="AppendLog"/> and
-    /// <see cref="RegenerateIndexes"/>'s own read-modify-write sequences
-    /// (each holds it around the read, the write, and its own cache
-    /// invalidation) against <see cref="_writer"/>'s own writes, so two
-    /// concurrent calls into the same tool can't interleave and lose one
-    /// side's update.
+    /// The write lease guards the image load (<see cref="GetBundleAsync"/> holds it while the handle loads, so a read never
+    /// interleaves with this tool set's own writes, decision Q6 of the async design) and the
+    /// read-modify-write sequences of <see cref="RegenerateIndexesAsync"/> and the writer's own methods, so two
+    /// concurrent calls into the same tool set cannot interleave and lose one side's update. The
+    /// invalidation of the handle (<see cref="InvalidateBundleAsync"/>) is a lock-free increment and takes no lease.
     /// </para>
     /// <para>
-    /// The guarantee is <see cref="BundleConceptWriter.EnterWriteLock"/>'s:
-    /// tool sets and writers in one process serialize when, at the moment they
-    /// take the lock, their roots resolve to the same directory, so a junction
-    /// or symlink to the bundle shares the lock; resolution failure falls back
-    /// to the lexical root; a topology change during an operation is not
-    /// followed -- a writer method called while this class already holds the
-    /// lock re-enters the object held, never a second resolved one. A stable
-    /// gate also serializes identical namespace-normalized lexical roots
-    /// across changes of resolved key, with one exception: a thread already
-    /// holding a write lock never waits for that gate. A nested acquisition
-    /// that finds it busy (which ordinary contention on that root causes, with
-    /// no topology change) holds no gate for its whole operation; if the
-    /// root's resolution changes while it runs, another writer on the same
-    /// lexical root can overlap it. Releasing the gate before the monitor,
-    /// and retrying it once (without blocking) after resolving, narrow this
-    /// but do not close it. Different aliases can still
-    /// diverge during an active topology change; targets are not pinned.
-    /// Nested calls over different resolved bundles need a consistent lock
-    /// order over the registry's case-folded keys. A link on the path
-    /// retargeted during an operation, even one every alias follows, splits
-    /// the bundle in two for that purpose: aliases of it nested in opposite
-    /// order can then deadlock between their resolved monitors. It does NOT
-    /// serialize writes across separate processes (e.g. two CLI invocations,
-    /// or two server processes sharing a network path), and a C# lock cannot
-    /// defend against a concurrent external actor mutating the bundle's files
-    /// directly on disk. The image (<see cref="_handle"/>) is per handle, shared
-    /// only with the consumers the host gives the same handle to: <see cref="AppendToConceptAtomic"/>
-    /// always re-reads the concept's on-disk body under this lock rather than
-    /// trusting any cache, so two instances having independent caches does not
-    /// affect write correctness, only how eagerly each one's read-only calls
-    /// see another instance's writes before their own next reload.
+    /// The guarantee is <see cref="BundleConceptWriter.EnterWriteLock"/>'s: tool sets and writers in one process serialize when, at the
+    /// moment they take the lease, their roots resolve to the same directory, so a junction or symlink to the bundle
+    /// shares the lock; resolution failure falls back to the lexical root; a topology change during an operation
+    /// is not followed. The lease is NOT re-entrant (it is not tied to a thread, so it can be held across an
+    /// <see langword="await"/>): code that already holds it receives it instead of acquiring again, and a contended
+    /// resolved lock is waited for without the lexical gate, so no wait cycle passes through a gate. It does NOT
+    /// serialize writes across separate processes (e.g. two CLI invocations, or two server processes sharing a
+    /// network path), and a C# lock cannot defend against a concurrent external actor mutating the bundle's files
+    /// directly on disk. The image (<see cref="_handle"/>) is per handle, shared only with the consumers the host
+    /// gives the same handle to: <see cref="AppendToConceptAtomicAsync"/> always re-reads the concept's stored body
+    /// under the lease rather than trusting any image, so two instances having independent images does not affect
+    /// write correctness, only how eagerly each one's read-only calls see another instance's writes before their own
+    /// next reload.
     /// </para>
     /// </remarks>
     private readonly BundleConceptWriter _writer;
@@ -303,7 +279,9 @@ public sealed class OkfBundleTools
     /// <summary>
     /// The result of an asynchronous tool for a synchronous caller (the obsolete <c>string</c> methods,
     /// #152): only over a provider that completes synchronously — refused before anything starts
-    /// otherwise — and waiting, if need be, for this tool set's own lock, never for the provider.
+    /// otherwise — and waiting, if need be, for what that provider makes finite: this tool set's own lease,
+    /// a load another consumer of the same handle has in progress, and a write's retry delay; never for a
+    /// provider that answers later.
     /// </summary>
     private string RunSync(Func<Task<string>> tool)
     {
@@ -859,10 +837,7 @@ public sealed class OkfBundleTools
     /// own precondition); a query that splits into zero terms yields an empty
     /// result rather than throwing.
     /// </summary>
-    internal IReadOnlyList<ScoredConcept> ScoreConceptsFor(string query, string? tag = null) =>
-        ConceptSearch.Search(GetBundle().Concepts, query, tag);
-
-    /// <summary><see cref="ScoreConceptsFor"/> without the blocking (#152): the image loaded asynchronously, the one shared scorer.</summary>
+    /// <summary><see cref="ScoreConceptsForAsync"/> without the blocking (#152): the image loaded asynchronously, the one shared scorer.</summary>
     internal async Task<IReadOnlyList<ScoredConcept>> ScoreConceptsForAsync(string query, string? tag, CancellationToken ct) =>
         ConceptSearch.Search((await GetBundleAsync(ct).ConfigureAwait(false)).Concepts, query, tag);
 

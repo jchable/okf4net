@@ -15,13 +15,14 @@ internal static class SyncAsyncEnumerable
     /// <summary>An async view of the sequence <paramref name="produce"/> returns when first enumerated.</summary>
     internal static IAsyncEnumerable<T> Create<T>(Func<IEnumerable<T>> produce, CancellationToken ct) => new Source<T>(produce, ct);
 
+
     private sealed class Source<T>(Func<IEnumerable<T>> produce, CancellationToken ct) : IAsyncEnumerable<T>
     {
         public IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken cancellationToken = default) =>
-            new Enumerator<T>(produce, cancellationToken.CanBeCanceled ? cancellationToken : ct);
+            new Enumerator<T>(produce, ct, cancellationToken);
     }
 
-    private sealed class Enumerator<T>(Func<IEnumerable<T>> produce, CancellationToken ct) : IAsyncEnumerator<T>
+    private sealed class Enumerator<T>(Func<IEnumerable<T>> produce, CancellationToken ct, CancellationToken enumeratorToken) : IAsyncEnumerator<T>
     {
         private IEnumerator<T>? _inner;
 
@@ -31,7 +32,9 @@ internal static class SyncAsyncEnumerable
         {
             try
             {
+                // Both tokens count: the one EnumerateAsync was given and the one GetAsyncEnumerator was given.
                 ct.ThrowIfCancellationRequested();
+                enumeratorToken.ThrowIfCancellationRequested();
                 _inner ??= produce().GetEnumerator();
                 return ValueTask.FromResult(_inner.MoveNext());
             }

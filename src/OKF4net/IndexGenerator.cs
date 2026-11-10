@@ -270,7 +270,7 @@ public static class IndexGenerator
     /// <param name="provider">Where the bundle is read and the indexes are written.</param>
     /// <param name="options">The key policy, extra validators and bounds, or <see langword="null"/> for the defaults.</param>
     /// <param name="ct">Cancels the run, as above.</param>
-    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
+    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted. Thrown at the call, not delivered through the returned task (unlike the writer's asynchronous methods): an invalid use of the API, refused before anything starts.</exception>
     public static ValueTask<BundleWriteReport> RegenerateIndexesAsync(IBundleProvider provider, BundleLoadOptions? options = null, CancellationToken ct = default) =>
         RegenerateIndexesWithAsync(provider, DefaultSynthesize, options, ct);
 
@@ -281,7 +281,7 @@ public static class IndexGenerator
     /// <param name="synthesize">Produces the description of a directory with several entries.</param>
     /// <param name="options">The key policy, extra validators and bounds, or <see langword="null"/> for the defaults.</param>
     /// <param name="ct">Cancels the run, as <see cref="RegenerateIndexesAsync"/> says.</param>
-    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
+    /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted. Thrown at the call, as for <see cref="RegenerateIndexesAsync"/>.</exception>
     public static ValueTask<BundleWriteReport> RegenerateIndexesWithAsync(IBundleProvider provider, Synthesize synthesize, BundleLoadOptions? options = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(provider);

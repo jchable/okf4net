@@ -88,6 +88,7 @@ public interface IBundleProvider
     /// refuses a name its storage would confuse with another.</para>
     /// </summary>
     /// <returns>The new version.</returns>
+    /// <remarks>A write the <see cref="CancellationToken"/> stops BEFORE it reaches the storage throws <see cref="OperationCanceledException"/> and the object is unchanged (the core then reports nothing as written). A provider whose request may already have committed when it is cancelled must throw <see cref="BundleWriteOutcomeUnknownException"/> instead, never a cancellation: the core treats a cancellation as "nothing landed".</remarks>
     /// <exception cref="BundleReadOnlyException"><see cref="BundleProviderCapabilities.CanWrite"/> is <see langword="false"/>; nothing was attempted.</exception>
     /// <exception cref="BundleWriteConflictException">The condition did not hold, or the storage cannot hold an object under that exact name (<see cref="BundleWriteConflictException.Reason"/>); nothing was changed.</exception>
     /// <exception cref="BundleAccessRefusedException">The key's path is refused (a reparse point, an entry that cannot be inspected, the confinement boundary); nothing was changed.</exception>
