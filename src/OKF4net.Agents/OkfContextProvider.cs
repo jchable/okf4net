@@ -28,7 +28,7 @@ namespace OKF4net.Agents;
 /// the bundle root's progressive-disclosure listing (<see cref="OkfBundleTools.Browse"/>
 /// with no path — its own <c>index.md</c> if one exists, otherwise a
 /// generated listing), then concepts scored against the last user message in
-/// the invocation's messages (the shared <see cref="OkfBundleTools.ScoreConceptsFor"/>
+/// the invocation's messages (the shared <see cref="OkfBundleTools.ScoreConceptsForAsync"/>
 /// seam also used by <see cref="OkfBundleTools.Search"/>), each rendered via
 /// <see cref="OkfBundleTools.ReadConcept"/>. Which concepts get the scarce
 /// slots is decided by <see cref="ConceptSearch.TopDiversified"/>, not by a
@@ -218,19 +218,19 @@ public sealed class OkfContextProvider : AIContextProvider
     /// <see cref="ValueTask"/>, so a caller that stores the task and awaits it
     /// later must still guard the call.
     /// </remarks>
-    protected override ValueTask<AIContext> ProvideAIContextAsync(
+    protected override async ValueTask<AIContext> ProvideAIContextAsync(
         InvokingContext context,
         CancellationToken cancellationToken = default)
     {
         var totalBudget = _options.TokenBudget;
         if (totalBudget <= 0)
         {
-            return new(new AIContext());
+            return new AIContext();
         }
 
         if (_resolver is not null && _memoryStore is not null)
         {
-            return ProvideScopedAsync(context, totalBudget, cancellationToken);
+            return await ProvideScopedAsync(context, totalBudget, cancellationToken).ConfigureAwait(false);
         }
 
         // The V1 path below is synchronous and does real work — a full bundle
@@ -259,7 +259,7 @@ public sealed class OkfContextProvider : AIContextProvider
             // fails to load is reported as our specific "bundle unavailable"
             // note even in the no-query path below, where ScoreConceptsFor
             // is never called at all and so could never surface it.
-            _tools!.GetBundle();
+            await _tools!.GetBundleAsync(cancellationToken).ConfigureAwait(false);
 
             // A reload that failed keeps the previous image served (spec §5.2), so
             // the model is told nothing; the host still hears of it, as it did when
@@ -279,7 +279,7 @@ public sealed class OkfContextProvider : AIContextProvider
             // budget so concepts have room; with no query (nothing else
             // will use the budget) it gets to use all of it.
             var rootBudget = query is null ? remaining : totalBudget / 4;
-            var (rootBlock, rootUsed) = RenderBlock(RootBlockId, _tools!.Browse(null), rootBudget, alwaysInclude: true);
+            var (rootBlock, rootUsed) = RenderBlock(RootBlockId, await _tools!.BrowseAsync(null, cancellationToken).ConfigureAwait(false), rootBudget, alwaysInclude: true);
             sb.Append(rootBlock);
             remaining -= rootUsed;
 
@@ -301,7 +301,7 @@ public sealed class OkfContextProvider : AIContextProvider
                 // across 55 slots (design §8.7). This covers THIS path only --
                 // the scoped (V2) path has its own selection site in
                 // ProvideScopedAsync, diversified separately.
-                var admitted = _tools!.ScoreConceptsFor(query)
+                var admitted = (await _tools!.ScoreConceptsForAsync(query, null, cancellationToken).ConfigureAwait(false))
                     .Where(hit => _options.StalePolicy.Admits(hit.Concept.Document.Frontmatter.Lifecycle, now))
                     .ToList();
 
@@ -318,7 +318,7 @@ public sealed class OkfContextProvider : AIContextProvider
                         break;
                     }
 
-                    var (block, used) = RenderBlock(concept.Id.ToString(), _tools!.ReadConcept(concept.Id.ToString()), remaining, alwaysInclude: false);
+                    var (block, used) = RenderBlock(concept.Id.ToString(), await _tools!.ReadConceptAsync(concept.Id.ToString(), cancellationToken).ConfigureAwait(false), remaining, alwaysInclude: false);
                     if (block is null)
                     {
                         break;
@@ -329,20 +329,20 @@ public sealed class OkfContextProvider : AIContextProvider
                 }
             }
 
-            return new(new AIContext
+            return new AIContext
             {
                 Instructions = FixedInstructions,
                 Messages = [new ChatMessage(ChatRole.User, sb.ToString())],
-            });
+            };
         }
         catch (Exception ex) when (ex is OkfException or IOException or UnauthorizedAccessException or DecoderFallbackException)
         {
             ReportInternalError(ex);
-            return new(new AIContext
+            return new AIContext
             {
                 Instructions = FixedInstructions,
                 Messages = [new ChatMessage(ChatRole.User, $"bundle unavailable: {FailureCategory(ex)}")],
-            });
+            };
         }
     }
 
@@ -702,7 +702,7 @@ public sealed class OkfContextProvider : AIContextProvider
     /// <para>
     /// When something is captured, both texts (whichever is present; the
     /// other renders as <c>(none)</c>) are written into the bundle via
-    /// <see cref="CaptureMemory"/>: a per-day concept plus a <c>log.md</c>
+    /// <see cref="CaptureMemoryAsync"/>: a per-day concept plus a <c>log.md</c>
     /// entry, through <see cref="OkfBundleTools.AppendToConceptAtomic"/> and
     /// <see cref="OkfBundleTools.AppendLog"/>. The former is a narrow
     /// <see langword="internal"/> seam on <see cref="OkfBundleTools"/> (not
@@ -732,7 +732,7 @@ public sealed class OkfContextProvider : AIContextProvider
     /// propagating or being reported to the invocation pipeline.
     /// </para>
     /// </remarks>
-    protected override ValueTask StoreAIContextAsync(
+    protected override async ValueTask StoreAIContextAsync(
         InvokedContext context,
         CancellationToken cancellationToken = default)
     {
@@ -740,17 +740,18 @@ public sealed class OkfContextProvider : AIContextProvider
 
         if (_resolver is not null && _memoryStore is not null)
         {
-            return StoreScopedAsync(context, cancellationToken);
+            await StoreScopedAsync(context, cancellationToken).ConfigureAwait(false);
+            return;
         }
 
         if (_options.MemoryCapture != MemoryCaptureMode.Enabled)
         {
-            return default;
+            return;
         }
 
         if (context.InvokeException is not null || context.ResponseMessages is null)
         {
-            return default;
+            return;
         }
 
         var userText = ExtractLastMessageText(context.RequestMessages, ChatRole.User);
@@ -758,12 +759,12 @@ public sealed class OkfContextProvider : AIContextProvider
 
         if (userText is null && agentText is null)
         {
-            return default;
+            return;
         }
 
         try
         {
-            CaptureMemory(userText, agentText);
+            await CaptureMemoryAsync(userText, agentText, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is OkfException or IOException or UnauthorizedAccessException or DecoderFallbackException or ArgumentException)
         {
@@ -774,8 +775,6 @@ public sealed class OkfContextProvider : AIContextProvider
             // vanishing out from under the tool set between invocations.
             LastMemoryError = ex.Message;
         }
-
-        return default;
     }
 
     /// <summary>
@@ -980,7 +979,7 @@ public sealed class OkfContextProvider : AIContextProvider
     /// prevents two concurrent same-day captures from each computing their
     /// new body against the same stale "before" body.
     /// </summary>
-    private void CaptureMemory(string? userText, string? agentText)
+    private async Task CaptureMemoryAsync(string? userText, string? agentText, CancellationToken ct)
     {
         var now = _tools!.UtcNow();
         var dateStr = now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
@@ -1003,17 +1002,18 @@ public sealed class OkfContextProvider : AIContextProvider
         // write lock -- never a snapshot taken by this method before the
         // lock, which is exactly the gap that used to let two concurrent
         // same-day captures race a lost update.
-        var writeResult = _tools!.AppendToConceptAtomic(
+        var writeResult = await _tools!.AppendToConceptAtomicAsync(
             memoryConceptId,
             frontmatterYamlIfCreating,
-            currentBody => currentBody is null ? section : currentBody.TrimEnd('\n') + "\n\n" + section);
+            currentBody => currentBody is null ? section : currentBody.TrimEnd('\n') + "\n\n" + section,
+            ct).ConfigureAwait(false);
         if (IsToolError(writeResult))
         {
             LastMemoryError = writeResult;
             return;
         }
 
-        var logResult = _tools!.AppendLog("Memory", $"Captured exchange in {memoryConceptId}");
+        var logResult = await _tools!.AppendLogAsync("Memory", $"Captured exchange in {memoryConceptId}", ct).ConfigureAwait(false);
         if (IsToolError(logResult))
         {
             LastMemoryError = logResult;

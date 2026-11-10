@@ -7,8 +7,8 @@ namespace OKF4net.Providers;
 
 /// <summary>
 /// The default provider (spec §8): a bundle as a directory tree, writable
-/// (<see cref="Write"/> commits each object atomically, issue #157).
-/// <see cref="Enumerate"/> is eager — the walk completes inside the call — so no
+/// (<see cref="WriteAsync"/> commits each object atomically, issue #157).
+/// <see cref="EnumerateAsync"/> is eager — the walk completes inside the call — so no
 /// deferred storage access exists; every directory passes the STRICT guard before it
 /// is listed, a reparse-point entry is skipped (never followed), every inspected entry
 /// is counted before the skip and before sorting, and with a confinement boundary the
@@ -46,7 +46,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// <see cref="BundleKeyConstraints.CaseInsensitiveCollisions"/> so that the loader also
     /// rejects siblings that collide there. The folding flags matter only for those collision
     /// checks; exact matching of the stored name does not depend on them, it is always on.
-    /// <paramref name="limits"/> bounds <see cref="Read"/>, which the interface gives no
+    /// <paramref name="limits"/> bounds <see cref="ReadAsync"/>, which the interface gives no
     /// per-call limits.
     /// </summary>
     public FileSystemBundleProvider(string root, string? confinementBoundary = null, BundleKeyConstraints additionalConstraints = BundleKeyConstraints.None, BundleLimits? limits = null)
@@ -72,7 +72,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     public string Location => Root;
 
     /// <inheritdoc/>
-    public BundleProviderCapabilities Capabilities => new(CanWrite: true);
+    public BundleProviderCapabilities Capabilities => new(CanWrite: true, CompletesSynchronously: true);
 
     /// <inheritdoc/>
     public BundleKeyConstraints NativeConstraints { get; }
@@ -89,8 +89,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
 
     /// <summary>
     /// Opens a listing scope on the calling flow (<see cref="IProviderScope"/>): until the handle
-    /// is disposed, each directory this flow lists — by a walk (<see cref="GetVersion"/>,
-    /// <see cref="Enumerate"/>) or by an exact-case lookup (<see cref="ResolveExact"/>) — is
+    /// is disposed, each directory this flow lists — by a walk (<see cref="GetVersionAsync"/>,
+    /// <see cref="EnumerateAsync"/>) or by an exact-case lookup (<see cref="ResolveExact"/>) — is
     /// listed once (for sequential lookups: flows forked inside the scope that miss together may
     /// each list it) and its entry names are reused by the scope's later calls, instead of
     /// listing that directory again for every key under it. <see cref="Bundle.Load(IBundleProvider, BundleLoadOptions?)"/>
@@ -141,7 +141,21 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     private ListingMemo? ActiveMemo => _scope.Value is { IsOpen: true } memo ? memo : null;
 
     /// <inheritdoc/>
-    public BundleVersion GetVersion(BundleLimits limits)
+    public ValueTask<BundleVersion> GetVersionAsync(BundleLimits limits, CancellationToken ct)
+    {
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(GetVersionCore(limits));
+        }
+        catch (Exception e)
+        {
+            return ValueTask.FromException<BundleVersion>(e);
+        }
+    }
+
+    /// <summary>The synchronous body of <see cref="GetVersionAsync"/>: this provider completes every operation before it returns.</summary>
+    internal BundleVersion GetVersionCore(BundleLimits limits)
     {
         ArgumentNullException.ThrowIfNull(limits);
         CheckBoundary();
@@ -175,7 +189,11 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     }
 
     /// <inheritdoc/>
-    public IEnumerable<BundleListing> Enumerate(BundleKey? prefix, BundleLimits limits)
+    public IAsyncEnumerable<BundleListing> EnumerateAsync(BundleKey? prefix, BundleLimits limits, CancellationToken ct) =>
+        SyncAsyncEnumerable.Create(() => EnumerateCore(prefix, limits), ct);
+
+    /// <summary>The synchronous body of <see cref="EnumerateAsync"/>: the listing is materialized, then handed out one name at a time.</summary>
+    internal IEnumerable<BundleListing> EnumerateCore(BundleKey? prefix, BundleLimits limits)
     {
         ArgumentNullException.ThrowIfNull(limits);
         CheckBoundary();
@@ -237,7 +255,21 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// it: a listing made while <c>ReplaceFile</c> runs can still find no entry under the name,
     /// and a read can still fail after its last attempt.</para>
     /// </remarks>
-    public BundleObject Read(BundleKey key, BundleObjectVersion? expected = null)
+    public ValueTask<BundleObject> ReadAsync(BundleKey key, BundleObjectVersion? expected, CancellationToken ct)
+    {
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(ReadCore(key, expected));
+        }
+        catch (Exception e)
+        {
+            return ValueTask.FromException<BundleObject>(e);
+        }
+    }
+
+    /// <summary>The synchronous body of <see cref="ReadAsync"/>: this provider completes every operation before it returns.</summary>
+    internal BundleObject ReadCore(BundleKey key, BundleObjectVersion? expected)
     {
         ArgumentNullException.ThrowIfNull(key);
         for (var attempt = 1; ; attempt++)
@@ -292,7 +324,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
         }
     }
 
-    /// <summary>How many times in all <see cref="Read"/> opens an object on Windows when it meets the <c>ReplaceFile</c> window.</summary>
+    /// <summary>How many times in all <see cref="ReadAsync"/> opens an object on Windows when it meets the <c>ReplaceFile</c> window.</summary>
     private const int MaxReadAttempts = 3;
 
     /// <summary>A sharing or lock violation (<c>ERROR_SHARING_VIOLATION</c>, <c>ERROR_LOCK_VIOLATION</c>).</summary>
@@ -301,7 +333,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
 
     /// <inheritdoc/>
     /// <remarks>
-    /// Refuses, like <see cref="Read"/>, rather than answering <see langword="false"/>, when the
+    /// Refuses, like <see cref="ReadAsync"/>, rather than answering <see langword="false"/>, when the
     /// key or its path is refused: outside the confinement boundary, through a reparse point, or
     /// through an entry that cannot be inspected. A directory on the path that cannot be
     /// listed — the listing is denied (an execute-only directory on Unix), or fails with any
@@ -310,7 +342,21 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// reached.
     /// </remarks>
     /// <exception cref="BundleAccessRefusedException">The key or its path is refused.</exception>
-    public bool Exists(BundleKey key)
+    public ValueTask<bool> ExistsAsync(BundleKey key, CancellationToken ct)
+    {
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(ExistsCore(key));
+        }
+        catch (Exception e)
+        {
+            return ValueTask.FromException<bool>(e);
+        }
+    }
+
+    /// <summary>The synchronous body of <see cref="ExistsAsync"/>: this provider completes every operation before it returns.</summary>
+    internal bool ExistsCore(BundleKey key)
     {
         ArgumentNullException.ThrowIfNull(key);
         CheckBoundary();
@@ -428,7 +474,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// commit is a <c>rename</c>, so a reader finds the old object or the new one. On Windows
     /// <c>ReplaceFile</c> is atomic for the stored state but not for readers: while it runs, a
     /// reader can for a moment find no entry under the name or meet a sharing violation (measured
-    /// on Windows 11); <see cref="Read"/> shares writing and deletion, so it never denies a
+    /// on Windows 11); <see cref="ReadAsync"/> shares writing and deletion, so it never denies a
     /// replacement the sharing it needs, and retries that window a bounded number of times.</para>
     /// <para><b>Durability.</b> When this method returns, the new bytes reached stable
     /// storage (<see cref="FileStream.Flush(bool)"/>) before the rename. A process crash or an I/O
@@ -465,7 +511,21 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// overwrite is an <c>lstat</c> then a <c>rename</c> (measured), so a name another process
     /// creates in that window is replaced.</para>
     /// </remarks>
-    public BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition)
+    public ValueTask<BundleObjectVersion> WriteAsync(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition, CancellationToken ct)
+    {
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(WriteCore(key, content, condition));
+        }
+        catch (Exception e)
+        {
+            return ValueTask.FromException<BundleObjectVersion>(e);
+        }
+    }
+
+    /// <summary>The synchronous body of <see cref="WriteAsync"/>: this provider completes every operation before it returns.</summary>
+    internal BundleObjectVersion WriteCore(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition)
     {
         ArgumentNullException.ThrowIfNull(key);
         var written = new BundleObjectVersion(Convert.ToHexStringLower(SHA256.HashData(content.Span)));
@@ -497,15 +557,30 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// <remarks>
     /// The object's directories are left in place, empty or not: an empty directory holds no key.
     /// A root that does not exist, or exists as a file, holds nothing: the delete is a no-op where
-    /// the condition holds on an absent object (<see cref="Exists"/> answers false), where a
-    /// <see cref="Write"/> under <see cref="BundleWriteConditionKind.None"/> raises an
+    /// the condition holds on an absent object (<see cref="ExistsAsync"/> answers false), where a
+    /// <see cref="WriteAsync"/> under <see cref="BundleWriteConditionKind.None"/> raises an
     /// <see cref="IOException"/> for a root that is a file.
     /// Like a write, a delete needs the right to write the object's directory (an unprivileged
     /// process in a 0555 directory gets <see cref="UnauthorizedAccessException"/>, the file kept).
     /// A key that names a directory names no object, so nothing is deleted. The same exact-name
-    /// resolution, STRICT guards, boundary re-check and per-object lock as <see cref="Write"/>.
+    /// resolution, STRICT guards, boundary re-check and per-object lock as <see cref="WriteAsync"/>.
     /// </remarks>
-    public void Delete(BundleKey key, BundleWriteCondition condition)
+    public ValueTask DeleteAsync(BundleKey key, BundleWriteCondition condition, CancellationToken ct)
+    {
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            DeleteCore(key, condition);
+            return ValueTask.CompletedTask;
+        }
+        catch (Exception e)
+        {
+            return ValueTask.FromException(e);
+        }
+    }
+
+    /// <summary>The synchronous body of <see cref="DeleteAsync"/>: this provider completes every operation before it returns.</summary>
+    internal void DeleteCore(BundleKey key, BundleWriteCondition condition)
     {
         ArgumentNullException.ThrowIfNull(key);
         CheckBoundary();
@@ -572,13 +647,13 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
         ForgetListings(key);
     }
 
-    /// <summary>The temporaries' name prefix (<see cref="Write"/>); the rest is 32 random lowercase hex digits and <see cref="TemporarySuffix"/>.</summary>
+    /// <summary>The temporaries' name prefix (<see cref="WriteAsync"/>); the rest is 32 random lowercase hex digits and <see cref="TemporarySuffix"/>.</summary>
     internal const string TemporaryPrefix = ".okf-write-";
 
     /// <summary>The temporaries' name suffix.</summary>
     internal const string TemporarySuffix = ".tmp";
 
-    /// <summary>How many times <see cref="Write"/> prepares a temporary before giving up on an object that keeps appearing under an unconditional creation (Unix) or keeps vanishing as the in-lock probe opens it (every OS), see <see cref="CommitTemporary"/>.</summary>
+    /// <summary>How many times <see cref="WriteAsync"/> prepares a temporary before giving up on an object that keeps appearing under an unconditional creation (Unix) or keeps vanishing as the in-lock probe opens it (every OS), see <see cref="CommitTemporary"/>.</summary>
     private const int MaxPreparations = 3;
 
     /// <summary>
@@ -593,7 +668,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     internal Action<string>? TemporaryCreatedForTest { get; set; }
 
     /// <summary>
-    /// Test hook: called by <see cref="Write"/> with the parent directory's full path once every
+    /// Test hook: called by <see cref="WriteAsync"/> with the parent directory's full path once every
     /// parent directory of the key exists (found, or created), before the STRICT re-check of the
     /// whole path and before the temporary is created — another process acting in that window (a
     /// directory just created swapped for a junction, a link planted under the object's name).
@@ -622,10 +697,10 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// <summary>Test hook: called under the commit lock of a write or a delete once the target's entry is matched and guarded, with its full path, before the target is opened to be hashed or probed for writing — the object vanishing in that window. <see langword="null"/> outside tests.</summary>
     internal Action<string>? TargetMatchedForTest { get; set; }
 
-    /// <summary>Test hook: called by <see cref="Delete"/> under the commit lock, with the parent directory's full path, once the parent is guarded again and before the object is looked up — another process acting in that window (a link planted under the object's name). <see langword="null"/> outside tests.</summary>
+    /// <summary>Test hook: called by <see cref="DeleteAsync"/> under the commit lock, with the parent directory's full path, once the parent is guarded again and before the object is looked up — another process acting in that window (a link planted under the object's name). <see langword="null"/> outside tests.</summary>
     internal Action<string>? DeleteLockedForTest { get; set; }
 
-    /// <summary>Test hook: called by <see cref="Read"/> with the object's full path on every attempt, once every check has passed and right before the object is opened — what it throws is what the open threw. <see langword="null"/> outside tests.</summary>
+    /// <summary>Test hook: called by <see cref="ReadAsync"/> with the object's full path on every attempt, once every check has passed and right before the object is opened — what it throws is what the open threw. <see langword="null"/> outside tests.</summary>
     internal Action<string>? ReadOpeningForTest { get; set; }
 
     /// <summary>Test hook: called with the temporary's full path after its bytes are written and just before they are flushed to stable storage — the point where a full disk, a quota or an I/O error surfaces; an exception it throws stands for that error. <see langword="null"/> outside tests.</summary>
@@ -641,10 +716,10 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// <summary>
     /// Test seam (issue #157, orphaned temporaries): the raw names of the temporaries present in
     /// the tree — left by a write whose outcome was unknown, or by a failure that could no longer
-    /// reach its temporary safely. Read through <see cref="Enumerate"/>, so it adds no walk.
+    /// reach its temporary safely. Read through <see cref="EnumerateCore"/>, so it adds no walk.
     /// </summary>
     internal IReadOnlyList<string> ListOrphanedTemporaries(BundleLimits limits) =>
-        [.. Enumerate(null, limits).Select(l => l.RawName).Where(n => IsTemporaryName(n[(n.LastIndexOf('/') + 1)..]))];
+        [.. EnumerateCore(null, limits).Select(l => l.RawName).Where(n => IsTemporaryName(n[(n.LastIndexOf('/') + 1)..]))];
 
     private static Lock CommitLockFor(string path) =>
         CommitLocks[(StringComparer.OrdinalIgnoreCase.GetHashCode(path) & int.MaxValue) % CommitLocks.Length];
@@ -872,7 +947,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// <summary>
     /// Creates the temporary beside the target, writes and flushes <paramref name="content"/>,
     /// closes it and returns its path; on any failure removes it (<see cref="DeleteTemporary"/>)
-    /// and rethrows. See <see cref="Write"/> for the modes.
+    /// and rethrows. See <see cref="WriteAsync"/> for the modes.
     /// </summary>
     /// <remarks>
     /// <paramref name="preparedAsReplacement"/> is whether the temporary was prepared for an
@@ -945,10 +1020,10 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     }
 
     /// <summary>
-    /// Re-checks and commits under the object's lock (see <see cref="Write"/>): <see langword="true"/>
+    /// Re-checks and commits under the object's lock (see <see cref="WriteAsync"/>): <see langword="true"/>
     /// once committed; <see langword="false"/>, with the temporary removed, when on Unix the object
     /// appeared since an unconditional creation was prepared — its temporary has a new file's mode
-    /// where the object has its own, so <see cref="Write"/> prepares again as a replacement — or
+    /// where the object has its own, so <see cref="WriteAsync"/> prepares again as a replacement — or
     /// when an unconditional write found the object gone as it opened it to probe it.
     /// </summary>
     private bool CommitTemporary(BundleKey key, string parent, string temporary, bool preparedAsReplacement, BundleObjectVersion written, BundleWriteCondition condition)
@@ -1241,7 +1316,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// and the write is refused with the same <see cref="UnauthorizedAccessException"/>. Nothing
     /// is written through this handle. An object longer than <see cref="BundleLimits.MaxObjectBytes"/>
     /// is refused with <see cref="BundleObjectTooLargeException"/> before any byte is hashed: a
-    /// <see cref="Read"/> never returns a version for it, so the condition could only fail, and the
+    /// <see cref="ReadAsync"/> never returns a version for it, so the condition could only fail, and the
     /// commit lock is held while this runs.
     /// </summary>
     private BundleObjectVersion HashForWrite(BundleKey key, string path)
@@ -1384,7 +1459,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// <c>NtQueryDirectoryFile</c> for every entry (no file-name filter), on Unix it reads every
     /// entry with <c>readdir</c>, and on both the pattern is matched in managed code
     /// (<c>FileSystemName.MatchesWin32Expression</c>) over that full listing. Every level of
-    /// every <see cref="Read"/>, <see cref="Exists"/> and prefixed <see cref="Enumerate"/>
+    /// every <see cref="ReadAsync"/>, <see cref="ExistsAsync"/> and prefixed <see cref="EnumerateAsync"/>
     /// therefore costs O(n) in the n entries of that directory; the <c>*</c> fallback below is
     /// not a different cost class. The literal-name pattern is kept (the managed match then
     /// builds a <see cref="FileSystemInfo"/> for the matching entry only) and the ordinal
@@ -1413,7 +1488,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// once, when this call reaches it, and is not re-inspected by a second walk at read time: a
     /// directory replaced by a junction after its own inspection is not seen by the remaining
     /// listings of this call, by the leaf check, nor by the final open or <c>File.Exists</c>, so
-    /// within that window an <see cref="Exists"/> answer about a name under it, or a read through
+    /// within that window an <see cref="ExistsAsync"/> answer about a name under it, or a read through
     /// it, is possible. That window lasts one call of this method plus the open. It lies inside the
     /// inter-process window already accepted for every path-based guard (a check on a path
     /// always precedes the open of that path, and another process can act in between; the OS
@@ -1673,12 +1748,12 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// (<see cref="IProviderScope.BeginScope"/>) the sorted names of each listed directory are
     /// kept, and a directory the scope already listed is not listed again: its kept names are
     /// counted the same way and visited after the same guards, so the second walk of a load
-    /// (<see cref="GetVersion"/> after <see cref="Enumerate"/>) and the exact-case lookups reuse
+    /// (<see cref="GetVersionAsync"/> after <see cref="EnumerateAsync"/>) and the exact-case lookups reuse
     /// the first walk's listings.
     /// <para><b>Guarding.</b> The walk's start (<paramref name="isStart"/>) gets the full
     /// <see cref="GuardStrict"/>: the start and every directory between it and the root. For the
-    /// root (<see cref="GetVersion"/>, an unprefixed <see cref="Enumerate"/>) that inspects
-    /// nothing, as before; for a prefixed <see cref="Enumerate"/> the chain was also inspected by
+    /// root (<see cref="GetVersionAsync"/>, an unprefixed <see cref="EnumerateAsync"/>) that inspects
+    /// nothing, as before; for a prefixed <see cref="EnumerateAsync"/> the chain was also inspected by
     /// <see cref="ResolveExact"/> and <see cref="GuardResolved"/> just before. Every directory
     /// below the start is then STRICT-inspected on its own
     /// (<see cref="ReparsePoints.IsReparsePointOrUninspectable"/>), once, before it is listed:
@@ -1692,8 +1767,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// <see cref="ResolveExact"/>; re-walking the ancestors would only have narrowed it. The
     /// window spans the walk of the swapped directory's whole subtree. What can leak in it is
     /// names, lengths and modification times of the link's target, through
-    /// <see cref="Enumerate"/> and <see cref="GetVersion"/>; never content, because every
-    /// <see cref="Read"/> resolves the key again and re-inspects each of its path segments
+    /// <see cref="EnumerateAsync"/> and <see cref="GetVersionAsync"/>; never content, because every
+    /// <see cref="ReadAsync"/> resolves the key again and re-inspects each of its path segments
     /// STRICTly.</para>
     /// </summary>
     private void Walk(string dir, string rel, int depth, BundleLimits limits, Counter counter, Action<WalkEntry> visit, bool isStart)

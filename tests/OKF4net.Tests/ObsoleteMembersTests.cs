@@ -87,8 +87,28 @@ public class ObsoleteMembersTests
     /// <summary>Obsolete before lot D, kept as they were: listed so that the inventory below is the whole public surface of every assembly this project references (types and members).</summary>
     private static readonly string[] EarlierObsoleteMembers =
     [
-        "OkfBundleTools.RunComputation(String, IReadOnlyDictionary`2)",
         "OkfContextProviderOptions.MemoryDirectory",
+    ];
+
+    /// <summary>
+    /// The synchronous <c>string</c> tool methods of <c>OkfBundleTools</c>, obsolete since the asynchronous
+    /// contract (#152) and removed in the release after 0.8.0 (decision Q3): each names its
+    /// <c>…Async</c> replacement. The synchronous <c>RunComputation</c>, obsolete since 0.7.0, was removed with it.
+    /// </summary>
+    private static readonly string[] SynchronousToolMembers =
+    [
+        "OkfBundleTools.ReadConcept(String)",
+        "OkfBundleTools.Browse(String)",
+        "OkfBundleTools.Graph(String)",
+        "OkfBundleTools.Search(String, String)",
+        "OkfBundleTools.Audit(Nullable`1, String, String, String)",
+        "OkfBundleTools.WriteConcept(String, String, String)",
+        "OkfBundleTools.Verify(String, String, String)",
+        "OkfBundleTools.AppendLog(String, String)",
+        "OkfBundleTools.RegenerateIndexes()",
+        "OkfBundleTools.ValidateBundle()",
+        "OkfBundleTools.ChangesSince(String)",
+        "OkfBundleTools.GetComputation(String)",
     ];
 
     [Fact]
@@ -97,7 +117,7 @@ public class ObsoleteMembersTests
         var members = ObsoleteMembers().ToList();
 
         Assert.Equal(
-            PathBasedMembers.Concat(EarlierObsoleteMembers).Order(StringComparer.Ordinal),
+            PathBasedMembers.Concat(EarlierObsoleteMembers).Concat(SynchronousToolMembers).Order(StringComparer.Ordinal),
             members.Select(m => m.Member).Order(StringComparer.Ordinal));
 
         foreach (var (member, attribute) in members.Where(m => PathBasedMembers.Contains(m.Member, StringComparer.Ordinal)))
@@ -105,6 +125,13 @@ public class ObsoleteMembersTests
             Assert.False(attribute.IsError, member);
             Assert.Contains("use ", attribute.Message, StringComparison.Ordinal);
             Assert.Contains("(#152)", attribute.Message, StringComparison.Ordinal);
+        }
+
+        foreach (var (member, attribute) in members.Where(m => SynchronousToolMembers.Contains(m.Member, StringComparer.Ordinal)))
+        {
+            Assert.False(attribute.IsError, member);
+            Assert.Contains("Async", attribute.Message, StringComparison.Ordinal);
+            Assert.Contains("removed in the release after 0.8.0", attribute.Message, StringComparison.Ordinal);
         }
     }
 

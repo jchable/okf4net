@@ -37,7 +37,7 @@ public enum Severity
 /// <see cref="BundleValidator.Validate"/> finding, independent of the
 /// human-readable <see cref="Diagnostic.Message"/> text (which may be
 /// reworded without notice). One member per distinct diagnostic
-/// <see cref="BundleValidator.Validate"/> and <see cref="BundleValidator.ValidateReserved"/>
+/// <see cref="BundleValidator.Validate"/> and <see cref="BundleValidator.ValidateReservedAsync"/>
 /// can emit -- see each member's doc comment for the corresponding message
 /// and, where applicable, the <see cref="Diagnostic.Field"/> it pairs with.
 /// </summary>
@@ -350,7 +350,19 @@ public static class BundleValidator
     /// </summary>
     /// <param name="bundle">The loaded bundle to validate.</param>
     /// <param name="clock">Supplies "now" for staleness checks (§5.5); defaults to <see cref="SystemClock"/>.</param>
-    public static ValidationReport Validate(Bundle bundle, IOkfClock? clock = null)
+    public static ValidationReport Validate(Bundle bundle, IOkfClock? clock = null) =>
+        SyncBridge.RunCancellable(ct => ValidateAsync(bundle, clock, ct));
+
+    /// <summary>
+    /// <see cref="Validate"/> without the blocking (#152): the same §11 findings, in the same order,
+    /// the provider asked asynchronously for what it must still be asked (the existence of the
+    /// §6.2 resources, <c>index.md</c> and <c>log.md</c>). There is ONE implementation: the
+    /// synchronous method is this one through the non-blocking bridge.
+    /// </summary>
+    /// <param name="bundle">The loaded bundle to validate.</param>
+    /// <param name="clock">Supplies "now" for staleness checks (§5.5); defaults to <see cref="SystemClock"/>.</param>
+    /// <param name="ct">Cancels the validation: the call ends with an <see cref="OperationCanceledException"/>.</param>
+    public static async ValueTask<ValidationReport> ValidateAsync(Bundle bundle, IOkfClock? clock = null, CancellationToken ct = default)
     {
         // One provider scope for the whole validation: the §6.2 path checks below ask the
         // provider about many keys, and a provider that supports it lists each directory once
@@ -681,11 +693,11 @@ public static class BundleValidator
                     continue;
                 }
 
-                bundle.TryResolveResourceKey(concept, resource.RawPath, out _, out var resolutionStatus);
+                var (_, resolutionStatus) = await bundle.ResolveResourceKeyAsync(concept, resource.RawPath, ct).ConfigureAwait(false);
                 if (resolutionStatus == ResourceResolutionStatus.Missing)
                 {
                     var message = $"frontmatter path '{resource.Field}' → '{resource.RawPath}' not found";
-                    var hint = ConceptRelativeHint(bundle, concept, resource);
+                    var hint = await ConceptRelativeHintAsync(bundle, concept, resource, ct).ConfigureAwait(false);
                     if (hint is not null)
                     {
                         message += hint;
@@ -703,7 +715,7 @@ public static class BundleValidator
         }
 
         // (3) Reserved files must follow their structure when present.
-        ValidateReserved(bundle, diagnostics);
+        await ValidateReservedAsync(bundle, diagnostics, ct).ConfigureAwait(false);
 
         // Broken cross-links are permitted (§5.3); report them as info only.
         foreach (var (source, raw) in bundle.BrokenLinks())
@@ -773,7 +785,10 @@ public static class BundleValidator
     /// <see cref="FrontmatterResourceKind.ConceptRelative"/> resource whose key names an
     /// existing object, independent of how the validator reached it.
     /// </summary>
-    internal static string? ConceptRelativeHint(Bundle bundle, Concept concept, FrontmatterResource resource)
+    internal static string? ConceptRelativeHint(Bundle bundle, Concept concept, FrontmatterResource resource) =>
+        SyncBridge.RunCancellable(ct => ConceptRelativeHintAsync(bundle, concept, resource, ct));
+
+    private static async ValueTask<string?> ConceptRelativeHintAsync(Bundle bundle, Concept concept, FrontmatterResource resource, CancellationToken ct)
     {
         if (resource.Kind != FrontmatterResourceKind.BundleRelative
             || resource.RawPath.StartsWith('/') || resource.RawPath.StartsWith('\\'))
@@ -783,7 +798,7 @@ public static class BundleValidator
 
         // Would the same bare path exist next to the concept? Ask the resolver for its
         // concept-relative form, under the same policy and through the same provider.
-        bundle.TryResolveResourceKey(concept, "./" + resource.RawPath, out var siblingKey, out var siblingStatus);
+        var (siblingKey, siblingStatus) = await bundle.ResolveResourceKeyAsync(concept, "./" + resource.RawPath, ct).ConfigureAwait(false);
         if (siblingStatus != ResourceResolutionStatus.Resolved || siblingKey is null)
         {
             return null;
@@ -925,33 +940,33 @@ public static class BundleValidator
     }
 
     /// <summary>Checks that reserved files (index.md and log.md) follow their structural rules when present (§8/§9).</summary>
-    private static void ValidateReserved(Bundle bundle, List<Diagnostic> diagnostics)
+    private static async ValueTask ValidateReservedAsync(Bundle bundle, List<Diagnostic> diagnostics, CancellationToken ct)
     {
         // One object per call: its findings carry the key the load gave it (spec §9), set
         // once here and never recovered from a display path.
         foreach (var key in bundle.IndexKeys)
         {
             var first = diagnostics.Count;
-            ValidateIndex(bundle, key, diagnostics);
+            await ValidateIndexAsync(bundle, key, diagnostics, ct).ConfigureAwait(false);
             StampKey(diagnostics, first, key);
         }
 
         foreach (var key in bundle.LogKeys)
         {
             var first = diagnostics.Count;
-            ValidateLog(bundle, key, diagnostics);
+            await ValidateLogAsync(bundle, key, diagnostics, ct).ConfigureAwait(false);
             StampKey(diagnostics, first, key);
         }
     }
 
     /// <summary>Checks one <c>index.md</c> (§8, §12).</summary>
-    private static void ValidateIndex(Bundle bundle, BundleKey key, List<Diagnostic> diagnostics)
+    private static async ValueTask ValidateIndexAsync(Bundle bundle, BundleKey key, List<Diagnostic> diagnostics, CancellationToken ct)
     {
         var path = BundleDisplayPath.Compose(bundle.Location, key);
         string text;
         try
         {
-            text = bundle.ReadResourceText(key);
+            text = (await bundle.ReadResourceTextAsync(key, null, ct).ConfigureAwait(false)).Text;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
         {
@@ -1024,13 +1039,13 @@ public static class BundleValidator
     }
 
     /// <summary>Checks one <c>log.md</c> (§9).</summary>
-    private static void ValidateLog(Bundle bundle, BundleKey key, List<Diagnostic> diagnostics)
+    private static async ValueTask ValidateLogAsync(Bundle bundle, BundleKey key, List<Diagnostic> diagnostics, CancellationToken ct)
     {
         var path = BundleDisplayPath.Compose(bundle.Location, key);
         string text;
         try
         {
-            text = bundle.ReadResourceText(key);
+            text = (await bundle.ReadResourceTextAsync(key, null, ct).ConfigureAwait(false)).Text;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
         {

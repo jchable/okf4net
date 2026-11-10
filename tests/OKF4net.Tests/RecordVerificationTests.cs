@@ -636,9 +636,12 @@ public class RecordVerificationTests
                 }
 
                 File.WriteAllText(path, before);
-                var first = writer.RecordVerifications(["metrics/dau"], "human:ada");
-                Assert.True(first.Recorded, first.Message);
             }
+
+            // Not under the lease: it is not re-entrant (#152). The worker, released with the
+            // lease, and this call serialize on the bundle's lock in either order.
+            var first = writer.RecordVerifications(["metrics/dau"], "human:ada");
+            Assert.True(first.Recorded, first.Message);
         }
         finally
         {

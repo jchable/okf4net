@@ -11,7 +11,7 @@ namespace OKF4net.Catalog;
 /// <remarks>
 /// <para>
 /// <b>One image, refreshed under the handle's policy.</b> Each <see cref="SearchAsync"/>
-/// call reads <see cref="BundleHandle.Current"/> and searches it with the core
+/// call reads <see cref="BundleHandle.GetCurrentAsync"/> and searches it with the core
 /// <see cref="ConceptSearch.Search"/> -- the same scorer <c>okf search</c>/<c>OkfBundleTools.Search</c>
 /// use, so ranking and scoring are identical by construction rather than by parallel
 /// re-implementation. The handle decides when the image is reloaded: a catalog source
@@ -117,44 +117,44 @@ public sealed class OkfBundleKnowledgeSource : IKnowledgeSource
     /// treats it as a caller error one layer up (this type has no such
     /// caller-contract to lean on).
     /// </remarks>
-    public ValueTask<KnowledgeSearchResult> SearchAsync(KnowledgeQuery query, CancellationToken ct = default)
+    public async ValueTask<KnowledgeSearchResult> SearchAsync(KnowledgeQuery query, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(query);
         ct.ThrowIfCancellationRequested();
 
         if (string.IsNullOrWhiteSpace(query.Text))
         {
-            return new ValueTask<KnowledgeSearchResult>(new KnowledgeSearchResult(Array.Empty<KnowledgePassage>(), null));
+            return new KnowledgeSearchResult(Array.Empty<KnowledgePassage>(), null);
         }
 
         Bundle bundle;
         try
         {
-            bundle = Handle.Current;
+            bundle = await Handle.GetCurrentAsync(ct).ConfigureAwait(false);
         }
         catch (OkfException e)
         {
-            return new ValueTask<KnowledgeSearchResult>(new KnowledgeSearchResult(
+            return new KnowledgeSearchResult(
                 Array.Empty<KnowledgePassage>(),
                 new KnowledgeDiagnostic(
                     KnowledgeDiagnosticCode.SourceUnavailable,
                     Id,
-                    $"Source '{Id}' bundle at '{LocationForDiagnostic}' could not be loaded: {e.Message}")));
+                    $"Source '{Id}' bundle at '{LocationForDiagnostic}' could not be loaded: {e.Message}"));
         }
         catch (Exception e) when (e is not OutOfMemoryException && !(e is OperationCanceledException && ct.IsCancellationRequested))
         {
             // A guard, not the usual path: the handle wraps a host provider's raw exception into a BundleLoadException
             // (caught above), so what reaches here is an exception the handle could not wrap (a host TimeProvider
             // that throws, say). This source is unavailable, by type only -- a host's message can name a bucket or
-            // a path (spec §7) -- and the sources around it are still searched. Handle.Current takes no token and
-            // ct was checked above, so a cancellation raised here is not the caller's and is reported the same way;
+            // a path (spec §7) -- and the sources around it are still searched. A cancellation raised here that is
+            // not the caller's (the handle's load holds no caller token) is reported the same way;
             // only a cancellation of the CALLER's token still propagates.
-            return new ValueTask<KnowledgeSearchResult>(new KnowledgeSearchResult(
+            return new KnowledgeSearchResult(
                 Array.Empty<KnowledgePassage>(),
                 new KnowledgeDiagnostic(
                     KnowledgeDiagnosticCode.SourceUnavailable,
                     Id,
-                    $"Source '{Id}' bundle at '{LocationForDiagnostic}' could not be loaded ({e.GetType().Name}).")));
+                    $"Source '{Id}' bundle at '{LocationForDiagnostic}' could not be loaded ({e.GetType().Name})."));
         }
 
         var scored = ConceptSearch.Search(bundle.Concepts, query.Text, query.Tag);
@@ -181,7 +181,7 @@ public sealed class OkfBundleKnowledgeSource : IKnowledgeSource
         // `(List<KnowledgePassage>)result.Passages` and mutate a published
         // KnowledgeSearchResult (same reasoning as KnowledgeContext's own
         // passages/diagnostics; see GroupedKnowledgeResolver).
-        return new ValueTask<KnowledgeSearchResult>(new KnowledgeSearchResult(passages.AsReadOnly(), null));
+        return new KnowledgeSearchResult(passages.AsReadOnly(), null);
     }
 
     /// <summary>

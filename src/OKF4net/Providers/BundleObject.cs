@@ -11,7 +11,7 @@ public readonly record struct BundleVersion(string Token);
 public sealed record BundleListing(string RawName, long? Length, BundleObjectVersion? Version);
 
 /// <summary>An object read from a provider: its content stream (owned by this instance) and its version. The core reads the stream counting bytes (spec §6).</summary>
-public sealed class BundleObject : IDisposable
+public sealed class BundleObject : IDisposable, IAsyncDisposable
 {
     /// <summary>Creates an object over <paramref name="content"/>; disposing the object disposes the stream.</summary>
     public BundleObject(Stream content, BundleObjectVersion version, long? length)
@@ -32,6 +32,9 @@ public sealed class BundleObject : IDisposable
 
     /// <inheritdoc/>
     public void Dispose() => Content.Dispose();
+
+    /// <summary>Disposes <see cref="Content"/> asynchronously.</summary>
+    public ValueTask DisposeAsync() => Content.DisposeAsync();
 }
 
 /// <summary>How a write or delete is conditioned (spec §4).</summary>
@@ -61,7 +64,9 @@ public readonly record struct BundleWriteCondition(BundleWriteConditionKind Kind
 }
 
 /// <summary>What a provider can do beyond reading (spec §3): reading is never optional.</summary>
-public sealed record BundleProviderCapabilities(bool CanWrite);
+/// <param name="CanWrite">Whether <see cref="IBundleProvider.WriteAsync"/> and <see cref="IBundleProvider.DeleteAsync"/> may be used; when <see langword="false"/> they throw <see cref="BundleReadOnlyException"/>.</param>
+/// <param name="CompletesSynchronously">Whether every operation of the provider returns an already-completed task (#152). Only such a provider can serve the library's synchronous entry points, which refuse a side-effecting call on any other before starting it, and never wait for an incomplete task. The filesystem provider is one; it defaults to <see langword="false"/> so a host's provider is asynchronous unless it says otherwise.</param>
+public sealed record BundleProviderCapabilities(bool CanWrite, bool CompletesSynchronously = false);
 
 /// <summary>The bounds of spec §6. The core enforces sizes, counts and depth on what it receives; a provider enforces the same on its own walks, and the network bounds on its requests.</summary>
 public sealed record BundleLimits

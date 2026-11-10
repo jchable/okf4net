@@ -168,7 +168,7 @@ public class FileSystemBundleProviderWriteScopeTests
         var p = new FileSystemBundleProvider(tmp.Path);
 
         Assert.Equal(["d/" + orphan], p.ListOrphanedTemporaries(BundleLimits.Default));
-        Assert.Throws<BundleLimitExceededException>(() => p.Enumerate(null, new BundleLimits { MaxEntries = 2 }));
+        Assert.Throws<BundleLimitExceededException>(() => p.EnumerateCore(null, new BundleLimits { MaxEntries = 2 }));
 
         var bundle = Bundle.Load(p);
         Assert.Equal(1, bundle.Count);

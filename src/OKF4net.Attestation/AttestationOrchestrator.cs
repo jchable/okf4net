@@ -93,21 +93,32 @@ public sealed class AttestationOrchestrator
         StalePolicy? policy = null,
         CancellationToken cancellationToken = default)
     {
+        // An argument that is not usable at all is thrown at the call, as before, not delivered through the task.
         ArgumentNullException.ThrowIfNull(bundle);
+        return RunCoreAsync(bundle, conceptId, parameterValues, policy, cancellationToken);
+    }
+
+    private async ValueTask<AttestationOutcome> RunCoreAsync(
+        Bundle bundle,
+        ConceptId conceptId,
+        IReadOnlyDictionary<string, object?> parameterValues,
+        StalePolicy? policy,
+        CancellationToken cancellationToken)
+    {
 
         // Step 1: load the concept; it must exist and be an Attested Computation.
         var concept = bundle.Get(conceptId);
         if (concept is null || !concept.Document.Frontmatter.IsAttestedComputation)
         {
-            return ValueTask.FromResult(Fail($"concept '{conceptId}' was not found or is not an attested computation"));
+            return Fail($"concept '{conceptId}' was not found or is not an attested computation");
         }
 
         // Step 2: capture the sanctioned code — the computation (inline fence, or the file read
         // through the provider) and the attester's source, pinned to the image (spec §5.4).
-        var captured = Capture(bundle, concept);
+        var captured = await CaptureAsync(bundle, concept, null, cancellationToken).ConfigureAwait(false);
         return captured.Capture is null
-            ? ValueTask.FromResult(captured.Failure!)
-            : RunCapturedAsync(bundle, conceptId, parameterValues, captured.Capture, policy, cancellationToken);
+            ? captured.Failure!
+            : await RunCapturedAsync(bundle, conceptId, parameterValues, captured.Capture, policy, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -138,6 +149,31 @@ public sealed class AttestationOrchestrator
     /// <param name="concept">The attested-computation concept, from that image.</param>
     /// <param name="expectedComputationFileVersion">The version of the <c>computation</c> file the caller observed, which must equal the version the image pinned; <see langword="null"/> uses the image's version alone.</param>
     public static AttestationCaptureResult Capture(Bundle bundle, Concept concept, BundleObjectVersion? expectedComputationFileVersion = null)
+    {
+        // The synchronous spelling (#152): the capture through the non-blocking bridge. It never
+        // waits: a read still pending when it returns is cancelled and abandoned, and the call
+        // throws, naming the async overload.
+        using var cts = new CancellationTokenSource();
+        var capture = CaptureAsync(bundle, concept, expectedComputationFileVersion, cts.Token);
+        if (!capture.IsCompleted)
+        {
+            cts.Cancel();
+            throw new InvalidOperationException("provider completed asynchronously; use CaptureAsync");
+        }
+
+        return capture.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// <see cref="Capture"/> without the blocking (#152): the same capture, pinned to the image
+    /// (spec §5.1, §5.4), the sanctioned code read through the provider asynchronously — and only
+    /// from the keys and at the versions the load surveyed.
+    /// </summary>
+    /// <param name="bundle">The image the capture is taken on.</param>
+    /// <param name="concept">The concept, which must be the one this image holds.</param>
+    /// <param name="expectedComputationFileVersion">The version of the computation file the caller was shown, or <see langword="null"/>.</param>
+    /// <param name="ct">Cancels the reads: the call ends with an <see cref="OperationCanceledException"/>.</param>
+    public static async ValueTask<AttestationCaptureResult> CaptureAsync(Bundle bundle, Concept concept, BundleObjectVersion? expectedComputationFileVersion = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(bundle);
         ArgumentNullException.ThrowIfNull(concept);
@@ -185,7 +221,7 @@ public sealed class AttestationOrchestrator
                 string text;
                 try
                 {
-                    text = bundle.ReadResourceText(file.Key, file.Version, out _);
+                    text = (await bundle.ReadResourceTextAsync(file.Key, file.Version, ct).ConfigureAwait(false)).Text;
                 }
                 catch (BundleVersionMismatchException)
                 {
@@ -237,7 +273,7 @@ public sealed class AttestationOrchestrator
         string attesterSourceText;
         try
         {
-            attesterSourceText = bundle.ReadResourceText(attester.Key, attester.Version, out _);
+            attesterSourceText = (await bundle.ReadResourceTextAsync(attester.Key, attester.Version, ct).ConfigureAwait(false)).Text;
         }
         catch (BundleVersionMismatchException)
         {

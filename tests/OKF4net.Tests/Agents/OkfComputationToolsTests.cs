@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+#pragma warning disable CS0618 // the obsolete synchronous tool methods are the subject (#152): kept one version, bridged over a provider that completes synchronously
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -561,7 +562,7 @@ public class OkfComputationToolsTests
     /// (missing required parameter), never an unhandled exception.
     /// </summary>
     [Fact]
-    public void Run_computation_with_null_parameterValues_does_not_throw()
+    public async Task Run_computation_with_null_parameterValues_does_not_throw()
     {
         using var tmp = new TempDir();
         tmp.Write(
@@ -574,9 +575,7 @@ public class OkfComputationToolsTests
         });
         var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg));
 
-#pragma warning disable CS0618 // The obsolete sync overload is still shipped, so its own null guard stays pinned.
-        var s = tools.RunComputation("c/rev", null!);
-#pragma warning restore CS0618
+        var s = await tools.RunComputationAsync("c/rev", null!);
 
         var lower = s.ToLowerInvariant();
         Assert.Contains("displayable: no", lower);
@@ -662,7 +661,7 @@ public class OkfComputationToolsTests
         };
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
         var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg));
-        tools.GetComputationTool("c/rev"); // shown first (spec §5.4): okf_run_computation runs only what the session was shown
+        tools.GetComputationTool("c/rev").Sync(); // shown first (spec §5.4): okf_run_computation runs only what the session was shown
         var function = tools.GetTools().Cast<AIFunction>().Single(f => f.Name == "okf_run_computation");
 
         // Parsed with the default options, which keep a duplicate: that is what a
@@ -768,7 +767,7 @@ public class OkfComputationToolsTests
         // Through GetTools(), not a hand-built AIFunctionFactory.Create: G4 wraps the
         // model-facing okf_run_computation in a top-level duplicate-parameter check, and
         // this test must cover that wrapper too, exactly as a real host calls it.
-        tools.GetComputationTool("c/rev"); // shown first (spec §5.4)
+        tools.GetComputationTool("c/rev").Sync(); // shown first (spec §5.4)
         var function = tools.GetTools().Cast<AIFunction>().Single(f => f.Name == "okf_run_computation");
 
         using var doc = JsonDocument.Parse("""{"conceptId": "c/rev", "parameterValues": {"n": 42}}""");

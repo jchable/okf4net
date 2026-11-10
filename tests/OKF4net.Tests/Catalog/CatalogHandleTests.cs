@@ -565,22 +565,22 @@ public class CatalogHandleTests
 }
 
 /// <summary>A provider whose <see cref="Id"/> is computed by the test (null, blank or throwing), the rest delegated.</summary>
-file sealed class IdProvider(IBundleProvider inner, Func<string> id) : IBundleProvider
+file sealed class IdProvider(IBundleProvider inner, Func<string> id) : SyncTestProvider
 {
-    public string Id => id();
-    public string Location => inner.Location;
-    public BundleProviderCapabilities Capabilities => inner.Capabilities;
-    public BundleKeyConstraints NativeConstraints => inner.NativeConstraints;
-    public BundleVersion GetVersion(BundleLimits limits) => inner.GetVersion(limits);
-    public IEnumerable<BundleListing> Enumerate(BundleKey? prefix, BundleLimits limits) => inner.Enumerate(prefix, limits);
-    public BundleObject Read(BundleKey key, BundleObjectVersion? expected = null) => inner.Read(key, expected);
-    public bool Exists(BundleKey key) => inner.Exists(key);
-    public BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition) => inner.Write(key, content, condition);
-    public void Delete(BundleKey key, BundleWriteCondition condition) => inner.Delete(key, condition);
+    public override string Id => id();
+    public override string Location => inner.Location;
+    public override BundleProviderCapabilities Capabilities => inner.Capabilities;
+    public override BundleKeyConstraints NativeConstraints => inner.NativeConstraints;
+    protected override BundleVersion GetVersionSync(BundleLimits limits) => inner.GetVersion(limits);
+    protected override IEnumerable<BundleListing> EnumerateSync(BundleKey? prefix, BundleLimits limits) => inner.Enumerate(prefix, limits);
+    protected override BundleObject ReadSync(BundleKey key, BundleObjectVersion? expected) => inner.Read(key, expected);
+    protected override bool ExistsSync(BundleKey key) => inner.Exists(key);
+    protected override BundleObjectVersion WriteSync(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition) => inner.Write(key, content, condition);
+    protected override void DeleteSync(BundleKey key, BundleWriteCondition condition) => inner.Delete(key, condition);
 }
 
 /// <summary>A notifying provider whose change subscription throws when it is disposed.</summary>
-file sealed class ThrowingDisposeProvider(NotifyingBundleProvider inner) : IBundleProvider, IBundleChangeNotifier
+file sealed class ThrowingDisposeProvider(NotifyingBundleProvider inner) : SyncTestProvider, IBundleChangeNotifier
 {
     public IDisposable Subscribe(Action onChange)
     {
@@ -588,16 +588,16 @@ file sealed class ThrowingDisposeProvider(NotifyingBundleProvider inner) : IBund
         return new Throwing(inside);
     }
 
-    public string Id => inner.Id;
-    public string Location => inner.Location;
-    public BundleProviderCapabilities Capabilities => inner.Capabilities;
-    public BundleKeyConstraints NativeConstraints => inner.NativeConstraints;
-    public BundleVersion GetVersion(BundleLimits limits) => inner.GetVersion(limits);
-    public IEnumerable<BundleListing> Enumerate(BundleKey? prefix, BundleLimits limits) => inner.Enumerate(prefix, limits);
-    public BundleObject Read(BundleKey key, BundleObjectVersion? expected = null) => inner.Read(key, expected);
-    public bool Exists(BundleKey key) => inner.Exists(key);
-    public BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition) => inner.Write(key, content, condition);
-    public void Delete(BundleKey key, BundleWriteCondition condition) => inner.Delete(key, condition);
+    public override string Id => inner.Id;
+    public override string Location => inner.Location;
+    public override BundleProviderCapabilities Capabilities => inner.Capabilities;
+    public override BundleKeyConstraints NativeConstraints => inner.NativeConstraints;
+    protected override BundleVersion GetVersionSync(BundleLimits limits) => inner.GetVersion(limits);
+    protected override IEnumerable<BundleListing> EnumerateSync(BundleKey? prefix, BundleLimits limits) => inner.Enumerate(prefix, limits);
+    protected override BundleObject ReadSync(BundleKey key, BundleObjectVersion? expected) => inner.Read(key, expected);
+    protected override bool ExistsSync(BundleKey key) => inner.Exists(key);
+    protected override BundleObjectVersion WriteSync(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition) => inner.Write(key, content, condition);
+    protected override void DeleteSync(BundleKey key, BundleWriteCondition condition) => inner.Delete(key, condition);
 
     private sealed class Throwing(IDisposable inside) : IDisposable
     {

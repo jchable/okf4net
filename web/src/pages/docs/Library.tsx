@@ -78,10 +78,12 @@ export default function Library() {
                 </>,
               ],
               [
-                'Load(IBundleProvider, BundleLoadOptions?) → Bundle',
+                'LoadAsync(IBundleProvider, BundleLoadOptions?, CancellationToken) → Bundle',
                 <>
-                  Load through any provider, under the <code>Limits</code> and <code>KeyPolicy</code> of the options.{' '}
-                  <code>Load(string)</code> is the same call over a <code>FileSystemBundleProvider</code>.
+                  Load through any provider, under the <code>Limits</code> and <code>KeyPolicy</code> of the options,
+                  reading concepts with at most <code>MaxConcurrentRequests</code> reads in flight.{' '}
+                  <code>Load(string)</code> is the same implementation over a <code>FileSystemBundleProvider</code>,
+                  through a bridge that never waits.
                 </>,
               ],
               [
@@ -171,9 +173,10 @@ export default function Library() {
               [
                 'IBundleProvider',
                 <>
-                  <code>Id</code>, <code>Location</code>, <code>Capabilities</code> (<code>CanWrite</code>),{' '}
-                  <code>GetVersion</code>, <code>Enumerate</code>, <code>Read</code>, <code>Write</code>,{' '}
-                  <code>Delete</code>. Knows nothing of concepts.
+                  <code>Id</code>, <code>Location</code>, <code>Capabilities</code> (<code>CanWrite</code>,{' '}
+                  <code>CompletesSynchronously</code>), <code>GetVersionAsync</code>, <code>EnumerateAsync</code>,{' '}
+                  <code>ReadAsync</code>, <code>ExistsAsync</code>, <code>WriteAsync</code>, <code>DeleteAsync</code>:{' '}
+                  <code>ValueTask</code>s with a required <code>CancellationToken</code>. Knows nothing of concepts.
                 </>,
               ],
               [
@@ -194,9 +197,10 @@ export default function Library() {
               [
                 'BundleHandle(provider, options, refreshPolicy)',
                 <>
-                  Holds one bundle's image: <code>Current</code> (loaded on first use), <code>Refresh()</code>,{' '}
-                  <code>Invalidate()</code>, <code>IsStale</code>, <code>LastLoadError</code>. One load at a time; a
-                  failed reload keeps the previous image served, marked stale.
+                  Holds one bundle's image: <code>GetCurrentAsync()</code> (loaded on first use),{' '}
+                  <code>RefreshAsync()</code>, <code>Invalidate()</code>, <code>IsStale</code>, <code>LastLoadError</code>.
+                  One shared load at a time; a caller that cancels stops waiting without cancelling it; a failed reload
+                  keeps the previous image served, marked stale.
                 </>,
               ],
               [

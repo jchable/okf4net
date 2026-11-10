@@ -9,13 +9,13 @@ namespace OKF4net.Providers;
 /// shared by every consumer of that source (the agent tools, a context provider, a catalog
 /// source) so that they serve one image; the sharing is explicit — a consumer built from a
 /// root string creates its own handle, and two such consumers have two images.
-/// <para><b>One load at a time.</b> The token comparison of <see cref="BundleRefreshMode.OnAccess"/> and <see cref="BundleRefreshMode.Interval"/> also runs serially under the load lock (on the filesystem provider it is a walk), blocking concurrent callers. Concurrent callers wait for the load in progress instead of
-/// each starting one; the image is replaced as a whole, so a call never sees two versions.</para>
+/// <para><b>One load at a time, shared.</b> The token comparison of <see cref="BundleRefreshMode.OnAccess"/> and <see cref="BundleRefreshMode.Interval"/> and the load it may lead to are ONE operation, and there is at most one running per handle (#152, single flight): concurrent callers join the operation in progress instead of each starting one, so N callers share one comparison, and the image is replaced as a whole, so a call never sees two versions.
+/// A caller joins only an operation that started at a generation at least its own required one (see the reload obligation): an access made after <see cref="Invalidate"/> waits for the older operation, then starts or joins one that covers it. The operation runs under no caller's token: a caller that cancels stops waiting (<see cref="OperationCanceledException"/>) and the others still get the image.</para>
 /// <para><b>Failure.</b> When a reload fails (the storage is unreachable, a bound is exceeded) the
-/// previous image stays served and <see cref="IsStale"/> says so; only the very first load throws from <see cref="Current"/> (<see cref="Refresh"/> also throws on a failed reload).
+/// previous image stays served and <see cref="IsStale"/> says so; only the very first load throws from <see cref="GetCurrentAsync"/> (<see cref="RefreshAsync"/> also throws on a failed reload).
 /// This holds for a raw exception from a host provider too (neither a provider, an I/O nor an access exception, <see cref="InvalidOperationException"/> say), at the token comparison or in a load: it is wrapped in a
 /// <see cref="BundleLoadException"/> whose message names its type only and which keeps it as the <see cref="Exception.InnerException"/>, so <see cref="LastLoadError"/> carries it, a first load throws it wrapped, and a
-/// consumed <see cref="BundleRefreshMode.Notify"/> signal is re-armed. Only an <see cref="OutOfMemoryException"/> propagates. The handle holds no caller token, so a cancellation raised by the provider is such a failure too.</para>
+/// consumed <see cref="BundleRefreshMode.Notify"/> signal is re-armed. Only an <see cref="OutOfMemoryException"/> propagates. The operation holds no caller token, so a cancellation raised by the provider is such a failure too.</para>
 /// <para><b>The reload obligation</b> (spec §5.1): <see cref="Invalidate"/> obliges the next access
 /// to reload, whatever the policy, and the obligation is acknowledged only by a successful load
 /// started after it — a load already running when it is made, or a load that fails, leaves it
@@ -29,9 +29,15 @@ public sealed class BundleHandle : IDisposable
 {
     private sealed record Image(Bundle Bundle, long Generation);
 
-    private readonly Lock _loadLock = new();
+    /// <summary>What one operation ended with: the image it serves and, when its reload failed and the previous image is served, that failure (so a refresh reports its OWN failure, not whatever another caller's operation left in <see cref="LastLoadError"/>).</summary>
+    private sealed record Outcome(Image Image, Exception? Failure);
+
+    /// <summary>Guards <see cref="_inflight"/> and <see cref="_inflightRequired"/> only: never held across I/O or an <see langword="await"/>.</summary>
+    private readonly Lock _gate = new();
     private readonly TimeProvider _time;
     private readonly IDisposable? _subscription;
+    private Task<Outcome>? _inflight;
+    private long _inflightRequired;
     private Image? _image;
     private long _required;
     private bool _checkRequested;
@@ -39,7 +45,7 @@ public sealed class BundleHandle : IDisposable
     private bool _stale;
     private Exception? _lastLoadError;
 
-    /// <summary>Creates a handle over <paramref name="provider"/>. Nothing is loaded until <see cref="Current"/> or <see cref="Refresh"/> is used.</summary>
+    /// <summary>Creates a handle over <paramref name="provider"/>. Nothing is loaded until <see cref="GetCurrentAsync"/> or <see cref="RefreshAsync"/> is used.</summary>
     /// <param name="provider">Where the bundle is read.</param>
     /// <param name="options">The options of every load (bounds, key policy); <see langword="null"/>: <see cref="BundleLoadOptions.Default"/>.</param>
     /// <param name="refreshPolicy">When the image is reloaded; <see langword="null"/>: <see cref="BundleRefreshPolicy.Manual"/>.</param>
@@ -80,7 +86,7 @@ public sealed class BundleHandle : IDisposable
     /// failed (<see cref="LastLoadError"/>), or an obligation to reload is pending. Reset by a
     /// successful load.
     /// </summary>
-    public bool IsStale => Volatile.Read(ref _stale) || (_image is { } image && image.Generation < Volatile.Read(ref _required));
+    public bool IsStale => Volatile.Read(ref _stale) || (Volatile.Read(ref _image) is { } image && image.Generation < Volatile.Read(ref _required));
 
     /// <summary>The failure of the last load, or <see langword="null"/>: a reload that kept the previous image served (then <see cref="IsStale"/> is set), or a failed first load (then there is no image and <see cref="IsStale"/> stays <see langword="false"/>). Cleared by a successful load, or by a comparison that finds the image current.</summary>
     public Exception? LastLoadError => Volatile.Read(ref _lastLoadError);
@@ -90,44 +96,84 @@ public sealed class BundleHandle : IDisposable
     /// reload obligation. When a reload fails the previous image is returned and
     /// <see cref="IsStale"/> is set.
     /// </summary>
+    /// <param name="ct">Stops the wait: the call ends with an <see cref="OperationCanceledException"/>. The load itself, shared with the other callers, is not cancelled.</param>
     /// <exception cref="BundleLoadException">No image could ever be loaded (the first load failed).</exception>
-    public Bundle Current
+    public async Task<Bundle> GetCurrentAsync(CancellationToken ct = default)
+    {
+        var image = Volatile.Read(ref _image);
+        if (image is not null && RefreshPolicy.Mode == BundleRefreshMode.Manual && image.Generation >= Volatile.Read(ref _required))
+        {
+            return image.Bundle; // the fast path: nothing to compare under Manual
+        }
+
+        ct.ThrowIfCancellationRequested();
+        while (true)
+        {
+            var required = Volatile.Read(ref _required);
+            var (operation, blocker) = JoinOrStart(required, force: false);
+            if (operation is not null)
+            {
+                return (await operation.WaitAsync(ct).ConfigureAwait(false)).Image.Bundle;
+            }
+
+            // An older operation is running, started before the obligation this caller must meet:
+            // wait for it to end (its outcome does not matter), then join or start one that covers it.
+            await WaitForEndAsync(blocker!, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Reloads now, whatever the policy, and returns the new image. A failure keeps the previous image served (<see cref="IsStale"/>) and is thrown. If an operation is in progress it is waited for first, then a new one starts, as the serialized load always did.</summary>
+    /// <param name="ct">Stops the wait: the call ends with an <see cref="OperationCanceledException"/>.</param>
+    /// <exception cref="BundleLoadException">The load failed.</exception>
+    public async Task<Bundle> RefreshAsync(CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        while (true)
+        {
+            var (operation, blocker) = JoinOrStart(Volatile.Read(ref _required), force: true);
+            if (operation is null)
+            {
+                await WaitForEndAsync(blocker!, ct).ConfigureAwait(false);
+                continue;
+            }
+
+            var outcome = await operation.WaitAsync(ct).ConfigureAwait(false);
+            if (outcome.Failure is { } error)
+            {
+                ExceptionDispatchInfo.Capture(error).Throw();
+            }
+
+            return outcome.Image.Bundle;
+        }
+    }
+
+    /// <summary>
+    /// The synchronous spelling of <see cref="GetCurrentAsync"/>, for the code that has not become
+    /// asynchronous yet (#152): only for a provider that declares
+    /// <see cref="BundleProviderCapabilities.CompletesSynchronously"/> (refused otherwise, before
+    /// anything starts), and a caller that finds an operation already running on another thread
+    /// waits for it, as the serialized load always made it wait.
+    /// </summary>
+    internal Bundle Current
     {
         get
         {
             var image = Volatile.Read(ref _image);
             if (image is not null && RefreshPolicy.Mode == BundleRefreshMode.Manual && image.Generation >= Volatile.Read(ref _required))
             {
-                return image.Bundle; // the fast path: nothing to compare under Manual
+                return image.Bundle;
             }
 
-            lock (_loadLock)
-            {
-                image = _image;
-                if (image is not null && !NeedsReload(image))
-                {
-                    return image.Bundle;
-                }
-
-                return LoadLocked().Bundle;
-            }
+            SyncBridge.RequireSynchronousProvider(Provider);
+            return GetCurrentAsync(CancellationToken.None).GetAwaiter().GetResult();
         }
     }
 
-    /// <summary>Reloads now, whatever the policy, and returns the new image. A failure keeps the previous image served (<see cref="IsStale"/>) and is thrown.</summary>
-    /// <exception cref="BundleLoadException">The load failed.</exception>
-    public Bundle Refresh()
+    /// <summary>The synchronous spelling of <see cref="RefreshAsync"/>; see <see cref="Current"/>.</summary>
+    internal Bundle Refresh()
     {
-        lock (_loadLock)
-        {
-            var image = LoadLocked();
-            if (_lastLoadError is { } error)
-            {
-                ExceptionDispatchInfo.Capture(error).Throw();
-            }
-
-            return image.Bundle;
-        }
+        SyncBridge.RequireSynchronousProvider(Provider);
+        return RefreshAsync(CancellationToken.None).GetAwaiter().GetResult();
     }
 
     /// <summary>
@@ -144,11 +190,95 @@ public sealed class BundleHandle : IDisposable
     /// notifier keeps an undisposed handle and its image alive. After disposal the handle still
     /// serves and reloads: <see cref="BundleRefreshMode.OnAccess"/> and <see cref="BundleRefreshMode.Interval"/>
     /// handles keep reloading by policy, and so does any handle on an obligation or a
-    /// <see cref="Refresh"/>; only the signals of a <see cref="BundleRefreshMode.Notify"/> handle are lost.
+    /// <see cref="RefreshAsync"/>; only the signals of a <see cref="BundleRefreshMode.Notify"/> handle are lost. A load in progress
+    /// is not cancelled either: a catalog disposes the handles a reload replaced while a search on the previous snapshot may still need them.
     /// </summary>
     public void Dispose() => _subscription?.Dispose();
 
-    private bool NeedsReload(Image image)
+    /// <summary>
+    /// The operation a caller needing generation <paramref name="required"/> should await: the one
+    /// in progress when it started at a generation at least that, a new one when none is running,
+    /// or — with the older operation as the second item — neither: the caller waits for that one to
+    /// end and asks again. Starting runs the operation's first step on the calling flow, outside
+    /// the gate (the gate only publishes it).
+    /// </summary>
+    private (Task<Outcome>? Operation, Task<Outcome>? Blocker) JoinOrStart(long required, bool force)
+    {
+        TaskCompletionSource<Outcome> published;
+        lock (_gate)
+        {
+            if (_inflight is { } running)
+            {
+                // A forced refresh never joins: it must run its own load after what is in progress.
+                return !force && Volatile.Read(ref _inflightRequired) >= required ? (running, null) : (null, running);
+            }
+
+            published = new TaskCompletionSource<Outcome>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _inflight = published.Task;
+            _inflightRequired = required;
+        }
+
+        _ = RunOperationAsync(published, force);
+        return (published.Task, null);
+    }
+
+    private async Task RunOperationAsync(TaskCompletionSource<Outcome> published, bool force)
+    {
+        Outcome? outcome = null;
+        Exception? failure = null;
+        try
+        {
+            outcome = await ObtainAsync(force).ConfigureAwait(false);
+        }
+        catch (Exception e)
+        {
+            failure = e;
+        }
+
+        // The slot is freed BEFORE the result is published: a caller woken by it never finds the finished operation still joinable.
+        lock (_gate)
+        {
+            if (ReferenceEquals(_inflight, published.Task))
+            {
+                _inflight = null;
+            }
+        }
+
+        if (failure is not null)
+        {
+            published.SetException(failure);
+        }
+        else
+        {
+            published.SetResult(outcome!);
+        }
+    }
+
+    private static async Task WaitForEndAsync(Task<Outcome> operation, CancellationToken ct)
+    {
+        try
+        {
+            await operation.WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception e) when (e is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            // The outcome of an operation that is not ours does not matter: only its end.
+        }
+    }
+
+    /// <summary>The body of one operation: the token comparison the policy asks for, then the load if the image is behind (or always, when forced).</summary>
+    private async Task<Outcome> ObtainAsync(bool force)
+    {
+        var image = _image;
+        if (!force && image is not null && !await NeedsReloadAsync(image).ConfigureAwait(false))
+        {
+            return new Outcome(image, null);
+        }
+
+        return await LoadAsync().ConfigureAwait(false);
+    }
+
+    private async ValueTask<bool> NeedsReloadAsync(Image image)
     {
         if (image.Generation < Volatile.Read(ref _required))
         {
@@ -158,7 +288,7 @@ public sealed class BundleHandle : IDisposable
         switch (RefreshPolicy.Mode)
         {
             case BundleRefreshMode.OnAccess:
-                return CheckToken(image);
+                return await CheckTokenAsync(image).ConfigureAwait(false);
             case BundleRefreshMode.Interval:
                 {
                     var now = _time.GetTimestamp();
@@ -168,7 +298,7 @@ public sealed class BundleHandle : IDisposable
                     }
 
                     _lastCheck = now;
-                    return CheckToken(image);
+                    return await CheckTokenAsync(image).ConfigureAwait(false);
                 }
 
             case BundleRefreshMode.Notify:
@@ -178,16 +308,16 @@ public sealed class BundleHandle : IDisposable
                 }
 
                 Volatile.Write(ref _checkRequested, false);
-                return CheckToken(image);
+                return await CheckTokenAsync(image).ConfigureAwait(false);
             default:
                 return false;
         }
     }
 
     /// <summary>Compares the tokens; an unchanged one means the image served is in fact current, so a stale mark left by an earlier failure is cleared (an obligation is not: it is generation-based).</summary>
-    private bool CheckToken(Image image)
+    private async ValueTask<bool> CheckTokenAsync(Image image)
     {
-        if (TokenChanged(image))
+        if (await TokenChangedAsync(image).ConfigureAwait(false))
         {
             return true;
         }
@@ -201,14 +331,14 @@ public sealed class BundleHandle : IDisposable
     /// A token that cannot be read counts as changed, whatever the exception (a host provider may
     /// raise one that is neither a provider, an I/O nor an access exception): the reload then
     /// fails the same way, and the image is marked stale. Only an <see cref="OutOfMemoryException"/>
-    /// propagates. The handle holds no caller token, so a cancellation raised by the provider is a
+    /// propagates. The operation holds no caller token, so a cancellation raised by the provider is a
     /// provider failure like the others.
     /// </summary>
-    private bool TokenChanged(Image image)
+    private async ValueTask<bool> TokenChangedAsync(Image image)
     {
         try
         {
-            return Provider.GetVersion(Options.Limits) != image.Bundle.Version;
+            return await Provider.GetVersionAsync(Options.Limits, CancellationToken.None).ConfigureAwait(false) != image.Bundle.Version;
         }
         catch (Exception e) when (e is not OutOfMemoryException)
         {
@@ -216,18 +346,18 @@ public sealed class BundleHandle : IDisposable
         }
     }
 
-    private Image LoadLocked()
+    private async Task<Outcome> LoadAsync()
     {
         var startedAt = Volatile.Read(ref _required);
         try
         {
-            var bundle = Bundle.Load(Provider, Options);
+            var bundle = await Bundle.LoadAsync(Provider, Options, CancellationToken.None).ConfigureAwait(false);
             var image = new Image(bundle, startedAt);
             Volatile.Write(ref _image, image);
             Volatile.Write(ref _lastLoadError, null);
             Volatile.Write(ref _stale, false);
             _lastCheck = _time.GetTimestamp();
-            return image;
+            return new Outcome(image, null);
         }
         catch (Exception e) when (e is not OutOfMemoryException)
         {
@@ -253,7 +383,7 @@ public sealed class BundleHandle : IDisposable
                 Volatile.Write(ref _checkRequested, true); // the signal was consumed by the comparison: re-arm it so the next access retries
             }
 
-            return previous;
+            return new Outcome(previous, failure);
         }
     }
 }

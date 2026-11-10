@@ -1721,3 +1721,7 @@ Ajoutés par la révision 6 :
 
 Tickets #140, #141, #142, #143, #151, #152, #153, #154, #178, #179, #181 (voir
 Périmètre).
+
+## Note du 2026-11-04 : le contrat asynchrone (#152)
+
+Le contrat de provider décrit ci-dessus (méthodes synchrones) a été **remplacé avant sa première publication** par sa forme asynchrone : `ValueTask`/`IAsyncEnumerable`, `CancellationToken` obligatoire, `Capabilities.CompletesSynchronously`. Les clés, la validation en trois couches, les bornes et la résolution §6.2 restent dans le cœur et sont inchangées ; le pont synchrone ne bloque jamais. Voir `2026-11-03-async-bundle-provider-design.md` (décisions du 2026-11-04) et le plan `../plans/2026-11-04-async-bundle-provider.md`. Les parties de ce document qui parlent de `Enumerate`, `Read`, `Write`, `Delete`, `GetVersion` et `Bundle.Load(provider)` se lisent désormais avec leur suffixe `Async`.

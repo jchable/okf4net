@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+#pragma warning disable CS0618 // the obsolete synchronous tool methods are the subject (#152): kept one version, bridged over a provider that completes synchronously
 using System.ComponentModel;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -279,7 +280,7 @@ public class AIFunctionExposureTests
 
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
         var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg));
-        tools.GetComputationTool("c/rev"); // shown first (spec §5.4): okf_run_computation runs only what the session was shown
+        tools.GetComputationTool("c/rev").Sync(); // shown first (spec §5.4): okf_run_computation runs only what the session was shown
         var function = GetFunction(tools, "okf_run_computation");
 
         var argsJson = """{"conceptId": "c/rev", "parameterValues": {"threshold": 42, "label": "q3"}}""";
@@ -497,7 +498,7 @@ public class AIFunctionExposureTests
         using var tmp = new TempDir();
         var capture = new RunCapture();
         var tools = WiredTools(tmp, capture);
-        tools.GetComputationTool("c/rev"); // shown first (spec §5.4)
+        tools.GetComputationTool("c/rev").Sync(); // shown first (spec §5.4)
         var function = GetFunction(tools, "okf_run_computation");
 
         var result = await function.InvokeAsync(JsonArguments("""{"n": 1, "m": 2}"""));
@@ -518,7 +519,7 @@ public class AIFunctionExposureTests
         using var tmp = new TempDir();
         var capture = new RunCapture();
         var tools = WiredTools(tmp, capture);
-        tools.GetComputationTool("c/rev"); // shown first (spec §5.4); the direct call below needs no observation
+        tools.GetComputationTool("c/rev").Sync(); // shown first (spec §5.4); the direct call below needs no observation
 
         var viaFunction = await GetFunction(tools, "okf_run_computation").InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?>
         {

@@ -44,7 +44,26 @@ public class BundleConceptWriterProviderTests
         ["AppendLog"] = (w, _) => w.AppendLog("Update", "entry"),
         ["IndexGenerator.RegenerateIndexes(provider)"] = (_, p) => IndexGenerator.RegenerateIndexes(p),
         ["IndexGenerator.RegenerateIndexesWith(provider)"] = (_, p) => IndexGenerator.RegenerateIndexesWith(p, IndexGenerator.DefaultSynthesize),
+
+        // The asynchronous spellings (#152): a refusal reaches the caller through the task, and the
+        // blocking read of an already-completed task below rethrows the original exception.
+        ["WriteConceptAsync(yaml)"] = (w, _) => Done(w.WriteConceptAsync("metrics/dau", Fm, "body\n")),
+        ["WriteConceptAsync(frontmatter)"] = (w, _) => Done(w.WriteConceptAsync("metrics/dau", Frontmatter.FromMapping((YamlMapping)YamlValue.Parse(Fm)), "body\n")),
+        ["AppendToConceptAtomicAsync"] = (w, _) => Done(w.AppendToConceptAtomicAsync("metrics/dau", Fm, b => (b ?? string.Empty) + "more\n")),
+        ["RecordVerificationsAsync"] = (w, _) => Done(w.RecordVerificationsAsync(["metrics/dau"], "human:ada")),
+        ["WriteConceptAsync(yaml, condition)"] = (w, _) => Done(w.WriteConceptAsync("metrics/dau", Fm, "body\n", BundleWriteCondition.MustNotExist)),
+        ["WriteConceptAsync(frontmatter, condition)"] = (w, _) => Done(w.WriteConceptAsync("metrics/dau", Frontmatter.FromMapping((YamlMapping)YamlValue.Parse(Fm)), "body\n", BundleWriteCondition.None)),
+        ["AppendLogAsync"] = (w, _) => Done(w.AppendLogAsync("Update", "entry")),
+        ["IndexGenerator.RegenerateIndexesAsync(provider)"] = (_, p) => Done(IndexGenerator.RegenerateIndexesAsync(p)),
+        ["IndexGenerator.RegenerateIndexesWithAsync(provider)"] = (_, p) => Done(IndexGenerator.RegenerateIndexesWithAsync(p, IndexGenerator.DefaultSynthesize)),
     };
+
+    /// <summary>The result of a task that has already completed (the providers of these tests complete before they return), or its original exception.</summary>
+    private static void Done<T>(ValueTask<T> task)
+    {
+        Assert.True(task.IsCompleted, "the provider of this matrix completes before it returns");
+        _ = task.GetAwaiter().GetResult();
+    }
 
     /// <summary>
     /// The same entry points called with an argument the writer would refuse first (an empty id,
@@ -65,6 +84,16 @@ public class BundleConceptWriterProviderTests
         ["IndexGenerator.RegenerateIndexes(provider)"] = (_, p) => IndexGenerator.RegenerateIndexes(p),
         // A null synthesizer is checked after the capability guard: read-only wins, writable throws.
         ["IndexGenerator.RegenerateIndexesWith(provider)"] = (_, p) => IndexGenerator.RegenerateIndexesWith(p, null!),
+
+        ["WriteConceptAsync(yaml)"] = (w, _) => Done(w.WriteConceptAsync("", Fm, "body\n")),
+        ["WriteConceptAsync(frontmatter)"] = (w, _) => Done(w.WriteConceptAsync("", Frontmatter.FromMapping((YamlMapping)YamlValue.Parse(Fm)), "body\n")),
+        ["AppendToConceptAtomicAsync"] = (w, _) => Done(w.AppendToConceptAtomicAsync("", Fm, b => (b ?? string.Empty) + "more\n")),
+        ["RecordVerificationsAsync"] = (w, _) => Done(w.RecordVerificationsAsync([], "human:ada")),
+        ["WriteConceptAsync(yaml, condition)"] = (w, _) => Done(w.WriteConceptAsync("", Fm, "body\n", BundleWriteCondition.MustNotExist)),
+        ["WriteConceptAsync(frontmatter, condition)"] = (w, _) => Done(w.WriteConceptAsync("", Frontmatter.FromMapping((YamlMapping)YamlValue.Parse(Fm)), "body\n", BundleWriteCondition.None)),
+        ["AppendLogAsync"] = (w, _) => Done(w.AppendLogAsync("", "entry")),
+        ["IndexGenerator.RegenerateIndexesAsync(provider)"] = (_, p) => Done(IndexGenerator.RegenerateIndexesAsync(p)),
+        ["IndexGenerator.RegenerateIndexesWithAsync(provider)"] = (_, p) => Done(IndexGenerator.RegenerateIndexesWithAsync(p, null!)),
     };
 
     /// <summary>The names of <see cref="WriteCalls"/>, for the matrix theories.</summary>
@@ -83,7 +112,8 @@ public class BundleConceptWriterProviderTests
         // method with another return type would escape it.
         var reflected = typeof(BundleConceptWriter)
             .GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly)
-            .Where(m => !m.IsSpecialName && (m.ReturnType == typeof(string) || m.ReturnType == typeof(VerificationOutcome)))
+            .Where(m => !m.IsSpecialName && (m.ReturnType == typeof(string) || m.ReturnType == typeof(VerificationOutcome)
+                || m.ReturnType == typeof(ValueTask<string>) || m.ReturnType == typeof(ValueTask<VerificationOutcome>)))
             .GroupBy(m => m.Name)
             .ToDictionary(g => g.Key, g => g.Count());
         var matrix = WriteCalls.Keys
@@ -133,7 +163,7 @@ public class BundleConceptWriterProviderTests
         // And on a writable provider the same call is an Error: text, so the guard is what the rows above pin.
         var writable = new InMemoryBundleProvider(canWrite: true);
         var writer = new BundleConceptWriter(writable);
-        if (entryPoint == "IndexGenerator.RegenerateIndexesWith(provider)")
+        if (entryPoint is "IndexGenerator.RegenerateIndexesWith(provider)" or "IndexGenerator.RegenerateIndexesWithAsync(provider)")
         {
             // The generator's argument checks throw, as they do for any caller: the order is what the rows above pin.
             Assert.Throws<ArgumentNullException>(() => InvalidWriteCalls[entryPoint](writer, writable));
@@ -462,8 +492,10 @@ public class BundleConceptWriterProviderTests
 
         Assert.Throws<OperationCanceledException>(() => writer.RecordVerifications(["a", "b"], "human:ada", "2026-10-19T00:00:00Z"));
         Assert.Equal(3, notifications);
+        // The notification runs after the lease is released (#152), so the batch is complete when the
+        // first one throws: both stamps are on disk, and the exception still propagates.
         Assert.Single(OkfDocument.Parse(File.ReadAllText(Path.Combine(tmp.Path, "a.md"))).Frontmatter.Verified);
-        Assert.Equal(Doc, File.ReadAllText(Path.Combine(tmp.Path, "b.md")));
+        Assert.Single(OkfDocument.Parse(File.ReadAllText(Path.Combine(tmp.Path, "b.md"))).Frontmatter.Verified);
     }
 
     /// <summary>

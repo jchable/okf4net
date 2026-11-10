@@ -19,33 +19,33 @@ public sealed class ReadOnlyBundleProvider : IBundleProvider, IProviderScope
     public string Location => _inner.Location;
 
     /// <inheritdoc/>
-    public BundleProviderCapabilities Capabilities => new(CanWrite: false);
+    public BundleProviderCapabilities Capabilities => new(CanWrite: false, CompletesSynchronously: _inner.Capabilities.CompletesSynchronously);
 
     /// <inheritdoc/>
     public BundleKeyConstraints NativeConstraints => _inner.NativeConstraints;
 
     /// <inheritdoc/>
-    public BundleVersion GetVersion(BundleLimits limits) => _inner.GetVersion(limits);
+    public ValueTask<BundleVersion> GetVersionAsync(BundleLimits limits, CancellationToken ct) => _inner.GetVersionAsync(limits, ct);
 
     /// <inheritdoc/>
-    public IEnumerable<BundleListing> Enumerate(BundleKey? prefix, BundleLimits limits) => _inner.Enumerate(prefix, limits);
+    public IAsyncEnumerable<BundleListing> EnumerateAsync(BundleKey? prefix, BundleLimits limits, CancellationToken ct) => _inner.EnumerateAsync(prefix, limits, ct);
 
     /// <inheritdoc/>
-    public BundleObject Read(BundleKey key, BundleObjectVersion? expected = null) => _inner.Read(key, expected);
+    public ValueTask<BundleObject> ReadAsync(BundleKey key, BundleObjectVersion? expected, CancellationToken ct) => _inner.ReadAsync(key, expected, ct);
 
     /// <inheritdoc/>
-    public bool Exists(BundleKey key) => _inner.Exists(key);
+    public ValueTask<bool> ExistsAsync(BundleKey key, CancellationToken ct) => _inner.ExistsAsync(key, ct);
 
     /// <summary>The inner provider's scope, when it has one: the downgrade changes what can be written, never what is read.</summary>
     IDisposable IProviderScope.BeginScope() => (_inner as IProviderScope)?.BeginScope() ?? ProviderScopes.None;
 
     /// <inheritdoc/>
-    public BundleObjectVersion Write(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition) =>
-        throw new BundleReadOnlyException(Id);
+    public ValueTask<BundleObjectVersion> WriteAsync(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition, CancellationToken ct) =>
+        ValueTask.FromException<BundleObjectVersion>(new BundleReadOnlyException(Id));
 
     /// <inheritdoc/>
-    public void Delete(BundleKey key, BundleWriteCondition condition) =>
-        throw new BundleReadOnlyException(Id);
+    public ValueTask DeleteAsync(BundleKey key, BundleWriteCondition condition, CancellationToken ct) =>
+        ValueTask.FromException(new BundleReadOnlyException(Id));
 }
 
 /// <summary>Extension methods on <see cref="IBundleProvider"/>.</summary>

@@ -72,13 +72,14 @@ public class NoResidualFileIoTests
         var t = new Dictionary<string, Func<Ctx, Task>>(StringComparer.Ordinal);
 
         // ----- read side -----
-        Add(t, "Bundle.Load(IBundleProvider,BundleLoadOptions)", c =>
+        Add(t, "Bundle.LoadAsync(IBundleProvider,BundleLoadOptions,CancellationToken)", async c =>
         {
-            var b = Bundle.Load(c.Mem);
+            var b = await Bundle.LoadAsync(c.Mem);
             Assert.Equal("memory://x", b.Location);
             Assert.True(b.Count > 0);
         });
         Add(t, "BundleValidator.Validate(Bundle,IOkfClock)", c => Assert.NotNull(BundleValidator.Validate(c.Bundle)));
+        Add(t, "BundleValidator.ValidateAsync(Bundle,IOkfClock,CancellationToken)", async c => Assert.NotNull(await BundleValidator.ValidateAsync(c.Bundle)));
         Add(t, "ConceptAudit.Run(Bundle,AuditQuery,IOkfClock)", c => Assert.NotNull(ConceptAudit.Run(c.Bundle)));
         Add(t, "SiteModel.Build(Bundle)", c => Assert.NotNull(SiteModel.Build(c.Bundle)));
         Add(t, "SiteIndex.Build(Bundle)", c => Assert.NotNull(SiteIndex.Build(c.Bundle)));
@@ -109,6 +110,13 @@ public class NoResidualFileIoTests
         });
         Add(t, "IndexGenerator.RegenerateIndexesWith(IBundleProvider,Synthesize,BundleLoadOptions)", c =>
             Assert.NotNull(IndexGenerator.RegenerateIndexesWith(c.Mem, IndexGenerator.DefaultSynthesize)));
+        Add(t, "IndexGenerator.RegenerateIndexesAsync(IBundleProvider,BundleLoadOptions,CancellationToken)", async c =>
+        {
+            Assert.NotNull(await IndexGenerator.RegenerateIndexesAsync(c.Mem));
+            Assert.Contains(c.Mem.Calls, call => call.StartsWith("enumerate", StringComparison.Ordinal));
+        });
+        Add(t, "IndexGenerator.RegenerateIndexesWithAsync(IBundleProvider,Synthesize,BundleLoadOptions,CancellationToken)", async c =>
+            Assert.NotNull(await IndexGenerator.RegenerateIndexesWithAsync(c.Mem, IndexGenerator.DefaultSynthesize)));
 
         // ----- the writer -----
         Add(t, "BundleConceptWriter..ctor(BundleHandle,Action)", c => Written(c, new BundleConceptWriter(c.Handle).WriteConcept("p/h", Fm, "b\n"), "p/h"));
@@ -133,6 +141,28 @@ public class NoResidualFileIoTests
             Assert.Contains(c.Mem.Calls, call => call.StartsWith("write log.md", StringComparison.Ordinal));
         });
 
+        // ----- the writer, asynchronous spellings (#152) -----
+        Add(t, "BundleConceptWriter.WriteConceptAsync(String,String,String,CancellationToken)", async c =>
+            Written(c, await Writer(c).WriteConceptAsync("p/aw1", Fm, "b\n"), "p/aw1"));
+        Add(t, "BundleConceptWriter.WriteConceptAsync(String,String,String,BundleWriteCondition,CancellationToken)", async c =>
+            Written(c, await Writer(c).WriteConceptAsync("p/aw2", Fm, "b\n", BundleWriteCondition.MustNotExist), "p/aw2"));
+        Add(t, "BundleConceptWriter.WriteConceptAsync(String,Frontmatter,String,CancellationToken)", async c =>
+            Written(c, await Writer(c).WriteConceptAsync("p/aw3", Doc().Frontmatter, "b\n"), "p/aw3"));
+        Add(t, "BundleConceptWriter.WriteConceptAsync(String,Frontmatter,String,BundleWriteCondition,CancellationToken)", async c =>
+            Written(c, await Writer(c).WriteConceptAsync("p/aw4", Doc().Frontmatter, "b\n", BundleWriteCondition.MustNotExist), "p/aw4"));
+        Add(t, "BundleConceptWriter.AppendToConceptAtomicAsync(String,String,Func`2,CancellationToken)", async c =>
+            Written(c, await Writer(c).AppendToConceptAtomicAsync("p/aa", Fm, existing => (existing ?? string.Empty) + "line\n"), "p/aa"));
+        Add(t, "BundleConceptWriter.RecordVerificationsAsync(IReadOnlyList`1,String,String,CancellationToken)", async c =>
+        {
+            _ = await Writer(c).RecordVerificationsAsync(["metrics/revenue"], "human:ada");
+            Assert.Contains(c.Mem.Calls, call => call.StartsWith("write metrics/revenue.md", StringComparison.Ordinal));
+        });
+        Add(t, "BundleConceptWriter.AppendLogAsync(String,String,Nullable`1,CancellationToken)", async c =>
+        {
+            Assert.StartsWith("Appended", await Writer(c).AppendLogAsync("Update", "probe"), StringComparison.Ordinal);
+            Assert.Contains(c.Mem.Calls, call => call.StartsWith("write log.md", StringComparison.Ordinal));
+        });
+
         // ----- the tool set (public methods) -----
         Add(t, "OkfBundleTools..ctor(BundleHandle,AttestationOrchestrator)", c => Assert.NotNull(new OkfBundleTools(c.Handle).Handle));
         Add(t, "OkfBundleTools.ReadConcept(String)", c => Assert.Contains("Revenue", Tools(c).ReadConcept("computations/revenue"), StringComparison.Ordinal));
@@ -148,9 +178,21 @@ public class NoResidualFileIoTests
         Add(t, "OkfBundleTools.ChangesSince(String)", c => NotError(Tools(c).ChangesSince("2020-01-01")));
         Add(t, "OkfBundleTools.GetComputation(String)", c => Assert.Contains("SELECT", Tools(c).GetComputation("computations/revenue"), StringComparison.Ordinal));
 
+        // ----- the tool set, asynchronous spellings (#152) -----
+        Add(t, "OkfBundleTools.ReadConceptAsync(String,CancellationToken)", async c => Assert.Contains("Revenue", await Tools(c).ReadConceptAsync("computations/revenue"), StringComparison.Ordinal));
+        Add(t, "OkfBundleTools.BrowseAsync(String,CancellationToken)", async c => NotError(await Tools(c).BrowseAsync()));
+        Add(t, "OkfBundleTools.GraphAsync(String,CancellationToken)", async c => NotError(await Tools(c).GraphAsync()));
+        Add(t, "OkfBundleTools.SearchAsync(String,String,CancellationToken)", async c => NotError(await Tools(c).SearchAsync("revenue")));
+        Add(t, "OkfBundleTools.AuditAsync(Nullable`1,String,String,String,CancellationToken)", async c => NotError(await Tools(c).AuditAsync()));
+        Add(t, "OkfBundleTools.WriteConceptAsync(String,String,String,CancellationToken)", async c => Written(c, await Tools(c).WriteConceptAsync("p/ta", Fm, "b\n"), "p/ta"));
+        Add(t, "OkfBundleTools.VerifyAsync(String,String,String,CancellationToken)", async c => NotError(await Tools(c).VerifyAsync("metrics/revenue", "human:ada")));
+        Add(t, "OkfBundleTools.AppendLogAsync(String,String,CancellationToken)", async c => NotError(await Tools(c).AppendLogAsync("Update", "probe")));
+        Add(t, "OkfBundleTools.RegenerateIndexesAsync(CancellationToken)", async c => NotError(await Tools(c).RegenerateIndexesAsync()));
+        Add(t, "OkfBundleTools.ValidateBundleAsync(CancellationToken)", async c => NotError(await Tools(c).ValidateBundleAsync()));
+        Add(t, "OkfBundleTools.ChangesSinceAsync(String,CancellationToken)", async c => NotError(await Tools(c).ChangesSinceAsync("2020-01-01")));
+        Add(t, "OkfBundleTools.GetComputationAsync(String,CancellationToken)", async c => Assert.Contains("SELECT", await Tools(c).GetComputationAsync("computations/revenue"), StringComparison.Ordinal));
+
         // ----- attestation: the attester is read through the provider, by key -----
-        Add(t, "OkfBundleTools.RunComputation(String,IReadOnlyDictionary`2)", c =>
-            AssertRan(c, Tools(c).RunComputation("computations/revenue", Year)));
         Add(t, "OkfBundleTools.RunComputationAsync(String,IReadOnlyDictionary`2,CancellationToken)", async c =>
             AssertRan(c, await Tools(c).RunComputationAsync("computations/revenue", Year)));
         Add(t, "AttestationOrchestrator.RunAsync(Bundle,ConceptId,IReadOnlyDictionary`2,Nullable`1,CancellationToken)", async c =>
@@ -163,6 +205,13 @@ public class NoResidualFileIoTests
         {
             var concept = c.Bundle.Concepts.Single(x => x.Id.ToString() == "computations/revenue");
             var captured = AttestationOrchestrator.Capture(c.Bundle, concept);
+            Assert.NotNull(captured.Capture);
+            AssertAttesterSourceRead(c);
+        });
+        Add(t, "AttestationOrchestrator.CaptureAsync(Bundle,Concept,Nullable`1,CancellationToken)", async c =>
+        {
+            var concept = c.Bundle.Concepts.Single(x => x.Id.ToString() == "computations/revenue");
+            var captured = await AttestationOrchestrator.CaptureAsync(c.Bundle, concept);
             Assert.NotNull(captured.Capture);
             AssertAttesterSourceRead(c);
         });

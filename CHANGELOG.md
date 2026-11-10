@@ -205,6 +205,55 @@ and this project adheres to
 
 ### Changed (breaking)
 
+- **The provider contract is asynchronous, before its first publication** (#152). The
+  provider seam of #139 was never published (0.7.0 has no `OKF4net.Providers`), so
+  `IBundleProvider` is **replaced** by its asynchronous form with no shim: `GetVersionAsync`,
+  `EnumerateAsync` (an `IAsyncEnumerable`), `ReadAsync`, `ExistsAsync`, `WriteAsync`,
+  `DeleteAsync`, each returning a `ValueTask` and taking a **required** `CancellationToken`,
+  failures delivered through the task. `BundleProviderCapabilities` gains
+  `CompletesSynchronously` (default `false`; the filesystem provider declares it), and
+  `BundleObject` is `IAsyncDisposable` too. Asynchronous at the I/O edges only:
+  `Bundle.LoadAsync`, `BundleHandle.GetCurrentAsync`/`RefreshAsync`,
+  `BundleValidator.ValidateAsync`, `Bundle.ResolveResourceKeyAsync`/`ReadResourceTextAsync`,
+  `AttestationOrchestrator.CaptureAsync`, `BundleConceptWriter.WriteConceptAsync`/
+  `AppendToConceptAtomicAsync`/`AppendLogAsync`/`RecordVerificationsAsync`,
+  `IndexGenerator.RegenerateIndexes(With)Async`; the queries on a loaded image stay
+  synchronous. The synchronous entry points that serve a filesystem path
+  (`Bundle.Load(string)`, the writer and index generator `string` overloads,
+  `BundleValidator.Validate`, `AttestationOrchestrator.Capture`) stay, as the same
+  implementation behind a bridge that **never waits**: a read still pending when it returns
+  is cancelled and the call throws `InvalidOperationException` ("provider completed
+  asynchronously; use the async overload"), and a synchronous **write** over a provider that
+  does not declare `CompletesSynchronously` is refused before any I/O starts. `Bundle.Load(IBundleProvider, …)`
+  and the blocking `BundleHandle.Current`/`Refresh()` are no longer public (internal, for
+  the code that has not become asynchronous). The asynchronous load reads concepts with at most
+  `BundleLimits.MaxConcurrentRequests` reads in flight (the synchronous one keeps degree 1, so
+  the CLI's output and goldens are unchanged) and reports the smallest failing key.
+  `CA2007` is enforced for the libraries (`ConfigureAwait(false)` everywhere).
+- **`OkfBundleTools`: `…Async` public methods, the `string` ones obsolete** (#152, decision Q3):
+  `ReadConceptAsync`, `BrowseAsync`, `GraphAsync`, `SearchAsync`, `AuditAsync`,
+  `WriteConceptAsync`, `VerifyAsync`, `AppendLogAsync`, `RegenerateIndexesAsync`,
+  `ValidateBundleAsync`, `ChangesSinceAsync`, `GetComputationAsync` (`Task<string>`). The `string`
+  methods published in 0.7.0 are `[Obsolete]` bridges, removed in the release after 0.8.0 (#224); they
+  throw on a provider that does not complete synchronously. `GetTools` is unchanged for the
+  model (same names, same schemas) and stays bound to the observation-checking wrappers, which are
+  asynchronous now; the public `…Async` methods record and require no observation. The synchronous
+  `RunComputation`, obsolete since 0.7.0, is **removed**.
+- **Two behaviours moved with the asynchronous write path** (#152): (1) the `onWriteCommitted`
+  callback of `BundleConceptWriter` (and the `OkfBundleTools` cache invalidation) now runs **after**
+  the bundle's write lock is released, so it may call back into the same bundle; a host that relied
+  on exclusion while the callback ran loses it. `RecordVerifications` completes its batch before
+  notifying, once per committed write, so a notification that throws (a cancellation, say) no longer
+  stops a batch half-way. (2) `BundleHandle` runs one shared operation per handle: N concurrent
+  `OnAccess` callers share one token comparison, and a caller that cancels stops waiting without
+  cancelling the load the others wait for. `BundleHandle.Dispose` still only ends the subscription.
+  A cancellation is honoured before a commit and between objects only: after a first commit a batch
+  (`RecordVerifications`, an index regeneration) stops and returns what landed, the rest reported as
+  `not attempted (cancelled)`.
+- **Not measured here:** the size of the `okf` Native AOT binary after the asynchronous core (design
+  R7). The machine this was built on cannot link a native binary, so the figure comes from the CI
+  AOT job. `FileMemoryStore`'s scope probe, writes and deletions still need a provider that
+  completes synchronously (its reads and listings are asynchronous).
 - **`MemoryDeleteResult` is `(IReadOnlyList<MemoryTierDeletion> Tiers,
   string? Error)`** (#139, lot D; spec §1, §9, §10): `TiersDeleted` counted
   directories removed by `Directory.Delete`; a scope is now a prefix whose
@@ -246,6 +295,8 @@ and this project adheres to
   `memory-session/`).
 
 ### Changed
+
+- **The write lock is an explicit lease, and the `onWriteCommitted` callback runs after it is released** (#152, step 1). `BundleConceptWriter`'s thread-bound `Monitor` pair (lexical gate + resolved bundle lock) became `SemaphoreSlim`s behind an internal `WriteLease`, so the lock can be held across an `await` once the writer is asynchronous. It is no longer re-entrant: code under a lease receives it instead of acquiring again. The two guarantees that mattered are kept: aliases of one directory share the lock (#86), and a contended resolved lock is waited for without the gate. Observable: the callback (`onWriteCommitted`, the `OkfBundleTools` cache invalidation) is now invoked after the lock is released, so it may call back into the same bundle; a host that relied on exclusion while the callback ran loses it. `RecordVerifications` completes its whole batch before notifying (once per committed write), so a notification that throws (a cancellation, say) no longer stops a batch half-way: the exception still propagates, with every stamp on disk.
 
 - **The path-based members are obsolete** (#139, lot D; spec §9, §10), kept
   one version with a warning (never an error, so not a break) whose message
