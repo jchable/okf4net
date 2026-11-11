@@ -57,6 +57,18 @@ public class AsyncReadersTests
     }
 
     [Fact]
+    public async Task ValidateAsync_with_a_cancelled_token_throws_even_when_the_bundle_asks_the_provider_nothing()
+    {
+        // A concept with no resource field, no index and no log: nothing in the validation
+        // asks the provider, so only an entry check can see the token.
+        var bundle = await Bundle.LoadAsync(new InMemoryBundleProvider().Add("probe.md", $"---\n{Fm}\n---\n\nbody\n"));
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await BundleValidator.ValidateAsync(bundle, null, cts.Token));
+    }
+
+    [Fact]
     public async Task CaptureAsync_reads_only_pinned_versions_like_Capture()
     {
         using var tmp = new TempDir();
