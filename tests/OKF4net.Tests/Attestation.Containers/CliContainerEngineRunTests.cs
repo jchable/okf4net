@@ -812,6 +812,99 @@ public class CliContainerEngineRunTests
     }
 
     /// <summary>
+    /// A <c>start</c> that exits non-zero may have failed before the container ever ran,
+    /// leaving it in Created state, which <c>--rm</c> never removes -- and nothing here can
+    /// tell that from the container's own non-zero exit. So a non-zero <c>start</c> is
+    /// followed by the same teardown as a cancelled one: one <c>kill</c>, then removal
+    /// rounds until <c>inspect</c> finds the name unknown twice (the create is settled, so
+    /// exactly two). The result is the one <c>start</c> gave -- its exit code, stdout and
+    /// stderr -- untouched by the teardown. A <c>start</c> that exits 0 triggers no
+    /// teardown at all: <c>--rm</c> removes a container that ran.
+    /// </summary>
+    [Theory]
+    [InlineData(7)]
+    [InlineData(0)]
+    public async Task A_start_that_exits_non_zero_is_followed_by_teardown_and_its_result_kept(int startExitCode)
+    {
+        EnsureThreadPoolHeadroom();
+        using var tmp = new TempDir();
+        var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
+        var engine = new CliContainerEngine(ExitingStartEngine(tmp, marker, startExitCode))
+        {
+            TeardownBudget = TimeSpan.FromSeconds(5),
+        };
+
+        var result = await engine.RunAsync(Spec(TimeSpan.FromSeconds(30)));
+
+        Assert.Equal(startExitCode, result.ExitCode);
+        Assert.Equal("start-out", result.Stdout.Trim());
+        Assert.Equal("start-err", result.Stderr.Trim());
+        if (startExitCode == 0)
+        {
+            Assert.Empty(Invocations(marker, "kill"));
+            Assert.Empty(Invocations(marker, "rm"));
+            Assert.Empty(Invocations(marker, "inspect"));
+            return;
+        }
+
+        var kill = Assert.Single(Invocations(marker, "kill"));
+        var name = kill.Single();
+        Assert.Matches(EngineContainerName, name);
+        Assert.NotEmpty(Invocations(marker, "rm"));
+        Assert.All(Invocations(marker, "rm"), removal => Assert.Equal(["-f", name], removal));
+        Assert.Equal(2, Invocations(marker, "inspect").Count);
+    }
+
+    /// <summary>
+    /// An "engine" whose <c>create</c> exits 0 and whose <c>start</c> prints
+    /// <c>start-out</c> on stdout and <c>start-err</c> on stderr, then exits with
+    /// <paramref name="startExitCode"/>. <c>kill</c> (exit 1), <c>rm</c> (exit 0) and
+    /// <c>inspect</c> (exit 1, "No such object") each record one line in
+    /// <paramref name="markerFile"/>, the way <see cref="DispatchingEngine"/>'s do.
+    /// </summary>
+    private static string ExitingStartEngine(TempDir tmp, string markerFile, int startExitCode)
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            return tmp.Write(
+                "engine.cmd",
+                "@echo off\r\n"
+                + "if \"%1\"==\"create\" exit /b 0\r\n"
+                + "if \"%1\"==\"kill\" goto kill\r\n"
+                + "if \"%1\"==\"rm\" goto rm\r\n"
+                + "if \"%1\"==\"inspect\" goto inspect\r\n"
+                + "echo start-out\r\n"
+                + "echo start-err 1>&2\r\n"
+                + $"exit /b {startExitCode}\r\n"
+                + ":kill\r\n"
+                + $"echo kill %2 >> \"{markerFile}\"\r\n"
+                + "exit /b 1\r\n"
+                + ":rm\r\n"
+                + $"echo %* >> \"{markerFile}\"\r\n"
+                + "exit /b 0\r\n"
+                + ":inspect\r\n"
+                + $"echo %* >> \"{markerFile}\"\r\n"
+                + "echo Error: No such object: %2 1>&2\r\n"
+                + "exit /b 1\r\n");
+        }
+
+        var path = tmp.Write(
+            "engine.sh",
+            "#!/bin/sh\n"
+            + "case \"$1\" in\n"
+            + "  create) exit 0 ;;\n"
+            + $"  kill) echo \"kill $2\" >> '{markerFile}'; exit 1 ;;\n"
+            + $"  rm) echo \"$*\" >> '{markerFile}'; exit 0 ;;\n"
+            + $"  inspect) echo \"$*\" >> '{markerFile}'; echo \"Error: No such object: $2\" >&2; exit 1 ;;\n"
+            + "esac\n"
+            + "echo start-out\n"
+            + "echo start-err >&2\n"
+            + $"exit {startExitCode}\n");
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        return path;
+    }
+
+    /// <summary>
     /// Runs <paramref name="engine"/> (whose "run" hangs) until it is cancelled by the
     /// caller's token or timed out by the spec's own deadline, and asserts the exception
     /// that tells which -- the shape the teardown must never disturb.
@@ -1018,10 +1111,13 @@ public class CliContainerEngineRunTests
         new(Encoding.UTF8.GetBytes(text));
 
     /// <summary>
-    /// An "engine" that ignores its arguments, copies <paramref name="bytes"/> verbatim
-    /// to stdout or stderr, and exits with <paramref name="exitCode"/>. The bytes live
-    /// in a file the script copies (<c>type</c>/<c>cat</c>) rather than in the script
-    /// text, so no shell quoting stands between them and the pipe.
+    /// An "engine" whose <c>start</c> copies <paramref name="bytes"/> verbatim to stdout or
+    /// stderr and exits with <paramref name="exitCode"/>. The bytes live in a file the
+    /// script copies (<c>type</c>/<c>cat</c>) rather than in the script text, so no shell
+    /// quoting stands between them and the pipe. <c>create</c> exits 0, and the teardown a
+    /// non-zero <c>start</c> triggers is answered at once as a container already gone
+    /// would be (<c>kill</c> 1, <c>rm</c> 0, <c>inspect</c> 1 with "No such object"), so
+    /// it costs two rounds rather than the whole budget.
     /// </summary>
     private static string ByteWritingEngine(TempDir tmp, byte[] bytes, bool toStderr, int exitCode)
     {
@@ -1031,10 +1127,29 @@ public class CliContainerEngineRunTests
 
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            return tmp.Write("engine.cmd", $"@echo off\r\nif \"%1\"==\"create\" exit /b 0\r\ntype \"{payload}\"{redirect}\r\nexit /b {exitCode}\r\n");
+            return tmp.Write(
+                "engine.cmd",
+                "@echo off\r\n"
+                + "if \"%1\"==\"create\" exit /b 0\r\n"
+                + "if \"%1\"==\"kill\" exit /b 1\r\n"
+                + "if \"%1\"==\"rm\" exit /b 0\r\n"
+                + "if \"%1\"==\"inspect\" goto inspect\r\n"
+                + $"type \"{payload}\"{redirect}\r\n"
+                + $"exit /b {exitCode}\r\n"
+                + ":inspect\r\n"
+                + "echo Error: No such object: %2 1>&2\r\n"
+                + "exit /b 1\r\n");
         }
 
-        var path = tmp.Write("engine.sh", $"#!/bin/sh\n[ \"$1\" = \"create\" ] && exit 0\ncat '{payload}'{redirect}\nexit {exitCode}\n");
+        var path = tmp.Write(
+            "engine.sh",
+            "#!/bin/sh\n"
+            + "[ \"$1\" = \"create\" ] && exit 0\n"
+            + "[ \"$1\" = \"kill\" ] && exit 1\n"
+            + "[ \"$1\" = \"rm\" ] && exit 0\n"
+            + "if [ \"$1\" = \"inspect\" ]; then echo \"Error: No such object: $2\" >&2; exit 1; fi\n"
+            + $"cat '{payload}'{redirect}\n"
+            + $"exit {exitCode}\n");
         File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         return path;
     }

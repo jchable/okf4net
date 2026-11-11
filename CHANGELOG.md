@@ -1096,6 +1096,14 @@ and this project adheres to
   reported as empty output in the timeout's `ContainerExecutionException`. The
   output of a refused `create` and of a run that ends on its own is still read
   to its end, as before.
+- `OKF4net.Attestation.Containers`: a `start -a -i` that exits non-zero is now
+  followed by the same teardown as a cancelled run (`kill`, then `rm -f` and
+  `inspect` until the name is unknown, within the 3 s budget). A `start` that
+  failed before the container ran left it in `Created` state, which `--rm`
+  never removes; that cannot be told apart from the container's own non-zero
+  exit, so every non-zero `start` pays the teardown (a few engine calls; with
+  the default budget, at most 3 s). The result returned — exit code, stdout,
+  stderr, and the output-ceiling and invalid-UTF-8 failures — is unchanged.
 
 ## [0.7.0] - 2026-10-14
 

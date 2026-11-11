@@ -12,7 +12,12 @@ namespace OKF4net.Attestation.Containers;
 /// shells to a Docker-CLI-compatible binary (<c>docker</c>, <c>podman</c>,
 /// or <c>nerdctl</c> — their <c>create</c>/<c>start</c> surface is compatible, so one
 /// parameterized class covers all three). A run is two commands, <c>create</c> then
-/// <c>start -a -i</c>, never <c>run</c>: see <see cref="RunAsync"/> for why.
+/// <c>start -a -i</c>, never <c>run</c>: see <see cref="RunAsync"/> for why. The created
+/// container is torn down and checked gone (<see cref="TearDownContainerAsync"/>) whenever
+/// the run does not end with <c>start</c> exiting 0: on cancellation or timeout, when
+/// <c>start</c> cannot be launched, and when it exits non-zero, since a <c>start</c> that
+/// failed before the container ran leaves it in Created state, which <c>--rm</c> never
+/// removes.
 /// <see cref="BuildRunArguments"/> is
 /// the pure argument-construction half: it never spawns a process, so it is
 /// unit-tested directly without Docker. <see cref="RunAsync"/> is the real
@@ -245,6 +250,17 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             throw await CancellationOutcomeAsync(cancellationToken, stdoutTask, stderrTask).ConfigureAwait(false);
         }
 
+        if (process.ExitCode != 0)
+        {
+            // A non-zero exit is either the container's own exit code (`--rm` then
+            // removes it) or `start` failing before the container ran at all -- and then
+            // it stays in Created state, which `--rm` never removes, because it never ran.
+            // The two cannot be told apart from here, so the container is torn down and
+            // checked gone either way, exactly as after a cancellation. Teardown never
+            // throws, and the result reported below is unchanged.
+            await TearDownContainerAsync(containerName, process, clientIsCreate: false).ConfigureAwait(false);
+        }
+
         await stdinTask.ConfigureAwait(false);
         var stdout = await stdoutTask.ConfigureAwait(false);
         var stderr = await stderrTask.ConfigureAwait(false);
@@ -463,8 +479,9 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     /// the local client driving it, best-effort, and VERIFIES that the container is
     /// gone rather than trusting any exit code to say so (#110). Never throws.
     /// <list type="number">
-    /// <item>Settling the client. When the run was cancelled during <c>start</c> (the
-    /// container exists, its <c>create</c> long done): <c>kill &lt;name&gt;</c>, once, which
+    /// <item>Settling the client. When the run was cancelled during <c>start</c>, or
+    /// <c>start</c> could not be launched or exited non-zero (the container exists, its
+    /// <c>create</c> long done): <c>kill &lt;name&gt;</c>, once, which
     /// stops a container that is running right now at once (the same SIGKILL on all three
     /// engines this class drives; its result only says the container existed), then the
     /// local client process tree is killed and waited for. When it was cancelled during
@@ -503,8 +520,10 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     /// unsettled, and one the daemon then commits after the last check is not seen. That
     /// needs a create that slow (an image pull, a daemon that has stopped answering), no
     /// longer a create racing a kill. A failure of any command here only means the container
-    /// may be left behind, never an exception: <see cref="RunAsync"/> then reports the
-    /// same <see cref="OperationCanceledException"/> or timeout failure it would have.
+    /// may be left behind, never an exception: <see cref="RunAsync"/> then reports what it
+    /// would have reported without the teardown (the caller's
+    /// <see cref="OperationCanceledException"/>, the timeout failure, or the outcome of a
+    /// <c>start</c> that exited non-zero).
     /// </summary>
     private async Task TearDownContainerAsync(string containerName, Process client, bool clientIsCreate)
     {
