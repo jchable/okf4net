@@ -89,8 +89,9 @@ public class OkfBundleToolsHandleTests
         Assert.Throws<BundleReadOnlyException>(() => tools.WriteConcept("notes/b", "type: Note\ntitle: B\ndescription: b.\n", "B.\n"));
         Assert.Throws<BundleReadOnlyException>(() => tools.AppendLog("Update", "x"));
         Assert.Throws<BundleReadOnlyException>(() => tools.RegenerateIndexes());
-        // Verify runs inside RunTool, which renders the library's refusal as its Error: text.
-        Assert.Equal("Error: the provider is read-only; the write was refused before being attempted", tools.Verify("tables/orders", "human:ada", "2026-07-22T00:00:00Z"));
+        Assert.Throws<BundleReadOnlyException>(() => tools.Verify("tables/orders", "human:ada", "2026-07-22T00:00:00Z"));
+        // Ahead of the argument checks too: a malformed call does not turn the host mistake into usage text.
+        Assert.Throws<BundleReadOnlyException>(() => tools.Verify(string.Empty, "not an actor"));
         Assert.DoesNotContain(storage.Calls, c => c.StartsWith("write ", StringComparison.Ordinal) || c.StartsWith("delete ", StringComparison.Ordinal));
     }
 
