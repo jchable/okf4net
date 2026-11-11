@@ -173,7 +173,7 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
         // profile's Timeout for the first run.
         using var create = NewClient(BuildRunArguments(spec, containerName));
         StartClient(create);
-        using var timeoutCts = spec.Timeout is { } timeout ? new CancellationTokenSource(timeout) : null;
+        using var timeoutCts = spec.Timeout is { } timeout ? new CancellationTokenSource(timeout, TimeProvider) : null;
         using var linked = timeoutCts is null
             ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
             : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
@@ -352,7 +352,8 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     /// client itself is gone by then (killed, or waited for), but a descendant it started
     /// can still hold the pipe open, and the drain only ends when the last writer closes
     /// it: unbounded, that wait would hold the run past its timeout and the teardown
-    /// budget alike.
+    /// budget alike. Wall-clock time, never <see cref="TimeProvider"/>: it bounds a real
+    /// pipe, not the run's deadline.
     /// </summary>
     internal static readonly TimeSpan TimeoutDrainBound = TimeSpan.FromSeconds(1);
 
@@ -441,6 +442,17 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     /// get a comfortable timing margin either side of the assertion.
     /// </summary>
     internal TimeSpan TeardownBudget { get; init; } = DefaultTeardownBudget;
+
+    /// <summary>
+    /// The clock <see cref="ContainerRunSpec.Timeout"/> is measured on, and nothing else:
+    /// the teardown budget, its per-command bounds and <see cref="TimeoutDrainBound"/>
+    /// stay on the wall clock. Internal and settable only so tests can make the timeout
+    /// fire at a chosen point of the run (once <c>start</c> is running, say) rather than
+    /// after a few milliseconds that a loaded machine may spend before <c>create</c> has
+    /// even exited; a real caller always gets <see cref="System.TimeProvider.System"/>. The same
+    /// kind of seam as <see cref="TeardownBudget"/>.
+    /// </summary>
+    internal TimeProvider TimeProvider { get; init; } = TimeProvider.System;
 
     /// <summary>
     /// How much of <see cref="TeardownBudget"/> must remain before another removal round
