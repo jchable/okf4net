@@ -511,8 +511,9 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     /// (observed on Docker 29.4.1), so "succeeded" cannot be told from "never existed
     /// yet". <c>inspect</c> exits non-zero for a name the engine does not know (Docker
     /// 29.4.1: exit 1, "No such object" on stderr); that, seen after the client has exited,
-    /// is the only signal taken as absence. A non-zero exit without that text (daemon down,
-    /// permission error) is unknown and restarts the count. Absence has to be seen in <see cref="AbsentRoundsRequired"/>
+    /// is the only signal taken as absence (<see cref="IsNotFound"/>: "no such object" or
+    /// "no such container"). A non-zero exit without that text (daemon down, a missing
+    /// daemon socket, permission error) is unknown and restarts the count. Absence has to be seen in <see cref="AbsentRoundsRequired"/>
     /// consecutive rounds, a <see cref="RetryDelay"/> apart -- and, only while the create
     /// is unsettled and the engine has not once confirmed the container exists
     /// (<c>kill</c> exiting 0, or <c>inspect</c> finding it), to hold for
@@ -612,8 +613,10 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             }
             else
             {
-                // Unknown: no answer, or a non-zero exit that does not say "no such"
-                // (daemon down, transport or permission error). Not evidence of absence.
+                // Unknown: no answer, or a non-zero exit that does not say "no such
+                // container" or "no such object" (daemon down, a missing socket's "no such
+                // file or directory", a transport or permission error). Not evidence of
+                // absence.
                 absentRounds = 0;
                 firstAbsent = null;
             }
@@ -692,13 +695,18 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     private readonly record struct EngineReply(int ExitCode, string Error);
 
     /// <summary>
-    /// True when an engine's error text says the name is unknown to it. Docker's
+    /// True when an engine's error text says the name is unknown to it: "no such container"
+    /// or "no such object", case-insensitively, and nothing looser. Docker's
     /// <c>inspect</c> of a missing name says "No such object" (29.4.1) or "No such
     /// container"; a daemon that is down, or a permission error, says neither, so it is
-    /// never taken as absence. Podman's and nerdctl's wording is NOT verified by this repo.
+    /// never taken as absence. A bare "no such" is not enough: a client that cannot reach
+    /// its daemon's socket says <c>dial unix /var/run/docker.sock: connect: no such file or
+    /// directory</c>, which says nothing about the container. Podman's and nerdctl's
+    /// wording is NOT verified by this repo.
     /// </summary>
     private static bool IsNotFound(string error) =>
-        error.Contains("no such", StringComparison.OrdinalIgnoreCase);
+        error.Contains("no such container", StringComparison.OrdinalIgnoreCase)
+        || error.Contains("no such object", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Runs one <c>binaryName &lt;arguments&gt;</c> (<c>kill</c>, <c>rm -f</c> or

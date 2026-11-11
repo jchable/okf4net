@@ -654,8 +654,8 @@ public class CliContainerEngineRunTests
     /// down or odd -- must neither replace the outcome the run was already going to
     /// report (the caller's <see cref="OperationCanceledException"/>, or the timeout's
     /// <see cref="ContainerExecutionException"/>) nor escape as an exception of its own;
-    /// teardown never throws. A non-zero <c>inspect</c> that says "no such" is read as
-    /// "absent" (the fake engine's default); see the test below for one that does not.
+    /// teardown never throws. A non-zero <c>inspect</c> that says "No such object" is read
+    /// as "absent" (the fake engine's default); see the test below for one that does not.
     /// </summary>
     [Theory]
     [InlineData(false)]
@@ -684,14 +684,19 @@ public class CliContainerEngineRunTests
     /// down, say -- is no evidence of absence. Teardown must keep retrying until its budget
     /// runs out: with a 3 s budget, the absence verdict (two rounds, 1.5 s apart) would end
     /// it at about 1.5 s, so a teardown that returns before 2.5 s took the failure for absence.
+    /// The second case is a client that cannot reach the daemon's socket: its "no such file
+    /// or directory" says "no such", which a match on those two words alone took for
+    /// absence; only "no such container" or "no such object" is.
     /// </summary>
-    [Fact]
-    public async Task An_inspect_failure_that_is_not_not_found_is_not_taken_as_absence()
+    [Theory]
+    [InlineData("Cannot connect to the Docker daemon")]
+    [InlineData("dial unix /var/run/docker.sock: connect: no such file or directory")]
+    public async Task An_inspect_failure_that_is_not_not_found_is_not_taken_as_absence(string inspectStderr)
     {
         EnsureThreadPoolHeadroom();
         using var tmp = new TempDir();
         var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
-        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 1, inspectExitCode: 1, inspectStderr: "Cannot connect to the Docker daemon"))
+        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 1, inspectExitCode: 1, inspectStderr: inspectStderr))
         {
             TeardownBudget = TimeSpan.FromSeconds(3),
         };

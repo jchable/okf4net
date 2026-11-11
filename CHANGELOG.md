@@ -1041,9 +1041,10 @@ and this project adheres to
   but this is a reduction, not a guarantee. Teardown now issues `kill` once,
   kills and waits for the local engine client, and only then repeats
   `rm -f <name>` followed by `inspect <name>` until `inspect` reports the name
-  unknown (a non-zero exit with "no such" on stderr; any other failure, such
-  as a daemon that is down or a permission error, is no evidence of absence
-  and is retried within the budget) in two consecutive rounds 250 ms apart —
+  unknown (a non-zero exit with "no such container" or "no such object" on
+  stderr; any other failure, such as a daemon that is down, a missing daemon
+  socket's "no such file or directory" or a permission error, is no evidence
+  of absence and is retried within the budget) in two consecutive rounds 250 ms apart —
   and, as long as the engine
   has not once confirmed the container exists, for 1.5 s in all. It does not
   take an exit code of `rm -f` as proof, because Docker (29.4.1) exits 0 for a
@@ -1062,12 +1063,13 @@ and this project adheres to
   check, or after the budget is spent, is not seen. Podman and nerdctl
   have not been run; their `rm -f` exit code for an unknown name is
   unverified, and the design assumes only that `inspect` of an unknown name
-  exits non-zero and says "no such" (case-insensitively) on stderr — Docker
+  exits non-zero and says "no such container" or "no such object"
+  (case-insensitively) on stderr — Docker
   29.4.1 does; Podman's and nerdctl's wording is unverified, and an engine
   that words it otherwise makes teardown run to the end of its budget instead
   of returning early. The engine commands' output reads share that budget
   too, so a descendant holding a pipe open cannot hold teardown past it. The
-  measurements above were taken before the "no such" rule and the live
+  measurements above were taken before that not-found rule and the live
   `docker events` check in the early-cancellation test.
 - `OKF4net.Attestation.Containers`: `CliContainerEngine` now runs a container as
   `create` followed by `start -a -i`, not as one `run` (#110). A client killed
