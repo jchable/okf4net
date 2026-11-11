@@ -331,11 +331,27 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     }
 
     /// <summary>
+    /// How long <see cref="CancellationOutcomeAsync"/> waits, after teardown, for the
+    /// output drains of the client whose wait was cancelled to reach end of stream. The
+    /// client itself is gone by then (killed, or waited for), but a descendant it started
+    /// can still hold the pipe open, and the drain only ends when the last writer closes
+    /// it: unbounded, that wait would hold the run past its timeout and the teardown
+    /// budget alike.
+    /// </summary>
+    internal static readonly TimeSpan TimeoutDrainBound = TimeSpan.FromSeconds(1);
+
+    /// <summary>
     /// The exception <see cref="RunAsync"/> throws once teardown has run for a cancelled
-    /// wait: the caller's own cancellation, or this project's timeout.
+    /// wait: the caller's own cancellation, or this project's timeout. Never waits on the
+    /// output drains for more than <see cref="TimeoutDrainBound"/>, and never throws.
     /// </summary>
     private static async Task<Exception> CancellationOutcomeAsync(CancellationToken callerToken, Task<BoundedRead> stdout, Task<BoundedRead> stderr)
     {
+        // Whatever happens below, a drain left running must not end as an unobserved
+        // task exception (its stream is disposed with the client once RunAsync returns).
+        ObserveFault(stdout);
+        ObserveFault(stderr);
+
         if (callerToken.IsCancellationRequested)
         {
             // The CALLER asked to stop -- propagate a real
@@ -347,12 +363,38 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
         }
 
         // Otherwise this project's OWN timeout fired -- a genuine stage
-        // failure, reported the same way a non-zero exit code is.
+        // failure, reported the same way a non-zero exit code is. Its output is
+        // diagnostics only, so it is taken as far as it got: a drain that finished
+        // within the bound keeps its text, one that did not (a descendant still holds
+        // the pipe) or that failed gives "".
+        try
+        {
+            await Task.WhenAll(stdout, stderr).WaitAsync(TimeoutDrainBound).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+        }
+
         return new ContainerExecutionException(
             "container run exceeded its timeout",
-            await SafeAwaitAsync(stdout).ConfigureAwait(false),
-            await SafeAwaitAsync(stderr).ConfigureAwait(false));
+            TextIfDrained(stdout),
+            TextIfDrained(stderr));
     }
+
+    /// <summary>The text of a drain that has completed successfully, otherwise <c>""</c>.</summary>
+    private static string TextIfDrained(Task<BoundedRead> drain) =>
+        drain.IsCompletedSuccessfully ? drain.Result.Text : "";
+
+    /// <summary>
+    /// Observes <paramref name="task"/>'s eventual fault, so a task nothing awaits any more
+    /// never surfaces as an unobserved task exception.
+    /// </summary>
+    private static void ObserveFault(Task task) =>
+        _ = task.ContinueWith(
+            static t => _ = t.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
 
     /// <summary>
     /// The whole teardown budget for <see cref="TearDownContainerAsync"/>: the stop

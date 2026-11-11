@@ -740,6 +740,49 @@ public class CliContainerEngineRunTests
         Assert.DoesNotContain("create-done", File.ReadAllLines(marker).Select(static line => line.Trim()));
     }
 
+    /// <summary>How long the descendant <see cref="A_descendant_holding_the_output_pipes_does_not_hold_the_timed_out_run"/>'s <c>create</c> leaves behind keeps running.</summary>
+    private const int PipeHoldingDescendantSeconds = 30;
+
+    /// <summary>
+    /// Once the run has timed out and teardown is done, the timeout's exception carries
+    /// the output of the client whose wait was cancelled, and the first version awaited
+    /// those drains with no bound. A drain only ends when the last writer of its pipe
+    /// closes it, and a client's descendant inherits the pipe: here the <c>create</c>
+    /// leaves a background process behind holding both pipes for
+    /// <see cref="PipeHoldingDescendantSeconds"/>, then exits 0 after about a second. The
+    /// 300 ms timeout lands during that second, so teardown waits for the <c>create</c>
+    /// (it exits on its own) and removes the container; what is left is the drain.
+    /// Unbounded, the run returned when the descendant ended, ~30 s; bounded, teardown
+    /// (~1.5-2 s) plus the drain bound (1 s). The 12 s bound sits between the two with a
+    /// wide margin each side.
+    /// </summary>
+    [Fact]
+    public async Task A_descendant_holding_the_output_pipes_does_not_hold_the_timed_out_run()
+    {
+        EnsureThreadPoolHeadroom();
+        using var tmp = new TempDir();
+        var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
+        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 0, inspectExitCode: 1, createSeconds: 1, createDescendantSeconds: PipeHoldingDescendantSeconds))
+        {
+            TeardownBudget = TimeSpan.FromSeconds(5),
+        };
+
+        var clock = Stopwatch.StartNew();
+        var ex = await Assert.ThrowsAsync<ContainerExecutionException>(
+            async () => await engine.RunAsync(Spec(TimeSpan.FromMilliseconds(300))));
+        clock.Stop();
+
+        Assert.Contains("exceeded its timeout", ex.Message);
+        // The timeout landed during `create`, which was waited for, not killed: the drain
+        // is the only thing still held open when teardown ends.
+        Assert.Contains("create-done", File.ReadAllLines(marker).Select(static line => line.Trim()));
+        Assert.Empty(Invocations(marker, "kill"));
+        var bound = TimeSpan.FromSeconds(12);
+        Assert.True(
+            clock.Elapsed < bound,
+            $"the timed-out run took {clock.Elapsed} against a bound of {bound}: it waited for a descendant holding the output pipes ({PipeHoldingDescendantSeconds} s)");
+    }
+
     /// <summary>
     /// An engine that refuses the <c>create</c> (image not found, a bad flag, a daemon that
     /// is down) leaves no container: the run reports the engine's exit code and message as
@@ -894,9 +937,11 @@ public class CliContainerEngineRunTests
     /// actually ran -- and then behaves per <paramref name="killMode"/>. <c>create</c>
     /// takes <paramref name="createSeconds"/> (none by default) and exits 0, writing a
     /// <c>create-begin</c> and a <c>create-done</c> line around the wait so a test can
-    /// order it against the teardown commands.
+    /// order it against the teardown commands. With <paramref name="createDescendantSeconds"/>,
+    /// <c>create</c> first starts a background process that lives that long and inherits
+    /// its stdout and stderr, so both pipes stay open after the <c>create</c> client exits.
     /// </summary>
-    private static string DispatchingEngine(TempDir tmp, string markerFile, int runHangSeconds, KillMode killMode, int rmExitCode = 1, int inspectExitCode = 1, string inspectStderr = "Error: No such object", int createSeconds = 0)
+    private static string DispatchingEngine(TempDir tmp, string markerFile, int runHangSeconds, KillMode killMode, int rmExitCode = 1, int inspectExitCode = 1, string inspectStderr = "Error: No such object", int createSeconds = 0, int createDescendantSeconds = 0)
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
@@ -918,6 +963,9 @@ public class CliContainerEngineRunTests
                 + "exit /b 0\r\n"
                 + ":create\r\n"
                 + $"echo create-begin >> \"{markerFile}\"\r\n"
+                // No redirection: the background ping inherits the script's stdout and
+                // stderr, i.e. the create client's pipes.
+                + (createDescendantSeconds > 0 ? $"start \"\" /b ping -n {createDescendantSeconds + 1} 127.0.0.1\r\n" : "")
                 + (createSeconds > 0 ? $"ping -n {createSeconds + 1} 127.0.0.1 >nul\r\n" : "")
                 + $"echo create-done >> \"{markerFile}\"\r\n"
                 + "exit /b 0\r\n"
@@ -945,6 +993,7 @@ public class CliContainerEngineRunTests
             "#!/bin/sh\n"
             + "if [ \"$1\" = \"create\" ]; then\n"
             + $"  echo create-begin >> '{markerFile}'\n"
+            + (createDescendantSeconds > 0 ? $"  sleep {createDescendantSeconds} &\n" : "")
             + (createSeconds > 0 ? $"  sleep {createSeconds}\n" : "")
             + $"  echo create-done >> '{markerFile}'\n"
             + "  exit 0\n"

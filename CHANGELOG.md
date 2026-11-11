@@ -1088,6 +1088,14 @@ and this project adheres to
   50-run early-cancellation sweeps left no container behind. Podman and nerdctl
   have not been run; that their `create`/`start -a -i` behave alike is assumed.
   The leak figures in the previous entry describe the old single-`run` client.
+- `OKF4net.Attestation.Containers`: a timed-out run no longer waits without
+  bound for the output of the client it cancelled. A descendant of that client
+  (of `create`, say) that still held its stdout or stderr kept the run going
+  past both its timeout and the teardown budget, until the descendant exited.
+  Those reads now get 1 s after teardown; one that has not finished by then is
+  reported as empty output in the timeout's `ContainerExecutionException`. The
+  output of a refused `create` and of a run that ends on its own is still read
+  to its end, as before.
 
 ## [0.7.0] - 2026-10-14
 
