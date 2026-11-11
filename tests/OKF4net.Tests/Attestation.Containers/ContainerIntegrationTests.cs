@@ -1090,13 +1090,13 @@ public class ContainerIntegrationTests
         return EngineContainers().Length == 0;
     }
 
-    private static string RunDocker(string arguments)
-    {
-        using var p = Process.Start(new ProcessStartInfo("docker", arguments) { RedirectStandardOutput = true, RedirectStandardError = true })!;
-        var output = p.StandardOutput.ReadToEnd();
-        p.WaitForExit(10_000);
-        return output.Trim();
-    }
+    /// <summary>
+    /// Runs docker and returns its trimmed stdout, or <c>""</c> when it does not finish
+    /// within 10 s. Best-effort: it ignores the exit code, so it is only for cleanup and
+    /// diagnostics, never for a check (see <see cref="DockerOrThrow"/>).
+    /// </summary>
+    private static string RunDocker(string arguments) =>
+        RunDockerWithin(arguments, TimeSpan.FromSeconds(10))?.Output.Trim() ?? "";
 
     /// <summary>
     /// Runs docker for a listing or a pull and returns its trimmed stdout, but THROWS when it
@@ -1106,21 +1106,85 @@ public class ContainerIntegrationTests
     /// </summary>
     private static string DockerOrThrow(string arguments, int timeoutMs = 10_000)
     {
-        using var p = Process.Start(new ProcessStartInfo("docker", arguments) { RedirectStandardOutput = true, RedirectStandardError = true })!;
+        var result = RunDockerWithin(arguments, TimeSpan.FromMilliseconds(timeoutMs))
+            ?? throw new InvalidOperationException($"docker {arguments} did not finish within {timeoutMs} ms");
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"docker {arguments} exited {result.ExitCode}: {result.Error.Trim()}");
+        }
+
+        return result.Output.Trim();
+    }
+
+    /// <summary>What one docker command exited with and wrote.</summary>
+    private readonly record struct DockerResult(int ExitCode, string Output, string Error);
+
+    /// <summary>
+    /// Runs <c>docker <paramref name="arguments"/></c>, writing <paramref name="stdin"/> to it
+    /// (then closing it) when given, and returns its exit code and full output -- or
+    /// <see langword="null"/>, after killing its process tree, when it has not exited and
+    /// finished writing both streams within <paramref name="timeout"/>.
+    /// <para>
+    /// One deadline covers the exit and both reads, and both reads start before anything is
+    /// waited for. The helpers this replaced read stdout to its end synchronously BEFORE
+    /// their timed <c>WaitForExit</c>, so a docker that hung with its pipe open hung the
+    /// test forever and the timeout never ran.
+    /// </para>
+    /// </summary>
+    private static DockerResult? RunDockerWithin(string arguments, TimeSpan timeout, string? stdin = null)
+    {
+        using var p = Process.Start(new ProcessStartInfo("docker", arguments)
+        {
+            RedirectStandardInput = stdin is not null,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        })!;
+        var output = p.StandardOutput.ReadToEndAsync();
         var error = p.StandardError.ReadToEndAsync();
-        var output = p.StandardOutput.ReadToEnd();
-        if (!p.WaitForExit(timeoutMs))
+        var write = stdin is null ? Task.CompletedTask : WriteAndCloseAsync(p.StandardInput, stdin);
+        using var deadline = new CancellationTokenSource(timeout);
+        try
         {
-            p.Kill(entireProcessTree: true);
-            throw new InvalidOperationException($"docker {arguments} did not finish within {timeoutMs} ms");
+            Task.WhenAll(p.WaitForExitAsync(deadline.Token), output, error, write)
+                .WaitAsync(deadline.Token)
+                .GetAwaiter()
+                .GetResult();
+        }
+        catch (OperationCanceledException)
+        {
+            try
+            {
+                p.Kill(entireProcessTree: true);
+            }
+            catch (Exception)
+            {
+            }
+
+            // The reads are abandoned; their eventual fault (the pipe is disposed with the
+            // process) must not surface as an unobserved task exception.
+            _ = output.ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+            _ = error.ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+            return null;
         }
 
-        if (p.ExitCode != 0)
-        {
-            throw new InvalidOperationException($"docker {arguments} exited {p.ExitCode}: {error.Result.Trim()}");
-        }
+        return new DockerResult(p.ExitCode, output.Result, error.Result);
+    }
 
-        return output.Trim();
+    /// <summary>
+    /// Writes <paramref name="text"/> to a child's stdin and closes it. A child that exits
+    /// without reading it all breaks the pipe; that is the child's failure to report
+    /// through its exit code, not an exception of this helper's.
+    /// </summary>
+    private static async Task WriteAndCloseAsync(StreamWriter stdin, string text)
+    {
+        try
+        {
+            await stdin.WriteAsync(text);
+            stdin.Close();
+        }
+        catch (IOException)
+        {
+        }
     }
 
     /// <summary>
@@ -1223,17 +1287,9 @@ public class ContainerIntegrationTests
 
     private static void BuildImage(string tag, string dockerfile)
     {
-        using var p = Process.Start(new ProcessStartInfo("docker", $"build --quiet -t {tag} -")
-        {
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        })!;
-        p.StandardInput.Write(dockerfile);
-        p.StandardInput.Close();
-        var stderr = p.StandardError.ReadToEndAsync();
-        p.StandardOutput.ReadToEnd();
-        p.WaitForExit(300_000);
-        Assert.True(p.ExitCode == 0, $"docker build failed: {stderr.Result}");
+        var budget = TimeSpan.FromMinutes(5);
+        var result = RunDockerWithin($"build --quiet -t {tag} -", budget, stdin: dockerfile)
+            ?? throw new InvalidOperationException($"docker build of {tag} did not finish within {budget}");
+        Assert.True(result.ExitCode == 0, $"docker build failed: {result.Error}");
     }
 }
