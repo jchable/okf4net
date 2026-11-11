@@ -701,12 +701,14 @@ public class CliContainerEngineRunTests
             TeardownBudget = TimeSpan.FromSeconds(3),
         };
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await engine.RunAsync(Spec(TimeSpan.FromSeconds(60)), cts.Token));
-        stopwatch.Stop();
+        // Cancelled once `start` runs, never on a wall-clock delay: a cancellation that lands
+        // during `create` spends two thirds of the budget waiting for it, which leaves too
+        // little for the four rounds asserted below (the flake this test had).
+        var stopwatch = Stopwatch.StartNew();
+        var (outcome, returnedAt) = await EndRunOnceStartedAsync(engine, marker, null, stopwatch);
 
-        Assert.True(stopwatch.Elapsed >= TimeSpan.FromSeconds(2.5), $"teardown returned after {stopwatch.Elapsed.TotalSeconds:F1} s with a 3 s budget: an inspect the daemon could not answer was taken as absence");
+        Assert.IsAssignableFrom<OperationCanceledException>(outcome);
+        Assert.True(returnedAt >= TimeSpan.FromSeconds(2.5), $"teardown returned after {returnedAt.TotalSeconds:F1} s with a 3 s budget: an inspect the daemon could not answer was taken as absence");
         Assert.True(Invocations(marker, "inspect").Count >= 4);
     }
 
