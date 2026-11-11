@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Text;
 using OKF4net.Providers;
 
 namespace OKF4net.Catalog;
@@ -14,11 +16,11 @@ namespace OKF4net.Catalog;
 /// path (a boundary, a link refusal) still run, on the whole path from its own root.
 /// </summary>
 /// <remarks>
-/// <para><see cref="IBundleProvider.GetVersionAsync"/> is the inner provider's token for its whole key space: a
-/// change anywhere in it changes the view's token, so the token can change when the scope did
-/// not, never the reverse. A key whose full form is no valid key of the inner provider (over
-/// <see cref="BundleKey.MaxUtf8Bytes"/>) holds nothing there: it is read as absent, and a write
-/// to it is refused as <see cref="BundleWriteConflictReason.NameUnavailable"/>.</para>
+/// <para><see cref="GetVersionAsync"/> is a token for the view alone, built from its own listing
+/// and objects, never a walk of the inner provider's whole key space. A key whose full form is
+/// no valid key of the inner provider (over <see cref="BundleKey.MaxUtf8Bytes"/>) holds nothing
+/// there: it is not listed, it is read as absent, and a write to it is refused as
+/// <see cref="BundleWriteConflictReason.NameUnavailable"/>.</para>
 /// </remarks>
 internal sealed class PrefixedBundleProvider : IBundleProvider, IProviderScope
 {
@@ -49,8 +51,64 @@ internal sealed class PrefixedBundleProvider : IBundleProvider, IProviderScope
     /// <summary>The inner provider's scope, when it has one.</summary>
     IDisposable IProviderScope.BeginScope() => ProviderScopes.Begin(_inner) ?? ProviderScopes.None;
 
-    /// <inheritdoc/>
-    public ValueTask<BundleVersion> GetVersionAsync(BundleLimits limits, CancellationToken ct) => _inner.GetVersionAsync(limits, ct);
+    /// <summary>
+    /// A token for the view alone, so that loading one scope never walks the rest of the inner
+    /// provider: a directory of another scope that cannot be listed, or that breaks a bound, does
+    /// not make this one unavailable, and a read of one scope does not cost a walk of every
+    /// scope. It is built from the view's listing (under the core's own bound on entries) with
+    /// each object's length and version. A provider that cannot give a version for free in its
+    /// listing (the filesystem) has each object opened for it, so the token changes whenever an
+    /// object of the view does, a same-length edit included, at the price of one read per object;
+    /// a memory scope is small. An object that cannot be read for its version (gone since the
+    /// listing, too large, refused) enters the token as that failure's type, and the load that
+    /// follows decides what it means.
+    /// </summary>
+    public async ValueTask<BundleVersion> GetVersionAsync(BundleLimits limits, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(limits);
+        var entries = new List<string>();
+        var count = 0;
+        await foreach (var listing in EnumerateAsync(null, limits, ct).WithCancellation(ct).ConfigureAwait(false))
+        {
+            if (++count > limits.MaxEntries)
+            {
+                throw new BundleLimitExceededException(BundleBound.Entries, limits.MaxEntries);
+            }
+
+            var version = await VersionOfAsync(listing, ct).ConfigureAwait(false);
+            entries.Add($"{listing.RawName}\0{listing.Length}\0{version}");
+        }
+
+        entries.Sort(StringComparer.Ordinal);
+        return new BundleVersion(Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\n', entries)))));
+    }
+
+    /// <summary>The version of one listed object of the view: the listing's when it has one, else read from the inner provider.</summary>
+    private async ValueTask<string> VersionOfAsync(BundleListing listing, CancellationToken ct)
+    {
+        if (listing.Version is { } listed)
+        {
+            return listed.Token;
+        }
+
+        if (!BundleKey.TryParse(listing.RawName, out var key, out _) || Full(key) is not { } full)
+        {
+            return "!key";
+        }
+
+        try
+        {
+            var read = await _inner.ReadAsync(full, null, ct).ConfigureAwait(false);
+            await using (read.ConfigureAwait(false))
+            {
+                return read.Version.Token;
+            }
+        }
+        catch (Exception e) when (e is BundleObjectNotFoundException or BundleObjectTooLargeException or BundleAccessRefusedException or IOException or UnauthorizedAccessException)
+        {
+            return "!" + e.GetType().Name;
+        }
+    }
 
     /// <inheritdoc/>
     public IAsyncEnumerable<BundleListing> EnumerateAsync(BundleKey? prefix, BundleLimits limits, CancellationToken ct)
@@ -114,10 +172,22 @@ internal sealed class PrefixedBundleProvider : IBundleProvider, IProviderScope
         await foreach (var listing in listings.WithCancellation(ct).ConfigureAwait(false))
         {
             // An object under the prefix key itself, or a name a buggy provider listed outside it, is not in the view.
-            if (listing.RawName.Length > _strip.Length && listing.RawName.StartsWith(_strip, StringComparison.Ordinal))
+            if (!(listing.RawName.Length > _strip.Length && listing.RawName.StartsWith(_strip, StringComparison.Ordinal)))
             {
-                yield return listing with { RawName = listing.RawName[_strip.Length..] };
+                continue;
             }
+
+            // Nor is a name too long to be a key of the inner provider: stripped of the prefix it
+            // can pass for a valid key of the view, which the load would then try to read and find
+            // nothing under (Full refuses it), failing the whole scope. The view holds nothing
+            // there, as for a read or a write (see the remarks). The memory store's deletion lists
+            // the inner provider itself, so it still reports such a name.
+            if (Encoding.UTF8.GetByteCount(listing.RawName) > BundleKey.MaxUtf8Bytes)
+            {
+                continue;
+            }
+
+            yield return listing with { RawName = listing.RawName[_strip.Length..] };
         }
     }
 }
