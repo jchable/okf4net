@@ -3,6 +3,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
+using OKF4net.Providers;
 using Xunit.Abstractions;
 
 namespace OKF4net.Tests;
@@ -160,6 +161,21 @@ public class BundleLoadPerformanceTests
         var diagnostics = BundleValidator.Validate(bundle).Diagnostics;
         Assert.All(diagnostics, d => Assert.Equal((Severity.Info, DiagnosticCode.BrokenLink), (d.Severity, d.Code)));
         Assert.Equal(expected.Broken.Count, diagnostics.Count);
+
+        // ---- What the load asks the file system, counted, never timed -------
+        //
+        // The cost of a load on the default provider is the number of calls it makes to the OS,
+        // so it is pinned by counting them, on a provider of its own (outside the timed region):
+        // each directory is listed once, each file is examined once (link check, type, length and
+        // last-write time) and each directory once per walk. A regression to a per-file question
+        // (the load then makes thousands of calls more) fails here on any machine, where a timing
+        // bound would not.
+        var counted = new FileSystemBundleProvider(tmp.Path);
+        Bundle.Load(counted);
+        var directories = Domains.Length * (SectionsPerDomain + 1); // each domain and each of its sections
+        var files = GeneratedConcepts + 2;                          // the concepts, overview.md and index.md
+        Assert.Equal(directories + 1, counted.DirectoryListings);    // plus the root
+        Assert.Equal(files + directories + directories, counted.EntryExaminations);
 
         // ---- The one timing assertion: a pathology tripwire, not a target --
 

@@ -75,7 +75,7 @@ internal static class ReparsePoints
     /// parent denying listing) is still traversed by the OS on the write that
     /// follows. Guards use <see cref="IsReparsePointOrUninspectable"/>.
     /// </remarks>
-    internal static bool IsReparsePoint(string path) => Inspect(path) == EntryState.ReparsePoint;
+    internal static bool IsReparsePoint(string path) => Inspect(path, out _) == EntryState.ReparsePoint;
 
     /// <summary>
     /// <c>true</c> if <paramref name="path"/> is itself a reparse point, OR
@@ -131,36 +131,84 @@ internal static class ReparsePoints
     ///
     /// Walks keep <see cref="IsReparsePoint"/> -- see its remarks for why.
     /// </remarks>
-    internal static bool IsReparsePointOrUninspectable(string path) => Inspect(path) is EntryState.ReparsePoint or EntryState.Uninspectable;
+    internal static bool IsReparsePointOrUninspectable(string path) => Inspect(path, out _) is EntryState.ReparsePoint or EntryState.Uninspectable;
+
+    /// <summary>
+    /// <see cref="IsReparsePoint"/> -- the LENIENT predicate, for a
+    /// walk -- that also hands back what the same single look established
+    /// about the entry's type, so the caller need not ask the OS again:
+    /// <paramref name="isDirectory"/> is <see langword="true"/> for a plain
+    /// directory, <see langword="false"/> for a plain entry that is not a
+    /// directory, and <see langword="null"/> whenever the look did not find a
+    /// plain entry (a link, an absent entry, an uninspectable one) -- the
+    /// caller then asks as it did before
+    /// (<see cref="Directory.Exists(string)"/>, <see cref="File.Exists(string)"/>).
+    /// </summary>
+    internal static bool IsReparsePointWithType(string path, out bool? isDirectory)
+    {
+        var state = Inspect(path, out var attributes);
+        isDirectory = state == EntryState.Plain ? (attributes & FileAttributes.Directory) != 0 : null;
+        return state == EntryState.ReparsePoint;
+    }
+
+    /// <summary>
+    /// <see cref="IsReparsePointOrUninspectable"/> -- the STRICT
+    /// predicate, for a guard -- that also hands back the entry's type as
+    /// <see cref="IsReparsePointWithType"/> does. The answer is the
+    /// one-argument overload's, from the same single look.
+    /// </summary>
+    internal static bool IsReparsePointOrUninspectableWithType(string path, out bool? isDirectory)
+    {
+        var state = Inspect(path, out var attributes);
+        isDirectory = state == EntryState.Plain ? (attributes & FileAttributes.Directory) != 0 : null;
+        return state is EntryState.ReparsePoint or EntryState.Uninspectable;
+    }
 
     /// <summary>
     /// Looks at <paramref name="path"/> once, without following it, and
     /// classifies what it found. Never throws for an I/O or access failure --
     /// it classifies it -- so the lenient and strict predicates cannot
     /// disagree about anything except <see cref="EntryState.Uninspectable"/>.
+    /// <paramref name="attributes"/> is the entry's own attributes when the
+    /// answer is <see cref="EntryState.Plain"/>, and unspecified otherwise.
     /// </summary>
-    private static EntryState Inspect(string path)
+    private static EntryState Inspect(string path, out FileAttributes attributes)
     {
+        attributes = default;
         try
         {
-            // Fast path: on Windows a symlink/junction/mount point sets the
-            // ReparsePoint attribute, and File.GetAttributes reports the entry
-            // itself (Win32 GetFileAttributes semantics).
-            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            // On Windows a symlink/junction/mount point sets the ReparsePoint
+            // attribute, and File.GetAttributes reports the entry itself
+            // (Win32 GetFileAttributes semantics).
+            var own = File.GetAttributes(path);
+            if ((own & FileAttributes.ReparsePoint) != 0)
             {
                 return EntryState.ReparsePoint;
             }
 
-            // lstat-correct cross-platform fallback. On Unix, File.GetAttributes
-            // resolves THROUGH a symlink (stat, not lstat), so a symlink to a
-            // directory reports as a plain Directory with no ReparsePoint flag --
-            // which would let a symlinked subdirectory be walked/indexed as if
-            // it were a real directory. FileSystemInfo.LinkTarget reads the
-            // entry itself and is non-null exactly when the entry is a link,
-            // on every platform.
-            return new DirectoryInfo(path).LinkTarget is not null || new FileInfo(path).LinkTarget is not null
-                ? EntryState.ReparsePoint
-                : EntryState.Plain;
+            // On Windows that attribute is the whole answer: an entry is a
+            // reparse point exactly when it carries it, and LinkTarget itself
+            // can only read a link target off an entry that does. Asking twice
+            // more (one handle opened per LinkTarget) for an entry whose
+            // attributes were just read cost two of the three OS calls of
+            // every inspection, on every entry of every walk and every read.
+            if (!OperatingSystem.IsWindows())
+            {
+                // lstat-correct fallback. On Unix, File.GetAttributes resolves
+                // THROUGH a symlink (stat, not lstat), so a symlink to a
+                // directory can report as a plain Directory with no
+                // ReparsePoint flag -- which would let a symlinked
+                // subdirectory be walked/indexed as if it were a real
+                // directory. FileSystemInfo.LinkTarget reads the entry itself
+                // and is non-null exactly when the entry is a link.
+                if (new DirectoryInfo(path).LinkTarget is not null || new FileInfo(path).LinkTarget is not null)
+                {
+                    return EntryState.ReparsePoint;
+                }
+            }
+
+            attributes = own;
+            return EntryState.Plain;
         }
         catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException || IsAbsentVolumeOrShare(e))
         {
@@ -520,7 +568,7 @@ internal static class ReparsePoints
 
         while (true)
         {
-            var state = Inspect(current);
+            var state = Inspect(current, out _);
             if (state == EntryState.Uninspectable)
             {
                 return false;

@@ -17,7 +17,8 @@ namespace OKF4net.Providers;
 /// deliberately weak and never used for pinning. A key is matched against the stored names
 /// exactly (ordinal, segment by segment) on every OS and every volume, case-insensitive or
 /// not (spec §8). Within one load or one validation, each
-/// directory's entry names are listed once for sequential lookups and reused (<c>IProviderScope.BeginScope</c>);
+/// directory's entry names are listed once for sequential lookups and reused, and each file a
+/// walk examined (link or not, length, last-write time) is examined once (<c>IProviderScope.BeginScope</c>);
 /// nothing is kept past it.
 /// </summary>
 public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
@@ -36,6 +37,9 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
 
     /// <summary>Test hook: every directory listing this provider asked the OS for.</summary>
     private int _directoryListings;
+
+    /// <summary>Test hook: every entry a walk of this provider asked the OS about, by its path.</summary>
+    private int _entryExaminations;
 
     /// <summary>
     /// Creates a provider over <paramref name="root"/>. <paramref name="confinementBoundary"/>
@@ -80,6 +84,9 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// <summary>Test hook: how many directory listings this provider has asked the OS for so far (walks and exact-case lookups alike).</summary>
     internal int DirectoryListings => Volatile.Read(ref _directoryListings);
 
+    /// <summary>Test hook: how many entries the walks of this provider have examined by their path so far (a link check, a type, and for a file its length and last-write time); a file a walk of the same scope already examined is not examined again.</summary>
+    internal int EntryExaminations => Volatile.Read(ref _entryExaminations);
+
     /// <summary>
     /// Test hook: called with a directory's full path after the walk has examined it as an entry
     /// of its parent and before it enters it, so a test can stand in for another process acting
@@ -95,12 +102,18 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// each list it) and its entry names are reused by the scope's later calls, instead of
     /// listing that directory again for every key under it. <see cref="Bundle.Load(IBundleProvider, BundleLoadOptions?)"/>
     /// and <see cref="BundleValidator.Validate"/> each open one around their own work.
-    /// <para><b>What is memoised.</b> Only the names a directory listing returned; a listing
-    /// that fails is not kept, so the next lookup tries again. Every guard still runs at access time, inside the
+    /// <para><b>What is memoised.</b> The names a directory listing returned (a listing
+    /// that fails is not kept, so the next lookup tries again) and, once a walk of the scope has
+    /// examined a directory's entries, what it read of each entry that was not a directory:
+    /// that it is a link the walk skips, or a file with its length and last-write time, or
+    /// neither. A later walk of the same scope (<see cref="GetVersionAsync"/> after
+    /// <see cref="EnumerateAsync"/>, in a load) reuses that instead of asking the OS about each
+    /// file again; it examines again every entry that was a directory. A read never uses what a
+    /// walk examined. Every guard still runs at access time, inside the
     /// scope as outside it: <see cref="CheckBoundary"/> on every call, the STRICT inspection of
     /// each traversed directory before its names are used, the leaf inspection
     /// (<see cref="GuardResolved"/>), the walk's STRICT guard on every directory and its
-    /// per-entry reparse-point skip, and the final <c>File.Exists</c>/open.</para>
+    /// reparse-point skip of a directory entry, and the final existence check or open.</para>
     /// <para><b>Lifetime.</b> The memo belongs to the flow that opened the scope (an
     /// <see cref="AsyncLocal{T}"/> on this instance), so a concurrent call on another thread, or
     /// any call made after the scope ended, lists the directory itself; a flow forked inside the
@@ -118,7 +131,12 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// case-only rename made by another process during a load or a validation can make a later
     /// access of the same scope open the renamed entry under its former name on a case-folding
     /// volume, and a file created or renamed by another process during the scope may not be seen
-    /// until the scope ends (a deletion is seen, through the final existence check). The
+    /// until the scope ends (a deletion is seen, through the final existence check). Likewise
+    /// what a walk read of a file is established when a walk of the scope first examines it: a
+    /// file another process rewrites in place, or replaces by a link, during the scope keeps
+    /// its first length and last-write time in the scope's later listings and bundle tokens
+    /// (nothing is then read from the link or its target), where a write made through this
+    /// provider on the scope's flow drops what was kept of its directory. The
     /// STRICT guards still inspect that entry, and each directory above it, at access time
     /// exactly as without a scope, so the memo lets no access reach anything — outside the root,
     /// or through a reparse point — that an unmemoised access would refuse. For the name
@@ -168,21 +186,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
                 return;
             }
 
-            long length;
-            long mtime;
-            try
-            {
-                var info = new FileInfo(entry.FullPath);
-                length = info.Length;
-                mtime = info.LastWriteTimeUtc.Ticks;
-            }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-            {
-                length = -1;
-                mtime = -1;
-            }
-
-            sb.Append(entry.RawName).Append('\0').Append(length).Append('\0').Append(mtime).Append('\n');
+            // -1 and -1 for a file whose length could not be read (Examine).
+            sb.Append(entry.RawName).Append('\0').Append(entry.Length).Append('\0').Append(entry.ModifiedTicks).Append('\n');
         }, isStart: true);
 
         return new BundleVersion(Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString()))));
@@ -223,16 +228,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
                 return;
             }
 
-            long? length;
-            try
-            {
-                length = new FileInfo(entry.FullPath).Length;
-            }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-            {
-                length = null;
-            }
-
+            long? length = entry.Length < 0 ? null : entry.Length; // unknown when it could not be read (Examine)
             var raw = prefix is null ? entry.RawName : prefix + "/" + entry.RawName;
             result.Add(new BundleListing(raw, length, null));
         }, isStart: true);
@@ -276,8 +272,9 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
         {
             CheckBoundary();
             var path = ResolveExact(key) ?? throw new BundleObjectNotFoundException(key);
-            GuardResolved(key, path);
-            if (!File.Exists(path) && Directory.Exists(path))
+            // The leaf's own inspection says whether it is a directory; only when it did not find
+            // a plain entry (it vanished since its name was matched) is the OS asked, as before.
+            if (InspectResolved(key, path) ?? (!File.Exists(path) && Directory.Exists(path)))
             {
                 throw new BundleObjectNotFoundException(key); // a directory is no object
             }
@@ -372,8 +369,9 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
             return false;
         }
 
-        GuardResolved(key, path);
-        return File.Exists(path);
+        // A plain entry that is not a directory is a file, and the leaf's inspection has just
+        // read that. An entry it did not find plain (gone since its name was matched) is asked.
+        return InspectResolved(key, path) is { } isDirectory ? !isDirectory : File.Exists(path);
     }
 
     /// <inheritdoc/>
@@ -1411,13 +1409,26 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// <see cref="GuardStrict"/> inspects — the leaf and every ancestor up to the root — and,
     /// like it, never inspect the root itself.
     /// </summary>
-    private void GuardResolved(BundleKey key, string path)
+    private void GuardResolved(BundleKey key, string path) => InspectResolved(key, path);
+
+    /// <summary>
+    /// <see cref="GuardResolved"/>, handing back what its one inspection of the leaf read about
+    /// the entry's type: <see langword="true"/> for a plain directory, <see langword="false"/>
+    /// for a plain entry that is not one, <see langword="null"/> when the inspection did not find
+    /// a plain entry (absent; or the root, which is not inspected) — the caller then asks the OS
+    /// as it would have. Refuses exactly as <see cref="GuardResolved"/> does: it is the same
+    /// STRICT predicate over the same single look.
+    /// </summary>
+    private bool? InspectResolved(BundleKey key, string path)
     {
+        bool? isDirectory = null;
         if (!ReparsePoints.IsWithin(_fullRoot, path, PathComparison)
-            || (!string.Equals(path, _fullRoot, PathComparison) && ReparsePoints.IsReparsePointOrUninspectable(path)))
+            || (!string.Equals(path, _fullRoot, PathComparison) && ReparsePoints.IsReparsePointOrUninspectableWithType(path, out isDirectory)))
         {
             throw new BundleAccessRefusedException(key, "it resolves outside the bundle root, or through a reparse point or an entry that could not be inspected");
         }
+
+        return isDirectory;
     }
 
     /// <summary>STRICT: the path must be under the root and neither it nor any directory between the root and it may be a reparse point or uninspectable. The root itself is not inspected here: <see cref="CheckBoundary"/> inspects it when a confinement boundary is set, and without one it is trusted host configuration.</summary>
@@ -1622,7 +1633,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     private sealed class ListingMemo(int budget)
     {
         private readonly Lock _gate = new();
-        private readonly Dictionary<string, string[]> _listings = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, Listing> _listings = new(StringComparer.Ordinal);
         private long _held;
         private bool _stopped;
         private volatile bool _open = true;
@@ -1645,14 +1656,50 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
         {
             lock (_gate)
             {
-                if (_open && _listings.TryGetValue(directory, out names))
+                if (_open && _listings.TryGetValue(directory, out var listing))
                 {
+                    names = listing.Names;
                     return true;
                 }
             }
 
             names = null;
             return false;
+        }
+
+        /// <summary>As the two-argument overload, with what a walk of this scope examined of each name (<see cref="SetFacts"/>), or <see langword="null"/> when no walk has yet.</summary>
+        public bool TryGet(string directory, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out string[]? names, out EntryFact[]? facts)
+        {
+            lock (_gate)
+            {
+                if (_open && _listings.TryGetValue(directory, out var listing))
+                {
+                    names = listing.Names;
+                    facts = listing.Facts;
+                    return true;
+                }
+            }
+
+            names = null;
+            facts = null;
+            return false;
+        }
+
+        /// <summary>
+        /// Keeps what a walk examined of each entry of <paramref name="directory"/>, index for
+        /// index with <paramref name="names"/> — only while the scope still holds that very
+        /// listing (not dropped by <see cref="Forget"/> or the scope's end, nor listed again
+        /// meanwhile), and only the first time.
+        /// </summary>
+        public void SetFacts(string directory, string[] names, EntryFact[] facts)
+        {
+            lock (_gate)
+            {
+                if (_open && _listings.TryGetValue(directory, out var listing) && ReferenceEquals(listing.Names, names))
+                {
+                    listing.Facts ??= facts;
+                }
+            }
         }
 
         public void Add(string directory, string[] names)
@@ -1671,7 +1718,7 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
                     return;
                 }
 
-                _listings.Add(directory, names);
+                _listings.Add(directory, new Listing(names));
                 _held += cost;
             }
         }
@@ -1681,9 +1728,9 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
         {
             lock (_gate)
             {
-                if (_listings.Remove(directory, out var names))
+                if (_listings.Remove(directory, out var listing))
                 {
-                    _held -= 1L + names.Length;
+                    _held -= 1L + listing.Names.Length;
                 }
             }
         }
@@ -1695,6 +1742,14 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
                 _open = false;
                 _listings.Clear();
             }
+        }
+
+        /// <summary>One listed directory: its names, sorted ordinally, and — once a walk of the scope has examined them — one fact per name.</summary>
+        private sealed class Listing(string[] names)
+        {
+            public string[] Names { get; } = names;
+
+            public EntryFact[]? Facts { get; set; }
         }
     }
 
@@ -1736,7 +1791,65 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
         public int Entries;
     }
 
-    private readonly record struct WalkEntry(string FullPath, string RawName, bool IsDirectory);
+    /// <summary>One entry a walk visits; for a file, the length and last-write ticks <see cref="Examine"/> read, or -1 and -1 when they could not be read.</summary>
+    private readonly record struct WalkEntry(string RawName, bool IsDirectory, long Length, long ModifiedTicks);
+
+    /// <summary>What a walk does with an entry (<see cref="Examine"/>).</summary>
+    private enum EntryType : byte
+    {
+        /// <summary>Neither a directory nor a file when it was examined (it vanished, or could not be inspected): not visited.</summary>
+        Other,
+
+        /// <summary>A reparse point: skipped, never followed.</summary>
+        Link,
+
+        /// <summary>A directory: visited, then entered after its own STRICT guard.</summary>
+        Directory,
+
+        /// <summary>A file: visited with its length and last-write time.</summary>
+        File,
+    }
+
+    /// <summary>What <see cref="Examine"/> read of one entry; the length and ticks are those of a <see cref="EntryType.File"/>, -1 and -1 when they could not be read and for every other type.</summary>
+    private readonly record struct EntryFact(EntryType Type, long Length, long ModifiedTicks);
+
+    /// <summary>
+    /// The walk's look at one entry of a listed directory, by its path: is it a link (the lenient
+    /// predicate — a walk skips, the read gate refuses), a directory, a file, and for a file its
+    /// length and last-write time. One inspection answers the first three for a plain entry
+    /// (<see cref="ReparsePoints.IsReparsePointWithType"/>): it is a directory or it is
+    /// a file, which is what <see cref="Directory.Exists(string)"/> and
+    /// <see cref="File.Exists(string)"/> answer for an entry that exists and is not a link. For
+    /// an entry the inspection did not find plain, those two are asked, as they always were.
+    /// </summary>
+    private static EntryFact Examine(string full)
+    {
+        if (ReparsePoints.IsReparsePointWithType(full, out var plainDirectory))
+        {
+            return new EntryFact(EntryType.Link, -1, -1);
+        }
+
+        if (plainDirectory ?? Directory.Exists(full))
+        {
+            return new EntryFact(EntryType.Directory, -1, -1);
+        }
+
+        if (plainDirectory is null && !File.Exists(full))
+        {
+            return new EntryFact(EntryType.Other, -1, -1);
+        }
+
+        try
+        {
+            var info = new FileInfo(full);
+            var length = info.Length;
+            return new EntryFact(EntryType.File, length, info.LastWriteTimeUtc.Ticks);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return new EntryFact(EntryType.File, -1, -1);
+        }
+    }
 
     /// <summary>
     /// Depth-first, ordinal per directory, recursive (depth bounded by
@@ -1749,7 +1862,11 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
     /// kept, and a directory the scope already listed is not listed again: its kept names are
     /// counted the same way and visited after the same guards, so the second walk of a load
     /// (<see cref="GetVersionAsync"/> after <see cref="EnumerateAsync"/>) and the exact-case lookups reuse
-    /// the first walk's listings.
+    /// the first walk's listings. Each entry is examined by its path once (<see cref="Examine"/>):
+    /// one inspection says whether it is a link, a directory or a file, and a file's length and
+    /// last-write time are read then. Inside a scope what was read of an entry that is not a
+    /// directory is kept with the names, so a later walk of the scope asks the OS nothing about
+    /// it; an entry that was a directory is examined again by every walk.
     /// <para><b>Guarding.</b> The walk's start (<paramref name="isStart"/>) gets the full
     /// <see cref="GuardStrict"/>: the start and every directory between it and the root. For the
     /// root (<see cref="GetVersionAsync"/>, an unprefixed <see cref="EnumerateAsync"/>) that inspects
@@ -1788,7 +1905,8 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
 
         var memo = ActiveMemo;
         string[] names;
-        if (memo is not null && memo.TryGet(dir, out var known))
+        EntryFact[]? facts = null;
+        if (memo is not null && memo.TryGet(dir, out var known, out facts))
         {
             // Listed earlier in this scope: counted as a fresh listing would be, every entry
             // before the skip (the bound throws iff the running total passes it).
@@ -1819,10 +1937,33 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
             memo?.Add(dir, names);
         }
 
-        foreach (var name in names)
+        // Each entry is examined by its path once per scope (once per walk outside one): a walk
+        // that finds this directory's facts kept by an earlier walk of the scope asks the OS
+        // nothing more about its files and its skipped links. What was a directory is examined
+        // again by every walk, so one that has since become a link is skipped, as it always
+        // was, before the STRICT guard its own Walk runs on it; the guards above ran all the same.
+        var examined = facts is null && memo is not null ? new EntryFact[names.Length] : null;
+        for (var i = 0; i < names.Length; i++)
         {
+            var name = names[i];
             var full = Path.Combine(dir, name);
-            if (ReparsePoints.IsReparsePoint(full))
+            EntryFact fact;
+            if (facts is null || facts[i].Type == EntryType.Directory)
+            {
+                Interlocked.Increment(ref _entryExaminations);
+                fact = Examine(full);
+            }
+            else
+            {
+                fact = facts[i];
+            }
+
+            if (examined is not null)
+            {
+                examined[i] = fact;
+            }
+
+            if (fact.Type == EntryType.Link)
             {
                 continue; // lenient: a walk skips, the read gate refuses
             }
@@ -1833,16 +1974,21 @@ public sealed class FileSystemBundleProvider : IBundleProvider, IProviderScope
             }
 
             var raw = rel.Length == 0 ? name : rel + "/" + name;
-            if (Directory.Exists(full))
+            if (fact.Type == EntryType.Directory)
             {
-                visit(new WalkEntry(full, raw, true));
+                visit(new WalkEntry(raw, true, -1, -1));
                 BeforeWalkEntersDirectory?.Invoke(full);
                 Walk(full, raw, depth + 1, limits, counter, visit, isStart: false);
             }
-            else if (File.Exists(full))
+            else if (fact.Type == EntryType.File)
             {
-                visit(new WalkEntry(full, raw, false));
+                visit(new WalkEntry(raw, false, fact.Length, fact.ModifiedTicks));
             }
+        }
+
+        if (examined is not null)
+        {
+            memo!.SetFacts(dir, names, examined);
         }
     }
 

@@ -323,6 +323,228 @@ public class FileSystemBundleProviderScopeTests
         }
     }
 
+    private static TempDir Tree()
+    {
+        var tmp = new TempDir();
+        tmp.Write("top.md", "top");
+        tmp.Write("a/one.md", "one");
+        tmp.Write("a/two.md", "two!");
+        tmp.Write("a/sub/x.md", "x");
+        tmp.Write("b/y.sql", "select 1");
+        return tmp;
+    }
+
+    private static List<string> Listed(FileSystemBundleProvider p) =>
+        p.Enumerate(null, BundleLimits.Default).Select(l => l.RawName + "=" + l.Length?.ToString(CultureInfo.InvariantCulture)).ToList();
+
+    [Fact]
+    public void A_walk_examines_each_entry_once_and_a_later_walk_of_the_scope_only_its_directories()
+    {
+        using var tmp = Tree();
+        var p = Exact(tmp.Path);
+        var listed = Listed(p);
+        var version = p.GetVersion(BundleLimits.Default);
+        // Outside a scope every walk examines every entry: 5 files and 3 directories.
+        Assert.Equal(8 + 8, p.EntryExaminations);
+
+        using (((IProviderScope)p).BeginScope())
+        {
+            var before = p.EntryExaminations;
+            Assert.Equal(listed, Listed(p));
+            Assert.Equal(8, p.EntryExaminations - before);
+
+            // The files are not asked about again; the 3 directories are, by every walk.
+            Assert.Equal(version, p.GetVersion(BundleLimits.Default));
+            Assert.Equal(listed, Listed(p));
+            Assert.Equal(8 + 3 + 3, p.EntryExaminations - before);
+        }
+
+        // Nothing is kept past the scope.
+        var after = p.EntryExaminations;
+        Assert.Equal(version, p.GetVersion(BundleLimits.Default));
+        Assert.Equal(8, p.EntryExaminations - after);
+    }
+
+    [Fact]
+    public void A_load_lists_each_directory_once_and_examines_each_file_once_and_each_directory_once_per_walk()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("index.md", "---\nokf_version: \"0.2\"\n---\n\n# Index\n");
+        tmp.Write("top.md", Concept("Top"));
+        tmp.Write("a/one.md", Concept("One", "./two.md"));
+        tmp.Write("a/two.md", Concept("Two"));
+        tmp.Write("a/sub/x.md", Concept("X"));
+        tmp.Write("b/y.sql", "select 1");
+        var p = Exact(tmp.Path);
+
+        var bundle = Bundle.Load(p);
+
+        Assert.Equal(4, bundle.Count);
+        Assert.Empty(bundle.ParseErrors);
+        // The root, a, a/sub and b: each listed once for the listing walk, the version walk and every read.
+        Assert.Equal(4, p.DirectoryListings);
+        // 6 files and 3 directories by the listing walk; by the version walk only the 3 directories again.
+        Assert.Equal(6 + 3 + 3, p.EntryExaminations);
+    }
+
+    [Fact]
+    public void A_walk_reuses_a_listing_a_lookup_made_and_still_examines_its_entries()
+    {
+        using var tmp = Tree();
+        var p = Exact(tmp.Path);
+        var listed = Listed(p);
+        var version = p.GetVersion(BundleLimits.Default);
+        using (((IProviderScope)p).BeginScope())
+        {
+            Assert.True(p.Exists(K("a/sub/x.md"))); // memoises the names of the root, a and a/sub: no walk yet
+            var listings = p.DirectoryListings;
+            var before = p.EntryExaminations;
+            Assert.Equal(version, p.GetVersion(BundleLimits.Default));
+            Assert.Equal(8, p.EntryExaminations - before);
+            Assert.Equal(1, p.DirectoryListings - listings); // only b was not listed yet
+            Assert.Equal(listed, Listed(p));
+            Assert.Equal(8 + 3, p.EntryExaminations - before);
+        }
+    }
+
+    [Fact]
+    public void A_write_inside_a_scope_is_seen_by_the_scopes_next_walk()
+    {
+        using var tmp = Tree();
+        var p = Exact(tmp.Path);
+        using (((IProviderScope)p).BeginScope())
+        {
+            var version = p.GetVersion(BundleLimits.Default);
+            Assert.Contains("a/one.md=3", Listed(p));
+
+            p.Write(K("a/one.md"), "longer"u8.ToArray(), BundleWriteCondition.None);
+            Assert.Contains("a/one.md=6", Listed(p));
+            var rewritten = p.GetVersion(BundleLimits.Default);
+            Assert.NotEqual(version, rewritten);
+
+            p.Write(K("a/sub/new.md"), "new"u8.ToArray(), BundleWriteCondition.MustNotExist);
+            Assert.Contains("a/sub/new.md=3", Listed(p));
+            var created = p.GetVersion(BundleLimits.Default);
+            Assert.NotEqual(rewritten, created);
+
+            p.Delete(K("a/sub/new.md"), BundleWriteCondition.None);
+            Assert.DoesNotContain("a/sub/new.md=3", Listed(p));
+            Assert.Equal(rewritten, p.GetVersion(BundleLimits.Default));
+        }
+
+        // The token computed inside the scope is the one an unscoped walk computes.
+        using (((IProviderScope)p).BeginScope())
+        {
+            var inScope = p.GetVersion(BundleLimits.Default);
+            Assert.Equal(inScope, p.GetVersion(BundleLimits.Default));
+            Assert.Equal(inScope, new FileSystemBundleProvider(tmp.Path).GetVersion(BundleLimits.Default));
+        }
+    }
+
+    /// <summary>
+    /// The accepted window of what a walk keeps: a file rewritten in place by another process
+    /// during the scope keeps the length and last-write time the scope's first walk read, until
+    /// the scope ends. A read is not concerned: it opens the object and returns its bytes.
+    /// </summary>
+    [Fact]
+    public void A_file_rewritten_behind_the_scope_keeps_its_first_listing_until_the_scope_ends_and_reads_its_new_bytes()
+    {
+        using var tmp = Tree();
+        var p = Exact(tmp.Path);
+        BundleVersion inScope;
+        using (((IProviderScope)p).BeginScope())
+        {
+            inScope = p.GetVersion(BundleLimits.Default);
+            File.WriteAllText(Path.Combine(tmp.Path, "a", "one.md"), "rewritten behind the scope");
+            Assert.Equal(inScope, p.GetVersion(BundleLimits.Default));
+            Assert.Contains("a/one.md=3", Listed(p));
+            using var obj = p.Read(K("a/one.md"));
+            Assert.Equal(26, obj.Length);
+        }
+
+        Assert.NotEqual(inScope, p.GetVersion(BundleLimits.Default));
+        Assert.Contains("a/one.md=26", Listed(p));
+    }
+
+    [SkippableFact]
+    public void A_directory_turned_into_a_junction_after_a_walk_of_the_scope_is_skipped_by_its_next_walk()
+    {
+        using var tmp = Tree();
+        using var external = new TempDir();
+        external.Write("outside.md", "outside");
+        var p = Exact(tmp.Path);
+        using (((IProviderScope)p).BeginScope())
+        {
+            Assert.Contains("a/one.md=3", Listed(p)); // the walk keeps what it examined of the root and of a
+            var listings = p.DirectoryListings;
+
+            Directory.Delete(Path.Combine(tmp.Path, "a"), recursive: true);
+            Skip.IfNot(tmp.TryCreateJunctionToExternalDir("a", external.Path), "no junction/symlink privilege on this machine");
+            try
+            {
+                // As outside a scope: the link is skipped, never followed, and nothing under it is listed.
+                var names = p.Enumerate(null, BundleLimits.Default).Select(l => l.RawName).ToList();
+                Assert.Equal(["b/y.sql", "top.md"], names);
+                p.GetVersion(BundleLimits.Default);
+                Assert.Equal(listings, p.DirectoryListings);
+                Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("a/one.md")));
+            }
+            finally
+            {
+                Directory.Delete(Path.Combine(tmp.Path, "a"));
+            }
+        }
+    }
+
+    [SkippableFact]
+    public void A_file_turned_into_a_link_after_a_walk_of_the_scope_is_never_read_through()
+    {
+        using var tmp = Tree();
+        using var external = new TempDir();
+        var outside = external.Write("outside.md", "outside, and much longer than the file it replaces");
+        var p = Exact(tmp.Path);
+        using (((IProviderScope)p).BeginScope())
+        {
+            var listed = Listed(p);
+            var version = p.GetVersion(BundleLimits.Default);
+
+            File.Delete(Path.Combine(tmp.Path, "a", "one.md"));
+            Skip.IfNot(tmp.TryCreateFileSymlinkToExternalFile(Path.Combine("a", "one.md"), outside), "no symlink privilege on this machine");
+
+            // The scope's later walks answer from what the first one read of the file that was
+            // there: nothing of the link's target (its length, its time) reaches them.
+            Assert.Equal(listed, Listed(p));
+            Assert.Equal(version, p.GetVersion(BundleLimits.Default));
+            // The read gate inspects the entry at access time, as always.
+            Assert.Throws<BundleAccessRefusedException>(() => p.Read(K("a/one.md")));
+            Assert.Throws<BundleAccessRefusedException>(() => p.Exists(K("a/one.md")));
+        }
+
+        // Past the scope the walk examines the entry again and skips the link.
+        Assert.DoesNotContain(Listed(p), l => l.StartsWith("a/one.md", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_key_that_names_a_directory_is_no_object_and_a_vanished_one_is_absent_inside_a_scope_as_outside()
+    {
+        using var tmp = Tree();
+        var p = Exact(tmp.Path);
+        Assert.False(p.Exists(K("a/sub")));
+        Assert.Throws<BundleObjectNotFoundException>(() => p.Read(K("a/sub")));
+        using (((IProviderScope)p).BeginScope())
+        {
+            Assert.False(p.Exists(K("a/sub")));
+            Assert.Throws<BundleObjectNotFoundException>(() => p.Read(K("a/sub")));
+            Assert.True(p.Exists(K("a/one.md"))); // memoises a's names
+
+            // Deleted behind the scope: the name is still in the memo, the leaf's inspection
+            // finds no entry, and the existence check and the open answer as they always did.
+            File.Delete(Path.Combine(tmp.Path, "a", "one.md"));
+            Assert.False(p.Exists(K("a/one.md")));
+            Assert.Throws<BundleObjectNotFoundException>(() => p.Read(K("a/one.md")));
+        }
+    }
+
     [Fact]
     public void Parallel_loads_and_validations_of_one_provider_return_equal_results()
     {
