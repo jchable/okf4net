@@ -138,8 +138,13 @@ même réponse que `BundleRoot` donne déjà hors filesystem
 (`BundleConceptWriter`, `OkfBundleTools`). Changement du cœur, dans ce lot,
 couvert par un test par membre (provider embarqué et `InMemoryBundleProvider`) ;
 le comportement filesystem est inchangé. `ObsoleteMembersTests` reste
-l'inventaire fermé : aucun membre n'est ajouté ni retiré. Le provider embarqué
-rejoint aussi `NoResidualFileIoTests`.
+l'inventaire fermé : aucun membre n'est ajouté ni retiré. `NoResidualFileIoTests` repose sur un
+`InMemoryBundleProvider` **inscriptible** (ses cas d'écriture n'ont pas de sens
+ici) : le provider embarqué a donc son propre test frère, dans la même
+collection `CurrentDirectoryCollection`, qui fait passer chaque point d'entrée
+de **lecture** (chargement, validation, audit, recherche, outils de lecture
+d'`OkfBundleTools`, résolution et lecture par clé) avec le répertoire courant
+réglé sur un dossier vide, et vérifie que ce dossier reste vide.
 
 ### 4.5 Hors périmètre (YAGNI)
 
@@ -209,9 +214,13 @@ l'hôte pose lui-même `CopyToOutputDirectory` ou `CopyToPublishDirectory` sur
 des fichiers du bundle, ils sont copiés à côté du binaire comme il l'a
 demandé — le `.targets` ne retire ni n'ajoute ces métadonnées, et le README le
 signale (une copie sur disque va contre le but du paquet sans rien changer à
-ce que sert le provider). Le répertoire est normalisé par `EnsureTrailingSlash`
-(`Include="knowledge"` sans `/` final donnerait sinon le littéral
-`knowledge**`).
+ce que sert le provider). Le motif est `@(OkfBundle->'%(FullPath)/**')`, qui
+retire bien les deux formes `Include="knowledge"` et `Include="knowledge/"`
+(vérifié par le prototype du 2026-11-12) ; `EnsureTrailingSlash` n'y est pas
+utilisable, car une fonction de propriété sur une métadonnée n'est pas
+développée dans une transformation d'évaluation (vérifié : le littéral
+`%(FullPath)\` reste tel quel). La cible, elle, normalise par
+`EnsureTrailingSlash`.
 
 Ce `Remove` fonctionne parce que `nuget.g.targets` est importé après le corps
 du projet (`Microsoft.Common.targets`), et les globs par défaut sont posés
@@ -318,8 +327,8 @@ Dans `tests/OKF4net.Tests/Providers/EmbeddedResources/` :
   préfixes et ignore `okf:/x`.
 - **D7** : `TryResolveResource` et `ReadResourceText(string)` lèvent
   `NotSupportedException` sur le provider embarqué et sur
-  `InMemoryBundleProvider` ; le provider embarqué rejoint
-  `NoResidualFileIoTests`.
+  `InMemoryBundleProvider` ; le test frère de `NoResidualFileIoTests`
+  décrit en §4.4.
 
 ### 6.2 Tests du `.targets`
 
@@ -449,6 +458,14 @@ Même matrice de RID que `aot-publish` (`linux-x64`, `osx-arm64`, `win-x64`).
 Par les revues : AOT sur `win-x64` et `osx-arm64` (le job de §6.4 le
 couvrira), macOS en général, le MSBuild .NET Framework de Visual Studio,
 l'interaction avec `dotnet format`.
+
+**Prototype Windows du 2026-11-12** (SDK 10, hors dépôt) : le parcours récursif
+par la tâche `MSBuild` signale une jonction vers l'extérieur et un cycle sans
+lister leur cible, et traverse un répertoire `sub;semi` (enfants joints sur
+NUL par `Char.ConvertFromUtf32(0)`, puis `Escape(…).Split(NUL)`) ; 20 noms
+pénibles embarqués octet pour octet, sans satellite ; `OKFEMB001`, `003`,
+`005`, `006` levés sur leur cas ; inerte sans `OkfBundle`. Restent Linux et
+macOS, couverts par la porte de la tâche 1 du plan.
 
 **Première étape obligatoire du plan : un prototype du `.targets`**, avant
 toute autre tâche, qui démontre :
