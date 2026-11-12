@@ -1,9 +1,11 @@
 # Provider de bundle embarqué dans un assembly — design
 
 Date : 2026-11-12
-Statut : **révision 2**, à relire par le mainteneur (la révision 1 a été
+Statut : **révision 3**, à relire par le mainteneur (la révision 1 a été
 validée section par section le 2026-11-12, puis soumise à deux revues
-externes ; cette révision les intègre, avec les arbitrages D6 et D7)
+externes ; la révision 2 les intègre, avec les arbitrages D6 et D7 ; la
+révision 3 intègre la relecture de la révision 2 : parcours des liens sans
+descente, position de l'import dans les tests, `None`, `PortabilityIssues`)
 Ticket : [#141](https://github.com/jchable/okf4net/issues/141). Suite hors lot :
 [#236](https://github.com/jchable/okf4net/issues/236) (fabrique de catalogue).
 
@@ -155,12 +157,25 @@ L'alternative — une tâche compilée — imposerait de livrer une DLL compilé
 contre `Microsoft.Build.Utilities.Core` et chargée tant par le MSBuild .NET
 Framework de Visual Studio que par celui de `dotnet` : une dépendance et une
 matrice de compatibilité pour peu de gain. Les essais des revues montrent que
-le MSBuild pur suffit : nommage fidèle, détection des liens
-(`Directory.GetDirectories(root, '*', AllDirectories)` et `File.GetAttributes`
-rendent `ReparsePoint` sur les liens), doublons de casse (`Distinct()` contre
-`DistinctWithCase()`). Ce qu'il ne peut pas reproduire, le build le **refuse
-en le nommant** (le ticket : « round-trip every path … or reject it
+le MSBuild pur suffit pour le nommage fidèle et les doublons de casse
+(`Distinct()` contre `DistinctWithCase()`), et que `File.GetAttributes` rend
+`ReparsePoint` sur les liens. Ce qu'il ne peut pas reproduire, le build le
+**refuse en le nommant** (le ticket : « round-trip every path … or reject it
 explicitly »).
+
+**Point ouvert, tranché par le prototype (§8).** Le contrôle des liens doit
+inspecter chaque répertoire **avant d'y descendre** (§5.4, étape 2), ce que ni
+le glob `**` ni `Directory.GetDirectories(root, '*', AllDirectories)` ne font :
+tous deux traversent une jonction avant que l'on puisse en contrôler le
+résultat (vérifié : `knowledge\link\deep` est énuméré), et une cible
+inaccessible ou cyclique peut empêcher d'atteindre le diagnostic. Candidat en
+MSBuild pur : un parcours récursif par la tâche `MSBuild` sur le `.targets`
+lui-même, un niveau par appel, avec `Directory.GetDirectories(dir)` non
+récursif et `File.GetAttributes` sur chaque enfant avant l'appel suivant. Si le
+prototype ne démontre pas cette propriété sur les trois OS, le plan s'arrête et
+D2 est rouvert avec le mainteneur (candidats : tâche inline
+`RoslynCodeTaskFactory`, fournie par MSBuild sans DLL livrée ; tâche
+compilée).
 
 ### 5.2 Usage
 
@@ -188,8 +203,13 @@ et d'éventuels secrets) partirait en ressources (vérifié par essai).
 répertoire de bundle des items par défaut `Compile`, `EmbeddedResource` et
 `Content` : sinon un script sanctionné `.cs` rangé dans le bundle (§10) serait
 **compilé dans l'hôte**, un `.resx` serait compilé par ResGen. `None` est
-laissé tel quel : il ne change rien au build et garde les fichiers visibles
-dans l'IDE. Le répertoire est normalisé par `EnsureTrailingSlash`
+laissé tel quel, pour garder les fichiers visibles dans l'IDE : un item `None`
+par défaut ne porte aucune métadonnée de copie et n'affecte pas le build ; si
+l'hôte pose lui-même `CopyToOutputDirectory` ou `CopyToPublishDirectory` sur
+des fichiers du bundle, ils sont copiés à côté du binaire comme il l'a
+demandé — le `.targets` ne retire ni n'ajoute ces métadonnées, et le README le
+signale (une copie sur disque va contre le but du paquet sans rien changer à
+ce que sert le provider). Le répertoire est normalisé par `EnsureTrailingSlash`
 (`Include="knowledge"` sans `/` final donnerait sinon le littéral
 `knowledge**`).
 
@@ -211,8 +231,13 @@ qui fait dans l'ordre, pour chaque `OkfBundle` :
 2. **Refuse tout lien** (D6) : le répertoire du bundle lui-même, chacun de ses
    sous-répertoires et chacun de ses fichiers, dont `File.GetAttributes`
    contient `ReparsePoint` (.NET le renseigne aussi pour un symlink Unix) →
-   `OKFEMB005` nommant le lien. Les sous-répertoires sont contrôlés avant le
-   glob des fichiers.
+   `OKFEMB005` nommant le lien. **Chaque répertoire est inspecté avant toute
+   descente** : le parcours ne liste jamais le contenu d'un lien, si bien
+   qu'une jonction vers l'extérieur, une cible inaccessible ou un cycle
+   aboutissent au diagnostic au lieu de parcourir la cible (§5.1, point
+   ouvert). Le glob des fichiers n'est évalué qu'après ce parcours, quand plus
+   aucun répertoire n'est un lien ; les fichiers qu'il rend sont contrôlés à
+   leur tour.
 3. **Calcule les noms** à partir de `%(FullPath)` moins le chemin complet du
    répertoire du bundle (`Substring`), séparateur `\` remplacé par `/` sous
    Windows. Pas de `%(RecursiveDir)%(Filename)%(Extension)` : sous Linux,
@@ -313,9 +338,20 @@ Dans `tests/OKF4net.Tests/Providers/EmbeddedResources/` :
   altérerait ou échouerait).
 - **Builds en processus enfant** (`TargetsBuildTests`) : chaque test génère
   dans un répertoire temporaire un petit projet qui importe le `.targets`
-  **après** `Sdk.targets` (imports SDK explicites, pour reproduire l'ordre de
-  NuGet), lance `dotnet build`, puis lit l'assembly produit dans un
-  `AssemblyLoadContext` collectible. Cas :
+  **exactement à la place de l'import NuGet**, lance `dotnet build`, puis lit
+  l'assembly produit dans un `AssemblyLoadContext` collectible. Un import
+  « après `Sdk.targets` » ne convient pas : il passe après
+  `Directory.Build.targets`, que l'import NuGet précède, et verrait donc un
+  `OkfBundle` tardif que le vrai paquet ne voit pas (vérifié :
+  `SEEN_AT_IMPORT=knowledge/` contre `SEEN_AT_IMPORT=` sous l'import NuGet).
+  Moyen retenu : un fichier `obj/<projet>.csproj.okf.targets` qui importe le
+  `.targets`, apparié par le même import générique que `nuget.g.targets`
+  (`$(MSBuildProjectExtensionsPath)$(MSBuildProjectFile).*.targets`, dans
+  `Microsoft.Common.targets`) et que la restauration ne réécrit pas ; le
+  prototype (§8) vérifie par la même sonde `SEEN_AT_IMPORT` qu'il se place
+  comme l'import NuGet, et à défaut les tests consomment le vrai paquet,
+  emballé une fois par exécution vers un flux local (avec `OKF4net`) et
+  restauré dans un `NUGET_PACKAGES` isolé. Cas :
   - un arbre de noms générés, légaux sur l'OS courant — sous Linux et macOS en
     plus : point final, espaces en tête et en fin, NFD, `* ? : < >` — comparé
     au provider filesystem ;
@@ -327,6 +363,12 @@ Dans `tests/OKF4net.Tests/Providers/EmbeddedResources/` :
     Linux, jumeaux de casse, `"`, `|`, `\` ; un lien (jonction sous Windows,
     qui ne demande pas de privilège, symlink de fichier et de répertoire
     ailleurs) ; un `OkfBundle` déclaré dans `Directory.Build.targets`.
+  - **confinement du parcours** : une jonction (ou un symlink de répertoire)
+    vers un répertoire extérieur contenant un sous-répertoire, une cible
+    inaccessible, et un cycle (lien vers un ancêtre) donnent tous `OKFEMB005`
+    sans que la cible ait été listée — vérifié par une cible extérieure
+    illisible ou par l'absence de son contenu dans la sortie détaillée du
+    build — et le build se termine.
 
 ### 6.3 Parité (critère d'acceptation du ticket)
 
@@ -337,8 +379,8 @@ après ses items `OkfBundle`, et embarque les bundles de fixtures (`okf_v02`,
 par le provider embarqué :
 
 - **objets** : mêmes clés, mêmes octets, exhaustivement ;
-- **chargement** : `OkfVersion`, `IndexKeys`, `LogKeys`, `ParseProblems`,
-  `PortabilityIssues` (par clé et code, sans chemin d'affichage) ;
+- **chargement** : `OkfVersion`, `IndexKeys`, `LogKeys`, `ParseProblems`
+  (sans chemin d'affichage), `PortabilityIssues` (par `Key` et `Reason`) ;
 - **concepts** : clé, id, frontmatter, corps ;
 - **diagnostics** de `BundleValidator` : code, sévérité, clé, `Concept`,
   `Field`, message — jamais `Path`, projection d'affichage qui diffère
@@ -406,5 +448,20 @@ Même matrice de RID que `aot-publish` (`linux-x64`, `osx-arm64`, `win-x64`).
 
 Par les revues : AOT sur `win-x64` et `osx-arm64` (le job de §6.4 le
 couvrira), macOS en général, le MSBuild .NET Framework de Visual Studio,
-l'interaction avec `dotnet format`. Le plan commence par un prototype du
-`.targets` exécuté sur ces cas avant toute autre tâche.
+l'interaction avec `dotnet format`.
+
+**Première étape obligatoire du plan : un prototype du `.targets`**, avant
+toute autre tâche, qui démontre :
+
+1. le parcours des liens qui inspecte chaque répertoire avant d'y descendre,
+   en MSBuild pur, sur une jonction vers l'extérieur, une cible inaccessible
+   et un cycle (§5.1, point ouvert) — sinon arrêt et D2 rouvert avec le
+   mainteneur ;
+2. que l'import par `obj/<projet>.csproj.okf.targets` se place comme l'import
+   NuGet (`SEEN_AT_IMPORT` vide pour un `OkfBundle` de
+   `Directory.Build.targets`) — sinon les tests du `.targets` consomment le
+   vrai paquet (§6.2) ;
+3. que le `Remove` d'évaluation de §5.3 n'énumère pas le disque sous le
+   répertoire du bundle (un appariement de motif, pas un parcours) ;
+4. le nommage, les codes `OKFEMB001` à `OKFEMB006` et la condition
+   `'@(OkfBundle)' != ''` sur les cas de §6.2.
