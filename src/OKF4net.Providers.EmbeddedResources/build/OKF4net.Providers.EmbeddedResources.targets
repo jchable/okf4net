@@ -1,0 +1,176 @@
+<!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
+<!--
+  OKF4net.Providers.EmbeddedResources: embeds an OKF bundle directory in the
+  assembly, one manifest resource per file, named okf:<Prefix>/<relative path>.
+  Design: docs/superpowers/specs/2026-11-12-embedded-resource-bundle-provider-design.md (§5).
+
+  Imported by NuGet into EVERY project that references the package: without an
+  OkfBundle item, nothing below runs (an empty batch would otherwise glob "**",
+  the whole project directory, obj/ included).
+-->
+<Project>
+
+  <!--
+    Evaluation time (§5.3): a bundle file must not also be a default Compile,
+    EmbeddedResource or Content item (a sanctioned .cs script would be compiled
+    into the host, a .resx passed to ResGen). None is left alone: it keeps the
+    files visible in the IDE and changes nothing unless the host sets copy
+    metadata itself. '%(FullPath)/**' removes both Include="dir" and
+    Include="dir/"; EnsureTrailingSlash is NOT usable here: a property function
+    over metadata is not expanded inside an evaluation-time transform.
+    This sees every OkfBundle declared before NuGet's import (the project body);
+    one declared later (Directory.Build.targets, a target) is caught by
+    OKFEMB006 at execution.
+  -->
+  <ItemGroup Condition="'@(OkfBundle)' != ''">
+    <Compile Remove="@(OkfBundle->'%(FullPath)/**')" />
+    <EmbeddedResource Remove="@(OkfBundle->'%(FullPath)/**')" />
+    <Content Remove="@(OkfBundle->'%(FullPath)/**')" />
+  </ItemGroup>
+
+  <!--
+    BeforeTargets="PrepareResourceNames" runs AFTER that target's dependencies
+    (AssignTargetPaths, SplitResourcesByCulture, CreateManifestResourceNames):
+    the items added here skip AssignCulture and the .licx/.resx handling and
+    arrive complete. WithCulture="false" and Type="Non-Resx" are then the only
+    filter of _CoreCompileResourceInputs: without them the build succeeds with
+    ZERO resources. Running earlier would send a bundle .licx to the LC task
+    (MSB4803); editing PrepareResourceNamesDependsOn is silently overwritten by
+    Microsoft.Common.CurrentVersion.targets.
+  -->
+  <Target Name="OkfEmbedBundles"
+          BeforeTargets="PrepareResourceNames"
+          DependsOnTargets="_OkfPrepareBundles;_OkfCollectBundle"
+          Condition="'@(OkfBundle)' != ''">
+    <ItemGroup>
+      <EmbeddedResource Include="@(_OkfFile)" WithCulture="false" Type="Non-Resx" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="_OkfPrepareBundles">
+    <ItemGroup>
+      <_OkfRoot Include="@(OkfBundle->'%(FullPath)')">
+        <OkfDir>$([MSBuild]::EnsureTrailingSlash('%(FullPath)'))</OkfDir>
+      </_OkfRoot>
+      <_OkfPrefix Include="@(_OkfRoot->'%(Prefix)')" />
+    </ItemGroup>
+    <Error Code="OKFEMB001"
+           Condition="'%(_OkfRoot.Prefix)' == '' or $([System.String]::Copy('%(_OkfRoot.Prefix)').Contains('/'))"
+           Text="OkfBundle '%(_OkfRoot.Identity)': Prefix is missing, empty or contains '/'." />
+    <Error Code="OKFEMB002"
+           Condition="!Exists('%(_OkfRoot.OkfDir)')"
+           Text="OkfBundle '%(_OkfRoot.Identity)': the directory does not exist." />
+    <!-- Distinct() compares ignoring case, as csc compares resource names (CS1508). -->
+    <Error Code="OKFEMB003"
+           Condition="'@(_OkfPrefix->Count())' != '@(_OkfPrefix->Distinct()->Count())'"
+           Text="Two OkfBundle items share a Prefix (compared ignoring case): @(_OkfPrefix, ', ')." />
+  </Target>
+
+  <!-- One batch per bundle (target batching on _OkfRoot). -->
+  <Target Name="_OkfCollectBundle" Outputs="%(_OkfRoot.Identity)">
+    <PropertyGroup>
+      <_OkfThisDir>%(_OkfRoot.OkfDir)</_OkfThisDir>
+      <_OkfThisPrefix>%(_OkfRoot.Prefix)</_OkfThisPrefix>
+      <_OkfThisDirLower>$(_OkfThisDir.ToLowerInvariant())</_OkfThisDirLower>
+    </PropertyGroup>
+
+    <!-- D6: refuse every link, inspecting each directory BEFORE descending into it. -->
+    <MSBuild Projects="$(MSBuildThisFileFullPath)" Targets="_OkfWalkDir"
+             Properties="_OkfDir=$([MSBuild]::Escape($([System.IO.Path]::GetDirectoryName('$(_OkfThisDir)'))))">
+      <Output TaskParameter="TargetOutputs" ItemName="_OkfWalked" />
+    </MSBuild>
+    <Error Code="OKFEMB005"
+           Condition="'%(_OkfWalked.OkfIsLink)' == 'true'"
+           Text="OkfBundle '$(_OkfThisDir)': '%(_OkfWalked.Identity)' is a symbolic link or junction; links are refused." />
+
+    <!-- OKFEMB006: a default item the evaluation-time Remove did not see (checked before this target adds its own). -->
+    <ItemGroup>
+      <_OkfLeftover Include="@(Compile);@(Content);@(EmbeddedResource)"
+                    Condition="$([System.String]::Copy('%(FullPath)').ToLowerInvariant().StartsWith('$(_OkfThisDirLower)'))" />
+    </ItemGroup>
+    <Error Code="OKFEMB006"
+           Condition="'@(_OkfLeftover)' != ''"
+           Text="OkfBundle '$(_OkfThisDir)': @(_OkfLeftover, ', ') is still a Compile, Content or EmbeddedResource item; declare OkfBundle in the project file, not in Directory.Build.targets or a target." />
+
+    <!-- Only now, with no directory link and no unholdable name left (both checked by the walk), is the tree globbed. -->
+    <ItemGroup>
+      <_OkfThisFile Include="$(_OkfThisDir)**" />
+      <_OkfThisFile>
+        <!-- From FullPath, never %(RecursiveDir)%(Filename)%(Extension): %(Extension) drops the dot of "name." on Linux. -->
+        <OkfRel>$([System.String]::Copy('%(FullPath)').Substring($(_OkfThisDir.Length)))</OkfRel>
+        <OkfAttrs>$([System.IO.File]::GetAttributes('%(FullPath)'))</OkfAttrs>
+      </_OkfThisFile>
+    </ItemGroup>
+    <Error Code="OKFEMB002"
+           Condition="'@(_OkfThisFile)' == ''"
+           Text="OkfBundle '$(_OkfThisDir)': the directory holds no file." />
+    <Error Code="OKFEMB005"
+           Condition="$([System.String]::Copy('%(_OkfThisFile.OkfAttrs)').Contains('ReparsePoint'))"
+           Text="OkfBundle '$(_OkfThisDir)': '%(_OkfThisFile.FullPath)' is a symbolic link; links are refused." />
+
+    <ItemGroup>
+      <_OkfThisFile>
+        <OkfName Condition="$([MSBuild]::IsOSPlatform('Windows'))">$([System.String]::Copy('%(OkfRel)').Replace('\', '/'))</OkfName>
+        <OkfName Condition="!$([MSBuild]::IsOSPlatform('Windows'))">%(OkfRel)</OkfName>
+      </_OkfThisFile>
+      <_OkfThisName Include="@(_OkfThisFile->'%(OkfName)')" />
+      <!-- Batching on Identity groups case-insensitively: a bucket of two or more is a case twin. -->
+      <_OkfTwin Include="%(_OkfThisName.Identity)" Condition="'@(_OkfThisName->Count())' &gt; '1'" />
+    </ItemGroup>
+    <Error Code="OKFEMB004"
+           Condition="'@(_OkfTwin)' != ''"
+           Text="OkfBundle '$(_OkfThisDir)': files differ only by case, which an assembly cannot hold: @(_OkfTwin, ', ')." />
+
+    <ItemGroup>
+      <_OkfFile Include="@(_OkfThisFile)" LogicalName="okf:$(_OkfThisPrefix)/%(_OkfThisFile.OkfName)" />
+      <_OkfThisFile Remove="@(_OkfThisFile)" />
+      <_OkfThisName Remove="@(_OkfThisName)" />
+      <_OkfTwin Remove="@(_OkfTwin)" />
+      <_OkfLeftover Remove="@(_OkfLeftover)" />
+      <_OkfWalked Remove="@(_OkfWalked)" />
+    </ItemGroup>
+  </Target>
+
+  <!--
+    One directory per call, invoked on this file through the MSBuild task.
+    GetAttributes reads the entry itself (a junction or symlink reports
+    ReparsePoint); a link is reported and NEVER listed. Children are joined on
+    NUL (impossible in a name on every OS), escaped, then split, so a ';' in a
+    directory name survives; Char.ConvertFromUtf32 is used because
+    Convert.ToChar(0) binds to the string overload and yields '0'.
+    OKFEMB004 is checked HERE, on the raw names Directory.GetFileSystemEntries
+    returns, before any of them becomes an item: off Windows MSBuild turns a
+    '\' in an item spec into '/', so "back\slash.md" would reach GetAttributes
+    as "back/slash.md" and fail with MSB4184 instead of the named refusal.
+  -->
+  <Target Name="_OkfWalkDir" Returns="@(_OkfWalkResult)">
+    <PropertyGroup>
+      <_OkfAttrs>$([System.IO.File]::GetAttributes('$(_OkfDir)'))</_OkfAttrs>
+      <_OkfIsLink>false</_OkfIsLink>
+      <_OkfIsLink Condition="$(_OkfAttrs.Contains('ReparsePoint'))">true</_OkfIsLink>
+      <_OkfNul>$([System.Char]::ConvertFromUtf32(0))</_OkfNul>
+      <_OkfDirSlash>$([MSBuild]::EnsureTrailingSlash('$(_OkfDir)'))</_OkfDirSlash>
+      <_OkfBadChars Condition="$([MSBuild]::IsOSPlatform('Windows'))">["|\x01-\x1F\x7F]</_OkfBadChars>
+      <_OkfBadChars Condition="!$([MSBuild]::IsOSPlatform('Windows'))">["|\\\x01-\x1F\x7F]</_OkfBadChars>
+      <!-- The entries' NAMES (files, then directories; GetFileSystemEntries is not an allowed property function), NUL-separated, the parent path stripped so it can never match. -->
+      <_OkfEntryPaths Condition="'$(_OkfIsLink)' != 'true'">$([System.String]::Join($(_OkfNul), $([System.IO.Directory]::GetFiles($(_OkfDir)))))$(_OkfNul)$([System.String]::Join($(_OkfNul), $([System.IO.Directory]::GetDirectories($(_OkfDir)))))</_OkfEntryPaths>
+      <_OkfEntryNames>$(_OkfEntryPaths.Replace($(_OkfDirSlash), ''))</_OkfEntryNames>
+      <_OkfBadName Condition="'$(_OkfIsLink)' != 'true'">$([System.Text.RegularExpressions.Regex]::Match($(_OkfEntryNames), '[^\x00]*$(_OkfBadChars)[^\x00]*').Value)</_OkfBadName>
+      <_OkfChildren Condition="'$(_OkfIsLink)' != 'true'">$([MSBuild]::Escape($([System.String]::Join($(_OkfNul), $([System.IO.Directory]::GetDirectories($(_OkfDir)))))).Split($(_OkfNul)))</_OkfChildren>
+    </PropertyGroup>
+    <Error Code="OKFEMB004"
+           Condition="'$(_OkfBadName)' != ''"
+           Text="'$(_OkfDir)' holds '$(_OkfBadName)', a name an embedded resource cannot hold (\ off Windows, &quot;, |, or a control character)." />
+    <ItemGroup>
+      <_OkfWalkResult Include="$([MSBuild]::Escape($(_OkfDir)))" OkfIsLink="$(_OkfIsLink)" />
+      <_OkfChildDir Condition="'$(_OkfIsLink)' != 'true'" Include="$(_OkfChildren)" />
+      <_OkfWalkProject Include="$(MSBuildThisFileFullPath)"
+                       AdditionalProperties="_OkfDir=$([MSBuild]::Escape('%(_OkfChildDir.Identity)'))"
+                       Condition="'@(_OkfChildDir)' != ''" />
+    </ItemGroup>
+    <MSBuild Condition="'@(_OkfWalkProject)' != ''" Projects="@(_OkfWalkProject)" Targets="_OkfWalkDir">
+      <Output TaskParameter="TargetOutputs" ItemName="_OkfWalkResult" />
+    </MSBuild>
+  </Target>
+
+</Project>
