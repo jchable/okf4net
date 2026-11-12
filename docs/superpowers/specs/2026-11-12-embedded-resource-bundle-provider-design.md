@@ -1,7 +1,9 @@
 # Provider de bundle embarqué dans un assembly — design
 
 Date : 2026-11-12
-Statut : **validé section par section par le mainteneur le 2026-11-12**
+Statut : **révision 2**, à relire par le mainteneur (la révision 1 a été
+validée section par section le 2026-11-12, puis soumise à deux revues
+externes ; cette révision les intègre, avec les arbitrages D6 et D7)
 Ticket : [#141](https://github.com/jchable/okf4net/issues/141). Suite hors lot :
 [#236](https://github.com/jchable/okf4net/issues/236) (fabrique de catalogue).
 
@@ -30,16 +32,25 @@ exerce la couture sur un espace de clés qui n'est pas un système de fichiers.
 | D3 | Intégration au catalogue | **Hors de ce lot** ; ticket [#236](https://github.com/jchable/okf4net/issues/236). Le README du paquet montre la fabrique d'une dizaine de lignes qu'un hôte écrit lui-même. |
 | D4 | Preuve Native AOT | **Un job CI** qui publie en AOT une sonde consommant le **vrai paquet** et l'exécute. |
 | D5 | Nommage | Paquet et projet `OKF4net.Providers.EmbeddedResources`, classe `EmbeddedResourceBundleProvider`, item MSBuild `OkfBundle`. `Resources` seul était ambigu avec les ressources §6.2 du cœur (`ExecutableResources`, `ResourceKeyResolver`). |
+| D6 | Lien (symlink, jonction) sous le répertoire du bundle, au build | **Erreur de build** `OKFEMB005` nommant le lien (échec fermé). Le glob `**` de MSBuild suit les liens : sans garde, un lien vers `~/.aws/credentials` ou un répertoire extérieur partirait dans un exécutable publié — vérifié par essai sous Windows (jonction) et Linux (symlinks de fichier et de répertoire). |
+| D7 | Membres `[Obsolete]` qui lisent par `System.IO` depuis `Location` | **Refus hors filesystem**, dans ce lot : `Bundle.TryResolveResource(…)` et `Bundle.ReadResourceText(string)` lèvent `NotSupportedException` quand le provider n'est pas un `FileSystemBundleProvider` (§4.4). |
 
 ## 3. Conformité à la spécification
 
 SPEC §3 : « A bundle is a directory tree of markdown files » et « A bundle MAY
 be distributed as » un dépôt git, une archive, un sous-répertoire — liste
-permissive, non exhaustive. Le provider présente exactement l'arbre du
-répertoire source (mêmes chemins relatifs, mêmes octets), et le cœur le lit
-par la même couture que le filesystem. Aucune divergence : **pas d'entrée dans
-`docs/spec-conformance/`**. La parité (§6.2) est la preuve que l'arbre lu est
-le même.
+permissive, non exhaustive. Le provider présente l'arbre du répertoire source
+(mêmes chemins relatifs, mêmes octets) tel que le provider filesystem le
+liste — liens exclus, puisque le build les refuse (D6) — et le cœur le lit par
+la même couture. La parité (§6.3) en est la preuve.
+
+Le stockage embarqué ne peut pas tenir quelques noms qu'un système de fichiers
+Linux tient : des jumeaux de casse (`Case.md` et `case.md`, que `csc` refuse
+comme doublons, CS1508) et des noms contenant `\`, `"`, `|` ou un caractère de
+contrôle (CS1566). Le build les **refuse en les nommant** (`OKFEMB004`), il ne
+les perd jamais en silence. Ce n'est pas une divergence de la spec, qui
+n'impose aucun nom ; ces noms sont déjà non portables (`Strict`). **Pas
+d'entrée dans `docs/spec-conformance/`.**
 
 ## 4. Le provider à l'exécution
 
@@ -63,45 +74,76 @@ namespace OKF4net.Providers.EmbeddedResources;
 
 public sealed class EmbeddedResourceBundleProvider : IBundleProvider
 {
-    /// Lève ArgumentException si aucune ressource ne porte « okf:<prefix>/ ».
+    /// Lève ArgumentException si l'assembly est dynamique, si le préfixe est
+    /// vide ou contient « / », ou si aucune ressource ne porte « okf:<prefix>/ ».
     public EmbeddedResourceBundleProvider(Assembly assembly, string prefix);
 
-    /// Les préfixes présents dans l'assembly, triés ordinalement.
+    /// Les préfixes présents dans l'assembly, distincts, triés ordinalement.
     public static IReadOnlyList<string> GetBundlePrefixes(Assembly assembly);
 }
 ```
 
 Un préfixe inconnu lève à la construction : c'est presque toujours une faute
-de frappe ou un `<OkfBundle>` oublié, qu'un bundle vide masquerait. Un préfixe
-vide ou contenant `/` lève aussi (`ArgumentException`).
+de frappe ou un `<OkfBundle>` oublié, qu'un bundle vide masquerait.
+`GetBundlePrefixes` ignore un nom `okf:` sans `/` ou au préfixe vide
+(`okf:/x`) ; un assembly dynamique y lève la même `ArgumentException`.
+
+**Domaine.** Le provider sert les assemblies d'exécution — chargés depuis un
+fichier, un bundle single-file, une image Native AOT ou des octets
+(`Assembly.Load(byte[])`, qui fonctionne et est testé) — et les ressources
+**incorporées** dans leur module manifeste. Un assembly dynamique
+(`Assembly.IsDynamic` : `GetManifestResourceNames` y lève
+`NotSupportedException`) est refusé par une `ArgumentException`. Une ressource
+liée (`/linkresource`) ou située dans un autre module n'est pas prise en
+charge : Native AOT ne la recopie pas. Pas de support multi-module.
 
 ### 4.3 Contrat
 
 | Membre | Comportement |
 |---|---|
 | `Capabilities` | `CanWrite = false`, `CompletesSynchronously = true`. |
-| `Id` | `embedded:<nom complet de l'assembly>/<prefix>` — stable, non secret, distinct d'un assembly à l'autre et d'un préfixe à l'autre. |
-| `Location` | `embedded:<nom simple de l'assembly>/<prefix>` — affichage ; la règle d'affichage (`BundleDisplayPath`) y ajoute séparateur et segments comme pour le filesystem. `Assembly.Location`, vide en single-file, n'est jamais utilisé. |
-| `NativeConstraints` | `FileDirectoryConflict \| WellFormedUnicode`. Les noms sont stockés en UTF-8 dans les métadonnées (deux surrogates isolés y deviendraient le même nom) ; et un `LogicalName` écrit à la main peut définir à la fois `a` et `a/b`, qu'aucun arbre ne peut tenir : le cœur refuse alors ce bundle plutôt que de le charger. |
-| `GetVersionAsync` | Jeton dérivé du `ModuleVersionId` (MVID) du module manifeste : le contenu ne peut pas changer pendant la vie du processus. |
-| `EnumerateAsync` | La liste des noms est lue une fois (`GetManifestResourceNames()`) à la construction, filtrée sur `okf:<prefix>/`, préfixe retiré, triée ordinalement (ordre déterministe). Le filtrage par `prefix` de clé se fait à la frontière de segment. Le provider borne sa propre énumération par `MaxEntries`, `MaxDepth` et `MaxKeyBytes` (`BundleLimitExceededException`), comme le fait le filesystem. `Length` est fourni quand il est connu sans lecture. |
-| `ReadAsync` | `GetManifestResourceStream` sur le nom exact (recherche ordinale). `Length` = longueur du flux. Absent → `BundleObjectNotFoundException`. Avec `expected` différent du jeton → `BundleVersionMismatchException`. |
+| `Id` | `embedded:<nom complet de l'assembly>/<MVID>/<prefix>` — stable, non secret. Le nom complet seul ne suffit pas : deux constructions de contenus différents sous la même version d'assembly, chargées par `Assembly.Load(byte[])`, ont le même nom complet et des MVID distincts (vérifié par essai), et le catalogue déduplique sur `Id` (`FusedResolverEngine`). Deux chargements des mêmes octets (deux `AssemblyLoadContext` par exemple) gardent le même `Id` : même contenu, dédoublonnage correct. |
+| `Location` | `embedded:<nom simple de l'assembly>/<prefix>` — **affichage seulement**. La règle d'affichage (`BundleDisplayPath`) y ajoute séparateur de l'OS et segments comme pour le filesystem ; sous Windows l'affichage mélange donc les séparateurs (`embedded:App/kb\sub\x.md`), ce qui est assumé. `Concept.Path`, `Diagnostic.Path`, `Bundle.Root`, `IndexFiles`, `LogFiles` en sont des projections d'affichage, jamais des chemins à ouvrir : un appelant lit par `BundleKey` (`TryResolveResourceKey`, `ReadResourceText(BundleKey)`). Les deux membres `[Obsolete]` qui feraient de l'E/S depuis cette chaîne la refusent (D7, §4.4). `Assembly.Location`, vide en single-file, n'est jamais utilisé. |
+| `NativeConstraints` | `WellFormedUnicode` seul. Les noms sont stockés en UTF-8 dans le tas `#Strings` (ECMA-335 §II.24.2.3) : deux surrogates isolés y deviendraient le même nom. Un assembly produit par le `.targets` n'en contient jamais (`csc` échoue avant, CS1566) ; le drapeau couvre les assemblies écrits autrement. Rien d'autre : la recherche est ordinale et sensible à la casse, sans normalisation (vérifié en JIT, single-file élagué et AOT), et le manifeste peut tenir à la fois `okf:kb/a` et `okf:kb/a/b` sans alias. Exiger un arbre est une portabilité, pas une contrainte native (`BundleKeyConstraints`, remarques de classe) : sous la politique `Native`, un tel couple — possible seulement par un `LogicalName` écrit à la main — est signalé comme non portable (`KeyNotPortable`, `Strict` portant `FileDirectoryConflict`) ; sous `Strict`, le cœur rejette la clé en conflit et ce qui est dessous, et le chargement continue. |
+| `GetVersionAsync` | Jeton dérivé du `ModuleVersionId` (MVID) du module manifeste : le contenu ne peut pas changer pendant la vie du processus. En build déterministe, le MVID dépend du contenu des ressources, pour le build IL comme pour la publication élaguée (vérifié par essai : build identique, même MVID ; un octet modifié, autre MVID ; retour arrière, MVID d'origine), et Native AOT le conserve. |
+| `EnumerateAsync` | La liste des noms est lue une fois (`GetManifestResourceNames()`) à la construction, filtrée sur `okf:<prefix>/`, préfixe retiré, triée ordinalement (ordre déterministe). Le filtrage par `prefix` de clé se fait à la frontière de segment. **Le provider n'applique aucune borne** : il n'a pas de parcours interne (sa liste est déjà calculée), et le cœur applique les trois bornes dans `Bundle.ListNamesAsync` — `MaxEntries` et `MaxDepth` en levant, `MaxKeyBytes` en mettant le nom de côté comme un problème local qui ne fait pas échouer le chargement. Un provider qui lèverait sur `MaxKeyBytes` changerait cette sémantique. (Le filesystem compte aussi les répertoires dans son parcours interne ; les deux ne coïncident donc pas exactement à la marge de `MaxEntries`, ce qui est sans effet sur la parité aux bornes par défaut.) `Length` est fourni quand il est connu sans lecture. |
+| `ReadAsync` | `GetManifestResourceStream` sur le nom exact (recherche ordinale). `Length` = longueur du flux (`UnmanagedMemoryStream`, longueur connue). Absent → `BundleObjectNotFoundException`. Avec `expected` différent du jeton → `BundleVersionMismatchException`. |
 | `ExistsAsync` | Appartenance exacte (ordinale) à la liste filtrée. |
-| `WriteAsync` / `DeleteAsync` | Tâche déjà en faute avec `BundleReadOnlyException`, rien n'est tenté (même forme que `ReadOnlyBundleProvider`). |
+| `WriteAsync` / `DeleteAsync` | `ValueTask.FromException(new BundleReadOnlyException(Id))`, rien n'est tenté — la forme exacte de `ReadOnlyBundleProvider`. |
 
 Version d'objet : le même jeton MVID pour tous les objets. Il suffit aux
-comparaisons `expected` (épinglage d'attestation, `Bundle.ExecutableResources`)
-parce que le contenu est immuable pour le processus ; il change dès que
-l'assembly est reconstruit avec un contenu différent.
+comparaisons `expected` parce que le contenu est immuable pour le processus.
+Aucun mécanisme du cœur n'exige des jetons distincts pour deux objets :
+`ExecutableResources` et `ObservationRegistry` travaillent par clé, `expected`
+compare le jeton de cette clé, `BundleHandle` ne compare que le jeton du
+bundle, et les jetons ne sont ni persistés ni montrés au modèle.
 
 Toutes les opérations rendent une tâche déjà achevée : le provider sert les
 points d'entrée synchrones (`SyncBridge`) sans attente.
 
-### 4.4 Hors périmètre (YAGNI)
+### 4.4 Membres `[Obsolete]` à E/S hors filesystem (D7)
+
+`Bundle.TryResolveResource(Concept, string, out string?, out ResourceResolutionStatus)`
+et `Bundle.ReadResourceText(string)` résolvent et lisent par `System.IO` depuis
+`Root`, hors de la couture. Pour un provider qui n'est pas un
+`FileSystemBundleProvider`, `Root` est une chaîne d'affichage qui peut désigner
+un répertoire relatif ordinaire : sous Linux, `GetFullPath("embedded:App/kb")`
+donne `<cwd>/embedded:App/kb`, et un fichier planté là serait lu (mesuré). Le
+défaut est préexistant (`memory://x` de `InMemoryBundleProvider`). Les deux
+membres lèvent désormais `NotSupportedException` dans ce cas, avec un message
+qui renvoie à `TryResolveResourceKey` / `ReadResourceText(BundleKey)` — la
+même réponse que `BundleRoot` donne déjà hors filesystem
+(`BundleConceptWriter`, `OkfBundleTools`). Changement du cœur, dans ce lot,
+couvert par un test par membre (provider embarqué et `InMemoryBundleProvider`) ;
+le comportement filesystem est inchangé. `ObsoleteMembersTests` reste
+l'inventaire fermé : aucun membre n'est ajouté ni retiré. Le provider embarqué
+rejoint aussi `NoResidualFileIoTests`.
+
+### 4.5 Hors périmètre (YAGNI)
 
 Pas de rafraîchissement (`BundleRefreshPolicy.Manual` suffit, le contenu est
-figé), pas d'`IProviderScope`, pas de chargement d'assembly par nom, pas de
-fabrique de catalogue (#236), pas de lecture d'archive zip.
+figé), pas de chargement d'assembly par nom, pas de fabrique de catalogue
+(#236), pas de lecture d'archive zip, pas de support multi-module.
 
 ## 5. Côté build : le `.targets` du paquet
 
@@ -109,13 +151,16 @@ fabrique de catalogue (#236), pas de lecture d'archive zip.
 
 `build/OKF4net.Providers.EmbeddedResources.targets`, en **MSBuild pur**
 (transformations d'items, fonctions de propriétés), sans assembly de tâche.
-L'alternative — une tâche compilée — gérerait plus confortablement
-l'échappement, mais imposerait de livrer une DLL compilée contre
-`Microsoft.Build.Utilities.Core` et chargée tant par le MSBuild .NET Framework
-de Visual Studio que par celui de `dotnet` : une dépendance et une matrice de
-compatibilité pour peu de gain. Si un nom ne peut pas être reproduit fidèlement
-en MSBuild pur, le build **échoue** en nommant le fichier (le ticket : « round-trip
-every path … or reject it explicitly »).
+L'alternative — une tâche compilée — imposerait de livrer une DLL compilée
+contre `Microsoft.Build.Utilities.Core` et chargée tant par le MSBuild .NET
+Framework de Visual Studio que par celui de `dotnet` : une dépendance et une
+matrice de compatibilité pour peu de gain. Les essais des revues montrent que
+le MSBuild pur suffit : nommage fidèle, détection des liens
+(`Directory.GetDirectories(root, '*', AllDirectories)` et `File.GetAttributes`
+rendent `ReparsePoint` sur les liens), doublons de casse (`Distinct()` contre
+`DistinctWithCase()`). Ce qu'il ne peut pas reproduire, le build le **refuse
+en le nommant** (le ticket : « round-trip every path … or reject it
+explicitly »).
 
 ### 5.2 Usage
 
@@ -130,99 +175,236 @@ var provider = new EmbeddedResourceBundleProvider(typeof(App).Assembly, "kb");
 var bundle = await Bundle.LoadAsync(provider, ct: ct);
 ```
 
-### 5.3 Ce que fait la cible
+Le `.targets` est importé dans **tout** projet qui référence le paquet, y
+compris une bibliothèque qui ne fait que lire un bundle : sans item
+`OkfBundle`, il ne fait **rien**. Chaque cible et chaque `Remove` porte
+`Condition="'@(OkfBundle)' != ''"` — sans elle, zéro item donne un seul lot
+vide, donc `Include="**"`, et tout le répertoire du projet (y compris `obj/`,
+et d'éventuels secrets) partirait en ressources (vérifié par essai).
 
-Une cible exécutée avant `PrepareResourceNames`, par `OkfBundle` :
+### 5.3 Évaluation : retrait des globs par défaut
 
-1. Prend **tous** les fichiers sous le répertoire, récursivement, sans filtre —
-   comme le provider filesystem charge tout.
-2. Ajoute pour chacun un `EmbeddedResource` avec
-   `LogicalName="okf:<Prefix>/<chemin relatif, séparateur />"`,
-   `WithCulture="false"` et `Type="Non-Resx"`. Deux pièges désarmés :
-   sans `WithCulture="false"`, MSBuild déplacerait un `glossary.fr.md` dans un
-   **assembly satellite** `fr` ; et un `.resx` du bundle serait compilé par
-   ResGen au lieu d'être embarqué tel quel.
+À l'évaluation, sous la condition ci-dessus, le `.targets` retire chaque
+répertoire de bundle des items par défaut `Compile`, `EmbeddedResource` et
+`Content` : sinon un script sanctionné `.cs` rangé dans le bundle (§10) serait
+**compilé dans l'hôte**, un `.resx` serait compilé par ResGen. `None` est
+laissé tel quel : il ne change rien au build et garde les fichiers visibles
+dans l'IDE. Le répertoire est normalisé par `EnsureTrailingSlash`
+(`Include="knowledge"` sans `/` final donnerait sinon le littéral
+`knowledge**`).
 
-À l'évaluation, le `.targets` retire aussi le répertoire du bundle des globs
-par défaut `Compile`, `EmbeddedResource`, `None` et `Content` : sinon un script
-sanctionné `.cs` rangé dans le bundle (§10) serait **compilé dans l'hôte**, et
-un `.resx` serait embarqué deux fois.
+Ce `Remove` fonctionne parce que `nuget.g.targets` est importé après le corps
+du projet (`Microsoft.Common.targets`), et les globs par défaut sont posés
+avant, dans `Microsoft.NET.Sdk.DefaultItems.props`. Il ne voit pas un
+`OkfBundle` déclaré plus tard — dans `Directory.Build.targets`, ou créé par une
+cible. D'où la vérification `OKFEMB006` à l'exécution (§5.4, étape 5).
 
-### 5.4 Erreurs de build
+### 5.4 Exécution : la cible
 
-Codes `OKFEMB00x`, chacune nommant l'item ou le fichier en cause :
+Une cible `BeforeTargets="PrepareResourceNames"`, sous la condition de §5.2,
+qui fait dans l'ordre, pour chaque `OkfBundle` :
+
+1. **Valide l'item** : `Prefix` présent, non vide, sans `/` (`OKFEMB001`) ;
+   répertoire existant et contenant au moins un fichier (`OKFEMB002`) ; aucun
+   autre `OkfBundle` au même préfixe, **comparé sans tenir compte de la
+   casse**, puisque `csc` compare ainsi les noms de ressources (`OKFEMB003`).
+2. **Refuse tout lien** (D6) : le répertoire du bundle lui-même, chacun de ses
+   sous-répertoires et chacun de ses fichiers, dont `File.GetAttributes`
+   contient `ReparsePoint` (.NET le renseigne aussi pour un symlink Unix) →
+   `OKFEMB005` nommant le lien. Les sous-répertoires sont contrôlés avant le
+   glob des fichiers.
+3. **Calcule les noms** à partir de `%(FullPath)` moins le chemin complet du
+   répertoire du bundle (`Substring`), séparateur `\` remplacé par `/` sous
+   Windows. Pas de `%(RecursiveDir)%(Filename)%(Extension)` : sous Linux,
+   `%(Extension)` perd le point final de `trailingdot.` (vérifié). La variante
+   `Substring` (comme `$([MSBuild]::MakeRelative(…))`) reproduit les 41 noms
+   Linux et les 27 noms Windows des essais, octets compris, sans décodage `%xx`
+   supplémentaire.
+4. **Refuse ce qu'il ne peut pas reproduire** (`OKFEMB004`, en nommant le
+   fichier) : un nom relatif contenant `\` (sous un OS où c'est un caractère de
+   nom), `"`, `|` ou un caractère de contrôle (U+0000–U+001F, U+007F) ; deux
+   noms du même bundle égaux sans tenir compte de la casse. (Un nom à
+   surrogate isolé n'est pas détectable en MSBuild : `csc` échoue sur CS1566,
+   message moins lisible mais build en échec, rien de perdu.)
+5. **Vérifie le retrait des globs** : un item `Compile`, `Content` ou
+   `EmbeddedResource` — hormis ceux que la cible ajoute — encore situé sous un
+   répertoire de bundle → `OKFEMB006` (cas d'un `OkfBundle` déclaré après le
+   `Remove`, §5.3).
+6. **Ajoute** pour chaque fichier un `EmbeddedResource` avec
+   `LogicalName="okf:<Prefix>/<nom>"`, `WithCulture="false"` et
+   `Type="Non-Resx"`.
+
+**Pourquoi `BeforeTargets="PrepareResourceNames"`, et pourquoi ces deux
+métadonnées sont obligatoires.** `BeforeTargets` s'exécute après les
+dépendances de la cible (`AssignTargetPaths`, `SplitResourcesByCulture`,
+`CreateManifestResourceNames`) : les items ajoutés échappent donc à
+`AssignCulture` et aux traitements spécialisés, et arrivent complets. Mais ces
+deux métadonnées sont alors le seul filtre de `_CoreCompileResourceInputs`
+(`Microsoft.Common.CurrentVersion.targets`) : sans elles, le build réussit avec
+**zéro ressource** (vérifié). Avancer la cible avant `AssignTargetPaths`
+marcherait pour la culture (sans `WithCulture="false"`, `glossary.fr.md`
+partirait dans un satellite `fr/`, vérifié) mais enverrait un `.licx` du bundle
+à la tâche LC (`MSB4803`, vérifié). Modifier `PrepareResourceNamesDependsOn`
+est écarté : écrasé en silence par `CurrentVersion.targets` quand le fichier
+est importé dans le corps du projet. Le `.targets` porte ces raisons en
+commentaire.
+
+### 5.5 Erreurs de build
 
 | Code | Cas |
 |---|---|
 | `OKFEMB001` | `Prefix` absent ou invalide (vide, ou contenant `/`). |
 | `OKFEMB002` | Répertoire inexistant, ou sans aucun fichier. |
-| `OKFEMB003` | Deux `OkfBundle` avec le même préfixe. |
-| `OKFEMB004` | Un fichier dont le nom ne peut pas être reproduit fidèlement — réservé au cas où les tests en trouveraient un ; sinon le code n'est pas créé. |
+| `OKFEMB003` | Deux `OkfBundle` au même préfixe, sans tenir compte de la casse. |
+| `OKFEMB004` | Un nom que le stockage embarqué ne peut pas tenir : `\`, `"`, `|`, caractère de contrôle, ou jumeau de casse dans le même bundle. |
+| `OKFEMB005` | Un lien symbolique ou une jonction : le répertoire du bundle, un sous-répertoire ou un fichier (D6). |
+| `OKFEMB006` | Un item `Compile`, `Content` ou `EmbeddedResource` resté sous un répertoire de bundle (un `OkfBundle` déclaré après le retrait des globs). |
 
-### 5.5 Emballage
+### 5.6 Emballage
 
 Le `.targets` va dans `build/` seulement, pas `buildTransitive/` : seul le
 projet qui déclare `<OkfBundle>` en a besoin, et il référence le paquet
-directement. Une bibliothèque qui embarque un bundle est lue depuis une
-application par l'`Assembly` de la bibliothèque, sans `.targets` côté
-application.
+directement (`PrivateAssets` contient `build` par défaut). Une bibliothèque
+qui embarque un bundle est lue depuis une application par l'`Assembly` de la
+bibliothèque, sans `.targets` côté application.
 
 ## 6. Tests
 
-### 6.1 Tests unitaires
+Toutes les comparaisons qui passent par une validation ou un audit utilisent
+la même horloge fixe, `FixedClock` à **2026-11-01T00:00:00Z**, des deux côtés
+et dans la sonde AOT : `ConceptAudit` enregistre l'instant d'évaluation, et les
+`stale_after: 2026-12-31` d'`acme_retail` changeraient sinon le résultat avec
+le calendrier, sans changement de code.
+
+### 6.1 Tests du provider
 
 Dans `tests/OKF4net.Tests/Providers/EmbeddedResources/` :
 
-- **Contrat** : chaque chemin d'écriture refuse — directement
-  (`WriteAsync`, `DeleteAsync`) et par `BundleConceptWriter`, `IndexGenerator`
-  et `OkfBundleTools` (dont les outils d'écriture ne doivent pas être
-  proposés) ; toutes les tâches sont achevées (`CompletionTrackingProvider`) ;
-  le préfixe filtre à la frontière de segment ; un préfixe inconnu, vide ou
-  contenant `/` lève ; les bornes sont honorées ; la version est stable et un
-  `expected` différent lève ; `GetBundlePrefixes` liste les préfixes.
-- **Fidélité des noms** : un répertoire d'actifs aux noms délibérément
-  pénibles — `a.b.c.md`, `glossary.fr.md`, espaces, `% ; @ $ # '`, non-ASCII
-  en NFC, `.hidden`, un `.resx`, un `.cs`, des répertoires imbriqués. Assertion :
-  le listing embarqué est égal, octet pour octet, au listing filesystem du même
-  répertoire. Pas de nom NFD dans le dépôt (un checkout git sur macOS
-  l'altérerait).
+- **Contrat** : chaque chemin d'écriture refuse — directement (`WriteAsync`,
+  `DeleteAsync`) et par `BundleConceptWriter`, `IndexGenerator` et
+  `OkfBundleTools` (dont les outils d'écriture ne doivent pas être proposés) ;
+  toutes les tâches sont achevées (`CompletionTrackingProvider`) ; le préfixe
+  filtre à la frontière de segment ; un préfixe inconnu, vide ou contenant `/`
+  lève ; un assembly dynamique est refusé ; un assembly chargé par
+  `Assembly.Load(byte[])` est servi ; deux assemblies de même nom complet et de
+  contenus différents ont des `Id` distincts ; `MaxKeyBytes` abaissé laisse le
+  chargement aboutir avec un problème local, comme le filesystem ; la version
+  est stable et un `expected` différent lève ; `GetBundlePrefixes` liste les
+  préfixes et ignore `okf:/x`.
+- **D7** : `TryResolveResource` et `ReadResourceText(string)` lèvent
+  `NotSupportedException` sur le provider embarqué et sur
+  `InMemoryBundleProvider` ; le provider embarqué rejoint
+  `NoResidualFileIoTests`.
 
-### 6.2 Parité (critère d'acceptation du ticket)
+### 6.2 Tests du `.targets`
 
-Le projet de tests importe le `.targets` directement depuis `src/` et embarque
-les bundles de fixtures (`okf_v02`, `okf_v02_computation`, `okf_v02_reserved`,
-`appendix_a`) et `bundles/acme_retail`. Pour chacun, chargé par le filesystem
-puis par le provider embarqué, on compare :
+- **Répertoire d'actifs dans le projet de tests**
+  (`tests/OKF4net.Tests/Providers/EmbeddedResources/Assets/names/`, donc sous
+  les globs par défaut du projet) : `a.b.c.md`, `glossary.fr.md`,
+  `x.en-US.md`, espaces, `% ; @ $ # ' ( ) ,`, `$(Property).md`,
+  `%(Metadata).md`, `@(Items).md`, `pct%25.md`, `pct%3B.md`, non-ASCII en NFC,
+  `.hidden`, `.dir/`, des répertoires imbriqués, un `.licx`, un `.restext`, un
+  `.resx` brut et un `.cs` **volontairement invalides**. Assertion : les clés
+  et les octets servis par le provider embarqué sont égaux à ceux que sert
+  `FileSystemBundleProvider` (son `EnumerateAsync`, pas un listing brut du
+  disque) sur le même répertoire. Le build qui réussit prouve à lui seul que le
+  `.cs` n'est pas compilé ni le `.resx` passé à ResGen. Rien de NFD, de point
+  final ni de caractère réservé à Windows n'est versionné (un checkout les
+  altérerait ou échouerait).
+- **Builds en processus enfant** (`TargetsBuildTests`) : chaque test génère
+  dans un répertoire temporaire un petit projet qui importe le `.targets`
+  **après** `Sdk.targets` (imports SDK explicites, pour reproduire l'ordre de
+  NuGet), lance `dotnet build`, puis lit l'assembly produit dans un
+  `AssemblyLoadContext` collectible. Cas :
+  - un arbre de noms générés, légaux sur l'OS courant — sous Linux et macOS en
+    plus : point final, espaces en tête et en fin, NFD, `* ? : < >` — comparé
+    au provider filesystem ;
+  - un projet qui référence le `.targets` **sans** `OkfBundle` n'embarque
+    aucune ressource ;
+  - `Include="knowledge"` sans `/` final fonctionne ;
+  - chaque code `OKFEMB001` à `OKFEMB006` est levé sur son cas : préfixe
+    invalide ; répertoire vide ; préfixes ne différant que par la casse ; sous
+    Linux, jumeaux de casse, `"`, `|`, `\` ; un lien (jonction sous Windows,
+    qui ne demande pas de privilège, symlink de fichier et de répertoire
+    ailleurs) ; un `OkfBundle` déclaré dans `Directory.Build.targets`.
 
-- les concepts (clé, id, frontmatter, corps) ;
-- les diagnostics de `BundleValidator` (code, sévérité, clé, message) ;
-- `ConceptAudit`, le graphe, `ConceptSearch` sur quelques requêtes ;
-- le relevé `ExecutableResources` ;
-- le contenu des index générés (rendu sans écriture).
+### 6.3 Parité (critère d'acceptation du ticket)
 
-Le projet de tests gardant les globs par défaut, cette parité prouve en même
-temps qu'un `.cs` ou un `.resx` d'un bundle n'est pas compilé. Les fixtures ne
-sont pas modifiées : elles sont seulement embarquées (aucun arbitrage au sens
-de `tests/fixtures/README.md`).
+Le projet de tests importe le `.targets` depuis `src/`, à la fin de son corps,
+après ses items `OkfBundle`, et embarque les bundles de fixtures (`okf_v02`,
+`okf_v02_computation`, `okf_v02_reserved`, `appendix_a`) et
+`bundles/acme_retail`. Pour chacun, chargé par `FileSystemBundleProvider` puis
+par le provider embarqué :
 
-### 6.3 Job CI `embedded bundle AOT smoke test`
+- **objets** : mêmes clés, mêmes octets, exhaustivement ;
+- **chargement** : `OkfVersion`, `IndexKeys`, `LogKeys`, `ParseProblems`,
+  `PortabilityIssues` (par clé et code, sans chemin d'affichage) ;
+- **concepts** : clé, id, frontmatter, corps ;
+- **diagnostics** de `BundleValidator` : code, sévérité, clé, `Concept`,
+  `Field`, message — jamais `Path`, projection d'affichage qui diffère
+  nécessairement ;
+- `ConceptAudit` (horloge fixe), le graphe, `ConceptSearch` sur quelques
+  requêtes, par clé et sans chemin d'affichage ;
+- **`ExecutableResources`** : par clé et état, **sans** les jetons de version
+  (SHA-256 d'un côté, MVID de l'autre), puis une relecture épinglée au jeton de
+  chaque côté dont les octets sont comparés ;
+- **index générés** : `IndexGenerator` n'a pas d'API publique de rendu sans
+  écriture ; chaque provider est donc enveloppé dans un double de test
+  inscriptible qui délègue les lectures et **capture** les écritures en
+  mémoire, et l'on compare les écritures capturées. Aucune fixture n'est
+  écrite.
 
-Même matrice de RID que `aot-publish`. Le job fait `dotnet pack` du provider
-vers un flux local, puis publie `tests/EmbeddedBundleAotProbe/` en
-`PublishAot`. Ce projet, hors de `OKF4net.sln`, consomme le **vrai paquet**
-(donc le vrai `.targets`, l'élagage et l'AOT réels) et embarque
-`bundles/acme_retail`. Le job l'exécute depuis un répertoire temporaire vide —
-aucun bundle sur disque — et compare son résumé (nombre de concepts,
-diagnostics par sévérité, code de sortie) à un fichier attendu versionné.
+Les fixtures ne sont pas modifiées : elles sont seulement embarquées (aucun
+arbitrage au sens de `tests/fixtures/README.md`). La preuve que les globs ne
+compilent pas un `.cs` de bundle est celle de §6.2, pas celle-ci : ces bundles
+sont hors du répertoire du projet et n'ont ni `.cs` ni `.resx`.
+
+### 6.4 Job CI `embedded bundle AOT smoke test`
+
+Même matrice de RID que `aot-publish` (`linux-x64`, `osx-arm64`, `win-x64`).
+
+1. `dotnet pack` de **`OKF4net` et du provider** vers un flux local, avec une
+   version propre au run : `<Version de Directory.Build.props>-ci.<run_id>.<run_attempt>`.
+   Le `ProjectReference` vers `OKF4net` devient une dépendance de paquet à la
+   même version : le cœur doit être dans le même flux, sinon la restauration
+   échoue ou prend un cœur publié.
+2. `NUGET_PACKAGES` isolé ; un `nuget.config` généré listant le flux local
+   **et** nuget.org (`Microsoft.DotNet.ILCompiler` et les packs runtime en
+   viennent ; un `--source` seul remplacerait les sources).
+3. Restauration de `tests/EmbeddedBundleAotProbe/` avec le RID et
+   `PublishAot=true`, la version épinglée ; contrôle dans
+   `project.assets.json` que `OKF4net` et le provider sont résolus à la version
+   du run ; puis `dotnet publish --no-restore` avec les mêmes propriétés.
+4. La sonde (hors de `OKF4net.sln`, elle hérite du `Directory.Build.props` du
+   dépôt, `TreatWarningsAsErrors` compris) embarque `bundles/acme_retail` et
+   imprime un résumé déterministe — clés, nombre de concepts, diagnostics
+   (code, sévérité, clé) et décompte d'audit, horloge fixe. Elle est exécutée
+   **deux fois** : depuis un répertoire temporaire vide, sur le bundle
+   embarqué ; puis avec `--filesystem <chemin du checkout>`, sur le même
+   bundle lu par `FileSystemBundleProvider`, dans le même binaire AOT. Le job
+   compare les deux sorties. Aucun fichier attendu versionné : un snapshot
+   d'`acme_retail` (copie amont, dérive connue) n'aurait pas de régime dans
+   `tests/fixtures/README.md`.
 
 ## 7. Livraison et documentation
 
 - `src/OKF4net.Providers.EmbeddedResources/` : référence `OKF4net` seulement,
-  zéro `PackageReference`, bloc d'emballage comme `OKF4net.Catalog`, README de
-  paquet (recette, codes `OKFEMB00x`, fabrique de catalogue écrite par l'hôte,
-  renvoi à #236).
+  zéro `PackageReference`, bloc d'emballage comme `OKF4net.Catalog`, le
+  `.targets` sous `build/` dans le paquet, README de paquet (recette, domaine
+  des assemblies, codes `OKFEMB00x`, `Location` d'affichage, fabrique de
+  catalogue écrite par l'hôte, renvoi à #236).
 - `release.yml` : une étape `dotnet pack` de plus.
+- `ci.yml` : le job de §6.4.
 - `CLAUDE.md` : le projet rejoint la liste BCL-only des règles dures ; une
-  puce d'architecture.
-- `README.md` (racine) et `CHANGELOG.md`.
+  puce d'architecture (dont le `.targets`, code non-.NET dont les gardes
+  exécutables sont `TargetsBuildTests` et le job AOT).
+- `README.md` (racine) et `CHANGELOG.md` (dont D7, changement de comportement
+  de deux membres `[Obsolete]`).
 - `graphify update .` après les modifications de code.
+
+## 8. Non vérifié à ce jour
+
+Par les revues : AOT sur `win-x64` et `osx-arm64` (le job de §6.4 le
+couvrira), macOS en général, le MSBuild .NET Framework de Visual Studio,
+l'interaction avec `dotnet format`. Le plan commence par un prototype du
+`.targets` exécuté sur ces cas avant toute autre tâche.
