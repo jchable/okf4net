@@ -257,7 +257,13 @@ qui fait dans l'ordre, pour chaque `OkfBundle` :
 4. **Refuse ce qu'il ne peut pas reproduire** (`OKFEMB004`, en nommant le
    fichier) : un nom relatif contenant `\` (sous un OS où c'est un caractère de
    nom), `"`, `|` ou un caractère de contrôle (U+0000–U+001F, U+007F) ; deux
-   noms du même bundle égaux sans tenir compte de la casse. (Un nom à
+   noms du même bundle égaux sans tenir compte de la casse. Les caractères
+   sont contrôlés **pendant le parcours, sur les noms bruts** que rendent
+   `Directory.GetFiles` et `Directory.GetDirectories`, avant qu'aucun ne
+   devienne un item : hors Windows, MSBuild change le `\` d'une spécification
+   d'item en `/`, si bien que `back\slash.md` atteindrait `File.GetAttributes`
+   sous le nom `back/slash.md` et échouerait sur `MSB4184` au lieu du refus
+   nommé (revue du plan, vérifié sous Linux). (Un nom à
    surrogate isolé n'est pas détectable en MSBuild : `csc` échoue sur CS1566,
    message moins lisible mais build en échec, rien de perdu.)
 5. **Vérifie le retrait des globs** : un item `Compile`, `Content` ou

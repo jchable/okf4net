@@ -236,7 +236,7 @@ This is the prototype that passed on Windows on 2026-11-12 (spec §8), with its 
            Condition="'@(_OkfLeftover)' != ''"
            Text="OkfBundle '$(_OkfThisDir)': @(_OkfLeftover, ', ') is still a Compile, Content or EmbeddedResource item; declare OkfBundle in the project file, not in Directory.Build.targets or a target." />
 
-    <!-- Only now, with no directory link left, is the tree globbed. -->
+    <!-- Only now, with no directory link and no unholdable name left (both checked by the walk), is the tree globbed. -->
     <ItemGroup>
       <_OkfThisFile Include="$(_OkfThisDir)**" />
       <_OkfThisFile>
@@ -251,9 +251,6 @@ This is the prototype that passed on Windows on 2026-11-12 (spec §8), with its 
     <Error Code="OKFEMB005"
            Condition="$([System.String]::Copy('%(_OkfThisFile.OkfAttrs)').Contains('ReparsePoint'))"
            Text="OkfBundle '$(_OkfThisDir)': '%(_OkfThisFile.FullPath)' is a symbolic link; links are refused." />
-    <Error Code="OKFEMB004"
-           Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('%(_OkfThisFile.OkfRel)', '[&quot;|\x00-\x1F\x7F]')) or ('$([MSBuild]::IsOSPlatform(`Windows`))' != 'true' and $([System.String]::Copy('%(_OkfThisFile.OkfRel)').Contains('\')))"
-           Text="OkfBundle '$(_OkfThisDir)': '%(_OkfThisFile.OkfRel)' cannot be held as an embedded resource name (\ off Windows, &quot;, |, or a control character)." />
 
     <ItemGroup>
       <_OkfThisFile>
@@ -285,6 +282,10 @@ This is the prototype that passed on Windows on 2026-11-12 (spec §8), with its 
     NUL (impossible in a name on every OS), escaped, then split, so a ';' in a
     directory name survives; Char.ConvertFromUtf32 is used because
     Convert.ToChar(0) binds to the string overload and yields '0'.
+    OKFEMB004 is checked HERE, on the raw names Directory.GetFileSystemEntries
+    returns, before any of them becomes an item: off Windows MSBuild turns a
+    '\' in an item spec into '/', so "back\slash.md" would reach GetAttributes
+    as "back/slash.md" and fail with MSB4184 instead of the named refusal.
   -->
   <Target Name="_OkfWalkDir" Returns="@(_OkfWalkResult)">
     <PropertyGroup>
@@ -292,8 +293,18 @@ This is the prototype that passed on Windows on 2026-11-12 (spec §8), with its 
       <_OkfIsLink>false</_OkfIsLink>
       <_OkfIsLink Condition="$(_OkfAttrs.Contains('ReparsePoint'))">true</_OkfIsLink>
       <_OkfNul>$([System.Char]::ConvertFromUtf32(0))</_OkfNul>
+      <_OkfDirSlash>$([MSBuild]::EnsureTrailingSlash('$(_OkfDir)'))</_OkfDirSlash>
+      <_OkfBadChars Condition="$([MSBuild]::IsOSPlatform('Windows'))">["|\x01-\x1F\x7F]</_OkfBadChars>
+      <_OkfBadChars Condition="!$([MSBuild]::IsOSPlatform('Windows'))">["|\\\x01-\x1F\x7F]</_OkfBadChars>
+      <!-- The entries' NAMES (files, then directories; GetFileSystemEntries is not an allowed property function), NUL-separated, the parent path stripped so it can never match. -->
+      <_OkfEntryPaths Condition="'$(_OkfIsLink)' != 'true'">$([System.String]::Join($(_OkfNul), $([System.IO.Directory]::GetFiles($(_OkfDir)))))$(_OkfNul)$([System.String]::Join($(_OkfNul), $([System.IO.Directory]::GetDirectories($(_OkfDir)))))</_OkfEntryPaths>
+      <_OkfEntryNames>$(_OkfEntryPaths.Replace($(_OkfDirSlash), ''))</_OkfEntryNames>
+      <_OkfBadName Condition="'$(_OkfIsLink)' != 'true'">$([System.Text.RegularExpressions.Regex]::Match($(_OkfEntryNames), '[^\x00]*$(_OkfBadChars)[^\x00]*').Value)</_OkfBadName>
       <_OkfChildren Condition="'$(_OkfIsLink)' != 'true'">$([MSBuild]::Escape($([System.String]::Join($(_OkfNul), $([System.IO.Directory]::GetDirectories($(_OkfDir)))))).Split($(_OkfNul)))</_OkfChildren>
     </PropertyGroup>
+    <Error Code="OKFEMB004"
+           Condition="'$(_OkfBadName)' != ''"
+           Text="'$(_OkfDir)' holds '$(_OkfBadName)', a name an embedded resource cannot hold (\ off Windows, &quot;, |, or a control character)." />
     <ItemGroup>
       <_OkfWalkResult Include="$([MSBuild]::Escape($(_OkfDir)))" OkfIsLink="$(_OkfIsLink)" />
       <_OkfChildDir Condition="'$(_OkfIsLink)' != 'true'" Include="$(_OkfChildren)" />
@@ -627,23 +638,81 @@ public class TargetsBuildTests
         outside.Write("secret-inner-dir-marker/secret.md", "secret\n");
         tmp.Write("knowledge/a.md", "a\n");
         tmp.Write("knowledge/sub/b.md", "b\n");
-        var linkPath = Path.Combine(tmp.Path, "knowledge", "sub", "link");
         var created = kind switch
         {
             "outward" => TryDirectoryLink(tmp, "knowledge/sub/link", outside.Path),
             "cycle" => TryDirectoryLink(tmp, "knowledge/sub/link", Path.Combine(tmp.Path, "knowledge")),
             "dangling" => TryDirectoryLink(tmp, "knowledge/sub/link", Path.Combine(outside.Path, "gone")),
-            _ => tmp.TryCreateFileSymlinkToExternalFile("knowledge/sub/link.md", Path.Combine(outside.Path, "secret-inner-dir-marker", "secret.md")),
+            _ => tmp.TryCreateFileSymlinkToExternalFile(Native("knowledge/sub/link.md"), Path.Combine(outside.Path, "secret-inner-dir-marker", "secret.md")),
         };
+        // Only the file symlink may legitimately be impossible (Windows without Developer Mode); the
+        // three directory cases must run on every OS — the gate (step 7) checks they are not skipped.
         Skip.IfNot(created, "This environment cannot create that link.");
 
         var result = EmbeddedBuild.Build(tmp.Path, Bundle, verbosity: "detailed");
 
         Assert.NotEqual(0, result.ExitCode);
         Assert.Contains("OKFEMB005", result.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain("MSB4184", result.Output, StringComparison.Ordinal);
         // The walk never listed the link's target: its inner directory appears nowhere in the detailed log.
         Assert.DoesNotContain("secret-inner-dir-marker", result.Output, StringComparison.Ordinal);
     }
+
+    [SkippableFact]
+    public void Refuses_a_link_to_an_unreadable_target_without_trying_to_list_it()
+    {
+        // Spec §6.2/§8: the strongest form of "never descends": listing the target would THROW
+        // (UnauthorizedAccessException -> MSB4184), so OKFEMB005 alone, with no MSB4184, proves no listing was attempted.
+        using var tmp = new TempDir();
+        using var outside = new TempDir();
+        outside.Write("locked/inner/secret.md", "secret\n");
+        var locked = Path.Combine(outside.Path, "locked");
+        tmp.Write("knowledge/a.md", "a\n");
+        tmp.Write("knowledge/sub/b.md", "b\n");
+
+        UninspectableJunction? junction = null;
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                junction = tmp.TryCreateUninspectableJunction(Native("knowledge/sub/link"), locked, denyParentListing: false);
+                Skip.If(junction is null, "Could not create a junction whose target is unreadable.");
+            }
+            else
+            {
+                Skip.IfNot(TryUnixDirectorySymlink(Path.Combine(tmp.Path, Native("knowledge/sub/link")), locked), "Could not create the symlink.");
+                File.SetUnixFileMode(locked, UnixFileMode.None);
+                var denied = false;
+                try
+                {
+                    Directory.GetDirectories(locked);
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    denied = true;
+                }
+
+                Skip.IfNot(denied, "The restriction is not effective here (running as root).");
+            }
+
+            var result = EmbeddedBuild.Build(tmp.Path, Bundle);
+
+            Assert.NotEqual(0, result.ExitCode);
+            Assert.Contains("OKFEMB005", result.Output, StringComparison.Ordinal);
+            Assert.DoesNotContain("MSB4184", result.Output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            junction?.Dispose();
+            if (!OperatingSystem.IsWindows() && Directory.Exists(locked))
+            {
+                File.SetUnixFileMode(locked, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+        }
+    }
+
+    /// <summary>TempDir's link helpers combine the relative path as given; on Windows `mklink` rejects '/' ("Option non valide").</summary>
+    private static string Native(string relative) => relative.Replace('/', Path.DirectorySeparatorChar);
 
     /// <summary>A junction on Windows (no privilege needed), a directory symlink elsewhere; a dangling target is created then deleted.</summary>
     private static bool TryDirectoryLink(TempDir tmp, string relativeLink, string target)
@@ -655,8 +724,8 @@ public class TargetsBuildTests
         }
 
         var ok = OperatingSystem.IsWindows()
-            ? tmp.TryCreateJunctionToExternalDir(relativeLink, target)
-            : TryUnixDirectorySymlink(Path.Combine(tmp.Path, relativeLink.Replace('/', Path.DirectorySeparatorChar)), target);
+            ? tmp.TryCreateJunctionToExternalDir(Native(relativeLink), target)
+            : TryUnixDirectorySymlink(Path.Combine(tmp.Path, Native(relativeLink)), target);
         if (dangling)
         {
             Directory.Delete(target);
@@ -751,7 +820,7 @@ gh pr create --draft --base dev --title "Embedded-resource bundle provider (#141
 gh pr checks --watch
 ```
 
-Expected: `build & test` green on all three OSes, with `TargetsBuildTests` run (not skipped) for the link cases on Linux and macOS.
+Expected: `build & test` green on all three OSes. Then read the test results of each OS (`gh run view --log` on the `build & test` job, or the TRX if uploaded) and check that `Refuses_a_link_without_listing_its_target` ran — **not skipped** — for `outward`, `cycle` and `dangling` on all three OSes, `Refuses_a_link_to_an_unreadable_target_without_trying_to_list_it` on Windows and at least one of Linux/macOS, and `Rejects_a_name_an_assembly_cannot_hold` and `Rejects_case_twins` on Linux. A skip there is a gate failure, not a pass.
 
 Spec §8 item 3 (the evaluation-time `Remove` must not walk the disk) is settled by construction, record it in the PR description: a `Remove` glob is matched against items that already exist, and the items it removes come from the SDK's own default globs (`Microsoft.NET.Sdk.DefaultItems.props`), which enumerate the project tree at evaluation whether or not this package is referenced. The package adds no evaluation-time enumeration; the cycle case of `Refuses_a_link_without_listing_its_target` shows evaluation terminates. If the walk fails there (a symlink not reported as `ReparsePoint`, a dangling link that throws in `GetAttributes`, an escaping problem), try a fix **in pure MSBuild** once; if it still fails, **stop and report to the maintainer** with the CI log — D2 reopens (spec §5.1). Do not start Task 2 before this gate is green.
 
@@ -763,12 +832,12 @@ Spec §8 item 3 (the evaluation-time `Remove` must not walk the disk) is settled
 - Modify: `src/OKF4net/OKF4net.csproj` (add `<InternalsVisibleTo Include="OKF4net.Providers.EmbeddedResources" />` beside the others)
 - Create: `src/OKF4net.Providers.EmbeddedResources/EmbeddedResourceBundleProvider.cs`
 - Modify: `tests/OKF4net.Tests/OKF4net.Tests.csproj` (test bundles + import at the end of the body)
-- Create: `tests/OKF4net.Tests/Providers/EmbeddedResources/Assets/contract/index.md`, `notes/a.md`, `notes/b.md`, `notes/a-much-longer-name.md`, `refs/q.sql`; `Assets/contract2/one.md`; `Assets/stray.txt`
+- Create: `tests/OKF4net.Tests/Providers/EmbeddedResources/Assets/contract/index.md`, `notes/a.md`, `notes/b.md`, `notes/a-much-longer-name.md`, `refs/q.sql`; `Assets/contract2/one.md`; `Assets/stray1.txt`, `Assets/stray2.txt`; `Assets/names/**`
 - Test: `tests/OKF4net.Tests/Providers/EmbeddedResources/EmbeddedResourceBundleProviderTests.cs`
 
 **Interfaces:**
-- Consumes: `EmbeddedBuild.Build` / `Result.AssemblyPath` (Task 1); `OKF4net.Internal.SyncAsyncEnumerable.Create<T>(Func<IEnumerable<T>>, CancellationToken)` (internal to `OKF4net`).
-- Produces (public): `namespace OKF4net.Providers.EmbeddedResources; public sealed class EmbeddedResourceBundleProvider : IBundleProvider` with `EmbeddedResourceBundleProvider(Assembly assembly, string prefix)` and `static IReadOnlyList<string> GetBundlePrefixes(Assembly assembly)`; `public const string ResourceNamePrefix = "okf:"`. Test bundles embedded in `OKF4net.Tests` under prefixes `contract`, `contract2`, `names`.
+- Consumes: `EmbeddedBuild.Build` / `Result.AssemblyPath` (Task 1); `SyncAsyncEnumerable.Create<T>(Func<IEnumerable<T>>, CancellationToken)` — internal to `OKF4net`, declared in namespace `OKF4net` (file `src/OKF4net/Internal/SyncAsyncEnumerable.cs`), so it resolves unqualified from `OKF4net.Providers.EmbeddedResources` with no `using`.
+- Produces (public): `namespace OKF4net.Providers.EmbeddedResources; public sealed class EmbeddedResourceBundleProvider : IBundleProvider` with `EmbeddedResourceBundleProvider(Assembly assembly, string prefix)` and `static IReadOnlyList<string> GetBundlePrefixes(Assembly assembly)` — nothing else public beyond the `IBundleProvider` members. Test bundles embedded in `OKF4net.Tests` under prefixes `contract`, `contract2`, `names`.
 
 - [ ] **Step 1: Add the test bundles**
 
@@ -830,7 +899,7 @@ description: In the contract2 bundle.
 One.
 ```
 
-`Assets/stray.txt`: `stray` (one line).
+`Assets/stray1.txt`: `stray one` (one line). `Assets/stray2.txt`: `stray two` (one line).
 
 Then the `names` bundle: create `tests/OKF4net.Tests/Providers/EmbeddedResources/Assets/names/` holding, each with content `content of <name>` + newline: `a.b.c.md`, `glossary.fr.md`, `x.en-US.md`, `sp ace.md`, `pct%25.md`, `pct%3B.md`, `$(P).md`, `@(I).md`, `%(M).md`, `q'uote.md`, `c,omma.md`, `par(en).md`, `étoile.md`, `.hidden`, `.dir/inner.md`, `l.licx`, `t.restext`, `nested/one/two.md`; plus `x.cs` = `this is not C#` and `r.resx` = `<not xml`. (Nothing NFD, no trailing dot, nothing Windows refuses: spec §6.2.)
 
@@ -849,15 +918,17 @@ In `tests/OKF4net.Tests/OKF4net.Tests.csproj`, add before `</Project>`:
     <OkfBundle Include="Providers\EmbeddedResources\Assets\contract\" Prefix="contract" />
     <OkfBundle Include="Providers\EmbeddedResources\Assets\contract2\" Prefix="contract2" />
     <OkfBundle Include="Providers\EmbeddedResources\Assets\names\" Prefix="names" />
-    <!-- Not under the convention: GetBundlePrefixes must ignore them. -->
-    <EmbeddedResource Include="Providers\EmbeddedResources\Assets\stray.txt" LogicalName="okf:/stray.md" WithCulture="false" Type="Non-Resx" />
-    <EmbeddedResource Include="Providers\EmbeddedResources\Assets\stray.txt" LogicalName="okf:noslash" WithCulture="false" Type="Non-Resx" />
+    <!-- Not under the convention: GetBundlePrefixes must ignore them. Two files: one item per file (NETSDK1022 refuses a duplicate EmbeddedResource). -->
+    <EmbeddedResource Include="Providers\EmbeddedResources\Assets\stray1.txt" LogicalName="okf:/stray.md" WithCulture="false" Type="Non-Resx" />
+    <EmbeddedResource Include="Providers\EmbeddedResources\Assets\stray2.txt" LogicalName="okf:noslash" WithCulture="false" Type="Non-Resx" />
   </ItemGroup>
 
   <Import Project="..\..\src\OKF4net.Providers.EmbeddedResources\build\OKF4net.Providers.EmbeddedResources.targets" />
 ```
 
 Run: `dotnet build OKF4net.sln` — Expected: success (proves `x.cs` is not compiled and `r.resx` not ResGen'd).
+
+If it fails with `OKFEMB006` on `names/x.cs` (one external reviewer saw it in a hand-assembled copy; it did not reproduce on 2026-11-12 in a project of the same layout with the same packages and the same import placement), do not weaken the check: run `dotnet msbuild tests/OKF4net.Tests/OKF4net.Tests.csproj -getItem:Compile -getItem:OkfBundle` and find which item still holds the file and why the `Remove` missed it (the `Import` must come after the `OkfBundle` items in the file; nothing may re-add `Compile` items afterwards). Report it if the cause is not in this plan's own edits.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -918,40 +989,43 @@ public class EmbeddedResourceBundleProviderTests
     }
 
     [Fact]
-    public void Exists_is_exact_and_ordinal()
+    public async Task Exists_is_exact_and_ordinal()
     {
         var p = Contract();
-        Assert.True(p.ExistsAsync(BundleKey.Parse("notes/a.md"), CancellationToken.None).Result);
-        Assert.False(p.ExistsAsync(BundleKey.Parse("Notes/a.md"), CancellationToken.None).Result);
-        Assert.False(p.ExistsAsync(BundleKey.Parse("notes"), CancellationToken.None).Result); // a prefix is not an object
+        var exact = p.ExistsAsync(BundleKey.Parse("notes/a.md"), CancellationToken.None);
+        Assert.True(exact.IsCompleted);
+        Assert.True(await exact);
+        Assert.False(await p.ExistsAsync(BundleKey.Parse("Notes/a.md"), CancellationToken.None));
+        Assert.False(await p.ExistsAsync(BundleKey.Parse("notes"), CancellationToken.None)); // a prefix is not an object
     }
 
     [Fact]
-    public void A_missing_object_and_a_stale_expected_version_fault_the_task()
+    public async Task A_missing_object_and_a_stale_expected_version_fault_the_task()
     {
         var p = Contract();
         var missing = p.ReadAsync(BundleKey.Parse("nope.md"), null, CancellationToken.None);
         Assert.True(missing.IsFaulted);
-        Assert.IsType<BundleObjectNotFoundException>(missing.AsTask().Exception!.InnerException);
+        await Assert.ThrowsAsync<BundleObjectNotFoundException>(async () => await missing);
 
         var stale = p.ReadAsync(BundleKey.Parse("index.md"), new BundleObjectVersion("other"), CancellationToken.None);
-        Assert.IsType<BundleVersionMismatchException>(stale.AsTask().Exception!.InnerException);
+        Assert.True(stale.IsFaulted);
+        await Assert.ThrowsAsync<BundleVersionMismatchException>(async () => await stale);
 
-        var version = p.GetVersionAsync(BundleLimits.Default, CancellationToken.None).Result;
-        using var ok = p.ReadAsync(BundleKey.Parse("index.md"), new BundleObjectVersion(version.Token), CancellationToken.None).Result;
+        var version = await p.GetVersionAsync(BundleLimits.Default, CancellationToken.None);
+        using var ok = await p.ReadAsync(BundleKey.Parse("index.md"), new BundleObjectVersion(version.Token), CancellationToken.None);
         Assert.Equal(version.Token, ok.Version.Token);
     }
 
     [Fact]
-    public void Writes_and_deletes_are_refused_as_completed_faults()
+    public async Task Writes_and_deletes_are_refused_as_completed_faults()
     {
         var p = Contract();
         var write = p.WriteAsync(BundleKey.Parse("index.md"), "x"u8.ToArray(), BundleWriteCondition.None, CancellationToken.None);
         var delete = p.DeleteAsync(BundleKey.Parse("index.md"), BundleWriteCondition.None, CancellationToken.None);
         Assert.True(write.IsFaulted);
         Assert.True(delete.IsFaulted);
-        Assert.IsType<BundleReadOnlyException>(write.AsTask().Exception!.InnerException);
-        Assert.IsType<BundleReadOnlyException>(delete.AsTask().Exception!.InnerException);
+        await Assert.ThrowsAsync<BundleReadOnlyException>(async () => await write);
+        await Assert.ThrowsAsync<BundleReadOnlyException>(async () => await delete);
     }
 
     [Fact]
@@ -972,7 +1046,7 @@ public class EmbeddedResourceBundleProviderTests
     }
 
     [Fact]
-    public void Declares_its_capabilities_constraints_identity_and_version()
+    public async Task Declares_its_capabilities_constraints_identity_and_version()
     {
         var p = Contract();
         var mvid = Self.ManifestModule.ModuleVersionId.ToString("N");
@@ -981,7 +1055,9 @@ public class EmbeddedResourceBundleProviderTests
         Assert.Equal(BundleKeyConstraints.WellFormedUnicode, p.NativeConstraints);
         Assert.Equal($"embedded:{Self.FullName}/{mvid}/contract", p.Id);
         Assert.Equal($"embedded:{Self.GetName().Name}/contract", p.Location);
-        Assert.Equal("mvid:" + mvid, p.GetVersionAsync(BundleLimits.Default, CancellationToken.None).Result.Token);
+        var version = p.GetVersionAsync(BundleLimits.Default, CancellationToken.None);
+        Assert.True(version.IsCompleted);
+        Assert.Equal("mvid:" + mvid, (await version).Token);
         Assert.Equal(p.Id, Contract().Id);
     }
 
@@ -1021,7 +1097,7 @@ public class EmbeddedResourceBundleProviderTests
     {
         var tracked = new CompletionTrackingProvider(Contract());
         var bundle = Bundle.Load(tracked);
-        Assert.Equal(4, bundle.Concepts.Count);
+        Assert.Equal(3, bundle.Concepts.Count); // notes/a, notes/b, notes/a-much-longer-name; index.md is an index, not a concept
         Assert.True(tracked.Observed > 3);
         Assert.Empty(tracked.Incomplete);
     }
@@ -1033,11 +1109,11 @@ public class EmbeddedResourceBundleProviderTests
         var bundle = Bundle.Load(Contract(), new BundleLoadOptions { Limits = new BundleLimits { MaxKeyBytes = 16 } });
         var problem = Assert.Single(bundle.ParseProblems);
         Assert.Equal("notes/a-much-longer-name.md", problem.RawName);
-        Assert.Equal(3, bundle.Concepts.Count);
+        Assert.Equal(2, bundle.Concepts.Count); // notes/a and notes/b load; only the long key is set aside
     }
 
     [Fact]
-    public void Two_builds_of_the_same_name_with_different_content_have_distinct_ids_and_one_build_loaded_twice_keeps_its_id()
+    public async Task Two_builds_of_the_same_name_with_different_content_have_distinct_ids_and_one_build_loaded_twice_keeps_its_id()
     {
         using var first = new TempDir();
         first.Write("knowledge/a.md", "one\n");
@@ -1064,8 +1140,8 @@ public class EmbeddedResourceBundleProviderTests
             Assert.Equal(pa.Id, pa2.Id);
             Assert.NotEqual(pa.Id, pb.Id);
             Assert.NotEqual(
-                pa.GetVersionAsync(BundleLimits.Default, CancellationToken.None).Result,
-                pb.GetVersionAsync(BundleLimits.Default, CancellationToken.None).Result);
+                await pa.GetVersionAsync(BundleLimits.Default, CancellationToken.None),
+                await pb.GetVersionAsync(BundleLimits.Default, CancellationToken.None));
         }
         finally
         {
@@ -1094,7 +1170,6 @@ In `src/OKF4net/OKF4net.csproj`, beside `<InternalsVisibleTo Include="OKF4net.Ca
 ```csharp
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Reflection;
-using OKF4net.Internal;
 
 namespace OKF4net.Providers.EmbeddedResources;
 
@@ -1112,8 +1187,8 @@ namespace OKF4net.Providers.EmbeddedResources;
 /// </summary>
 public sealed class EmbeddedResourceBundleProvider : IBundleProvider
 {
-    /// <summary>The scheme every bundle resource name starts with.</summary>
-    public const string ResourceNamePrefix = "okf:";
+    /// <summary>The scheme every bundle resource name starts with (not public: the spec adds no API beyond the constructor and GetBundlePrefixes).</summary>
+    private const string ResourceNamePrefix = "okf:";
 
     private readonly Assembly _assembly;
     private readonly string _resourcePrefix;
@@ -1462,7 +1537,7 @@ public class EmbeddedConsumersTests
             var tools = new OkfBundleTools(handle);
             Assert.Contains("Links to", tools.ReadConcept("notes/a"), StringComparison.Ordinal);
             Assert.Contains("notes/a", tools.Search("first"), StringComparison.Ordinal);
-            Assert.StartsWith("# (bundle root)", tools.Browse(), StringComparison.Ordinal);
+            Assert.StartsWith("# contract", tools.Browse(), StringComparison.Ordinal); // the root index.md, served as is
         }
         finally
         {
@@ -1477,7 +1552,7 @@ public class EmbeddedConsumersTests
 - [ ] **Step 2: Run**
 
 Run: `dotnet test OKF4net.sln --filter "FullyQualifiedName~EmbeddedConsumersTests"`
-Expected: PASS (these exercise existing guards; a failure is a real defect in a consumer, investigate it in `src/`).
+Expected: PASS. On a failure, first check the expectation against the `contract` fixture and the consumer's documented behaviour (an external review caught three wrong expectations in an earlier draft of this plan); only then investigate `src/`. Never weaken an assertion about a refusal or about the empty directory.
 
 - [ ] **Step 3: Full suite, format, commit**
 
@@ -1594,29 +1669,27 @@ public class ParityTests
         new FileSystemBundleProvider(Path.Combine(TestPaths.RepoRoot(), relative.Replace('/', Path.DirectorySeparatorChar))),
         new EmbeddedResourceBundleProvider(typeof(ParityTests).Assembly, prefix));
 
-    private static SortedDictionary<string, byte[]> Objects(IBundleProvider p)
+    private static async Task<SortedDictionary<string, byte[]>> Objects(IBundleProvider p)
     {
         var result = new SortedDictionary<string, byte[]>(StringComparer.Ordinal);
-        var e = p.EnumerateAsync(null, BundleLimits.Default, CancellationToken.None).GetAsyncEnumerator();
-        while (e.MoveNextAsync().AsTask().GetAwaiter().GetResult())
+        await foreach (var listing in p.EnumerateAsync(null, BundleLimits.Default, CancellationToken.None))
         {
-            using var obj = p.ReadAsync(BundleKey.Parse(e.Current.RawName), null, CancellationToken.None).Result;
+            using var obj = await p.ReadAsync(BundleKey.Parse(listing.RawName), null, CancellationToken.None);
             using var copy = new MemoryStream();
-            obj.Content.CopyTo(copy);
-            result.Add(e.Current.RawName, copy.ToArray());
+            await obj.Content.CopyToAsync(copy);
+            result.Add(listing.RawName, copy.ToArray());
         }
 
-        e.DisposeAsync().AsTask().GetAwaiter().GetResult();
         return result;
     }
 
     [Theory]
     [MemberData(nameof(Bundles))]
-    public void Same_keys_and_bytes(string prefix, string relative)
+    public async Task Same_keys_and_bytes(string prefix, string relative)
     {
         var (fs, emb) = Providers(prefix, relative);
-        var a = Objects(fs);
-        var b = Objects(emb);
+        var a = await Objects(fs);
+        var b = await Objects(emb);
         Assert.Equal(a.Keys, b.Keys);
         foreach (var (key, bytes) in a)
         {
@@ -1715,8 +1788,16 @@ public class ParityTests
         var (fs, emb) = Providers(prefix, relative);
         var a = new CapturingProvider(fs);
         var b = new CapturingProvider(emb);
-        IndexGenerator.RegenerateIndexes(a);
-        IndexGenerator.RegenerateIndexes(b);
+        var reportA = IndexGenerator.RegenerateIndexes(a);
+        var reportB = IndexGenerator.RegenerateIndexes(b);
+
+        // Two empty results must not pass as parity: every regeneration writes at least the root index.md.
+        Assert.Empty(reportA.Failed);
+        Assert.Empty(reportB.Failed);
+        Assert.NotEmpty(reportA.Written);
+        Assert.Contains(BundleKey.Parse("index.md"), reportA.Written);
+        Assert.Equal(reportA.Written.Select(k => k.ToString()).Order(StringComparer.Ordinal), a.Written.Keys);
+        Assert.Equal(reportA.Written, reportB.Written);
         Assert.Equal(a.Written.Keys, b.Written.Keys);
         foreach (var (key, bytes) in a.Written)
         {
@@ -1801,7 +1882,7 @@ IBundleProvider provider = args is ["--filesystem", var dir]
     ? new FileSystemBundleProvider(dir)
     : new EmbeddedResourceBundleProvider(typeof(Marker).Assembly, "acme_retail");
 
-var bundle = Bundle.Load(provider);
+var bundle = await Bundle.LoadAsync(provider); // Bundle.Load(IBundleProvider, …) is internal
 var report = BundleValidator.Validate(bundle, clock);
 var audit = ConceptAudit.Run(bundle, default, clock);
 
@@ -1832,8 +1913,11 @@ internal sealed class Marker;
 
 - [ ] **Step 2: Try it locally (Windows)**
 
+A version, a feed and a package cache unique to each try, so a second try can never restore a package extracted by the first; the caller's `NUGET_PACKAGES` is put back at the end.
+
 ```powershell
-$v = "0.7.0-local.1"; $feed = "$env:TEMP\okf-probe-feed"; $env:NUGET_PACKAGES = "$env:TEMP\okf-probe-packages"
+$stamp = Get-Date -Format "yyyyMMddHHmmss"; $v = "0.7.0-local.$stamp"
+$feed = "$env:TEMP\okf-probe-feed-$stamp"; $savedPackages = $env:NUGET_PACKAGES; $env:NUGET_PACKAGES = "$env:TEMP\okf-probe-packages-$stamp"
 dotnet pack src/OKF4net/OKF4net.csproj -c Release -o $feed -p:Version=$v
 dotnet pack src/OKF4net.Providers.EmbeddedResources/OKF4net.Providers.EmbeddedResources.csproj -c Release -o $feed -p:Version=$v
 @"
@@ -1844,7 +1928,7 @@ dotnet restore tests/EmbeddedBundleAotProbe -r win-x64 -p:PublishAot=true -p:Okf
 dotnet publish tests/EmbeddedBundleAotProbe -c Release -r win-x64 -p:PublishAot=true -p:OkfProbeVersion=$v --no-restore -o "$env:TEMP\okf-probe-out"
 ```
 
-Expected: publish succeeds (needs the MSVC linker for AOT on Windows; if absent, publish with `-p:PublishAot=false -p:PublishSingleFile=true --self-contained` instead to exercise the package and `.targets`, and leave AOT to CI). Then run the binary from an empty directory and with `--filesystem bundles/acme_retail`; the two outputs must be identical and start with `concepts=` followed by a non-zero count. Remove `$env:NUGET_PACKAGES` afterwards.
+Expected: publish succeeds (needs the MSVC linker for AOT on Windows; if absent, publish with `-p:PublishAot=false -p:PublishSingleFile=true --self-contained` instead to exercise the package and `.targets`, and leave AOT to CI). Then run the binary from an empty directory and with `--filesystem bundles/acme_retail`; the two outputs must be identical and start with `concepts=` followed by a non-zero count. Finally restore the cache variable: `$env:NUGET_PACKAGES = $savedPackages`.
 
 - [ ] **Step 3: Add the CI job**
 
