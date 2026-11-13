@@ -38,7 +38,7 @@ Supported assemblies: those loaded at run time from a file, a single-file bundle
 | `OKFEMB001` | `Prefix` missing, empty, or containing `/`. |
 | `OKFEMB002` | The directory does not exist, or holds no file. |
 | `OKFEMB003` | Two `OkfBundle` items share a prefix, compared ignoring case. |
-| `OKFEMB004` | A file name an assembly cannot hold: `\` (outside Windows), `"`, `|`, a control character, or two files that differ only by case. |
+| `OKFEMB004` | A file name an assembly cannot hold: `\` (outside Windows), `"`, `|`, a control character, or two files that differ only by case, or that read as the same path once a `` is a separator. |
 | `OKFEMB005` | A symbolic link or junction under the bundle directory (or the directory itself). Links are refused, never followed: a link to `~/.ssh` must not end up in a published binary. |
 | `OKFEMB006` | A target of your own put a bundle file back into `Compile`, `Content` or `EmbeddedResource` after the package detached it. |
 

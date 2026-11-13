@@ -130,12 +130,24 @@
       <_OkfThisFile>
         <!-- From FullPath, never %(RecursiveDir)%(Filename)%(Extension): %(Extension) drops the dot of "name." on Linux. -->
         <OkfRel>$([System.String]::Copy('%(FullPath)').Substring($(_OkfThisDir.Length)))</OkfRel>
-        <OkfAttrs>$([System.IO.File]::GetAttributes('%(FullPath)'))</OkfAttrs>
+        <!--
+          Outside Windows MSBuild rewrites "\" to "/" in every path it hands back, the walk's
+          included, so a file named back\slash.md reaches here as back/slash.md, a path that
+          does not exist (found by CI on Linux and macOS, 2026-11-13). Its existence is the one
+          thing that still tells such a name from a real file.
+        -->
+        <OkfExists>$([System.IO.File]::Exists('%(FullPath)'))</OkfExists>
+      </_OkfThisFile>
+      <_OkfThisFile>
+        <OkfAttrs Condition="'%(OkfExists)' == 'True'">$([System.IO.File]::GetAttributes('%(FullPath)'))</OkfAttrs>
       </_OkfThisFile>
     </ItemGroup>
     <Error Code="OKFEMB002"
            Condition="'@(_OkfThisFile)' == ''"
            Text="OkfBundle '$(_OkfThisDir)': the directory holds no file." />
+    <Error Code="OKFEMB004"
+           Condition="'%(_OkfThisFile.OkfExists)' == 'False'"
+           Text="OkfBundle '$(_OkfThisDir)': '%(_OkfThisFile.FullPath)' names no file: a name with a backslash reads as a path separator outside Windows, and an assembly cannot hold it." />
     <Error Code="OKFEMB005"
            Condition="$([System.String]::Copy('%(_OkfThisFile.OkfAttrs)').Contains('ReparsePoint'))"
            Text="OkfBundle '$(_OkfThisDir)': '%(_OkfThisFile.FullPath)' is a symbolic link; links are refused." />
@@ -151,7 +163,7 @@
     </ItemGroup>
     <Error Code="OKFEMB004"
            Condition="'@(_OkfTwin)' != ''"
-           Text="OkfBundle '$(_OkfThisDir)': files differ only by case, which an assembly cannot hold: @(_OkfTwin, ', ')." />
+           Text="OkfBundle '$(_OkfThisDir)': files differ only by case, or read as the same path (outside Windows a backslash is a separator), which an assembly cannot hold: @(_OkfTwin, ', ')." />
 
     <ItemGroup>
       <_OkfFile Include="@(_OkfThisFile)" LogicalName="okf:$(_OkfThisPrefix)/%(_OkfThisFile.OkfName)" />

@@ -161,6 +161,23 @@ public class TargetsBuildTests
         Assert.Contains("OKFEMB004", result.Output, StringComparison.Ordinal);
     }
 
+    [SkippableFact]
+    public void Rejects_a_backslash_name_that_collides_with_a_real_path()
+    {
+        // Outside Windows MSBuild reads "back\slash.md" as "back/slash.md": here a real file, so the glob
+        // yields the same path twice and only the twin check can catch it (verified in a Linux container
+        // on 2026-11-13; CI is the arbiter on Linux and macOS).
+        Skip.If(OperatingSystem.IsWindows(), "Windows cannot create these names.");
+        using var tmp = new TempDir();
+        tmp.Write("knowledge/back/slash.md", "real\n");
+        File.WriteAllText(Path.Combine(tmp.Path, "knowledge", "back\\slash.md"), "literal\n");
+
+        var result = EmbeddedBuild.Build(tmp.Path, Bundle);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("OKFEMB004", result.Output, StringComparison.Ordinal);
+    }
+
     public static TheoryData<string> LinkKinds => new() { "outward", "cycle", "dangling", "file" };
 
     [SkippableTheory]
