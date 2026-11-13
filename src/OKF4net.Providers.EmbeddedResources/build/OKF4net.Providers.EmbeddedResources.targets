@@ -97,6 +97,19 @@
     <ItemGroup>
       <EmbeddedResource Include="@(_OkfFile)" WithCulture="false" Type="Non-Resx" />
     </ItemGroup>
+    <!--
+      LogicalName is no CoreCompile input: a Prefix changed through a property (or a file renamed
+      with its mtime kept) would leave the old names in the assembly. The names go into a stamp
+      that is one, rewritten only when they differ (final review, 2026-11-13).
+    -->
+    <PropertyGroup>
+      <_OkfStamp>$(IntermediateOutputPath)okf-bundle-names.txt</_OkfStamp>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(_OkfStamp)" Lines="@(_OkfFile->'%(LogicalName)')" Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <ItemGroup>
+      <CustomAdditionalCompileInputs Include="$(_OkfStamp)" />
+      <FileWrites Include="$(_OkfStamp)" />
+    </ItemGroup>
   </Target>
 
   <Target Name="_OkfPrepareBundles">
@@ -105,6 +118,7 @@
         <OkfDir>$([MSBuild]::EnsureTrailingSlash('%(FullPath)'))</OkfDir>
       </_OkfRoot>
       <_OkfPrefix Include="@(_OkfRoot->'%(Prefix)')" />
+      <_OkfRootDir Include="@(_OkfRoot->'%(OkfDir)')" />
     </ItemGroup>
     <Error Code="OKFEMB001"
            Condition="'%(_OkfRoot.Prefix)' == '' or $([System.String]::Copy('%(_OkfRoot.Prefix)').Contains('/'))"
@@ -116,6 +130,10 @@
     <Error Code="OKFEMB003"
            Condition="'@(_OkfPrefix->Count())' != '@(_OkfPrefix->Distinct()->Count())'"
            Text="Two OkfBundle items share a Prefix (compared ignoring case): @(_OkfPrefix, ', ')." />
+    <!-- One directory under two prefixes made the batches on Identity merge, and the last prefix silently won. -->
+    <Error Code="OKFEMB003"
+           Condition="'@(_OkfRootDir->Count())' != '@(_OkfRootDir->Distinct()->Count())'"
+           Text="Two OkfBundle items name the same directory (compared ignoring case): @(_OkfRootDir, ', ')." />
   </Target>
 
   <!-- One batch per bundle (target batching on _OkfRoot). -->
@@ -211,25 +229,32 @@
   -->
   <Target Name="_OkfWalkDir" Returns="@(_OkfWalkResult)">
     <PropertyGroup>
-      <_OkfAttrs>$([System.IO.File]::GetAttributes('$(_OkfDir)'))</_OkfAttrs>
+      <!-- Outside Windows MSBuild rewrites \ to / in the child paths it hands back: a directory named back\dir then names nothing. A dangling link still exists as a file. -->
+      <_OkfDirExists Condition="$([System.IO.Directory]::Exists('$(_OkfDir)')) or $([System.IO.File]::Exists('$(_OkfDir)'))">true</_OkfDirExists>
+      <_OkfAttrs Condition="'$(_OkfDirExists)' == 'true'">$([System.IO.File]::GetAttributes('$(_OkfDir)'))</_OkfAttrs>
       <_OkfIsLink>false</_OkfIsLink>
-      <_OkfIsLink Condition="$(_OkfAttrs.Contains('ReparsePoint'))">true</_OkfIsLink>
+      <_OkfIsLink Condition="'$(_OkfDirExists)' == 'true' and $(_OkfAttrs.Contains('ReparsePoint'))">true</_OkfIsLink>
+      <_OkfWalkable>false</_OkfWalkable>
+      <_OkfWalkable Condition="'$(_OkfDirExists)' == 'true' and '$(_OkfIsLink)' != 'true'">true</_OkfWalkable>
       <_OkfNul>$([System.Char]::ConvertFromUtf32(0))</_OkfNul>
       <_OkfDirSlash>$([MSBuild]::EnsureTrailingSlash('$(_OkfDir)'))</_OkfDirSlash>
       <_OkfBadChars Condition="$([MSBuild]::IsOSPlatform('Windows'))">["|\x01-\x1F\x7F]</_OkfBadChars>
       <_OkfBadChars Condition="!$([MSBuild]::IsOSPlatform('Windows'))">["|\\\x01-\x1F\x7F]</_OkfBadChars>
       <!-- The entries' NAMES (files, then directories; GetFileSystemEntries is not an allowed property function), NUL-separated, the parent path stripped so it can never match. -->
-      <_OkfEntryPaths Condition="'$(_OkfIsLink)' != 'true'">$([System.String]::Join($(_OkfNul), $([System.IO.Directory]::GetFiles($(_OkfDir)))))$(_OkfNul)$([System.String]::Join($(_OkfNul), $([System.IO.Directory]::GetDirectories($(_OkfDir)))))</_OkfEntryPaths>
+      <_OkfEntryPaths Condition="'$(_OkfWalkable)' == 'true'">$([System.String]::Join($(_OkfNul), $([System.IO.Directory]::GetFiles($(_OkfDir)))))$(_OkfNul)$([System.String]::Join($(_OkfNul), $([System.IO.Directory]::GetDirectories($(_OkfDir)))))</_OkfEntryPaths>
       <_OkfEntryNames>$(_OkfEntryPaths.Replace($(_OkfDirSlash), ''))</_OkfEntryNames>
-      <_OkfBadName Condition="'$(_OkfIsLink)' != 'true'">$([System.Text.RegularExpressions.Regex]::Match($(_OkfEntryNames), '[^\x00]*$(_OkfBadChars)[^\x00]*').Value)</_OkfBadName>
-      <_OkfChildren Condition="'$(_OkfIsLink)' != 'true'">$([MSBuild]::Escape($([System.String]::Join($(_OkfNul), $([System.IO.Directory]::GetDirectories($(_OkfDir)))))).Split($(_OkfNul)))</_OkfChildren>
+      <_OkfBadName Condition="'$(_OkfWalkable)' == 'true'">$([System.Text.RegularExpressions.Regex]::Match($(_OkfEntryNames), '[^\x00]*$(_OkfBadChars)[^\x00]*').Value)</_OkfBadName>
+      <_OkfChildren Condition="'$(_OkfWalkable)' == 'true'">$([MSBuild]::Escape($([System.String]::Join($(_OkfNul), $([System.IO.Directory]::GetDirectories($(_OkfDir)))))).Split($(_OkfNul)))</_OkfChildren>
     </PropertyGroup>
+    <Error Code="OKFEMB004"
+           Condition="'$(_OkfDirExists)' != 'true'"
+           Text="'$(_OkfDir)' names no directory: a name with a backslash reads as a path separator outside Windows, and an assembly cannot hold it." />
     <Error Code="OKFEMB004"
            Condition="'$(_OkfBadName)' != ''"
            Text="'$(_OkfDir)' holds '$(_OkfBadName)', a name an embedded resource cannot hold (\ off Windows, &quot;, |, or a control character)." />
     <ItemGroup>
       <_OkfWalkResult Include="$([MSBuild]::Escape($(_OkfDir)))" OkfIsLink="$(_OkfIsLink)" />
-      <_OkfChildDir Condition="'$(_OkfIsLink)' != 'true'" Include="$(_OkfChildren)" />
+      <_OkfChildDir Condition="'$(_OkfWalkable)' == 'true'" Include="$(_OkfChildren)" />
       <_OkfWalkProject Include="$(MSBuildThisFileFullPath)"
                        AdditionalProperties="_OkfDir=$([MSBuild]::Escape('%(_OkfChildDir.Identity)'))"
                        Condition="'@(_OkfChildDir)' != ''" />

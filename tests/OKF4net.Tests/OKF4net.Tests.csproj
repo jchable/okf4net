@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -45,7 +45,7 @@
 
   <!--
     Embedded test bundles (spec §6.1-§6.3). The .targets is imported at the END
-    of the body, after these items, so its evaluation-time Remove sees them —
+    of the body, after these items (the bundles are detached from the default items by a target, wherever they are declared) —
     the names/ bundle holds a deliberately invalid x.cs and r.resx, and this
     project still builds only because they are neither compiled nor passed to
     ResGen. NuGet's own import order is covered by TargetsBuildTests and the

@@ -135,6 +135,40 @@ public class EmbeddedResourceBundleProviderTests
     }
 
     [Fact]
+    public void GetBundlePrefixes_ignores_a_resource_the_constructor_would_refuse()
+    {
+        // Final review, 2026-11-13: a resource named exactly "okf:kb/" holds no file, so no bundle.
+        using var tmp = new TempDir();
+        tmp.Write("knowledge/a.md", "a\n");
+        tmp.Write("empty.txt", "x\n");
+        var build = EmbeddedBuild.Build(tmp.Path, """
+                <OkfBundle Include="knowledge/" Prefix="real" />
+                <EmbeddedResource Include="empty.txt" LogicalName="okf:kb/" WithCulture="false" Type="Non-Resx" />
+            """);
+        Assert.True(build.ExitCode == 0, build.Output);
+
+        var context = new AssemblyLoadContext("okf-prefixes", isCollectible: true);
+        try
+        {
+            var assembly = context.LoadFromStream(new MemoryStream(File.ReadAllBytes(build.AssemblyPath)));
+            Assert.Equal(["real"], EmbeddedResourceBundleProvider.GetBundlePrefixes(assembly));
+        }
+        finally
+        {
+            context.Unload();
+        }
+    }
+
+    [Fact]
+    public void The_unknown_prefix_message_says_a_direct_PackageReference_is_needed()
+    {
+        // Final review, 2026-11-13: build/ assets do not flow through a ProjectReference, so an OkfBundle
+        // declared in a project that only reaches the package transitively embeds nothing.
+        var e = Assert.Throws<ArgumentException>(() => new EmbeddedResourceBundleProvider(Self, "nope"));
+        Assert.Contains("PackageReference", e.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void A_dynamic_assembly_is_refused()
     {
         var dynamic = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName("okf-dynamic"), AssemblyBuilderAccess.Run);

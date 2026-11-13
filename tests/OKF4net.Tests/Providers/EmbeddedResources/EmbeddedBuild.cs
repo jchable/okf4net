@@ -20,10 +20,19 @@ internal static class EmbeddedBuild
     public static string TargetsPath { get; } = Path.Combine(
         TestPaths.RepoRoot(), "src", "OKF4net.Providers.EmbeddedResources", "build", "OKF4net.Providers.EmbeddedResources.targets");
 
-    public static Result Build(string projectDir, string itemsXml, string? directoryBuildTargetsXml = null, string verbosity = "minimal")
+    /// <summary>Writes only when the text differs: rewriting an unchanged project file would make the next build non-incremental, which the incremental tests must be able to see.</summary>
+    private static void WriteIfChanged(string path, string text)
+    {
+        if (!File.Exists(path) || File.ReadAllText(path) != text)
+        {
+            File.WriteAllText(path, text);
+        }
+    }
+
+    public static Result Build(string projectDir, string itemsXml, string? directoryBuildTargetsXml = null, string verbosity = "minimal", IEnumerable<string>? extraArgs = null)
     {
         Directory.CreateDirectory(Path.Combine(projectDir, "obj"));
-        File.WriteAllText(Path.Combine(projectDir, "probe.csproj"), $"""
+        WriteIfChanged(Path.Combine(projectDir, "probe.csproj"), $"""
             <Project Sdk="Microsoft.NET.Sdk">
               <PropertyGroup>
                 <TargetFramework>net10.0</TargetFramework>
@@ -36,7 +45,7 @@ internal static class EmbeddedBuild
             </Project>
             """);
         // An ITEM captures what is declared before this import; a property would expand @() lazily, at use.
-        File.WriteAllText(Path.Combine(projectDir, "obj", "probe.csproj.okf.targets"), $"""
+        WriteIfChanged(Path.Combine(projectDir, "obj", "probe.csproj.okf.targets"), $"""
             <Project>
               <ItemGroup><_OkfSeenAtImport Include="@(OkfBundle)" /></ItemGroup>
               <Target Name="_OkfReportSeen" BeforeTargets="PrepareForBuild">
@@ -59,6 +68,11 @@ internal static class EmbeddedBuild
             UseShellExecute = false,
         };
         foreach (var arg in new[] { "build", "probe.csproj", "-nologo", "-v:" + verbosity, "-nodeReuse:false", "-p:UseSharedCompilation=false", "--disable-build-servers" })
+        {
+            start.ArgumentList.Add(arg);
+        }
+
+        foreach (var arg in extraArgs ?? [])
         {
             start.ArgumentList.Add(arg);
         }

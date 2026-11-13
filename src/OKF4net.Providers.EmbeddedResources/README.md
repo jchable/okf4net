@@ -11,9 +11,11 @@ Ship an [OKF](https://github.com/jchable/okf4net) knowledge bundle **inside** yo
 </ItemGroup>
 ```
 
-Every file under `knowledge/` becomes the manifest resource `okf:kb/<relative path>`, byte for byte. The bundle's files are detached from the default `Compile`, `EmbeddedResource` and `Content` items, by a target that runs before the build reads them (a sanctioned `.cs` script is never compiled into your assembly, a `.resx` never passed to ResGen, whatever the size of your project); they stay `None` items, visible in the IDE. `OkfBundle` can be declared anywhere that is evaluated before the build runs, `Directory.Build.targets` included. Several bundles can share an assembly under distinct prefixes. Without an `OkfBundle` item the package's `.targets` does nothing.
+Every file under `knowledge/` becomes the manifest resource `okf:kb/<relative path>`, byte for byte. Every `Compile`, `EmbeddedResource` or `Content` item under the bundle directory, a default one or one you declared, is removed by a target that runs before the build reads those lists (a sanctioned `.cs` script is never compiled into your assembly, a `.resx` never passed to ResGen, whatever the size of your project). The files are then in no build item at all; a `None` item you declare yourself is left alone. `OkfBundle` can be declared anywhere that is evaluated before the build runs, `Directory.Build.targets` included. Several bundles can share an assembly under distinct prefixes. Without an `OkfBundle` item the package's `.targets` does nothing.
 
-If you set `CopyToOutputDirectory`/`CopyToPublishDirectory` on the bundle's files yourself, they are also copied beside the binary — which works, but defeats the purpose.
+A `None` item with `CopyToOutputDirectory`/`CopyToPublishDirectory` on the bundle's files copies them beside the binary too — which works, but defeats the purpose. The same on a `Content` item has no effect: it is detached.
+
+The project that builds the assembly must hold a **direct** `PackageReference` to this package: a package's `build/` assets do not flow through a `ProjectReference`, so an `OkfBundle` declared in a project that only reaches the package transitively embeds nothing. Not supported: special files (FIFOs, devices) under the bundle directory, which MSBuild cannot tell from regular files and which can hang the build.
 
 ## Read
 
@@ -37,7 +39,7 @@ Supported assemblies: those loaded at run time from a file, a single-file bundle
 |---|---|
 | `OKFEMB001` | `Prefix` missing, empty, or containing `/`. |
 | `OKFEMB002` | The directory does not exist, or holds no file. |
-| `OKFEMB003` | Two `OkfBundle` items share a prefix, compared ignoring case. |
+| `OKFEMB003` | Two `OkfBundle` items share a prefix, or name the same directory (compared ignoring case). |
 | `OKFEMB004` | A file name an assembly cannot hold: `\` (outside Windows), `"`, `|`, a control character, or two files that differ only by case, or that read as the same path once a `\` is a separator. |
 | `OKFEMB005` | A symbolic link or junction under the bundle directory (or the directory itself). Links are refused, never followed: a link to `~/.ssh` must not end up in a published binary. |
 | `OKFEMB006` | A target of your own put a bundle file back into `Compile`, `Content` or `EmbeddedResource` after the package detached it. |

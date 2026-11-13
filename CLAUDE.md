@@ -21,7 +21,7 @@ dotnet pack src/OKF4net.Cli -c Release         # portable `okf` dotnet tool (`OK
 dotnet publish src/OKF4net.Render -c Release   # Native AOT self-contained `okf-render` binary
 ```
 
-Requires .NET SDK 10.0+. CI (ci.yml) runs build+test on Linux/Windows/macOS, `dotnet format --verify-no-changes`, the `viewer sanitizer (JS)` harness, an AOT publish smoke test, and a `dotnet tool` smoke test of the `OKF4net.Cli` package — all must pass.
+Requires .NET SDK 10.0+. CI (ci.yml) runs build+test on Linux/Windows/macOS, `dotnet format --verify-no-changes`, the `viewer sanitizer (JS)` harness, an AOT publish smoke test, the `embedded bundle AOT smoke test` (the embedded-resource provider and its `.targets` consumed as packages, Native AOT), and a `dotnet tool` smoke test of the `OKF4net.Cli` package — all must pass.
 
 ## Hard rules
 

@@ -304,7 +304,7 @@ commentaire.
 |---|---|
 | `OKFEMB001` | `Prefix` absent ou invalide (vide, ou contenant `/`). |
 | `OKFEMB002` | Répertoire inexistant, ou sans aucun fichier. |
-| `OKFEMB003` | Deux `OkfBundle` au même préfixe, sans tenir compte de la casse. |
+| `OKFEMB003` | Deux `OkfBundle` au même préfixe, sans tenir compte de la casse. Ou deux items nomment le même répertoire (comparaison sans casse). |
 | `OKFEMB004` | Un nom que le stockage embarqué ne peut pas tenir : `\`, `"`, `|`, caractère de contrôle, ou jumeau de casse dans le même bundle. |
 | `OKFEMB005` | Un lien symbolique ou une jonction : le répertoire du bundle, un sous-répertoire ou un fichier (D6). |
 | `OKFEMB006` | Un item `Compile`, `Content` ou `EmbeddedResource` remis, par une cible, sous un répertoire de bundle après le retrait de §5.3. |

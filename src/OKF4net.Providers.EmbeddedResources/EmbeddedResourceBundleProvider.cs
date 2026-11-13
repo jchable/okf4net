@@ -52,7 +52,7 @@ public sealed class EmbeddedResourceBundleProvider : IBundleProvider
         if (_names.Length == 0)
         {
             throw new ArgumentException(
-                $"The assembly '{name}' holds no resource named '{_resourcePrefix}…': declare <OkfBundle Include=\"…\" Prefix=\"{prefix}\" /> in its project.",
+                $"The assembly '{name}' holds no resource named '{_resourcePrefix}…': declare <OkfBundle Include=\"…\" Prefix=\"{prefix}\" /> in the project that builds it, which must hold a direct PackageReference to OKF4net.Providers.EmbeddedResources (its build assets do not flow through a ProjectReference).",
                 nameof(prefix));
         }
 
@@ -63,7 +63,7 @@ public sealed class EmbeddedResourceBundleProvider : IBundleProvider
         Location = $"embedded:{name}/{prefix}";
     }
 
-    /// <summary>The prefixes of the bundles embedded in <paramref name="assembly"/>, distinct, sorted ordinally. A name <c>okf:</c> with no <c>/</c> or an empty prefix is ignored.</summary>
+    /// <summary>The prefixes of the bundles embedded in <paramref name="assembly"/>, distinct, sorted ordinally. A name <c>okf:</c> with no <c>/</c>, an empty prefix, or nothing after the <c>/</c> is ignored.</summary>
     /// <exception cref="ArgumentException">The assembly is dynamic.</exception>
     public static IReadOnlyList<string> GetBundlePrefixes(Assembly assembly)
     {
@@ -72,7 +72,7 @@ public sealed class EmbeddedResourceBundleProvider : IBundleProvider
         return assembly.GetManifestResourceNames()
             .Where(n => n.StartsWith(ResourceNamePrefix, StringComparison.Ordinal))
             .Select(n => n[ResourceNamePrefix.Length..])
-            .Select(rest => rest.IndexOf('/', StringComparison.Ordinal) is var slash and > 0 ? rest[..slash] : null)
+            .Select(rest => rest.IndexOf('/', StringComparison.Ordinal) is var slash and > 0 && slash < rest.Length - 1 ? rest[..slash] : null)
             .OfType<string>()
             .Distinct(StringComparer.Ordinal)
             .Order(StringComparer.Ordinal)

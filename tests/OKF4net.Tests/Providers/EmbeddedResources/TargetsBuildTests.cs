@@ -214,6 +214,58 @@ public class TargetsBuildTests
         Assert.Contains("OKFEMB004", result.Output, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("knowledge/", "knowledge/")]
+    [InlineData("knowledge/", "knowledge")]
+    public void Refuses_two_OkfBundle_items_on_one_directory(string first, string second)
+    {
+        // Final review, 2026-11-13: batching on Identity merged the two, and the last prefix silently won.
+        using var tmp = new TempDir();
+        tmp.Write("knowledge/a.md", "a\n");
+
+        var result = EmbeddedBuild.Build(tmp.Path, $"""
+                <OkfBundle Include="{first}" Prefix="kb" />
+                <OkfBundle Include="{second}" Prefix="kc" />
+            """);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("OKFEMB003", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_prefix_changed_through_a_property_is_picked_up_by_an_incremental_build()
+    {
+        // Final review, 2026-11-13: LogicalName is no CoreCompile input, so the second build kept "okf:one/".
+        using var tmp = new TempDir();
+        tmp.Write("knowledge/a.md", "a\n");
+        const string Items = """    <OkfBundle Include="knowledge/" Prefix="$(KP)" />""";
+
+        var first = EmbeddedBuild.Build(tmp.Path, Items, extraArgs: ["-p:KP=one"]);
+        Assert.True(first.ExitCode == 0, first.Output);
+        Assert.Equal(["okf:one/a.md"], EmbeddedBuild.ReadOkfResources(first.AssemblyPath).Keys);
+
+        var second = EmbeddedBuild.Build(tmp.Path, Items, extraArgs: ["-p:KP=two"]);
+        Assert.True(second.ExitCode == 0, second.Output);
+        Assert.Equal(["okf:two/a.md"], EmbeddedBuild.ReadOkfResources(second.AssemblyPath).Keys);
+    }
+
+    [SkippableFact]
+    public void Rejects_a_directory_name_with_a_backslash_with_the_named_error()
+    {
+        // Final review, 2026-11-13: the directory case still ended in a raw MSB4184 outside Windows.
+        Skip.If(OperatingSystem.IsWindows(), "Windows cannot create these names.");
+        using var tmp = new TempDir();
+        tmp.Write("knowledge/a.md", "a\n");
+        Directory.CreateDirectory(Path.Combine(tmp.Path, "knowledge", "back\\dir"));
+        File.WriteAllText(Path.Combine(tmp.Path, "knowledge", "back\\dir", "x.md"), "x\n");
+
+        var result = EmbeddedBuild.Build(tmp.Path, Bundle);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("OKFEMB004", result.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain("MSB4184", result.Output, StringComparison.Ordinal);
+    }
+
     public static TheoryData<string> LinkKinds => new() { "outward", "cycle", "dangling", "file" };
 
     [SkippableTheory]
