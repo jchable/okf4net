@@ -75,6 +75,7 @@ other project layers a specific integration on top and points back to it.
 | `OKF4net.Agents`         | `OKF4net.Agents`          | Microsoft Agent Framework tools + `OkfContextProvider` (context & memory). | [Microsoft Agent Framework](#using-okf4net-with-microsoft-agent-framework) |
 | `OKF4net.Catalog`        | `OKF4net.Catalog`         | Catalog of OKF bundles (local or any provider): `catalog.json` + resolver. | [Local catalog](#local-catalog-okf4netcatalog) · [README](src/OKF4net.Catalog/README.md) |
 | `OKF4net.Catalog.Hosting`| `OKF4net.Catalog.Hosting` | `IServiceCollection` integration (`AddKnowledge`) for the catalog.         | [README](src/OKF4net.Catalog.Hosting/README.md)              |
+| `OKF4net.Providers.EmbeddedResources` | `OKF4net.Providers.EmbeddedResources` | A bundle shipped inside your assembly: the `OkfBundle` MSBuild item and a read-only provider; BCL only. | [README](src/OKF4net.Providers.EmbeddedResources/README.md) |
 | `OKF4net.Mcp`            | `OKF4net.Mcp`             | Local MCP server exposing an OKF bundle to Claude Desktop / Claude Code.    | [Use OKF in Claude (MCP)](#use-okf-in-claude-mcp) · [README](src/OKF4net.Mcp/README.md) |
 | `OKF4net.Attestation`    | `OKF4net.Attestation`    | Host-plugged §10 attested-computation orchestration (bind → execute → attest). | [Attested computation](#attested-computation-okf4netattestation) · [README](src/OKF4net.Attestation/README.md) |
 | `OKF4net.Attestation.Containers` | — (not packed by `release.yml`; needs a container engine on `PATH`) | Runs a bundle's sanctioned script/SQL and its attester in real containers (Docker/Podman/nerdctl), never reimplemented in C#. | [README](src/OKF4net.Attestation.Containers/README.md) |
@@ -394,6 +395,20 @@ default macOS volume), for a file whose name differs from `index.md` only in
 case (`Index.md` at the root or in a subdirectory): that file is never written
 through, where the write that preceded the provider overwrote it. The
 "Failures" remarks of `RegenerateIndexesWith` give the rest of what they throw.
+
+### A bundle inside your assembly
+
+`OKF4net.Providers.EmbeddedResources` embeds a bundle at build time and serves it back at run time, Native AOT and single-file included:
+
+```xml
+<OkfBundle Include="knowledge/" Prefix="kb" />
+```
+
+```csharp
+var bundle = await Bundle.LoadAsync(new EmbeddedResourceBundleProvider(typeof(App).Assembly, "kb"));
+```
+
+The bundle is read-only, one manifest resource per file (`okf:kb/<path>`); links under the directory, and names an assembly cannot hold, fail the build with a named `OKFEMB00x` error. See the [package README](src/OKF4net.Providers.EmbeddedResources/README.md).
 
 ### One image per source: `BundleHandle`
 
