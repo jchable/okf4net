@@ -237,6 +237,26 @@ projet, `Directory.Build.targets`, cible exécutée plus tôt. `OKFEMB006` (§5.
 étape 5) ne couvre plus que ce qu'une cible **remet** dans ces listes après le
 retrait.
 
+Revue externe du 2026-11-13, trois ajustements. (1) Les items par défaut du SDK
+WPF pour `*.xaml` (`Page`, `ApplicationDefinition`, `Resource`) sont retirés et
+contrôlés comme `Compile`, `Content` et `EmbeddedResource` : un `sample.xaml` de
+bundle échouait en `MC3000`. (2) Une cible de l'utilisateur qui remet un fichier
+dans `Compile` entre `PrepareResourceNames` et le compilateur échappait au
+contrôle d'`OKFEMB006` (du code du bundle était compilé) : deux contrôles
+supplémentaires de `Compile` et des `EmbeddedResource` qui ne sont pas les
+nôtres, `BeforeTargets="CoreCompile"` et `AfterTargets="CoreCompile"` (les
+`DependsOnTargets` de `CoreCompile` tournent *avant* ses `BeforeTargets` : aucun
+crochet sur une dépendance ne serait plus tardif ; le second contrôle fait
+échouer le build, qui ne copie alors rien dans le répertoire de sortie).
+(3) `OKFEMB007` comparait des chemins comme du texte : un répertoire a plusieurs
+écritures (alias 8.3, jonction, lien symbolique, lecteur `subst`). MSBuild
+normalise l'alias 8.3 (non reproduit sur Windows 11, trois formes testées), pas
+une jonction (reproduit, test rouge puis vert) : le contrôle demande donc aussi
+au système de fichiers si le répertoire du bundle contient directement un
+fichier de même nom que le projet. Reste hors de portée : un répertoire de
+bundle qui contient le projet dans un sous-répertoire, atteint par une écriture
+que MSBuild ne normalise pas.
+
 ### 5.4 Exécution : la cible
 
 Une cible `BeforeTargets="PrepareResourceNames"`, sous la condition de §5.2,
@@ -307,7 +327,7 @@ commentaire.
 | `OKFEMB003` | Deux `OkfBundle` au même préfixe, sans tenir compte de la casse. Ou deux items nomment le même répertoire (comparaison sans casse). |
 | `OKFEMB004` | Un nom que le stockage embarqué ne peut pas tenir : `\`, `"`, `|`, caractère de contrôle, ou jumeau de casse dans le même bundle. |
 | `OKFEMB005` | Un lien symbolique ou une jonction : le répertoire du bundle, un sous-répertoire ou un fichier (D6). |
-| `OKFEMB006` | Un item `Compile`, `Content` ou `EmbeddedResource` remis, par une cible, sous un répertoire de bundle après le retrait de §5.3. |
+| `OKFEMB006` | Un item `Compile`, `Content`, `EmbeddedResource`, `Page`, `ApplicationDefinition` ou `Resource` remis, par une cible, sous un répertoire de bundle après le retrait de §5.3. |
 | `OKFEMB007` | Le répertoire du bundle est, ou contient, le répertoire du projet (il embarquerait `obj/`, `bin/` et les fichiers du projet). |
 
 ### 5.6 Emballage

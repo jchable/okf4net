@@ -56,27 +56,100 @@
     <PropertyGroup>
       <_OkfDetachDir>%(_OkfRoot.OkfDir)</_OkfDetachDir>
       <_OkfDetachDirLower>$(_OkfDetachDir.ToLowerInvariant())</_OkfDetachDirLower>
-      <_OkfProjectDir>$([MSBuild]::EnsureTrailingSlash('$(MSBuildProjectDirectory)'))</_OkfProjectDir>
+      <_OkfProjectDir>$([MSBuild]::EnsureTrailingSlash($([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)'))))</_OkfProjectDir>
       <_OkfProjectDirLower>$(_OkfProjectDir.ToLowerInvariant())</_OkfProjectDirLower>
     </PropertyGroup>
     <!--
       A bundle directory that holds the project would detach every source and embed obj/, bin/,
       the project file and whatever else sits beside them (.git/, .env): refused before anything runs.
+      The path comparison is text, and one directory has many spellings (an 8.3 alias, a junction, a
+      symlink, a subst drive): the last test asks the FILE SYSTEM whether the bundle directory directly
+      holds a file of the project's own name, which no spelling can hide (external review, 2026-11-13).
+      Not covered: a bundle directory that holds the project in a subdirectory, reached by a spelling
+      MSBuild does not normalise.
     -->
     <Error Code="OKFEMB007"
-           Condition="('$(_OkfFold)' == 'true' and $(_OkfProjectDirLower.StartsWith('$(_OkfDetachDirLower)'))) or ('$(_OkfFold)' != 'true' and $(_OkfProjectDir.StartsWith('$(_OkfDetachDir)')))"
+           Condition="('$(_OkfFold)' == 'true' and $(_OkfProjectDirLower.StartsWith('$(_OkfDetachDirLower)'))) or ('$(_OkfFold)' != 'true' and $(_OkfProjectDir.StartsWith('$(_OkfDetachDir)'))) or Exists('$(_OkfDetachDir)$(MSBuildProjectFile)')"
            Text="OkfBundle '$(_OkfDetachDir)': the directory is, or holds, the project directory '$(_OkfProjectDir)': it would embed obj/, bin/ and the project's own files. Point OkfBundle at a subdirectory." />
+    <!--
+      Page, ApplicationDefinition and Resource are the WPF SDK's default items for **/*.xaml: a bundle's
+      sample.xaml would reach the XAML compiler (MC3000). None stays alone, as before.
+    -->
     <ItemGroup>
-      <_OkfDetach Include="@(Compile);@(Content);@(EmbeddedResource)"
+      <_OkfDetach Include="@(Compile);@(Content);@(EmbeddedResource);@(Page);@(ApplicationDefinition);@(Resource)"
                   Condition="'$(_OkfFold)' == 'true' and $([System.String]::Copy('%(FullPath)').ToLowerInvariant().StartsWith('$(_OkfDetachDirLower)'))" />
-      <_OkfDetach Include="@(Compile);@(Content);@(EmbeddedResource)"
+      <_OkfDetach Include="@(Compile);@(Content);@(EmbeddedResource);@(Page);@(ApplicationDefinition);@(Resource)"
                   Condition="'$(_OkfFold)' != 'true' and $([System.String]::Copy('%(FullPath)').StartsWith('$(_OkfDetachDir)'))" />
     </ItemGroup>
     <ItemGroup>
       <Compile Remove="@(_OkfDetach)" />
       <Content Remove="@(_OkfDetach)" />
       <EmbeddedResource Remove="@(_OkfDetach)" />
+      <Page Remove="@(_OkfDetach)" />
+      <ApplicationDefinition Remove="@(_OkfDetach)" />
+      <Resource Remove="@(_OkfDetach)" />
       <_OkfDetach Remove="@(_OkfDetach)" />
+    </ItemGroup>
+  </Target>
+
+  <!--
+    The check of the leftovers in _OkfCollectBundle runs at PrepareResourceNames: a target that puts a bundle
+    file into Compile after it, up to the compiler, went unseen and its code was compiled and run (external
+    review, 2026-11-13). Two more checks, of Compile and of the EmbeddedResource items that are not the
+    package's own (_OkfFile): one just before CoreCompile (the compiler never sees the file), and one just
+    after it, because a target declared later than this one with its own BeforeTargets="CoreCompile" runs after
+    the first (DependsOnTargets of CoreCompile run BEFORE its BeforeTargets, so no hook on a dependency would
+    be later). The second fails the build, which then copies nothing to the output directory. One target runs
+    once per build, hence two targets with the same body.
+  -->
+  <Target Name="_OkfVerifyNoLateCompile"
+          BeforeTargets="CoreCompile"
+          DependsOnTargets="_OkfPrepareBundles;_OkfVerifyBundle"
+          Condition="'@(OkfBundle)' != ''" />
+
+  <Target Name="_OkfVerifyNoLateCompileAfter"
+          AfterTargets="CoreCompile"
+          DependsOnTargets="_OkfPrepareBundles;_OkfVerifyBundleAfter"
+          Condition="'@(OkfBundle)' != ''" />
+
+  <Target Name="_OkfVerifyBundleAfter" Outputs="%(_OkfRoot.Identity)">
+    <PropertyGroup>
+      <_OkfVerifyDir>%(_OkfRoot.OkfDir)</_OkfVerifyDir>
+      <_OkfVerifyDirLower>$(_OkfVerifyDir.ToLowerInvariant())</_OkfVerifyDirLower>
+    </PropertyGroup>
+    <ItemGroup>
+      <_OkfLate Include="@(Compile);@(EmbeddedResource)"
+                Condition="'$(_OkfFold)' == 'true' and $([System.String]::Copy('%(FullPath)').ToLowerInvariant().StartsWith('$(_OkfVerifyDirLower)'))" />
+      <_OkfLate Include="@(Compile);@(EmbeddedResource)"
+                Condition="'$(_OkfFold)' != 'true' and $([System.String]::Copy('%(FullPath)').StartsWith('$(_OkfVerifyDir)'))" />
+      <_OkfLate Remove="@(_OkfFile)" />
+    </ItemGroup>
+    <Error Code="OKFEMB006"
+           Condition="'@(_OkfLate)' != ''"
+           Text="OkfBundle '$(_OkfVerifyDir)': @(_OkfLate, ', ') was a Compile or EmbeddedResource item when the compiler ran: a target put it back after the bundle's files were detached from those lists. Do not add files of an OkfBundle directory to them." />
+    <ItemGroup>
+      <_OkfLate Remove="@(_OkfLate)" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="_OkfVerifyBundle" Outputs="%(_OkfRoot.Identity)">
+    <PropertyGroup>
+      <_OkfVerifyDir>%(_OkfRoot.OkfDir)</_OkfVerifyDir>
+      <_OkfVerifyDirLower>$(_OkfVerifyDir.ToLowerInvariant())</_OkfVerifyDirLower>
+    </PropertyGroup>
+    <ItemGroup>
+      <_OkfLate Include="@(Compile);@(EmbeddedResource)"
+                Condition="'$(_OkfFold)' == 'true' and $([System.String]::Copy('%(FullPath)').ToLowerInvariant().StartsWith('$(_OkfVerifyDirLower)'))" />
+      <_OkfLate Include="@(Compile);@(EmbeddedResource)"
+                Condition="'$(_OkfFold)' != 'true' and $([System.String]::Copy('%(FullPath)').StartsWith('$(_OkfVerifyDir)'))" />
+      <!-- The package's own resources (OkfEmbedBundles ran before CoreCompile) are the one thing allowed there. -->
+      <_OkfLate Remove="@(_OkfFile)" />
+    </ItemGroup>
+    <Error Code="OKFEMB006"
+           Condition="'@(_OkfLate)' != ''"
+           Text="OkfBundle '$(_OkfVerifyDir)': @(_OkfLate, ', ') is a Compile or EmbeddedResource item again just before compilation: a target put it back after the bundle's files were detached from those lists. Do not add files of an OkfBundle directory to them." />
+    <ItemGroup>
+      <_OkfLate Remove="@(_OkfLate)" />
     </ItemGroup>
   </Target>
 
@@ -155,14 +228,14 @@
 
     <!-- OKFEMB006: an item a target put back after _OkfDetachDefaultItems (checked before this target adds its own). -->
     <ItemGroup>
-      <_OkfLeftover Include="@(Compile);@(Content);@(EmbeddedResource)"
+      <_OkfLeftover Include="@(Compile);@(Content);@(EmbeddedResource);@(Page);@(ApplicationDefinition);@(Resource)"
                     Condition="'$(_OkfFold)' == 'true' and $([System.String]::Copy('%(FullPath)').ToLowerInvariant().StartsWith('$(_OkfThisDirLower)'))" />
-      <_OkfLeftover Include="@(Compile);@(Content);@(EmbeddedResource)"
+      <_OkfLeftover Include="@(Compile);@(Content);@(EmbeddedResource);@(Page);@(ApplicationDefinition);@(Resource)"
                     Condition="'$(_OkfFold)' != 'true' and $([System.String]::Copy('%(FullPath)').StartsWith('$(_OkfThisDir)'))" />
     </ItemGroup>
     <Error Code="OKFEMB006"
            Condition="'@(_OkfLeftover)' != ''"
-           Text="OkfBundle '$(_OkfThisDir)': @(_OkfLeftover, ', ') is a Compile, Content or EmbeddedResource item again: a target put it back after the bundle's files were detached from those lists. Do not add files of an OkfBundle directory to them." />
+           Text="OkfBundle '$(_OkfThisDir)': @(_OkfLeftover, ', ') is a Compile, Content, EmbeddedResource, Page, ApplicationDefinition or Resource item again: a target put it back after the bundle's files were detached from those lists. Do not add files of an OkfBundle directory to them." />
 
     <!-- Only now, with no directory link and no unholdable name left (both checked by the walk), is the tree globbed. -->
     <ItemGroup>

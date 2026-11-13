@@ -29,15 +29,16 @@ internal static class EmbeddedBuild
         }
     }
 
-    public static Result Build(string projectDir, string itemsXml, string? directoryBuildTargetsXml = null, string verbosity = "minimal", IEnumerable<string>? extraArgs = null)
+    public static Result Build(string projectDir, string itemsXml, string? directoryBuildTargetsXml = null, string verbosity = "minimal", IEnumerable<string>? extraArgs = null, string targetFramework = "net10.0", string extraPropertiesXml = "")
     {
         Directory.CreateDirectory(Path.Combine(projectDir, "obj"));
         WriteIfChanged(Path.Combine(projectDir, "probe.csproj"), $"""
             <Project Sdk="Microsoft.NET.Sdk">
               <PropertyGroup>
-                <TargetFramework>net10.0</TargetFramework>
+                <TargetFramework>{targetFramework}</TargetFramework>
                 <Deterministic>true</Deterministic>
                 <AssemblyName>probe</AssemblyName>
+            {extraPropertiesXml}
               </PropertyGroup>
               <ItemGroup>
             {itemsXml}
@@ -92,7 +93,7 @@ internal static class EmbeddedBuild
             throw new TimeoutException("dotnet build did not finish within 5 minutes:\n" + stdout.Result);
         }
 
-        return new Result(process.ExitCode, stdout.Result + stderr.Result, Path.Combine(projectDir, "bin", "Debug", "net10.0", "probe.dll"));
+        return new Result(process.ExitCode, stdout.Result + stderr.Result, Path.Combine(projectDir, "bin", "Debug", targetFramework, "probe.dll"));
     }
 
     /// <summary>Every <c>okf:</c> resource of the assembly, read from a collectible context (the file is never locked).</summary>

@@ -181,6 +181,96 @@ public class TargetsBuildTests
         Assert.Contains("OKFEMB007", result.Output, StringComparison.Ordinal);
     }
 
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetShortPathName(string longPath, System.Text.StringBuilder shortPath, uint length);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetLongPathName(string shortPath, System.Text.StringBuilder longPath, uint length);
+
+    private static string Win32Path(string path, bool shortForm)
+    {
+        var buffer = new System.Text.StringBuilder(1024);
+        var n = shortForm ? GetShortPathName(path, buffer, (uint)buffer.Capacity) : GetLongPathName(path, buffer, (uint)buffer.Capacity);
+        return n == 0 ? path : buffer.ToString();
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Refuses_the_project_directory_named_through_a_Windows_8_3_alias(bool projectIsShort)
+    {
+        // External review, 2026-11-13: the project opened by its long path while OkfBundle named the SAME directory
+        // by its 8.3 alias (or the reverse) compared as two different paths: the build succeeded and embedded
+        // .env, probe.csproj and obj/ under okf:kb/.
+        Skip.IfNot(OperatingSystem.IsWindows(), "8.3 aliases are a Windows volume feature.");
+        using var tmp = new TempDir();
+        var created = Path.Combine(tmp.Path, "a-project-with-a-long-name");
+        Directory.CreateDirectory(created);
+        File.WriteAllText(Path.Combine(created, "a.md"), "a\n");
+        File.WriteAllText(Path.Combine(created, ".env"), "SECRET=synthetic\n");
+        var longDir = Win32Path(created, shortForm: false);
+        var shortDir = Win32Path(longDir, shortForm: true);
+        Skip.If(string.Equals(longDir, shortDir, StringComparison.OrdinalIgnoreCase), "This volume holds no 8.3 alias.");
+
+        var result = EmbeddedBuild.Build(
+            projectIsShort ? shortDir : longDir,
+            $"""    <OkfBundle Include="{(projectIsShort ? longDir : shortDir)}{Path.DirectorySeparatorChar}" Prefix="kb" />""");
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("OKFEMB007", result.Output, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public void Refuses_the_project_directory_named_through_a_link_to_it()
+    {
+        // Same class as the 8.3 alias, one MSBuild never normalises: the project built through a link (a junction,
+        // a symlink, a subst drive) while OkfBundle names the real directory. The paths differ as text; only the
+        // file system knows they are one directory, which is what the check on the project file asks it.
+        using var tmp = new TempDir();
+        using var real = new TempDir();
+        real.Write("a.md", "a\n");
+        real.Write(".env", "SECRET=synthetic\n");
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("alias", real.Path), "This process cannot create a link.");
+
+        var result = EmbeddedBuild.Build(Path.Combine(tmp.Path, "alias"), $"""    <OkfBundle Include="{real.Path}{Path.DirectorySeparatorChar}" Prefix="kb" />""");
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("OKFEMB007", result.Output, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("""<Target Name="OkfTestLate" AfterTargets="PrepareResourceNames" BeforeTargets="CoreCompile"><ItemGroup><Compile Include="knowledge/x.cs" /></ItemGroup></Target>""")]
+    [InlineData("""<Target Name="OkfTestLate" BeforeTargets="CoreCompile"><ItemGroup><Compile Include="knowledge/x.cs" /></ItemGroup></Target>""")]
+    public void Refuses_a_Compile_item_that_a_late_target_adds_back_before_compilation(string targetXml)
+    {
+        // External review, 2026-11-13: a target running after PrepareResourceNames, past the one check of the
+        // leftovers, compiled (and ran) a bundle file with no error.
+        using var tmp = new TempDir();
+        tmp.Write("knowledge/a.md", "a\n");
+        tmp.Write("knowledge/x.cs", "class Late { }\n");
+
+        var result = EmbeddedBuild.Build(tmp.Path, Bundle, directoryBuildTargetsXml: $"<Project>{targetXml}</Project>");
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("OKFEMB006", result.Output, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public void A_xaml_file_of_a_bundle_is_not_handed_to_the_WPF_compiler()
+    {
+        // External review, 2026-11-13: the WPF SDK classes **/*.xaml as Page, which the detach did not
+        // remove: a deliberately incomplete sample.xaml failed the build with MC3000.
+        Skip.IfNot(OperatingSystem.IsWindows(), "WPF builds only on Windows.");
+        using var tmp = new TempDir();
+        tmp.Write("knowledge/a.md", "a\n");
+        tmp.Write("knowledge/sample.xaml", "<Page xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"><Grid>\n");
+
+        var result = EmbeddedBuild.Build(tmp.Path, Bundle, targetFramework: "net10.0-windows", extraPropertiesXml: "<UseWPF>true</UseWPF>");
+
+        Assert.True(result.ExitCode == 0, result.Output);
+        Assert.Equal(["okf:kb/a.md", "okf:kb/sample.xaml"], EmbeddedBuild.ReadOkfResources(result.AssemblyPath).Keys);
+    }
+
     [SkippableFact]
     public void Detaches_by_exact_case_on_a_case_sensitive_file_system()
     {
