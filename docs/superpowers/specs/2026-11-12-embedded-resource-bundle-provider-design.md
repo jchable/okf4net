@@ -202,31 +202,40 @@ compris une bibliothèque qui ne fait que lire un bundle : sans item
 vide, donc `Include="**"`, et tout le répertoire du projet (y compris `obj/`,
 et d'éventuels secrets) partirait en ressources (vérifié par essai).
 
-### 5.3 Évaluation : retrait des globs par défaut
+### 5.3 Retrait des items par défaut
 
-À l'évaluation, sous la condition ci-dessus, le `.targets` retire chaque
-répertoire de bundle des items par défaut `Compile`, `EmbeddedResource` et
-`Content` : sinon un script sanctionné `.cs` rangé dans le bundle (§10) serait
-**compilé dans l'hôte**, un `.resx` serait compilé par ResGen. `None` est
-laissé tel quel, pour garder les fichiers visibles dans l'IDE : un item `None`
-par défaut ne porte aucune métadonnée de copie et n'affecte pas le build ; si
-l'hôte pose lui-même `CopyToOutputDirectory` ou `CopyToPublishDirectory` sur
-des fichiers du bundle, ils sont copiés à côté du binaire comme il l'a
-demandé — le `.targets` ne retire ni n'ajoute ces métadonnées, et le README le
-signale (une copie sur disque va contre le but du paquet sans rien changer à
-ce que sert le provider). Le motif est `@(OkfBundle->'%(FullPath)/**')`, qui
-retire bien les deux formes `Include="knowledge"` et `Include="knowledge/"`
-(vérifié par le prototype du 2026-11-12) ; `EnsureTrailingSlash` n'y est pas
-utilisable, car une fonction de propriété sur une métadonnée n'est pas
-développée dans une transformation d'évaluation (vérifié : le littéral
-`%(FullPath)\` reste tel quel). La cible, elle, normalise par
-`EnsureTrailingSlash`.
+Sous la condition ci-dessus, le `.targets` retire chaque fichier de bundle des
+items par défaut `Compile`, `EmbeddedResource` et `Content` : sinon un script
+sanctionné `.cs` rangé dans le bundle (§10) serait **compilé dans l'hôte**, un
+`.resx` serait compilé par ResGen. `None` est laissé tel quel, pour garder les
+fichiers visibles dans l'IDE : un item `None` par défaut ne porte aucune
+métadonnée de copie et n'affecte pas le build ; si l'hôte pose lui-même
+`CopyToOutputDirectory` ou `CopyToPublishDirectory` sur des fichiers du bundle,
+ils sont copiés à côté du binaire comme il l'a demandé — le `.targets` ne
+retire ni n'ajoute ces métadonnées, et le README le signale (une copie sur
+disque va contre le but du paquet sans rien changer à ce que sert le provider).
 
-Ce `Remove` fonctionne parce que `nuget.g.targets` est importé après le corps
-du projet (`Microsoft.Common.targets`), et les globs par défaut sont posés
-avant, dans `Microsoft.NET.Sdk.DefaultItems.props`. Il ne voit pas un
-`OkfBundle` déclaré plus tard — dans `Directory.Build.targets`, ou créé par une
-cible. D'où la vérification `OKFEMB006` à l'exécution (§5.4, étape 5).
+**Ce retrait est une cible, pas un `Remove` d'évaluation (révision du
+2026-11-13).** La première conception posait à l'évaluation
+`Remove="@(OkfBundle->'%(FullPath)/**')"`, qui marchait sur le prototype. Elle
+est fausse pour un vrai projet : ce `Remove` cesse silencieusement de retirer
+quoi que ce soit dès que le projet compte **100** items `Compile` (mesuré : 98
+retire, 100 ne retire pas ; `OKF4net.Tests` en a plus de 700), de sorte que le
+`x.cs` du bundle était compilé — c'est `OKFEMB006` qui l'a révélé en construisant
+`OKF4net.Tests`. Un `Remove="%(_OkfRoot.OkfDir)**"` par lot, dans une cible,
+ne retirait rien non plus. Ce qui marche, à toute taille : construire par une
+comparaison de chemins la liste des items situés sous le répertoire, puis les
+retirer **par identité**, sans glob.
+
+La cible `_OkfDetachDefaultItems` (un lot par bundle, `_OkfDetachBundle`) tourne
+`BeforeTargets="PrepareForBuild;AssignTargetPaths;CoreCompile"` : avant tout
+consommateur des listes — `AssignTargetPaths` précède le traitement des
+ressources, dont `SplitResourcesByCulture` copierait un `.resx` ou un `.licx`
+dans des listes qu'un retrait ultérieur n'atteint plus. Elle voit tout
+`OkfBundle` déclaré au moment où le build tourne, où que ce soit — corps du
+projet, `Directory.Build.targets`, cible exécutée plus tôt. `OKFEMB006` (§5.4,
+étape 5) ne couvre plus que ce qu'une cible **remet** dans ces listes après le
+retrait.
 
 ### 5.4 Exécution : la cible
 
@@ -266,10 +275,10 @@ qui fait dans l'ordre, pour chaque `OkfBundle` :
    nommé (revue du plan, vérifié sous Linux). (Un nom à
    surrogate isolé n'est pas détectable en MSBuild : `csc` échoue sur CS1566,
    message moins lisible mais build en échec, rien de perdu.)
-5. **Vérifie le retrait des globs** : un item `Compile`, `Content` ou
+5. **Vérifie le retrait** : un item `Compile`, `Content` ou
    `EmbeddedResource` — hormis ceux que la cible ajoute — encore situé sous un
-   répertoire de bundle → `OKFEMB006` (cas d'un `OkfBundle` déclaré après le
-   `Remove`, §5.3).
+   répertoire de bundle → `OKFEMB006` (un item remis par une cible après le
+   retrait, §5.3).
 6. **Ajoute** pour chaque fichier un `EmbeddedResource` avec
    `LogicalName="okf:<Prefix>/<nom>"`, `WithCulture="false"` et
    `Type="Non-Resx"`.
@@ -298,7 +307,7 @@ commentaire.
 | `OKFEMB003` | Deux `OkfBundle` au même préfixe, sans tenir compte de la casse. |
 | `OKFEMB004` | Un nom que le stockage embarqué ne peut pas tenir : `\`, `"`, `|`, caractère de contrôle, ou jumeau de casse dans le même bundle. |
 | `OKFEMB005` | Un lien symbolique ou une jonction : le répertoire du bundle, un sous-répertoire ou un fichier (D6). |
-| `OKFEMB006` | Un item `Compile`, `Content` ou `EmbeddedResource` resté sous un répertoire de bundle (un `OkfBundle` déclaré après le retrait des globs). |
+| `OKFEMB006` | Un item `Compile`, `Content` ou `EmbeddedResource` remis, par une cible, sous un répertoire de bundle après le retrait de §5.3. |
 
 ### 5.6 Emballage
 
@@ -484,7 +493,7 @@ toute autre tâche, qui démontre :
    NuGet (`SEEN_AT_IMPORT` vide pour un `OkfBundle` de
    `Directory.Build.targets`) — sinon les tests du `.targets` consomment le
    vrai paquet (§6.2) ;
-3. que le `Remove` d'évaluation de §5.3 n'énumère pas le disque sous le
-   répertoire du bundle (un appariement de motif, pas un parcours) ;
+3. que le retrait de §5.3 ne dépend pas du nombre d'items `Compile` du projet (cas à 120 sources) et n'énumère pas le disque sous le
+   répertoire du bundle (une comparaison de chemins sur les items, pas un parcours) ;
 4. le nommage, les codes `OKFEMB001` à `OKFEMB006` et la condition
    `'@(OkfBundle)' != ''` sur les cas de §6.2.

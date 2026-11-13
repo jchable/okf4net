@@ -286,14 +286,59 @@ public class TargetsBuildTests
     }
 
     [Fact]
-    public void Refuses_an_OkfBundle_the_Remove_cannot_see()
+    public void A_bundle_file_is_never_compiled_however_many_sources_the_project_has()
     {
+        // Found on 2026-11-13 building OKF4net.Tests: an evaluation-time `Compile Remove` built from an item
+        // transform silently stops removing once the project holds 100 Compile items (98 -> 100 flips it),
+        // so a real project would compile the bundle's x.cs. The detach runs in a target, on the items themselves.
+        using var tmp = new TempDir();
+        tmp.Write("knowledge/a.md", "a\n");
+        tmp.Write("knowledge/x.cs", "this is not C#\n");
+        tmp.Write("knowledge/r.resx", "<not xml\n");
+        for (var i = 0; i < 120; i++)
+        {
+            tmp.Write($"gen/G{i:000}.cs", $"class G{i:000} {{ }}\n");
+        }
+
+        var result = EmbeddedBuild.Build(tmp.Path, Bundle);
+
+        Assert.True(result.ExitCode == 0, result.Output);
+        Assert.Equal(["okf:kb/a.md", "okf:kb/r.resx", "okf:kb/x.cs"], EmbeddedBuild.ReadOkfResources(result.AssemblyPath).Keys);
+
+        // And only the bundle's files left the Compile list: the project's own sources are still compiled.
+        var types = EmbeddedBuild.ReadTypeNames(result.AssemblyPath);
+        Assert.Equal(120, types.Count(t => t.StartsWith('G')));
+    }
+
+    [Fact]
+    public void A_bundle_declared_in_Directory_Build_targets_is_detached_too()
+    {
+        // The detach runs when the build runs, after every OkfBundle declaration, wherever it sits.
         using var tmp = new TempDir();
         tmp.Write("knowledge/a.md", "a\n");
         tmp.Write("knowledge/x.cs", "this is not C#\n");
 
         var result = EmbeddedBuild.Build(tmp.Path, "", directoryBuildTargetsXml: """
             <Project><ItemGroup><OkfBundle Include="knowledge/" Prefix="kb" /></ItemGroup></Project>
+            """);
+
+        Assert.True(result.ExitCode == 0, result.Output);
+        Assert.Equal(["okf:kb/a.md", "okf:kb/x.cs"], EmbeddedBuild.ReadOkfResources(result.AssemblyPath).Keys);
+    }
+
+    [Fact]
+    public void Refuses_a_default_item_that_a_target_adds_back_after_the_detach()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("knowledge/a.md", "a\n");
+        tmp.Write("knowledge/x.cs", "this is not C#\n");
+
+        var result = EmbeddedBuild.Build(tmp.Path, Bundle, directoryBuildTargetsXml: """
+            <Project>
+              <Target Name="OkfTestReAdd" AfterTargets="AssignTargetPaths" BeforeTargets="OkfEmbedBundles">
+                <ItemGroup><Compile Include="knowledge/x.cs" /></ItemGroup>
+              </Target>
+            </Project>
             """);
 
         Assert.NotEqual(0, result.ExitCode);

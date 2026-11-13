@@ -11,22 +11,54 @@
 <Project>
 
   <!--
-    Evaluation time (§5.3): a bundle file must not also be a default Compile,
+    Detach (§5.3): a bundle file must not also be a default Compile,
     EmbeddedResource or Content item (a sanctioned .cs script would be compiled
     into the host, a .resx passed to ResGen). None is left alone: it keeps the
     files visible in the IDE and changes nothing unless the host sets copy
-    metadata itself. '%(FullPath)/**' removes both Include="dir" and
-    Include="dir/"; EnsureTrailingSlash is NOT usable here: a property function
-    over metadata is not expanded inside an evaluation-time transform.
-    This sees every OkfBundle declared before NuGet's import (the project body);
-    one declared later (Directory.Build.targets, a target) is caught by
-    OKFEMB006 at execution.
+    metadata itself.
+
+    This runs as a TARGET, on the items themselves, NOT as an evaluation-time
+    `Remove="@(OkfBundle->'%(FullPath)/**')"`: that Remove silently stops
+    removing once the project holds 100 Compile items (measured 2026-11-13: 98
+    items removes, 100 does not), so every real project would compile the
+    bundle's x.cs. A batched `Remove="%(_OkfRoot.OkfDir)**"` inside a target
+    removed nothing either (same day, same project). Removing by identity,
+    from a list built with a path comparison, needs no glob and always worked.
+
+    It runs before every consumer of the items: PrepareForBuild opens a build,
+    AssignTargetPaths precedes the resource handling (SplitResourcesByCulture
+    would copy a .resx or .licx into lists a later Remove cannot reach), and
+    CoreCompile is the last stop for the Compile items. It sees every OkfBundle
+    declared by the time the build runs, wherever it sits (the project body,
+    Directory.Build.targets, a target that ran earlier).
   -->
-  <ItemGroup Condition="'@(OkfBundle)' != ''">
-    <Compile Remove="@(OkfBundle->'%(FullPath)/**')" />
-    <EmbeddedResource Remove="@(OkfBundle->'%(FullPath)/**')" />
-    <Content Remove="@(OkfBundle->'%(FullPath)/**')" />
-  </ItemGroup>
+  <Target Name="_OkfDetachDefaultItems"
+          BeforeTargets="PrepareForBuild;AssignTargetPaths;CoreCompile"
+          DependsOnTargets="_OkfPrepareBundles;_OkfDetachBundle"
+          Condition="'@(OkfBundle)' != ''" />
+
+  <!--
+    One batch per bundle (target batching on _OkfRoot), the directory held in a
+    property first: a qualified %(_OkfRoot.OkfDir) nested inside the item
+    condition's property function removed EVERY Compile item (found by the
+    CS5001 of OKF4net.Tests, an Exe).
+  -->
+  <Target Name="_OkfDetachBundle" Outputs="%(_OkfRoot.Identity)">
+    <PropertyGroup>
+      <_OkfDetachDir>%(_OkfRoot.OkfDir)</_OkfDetachDir>
+      <_OkfDetachDirLower>$(_OkfDetachDir.ToLowerInvariant())</_OkfDetachDirLower>
+    </PropertyGroup>
+    <ItemGroup>
+      <_OkfDetach Include="@(Compile);@(Content);@(EmbeddedResource)"
+                  Condition="$([System.String]::Copy('%(FullPath)').ToLowerInvariant().StartsWith('$(_OkfDetachDirLower)'))" />
+    </ItemGroup>
+    <ItemGroup>
+      <Compile Remove="@(_OkfDetach)" />
+      <Content Remove="@(_OkfDetach)" />
+      <EmbeddedResource Remove="@(_OkfDetach)" />
+      <_OkfDetach Remove="@(_OkfDetach)" />
+    </ItemGroup>
+  </Target>
 
   <!--
     BeforeTargets="PrepareResourceNames" runs AFTER that target's dependencies
@@ -83,14 +115,14 @@
            Condition="'%(_OkfWalked.OkfIsLink)' == 'true'"
            Text="OkfBundle '$(_OkfThisDir)': '%(_OkfWalked.Identity)' is a symbolic link or junction; links are refused." />
 
-    <!-- OKFEMB006: a default item the evaluation-time Remove did not see (checked before this target adds its own). -->
+    <!-- OKFEMB006: an item a target put back after _OkfDetachDefaultItems (checked before this target adds its own). -->
     <ItemGroup>
       <_OkfLeftover Include="@(Compile);@(Content);@(EmbeddedResource)"
                     Condition="$([System.String]::Copy('%(FullPath)').ToLowerInvariant().StartsWith('$(_OkfThisDirLower)'))" />
     </ItemGroup>
     <Error Code="OKFEMB006"
            Condition="'@(_OkfLeftover)' != ''"
-           Text="OkfBundle '$(_OkfThisDir)': @(_OkfLeftover, ', ') is still a Compile, Content or EmbeddedResource item; declare OkfBundle in the project file, not in Directory.Build.targets or a target." />
+           Text="OkfBundle '$(_OkfThisDir)': @(_OkfLeftover, ', ') is a Compile, Content or EmbeddedResource item again: a target put it back after the bundle's files were detached from those lists. Do not add files of an OkfBundle directory to them." />
 
     <!-- Only now, with no directory link and no unholdable name left (both checked by the walk), is the tree globbed. -->
     <ItemGroup>

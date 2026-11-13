@@ -106,6 +106,21 @@ internal static class EmbeddedBuild
         }
     }
 
+    /// <summary>The names of the types the assembly defines, to prove the project's own sources were compiled.</summary>
+    public static SortedSet<string> ReadTypeNames(string assemblyPath)
+    {
+        var context = new AssemblyLoadContext("okf-types-" + Guid.NewGuid().ToString("N"), isCollectible: true);
+        try
+        {
+            using var file = File.OpenRead(assemblyPath);
+            return new SortedSet<string>(context.LoadFromStream(file).GetTypes().Select(t => t.Name), StringComparer.Ordinal);
+        }
+        finally
+        {
+            context.Unload();
+        }
+    }
+
     /// <summary>The bundle as <see cref="FileSystemBundleProvider"/> lists it (links skipped), each name with the file's bytes.</summary>
     public static SortedDictionary<string, byte[]> ReadFileSystemView(string bundleDir)
     {
