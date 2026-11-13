@@ -203,6 +203,14 @@ and this project adheres to
   names carry the lowercased ids, stays the directory constructor's alone.
   The directory constructor is unchanged.
 
+- **Embedded-resource bundle provider (#141).** New package
+  `OKF4net.Providers.EmbeddedResources`: the `OkfBundle` MSBuild item (a
+  pure-MSBuild `.targets` shipped in the package) embeds a bundle directory one
+  manifest resource per file, `okf:<prefix>/<path>`, refusing links and names an
+  assembly cannot hold (`OKFEMB001`–`OKFEMB006`), and
+  `EmbeddedResourceBundleProvider` serves it back read-only, synchronously,
+  versioned by the assembly's MVID — Native AOT and single-file included.
+
 ### Changed (breaking)
 
 - **The provider contract is asynchronous, before its first publication** (#152). The
@@ -295,6 +303,12 @@ and this project adheres to
   `memory-session/`).
 
 ### Changed
+
+- **`Bundle.TryResolveResource(…)` and `Bundle.ReadResourceText(string)`**
+  (both `[Obsolete]`) now throw `NotSupportedException` when the bundle's
+  provider is not a `FileSystemBundleProvider`: its `Root` is then a display
+  string, which on Linux could resolve under the current directory. Use
+  `TryResolveResourceKey` and `ReadResourceText(BundleKey)`.
 
 - **The write lock is an explicit lease, and the `onWriteCommitted` callback runs after it is released** (#152, step 1). `BundleConceptWriter`'s thread-bound `Monitor` pair (lexical gate + resolved bundle lock) became `SemaphoreSlim`s behind an internal `WriteLease`, so the lock can be held across an `await` once the writer is asynchronous. It is no longer re-entrant: code under a lease receives it instead of acquiring again. The two guarantees that mattered are kept: aliases of one directory share the lock (#86), and a contended resolved lock is waited for without the gate. Observable: the callback (`onWriteCommitted`, the `OkfBundleTools` cache invalidation) is now invoked after the lock is released, so it may call back into the same bundle; a host that relied on exclusion while the callback ran loses it. `RecordVerifications` completes its whole batch before notifying (once per committed write), so a notification that throws (a cancellation, say) no longer stops a batch half-way: the exception still propagates, with every stamp on disk.
 

@@ -64,6 +64,12 @@ jobs:
           -p:Version=$VERSION
           -p:ContinuousIntegrationBuild=true
 
+      - name: Pack (Providers.EmbeddedResources)
+        run: >
+          dotnet pack src/OKF4net.Providers.EmbeddedResources/OKF4net.Providers.EmbeddedResources.csproj -c Release -o artifacts
+          -p:Version=$VERSION
+          -p:ContinuousIntegrationBuild=true
+
       - name: Pack (Attestation)
         run: >
           dotnet pack src/OKF4net.Attestation/OKF4net.Attestation.csproj -c Release -o artifacts
