@@ -420,3 +420,88 @@ jobs:
           if ($actual -notlike "okf-render $env:DECLARED *") {
             throw "published binary reports '$actual', expected version $env:DECLARED"
           }
+
+  # Spec of 2026-11-12 §6.4 (#141): the embedded provider and its .targets as a
+  # host really consumes them -- the core and the provider PACKED at a
+  # run-unique version, restored from a local feed (plus nuget.org for the AOT
+  # compiler and runtime packs), published Native AOT, run from an empty
+  # directory, and compared with the same binary reading the bundle from disk.
+  embedded-aot:
+    name: embedded bundle AOT smoke test (${{ matrix.rid }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: macos-latest
+            rid: osx-arm64
+          - os: windows-latest
+            rid: win-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      # A version no feed can already hold, so restore cannot take a published core.
+      - name: Derive a CI-only version and an isolated package cache
+        shell: pwsh
+        run: |
+          $declared = (Select-String -Path Directory.Build.props -Pattern '<Version>([^<]*)</Version>').Matches[0].Groups[1].Value
+          echo "PROBE_VERSION=$declared-ci.${{ github.run_id }}.${{ github.run_attempt }}" >> $env:GITHUB_ENV
+          echo "PROBE_FEED=${{ runner.temp }}/okf-probe-feed" >> $env:GITHUB_ENV
+          echo "NUGET_PACKAGES=${{ runner.temp }}/okf-probe-packages" >> $env:GITHUB_ENV
+
+      - name: Pack the core and the provider
+        shell: pwsh
+        run: |
+          foreach ($project in 'src/OKF4net/OKF4net.csproj', 'src/OKF4net.Providers.EmbeddedResources/OKF4net.Providers.EmbeddedResources.csproj') {
+            dotnet pack $project -c Release -o $env:PROBE_FEED -p:Version=$env:PROBE_VERSION -p:ContinuousIntegrationBuild=true
+            if ($LASTEXITCODE -ne 0) { throw "dotnet pack failed: $project" }
+          }
+
+      # `dotnet publish` restores for itself: a separate `dotnet restore` does not set
+      # _IsPublishing, so the assets file lacks what the native compile needs and a
+      # following `publish --no-restore` fails on PrivateSdkAssemblies (measured 2026-11-13).
+      - name: Publish the probe Native AOT from the packages, then check the resolved versions
+        shell: pwsh
+        run: |
+          $config = Join-Path $env:RUNNER_TEMP 'okf-probe-nuget.config'
+          @(
+            '<?xml version="1.0" encoding="utf-8"?>',
+            '<configuration>',
+            '  <packageSources>',
+            '    <clear />',
+            "    <add key=`"okf-probe`" value=`"$env:PROBE_FEED`" />",
+            '    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />',
+            '  </packageSources>',
+            '</configuration>'
+          ) | Set-Content $config
+          dotnet publish tests/EmbeddedBundleAotProbe/EmbeddedBundleAotProbe.csproj -c Release -r ${{ matrix.rid }} -p:PublishAot=true "-p:OkfProbeVersion=$env:PROBE_VERSION" "-p:RestoreConfigFile=$config" -o probe-out
+          if ($LASTEXITCODE -ne 0) { throw "publish failed" }
+          $assets = Get-Content tests/EmbeddedBundleAotProbe/obj/project.assets.json -Raw | ConvertFrom-Json
+          foreach ($id in 'OKF4net', 'OKF4net.Providers.EmbeddedResources') {
+            if (-not $assets.libraries.PSObject.Properties["$id/$env:PROBE_VERSION"]) { throw "$id was not resolved at $env:PROBE_VERSION" }
+          }
+
+      - name: The embedded run, from an empty directory, matches the filesystem run
+        shell: pwsh
+        run: |
+          $exe = Join-Path (Resolve-Path probe-out) ('EmbeddedBundleAotProbe' + $(if ('${{ matrix.rid }}'.StartsWith('win-')) { '.exe' } else { '' }))
+          $empty = Join-Path $env:RUNNER_TEMP 'okf-probe-empty'
+          New-Item -ItemType Directory -Force -Path $empty | Out-Null
+          Push-Location $empty
+          $embedded = @(& $exe)
+          $code = $LASTEXITCODE
+          Pop-Location
+          if ($code -ne 0) { throw "embedded run exited $code" }
+          if (@(Get-ChildItem -Force $empty).Count -ne 0) { throw "the embedded run wrote into the current directory" }
+          $filesystem = @(& $exe --filesystem (Resolve-Path bundles/acme_retail).Path)
+          if ($LASTEXITCODE -ne 0) { throw "filesystem run exited $LASTEXITCODE" }
+          if (-not ($embedded[0] -match '^concepts=[1-9]')) { throw "no concept loaded: $($embedded[0])" }
+          $diff = Compare-Object $embedded $filesystem -SyncWindow 0
+          if ($diff) { $diff | Format-Table -AutoSize | Out-String | Write-Host; throw "embedded and filesystem summaries differ" }
+          Write-Host "OK: $($embedded.Count) summary lines identical, $($embedded[0])"
