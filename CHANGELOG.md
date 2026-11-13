@@ -207,7 +207,7 @@ and this project adheres to
   `OKF4net.Providers.EmbeddedResources`: the `OkfBundle` MSBuild item (a
   pure-MSBuild `.targets` shipped in the package) embeds a bundle directory one
   manifest resource per file, `okf:<prefix>/<path>`, refusing links and names an
-  assembly cannot hold (`OKFEMB001`–`OKFEMB006`), and
+  assembly cannot hold (`OKFEMB001`–`OKFEMB007`), and
   `EmbeddedResourceBundleProvider` serves it back read-only, synchronously,
   versioned by the assembly's MVID — Native AOT and single-file included.
 

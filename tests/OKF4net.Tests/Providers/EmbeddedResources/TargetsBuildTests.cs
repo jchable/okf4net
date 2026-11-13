@@ -161,6 +161,42 @@ public class TargetsBuildTests
         Assert.Contains("OKFEMB004", result.Output, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("./", "")]
+    [InlineData("../", "proj")]
+    public void Refuses_a_bundle_directory_that_holds_the_project(string include, string projectSubdir)
+    {
+        // Final review, 2026-11-13: such a bundle detached every source (an empty assembly) and embedded
+        // obj/project.assets.json, the .csproj and whatever else sat beside them (.git/, .env), with no error.
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "a\n");
+        if (projectSubdir.Length > 0)
+        {
+            Directory.CreateDirectory(Path.Combine(tmp.Path, projectSubdir));
+        }
+
+        var result = EmbeddedBuild.Build(Path.Combine(tmp.Path, projectSubdir), $"""    <OkfBundle Include="{include}" Prefix="kb" />""");
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("OKFEMB007", result.Output, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public void Detaches_by_exact_case_on_a_case_sensitive_file_system()
+    {
+        // Final review, 2026-11-13: the path comparison folded case on every OS, so on Linux a source in
+        // knowledge/ was dropped from the build because the bundle is Knowledge/.
+        Skip.IfNot(OperatingSystem.IsLinux(), "Only a case-sensitive file system tells the two directories apart.");
+        using var tmp = new TempDir();
+        tmp.Write("Knowledge/a.md", "a\n");
+        tmp.Write("knowledge/Lost.cs", "class LostType { }\n");
+
+        var result = EmbeddedBuild.Build(tmp.Path, """    <OkfBundle Include="Knowledge/" Prefix="kb" />""");
+
+        Assert.True(result.ExitCode == 0, result.Output);
+        Assert.Contains("LostType", EmbeddedBuild.ReadTypeNames(result.AssemblyPath));
+    }
+
     [SkippableFact]
     public void Rejects_a_backslash_name_that_collides_with_a_real_path()
     {

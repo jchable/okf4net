@@ -11,6 +11,15 @@
 <Project>
 
   <!--
+    Paths are compared ignoring case everywhere but on Linux: a Windows or macOS volume holds one
+    spelling per name (the user's Include may spell it differently from the disk), a Linux one can
+    hold Knowledge/ beside knowledge/ (final review, 2026-11-13).
+  -->
+  <PropertyGroup>
+    <_OkfFold Condition="!$([MSBuild]::IsOSPlatform('Linux'))">true</_OkfFold>
+  </PropertyGroup>
+
+  <!--
     Detach (§5.3): a bundle file must not also be a default Compile,
     EmbeddedResource or Content item (a sanctioned .cs script would be compiled
     into the host, a .resx passed to ResGen). None is left alone: it keeps the
@@ -47,10 +56,21 @@
     <PropertyGroup>
       <_OkfDetachDir>%(_OkfRoot.OkfDir)</_OkfDetachDir>
       <_OkfDetachDirLower>$(_OkfDetachDir.ToLowerInvariant())</_OkfDetachDirLower>
+      <_OkfProjectDir>$([MSBuild]::EnsureTrailingSlash('$(MSBuildProjectDirectory)'))</_OkfProjectDir>
+      <_OkfProjectDirLower>$(_OkfProjectDir.ToLowerInvariant())</_OkfProjectDirLower>
     </PropertyGroup>
+    <!--
+      A bundle directory that holds the project would detach every source and embed obj/, bin/,
+      the project file and whatever else sits beside them (.git/, .env): refused before anything runs.
+    -->
+    <Error Code="OKFEMB007"
+           Condition="('$(_OkfFold)' == 'true' and $(_OkfProjectDirLower.StartsWith('$(_OkfDetachDirLower)'))) or ('$(_OkfFold)' != 'true' and $(_OkfProjectDir.StartsWith('$(_OkfDetachDir)')))"
+           Text="OkfBundle '$(_OkfDetachDir)': the directory is, or holds, the project directory '$(_OkfProjectDir)': it would embed obj/, bin/ and the project's own files. Point OkfBundle at a subdirectory." />
     <ItemGroup>
       <_OkfDetach Include="@(Compile);@(Content);@(EmbeddedResource)"
-                  Condition="$([System.String]::Copy('%(FullPath)').ToLowerInvariant().StartsWith('$(_OkfDetachDirLower)'))" />
+                  Condition="'$(_OkfFold)' == 'true' and $([System.String]::Copy('%(FullPath)').ToLowerInvariant().StartsWith('$(_OkfDetachDirLower)'))" />
+      <_OkfDetach Include="@(Compile);@(Content);@(EmbeddedResource)"
+                  Condition="'$(_OkfFold)' != 'true' and $([System.String]::Copy('%(FullPath)').StartsWith('$(_OkfDetachDir)'))" />
     </ItemGroup>
     <ItemGroup>
       <Compile Remove="@(_OkfDetach)" />
@@ -118,7 +138,9 @@
     <!-- OKFEMB006: an item a target put back after _OkfDetachDefaultItems (checked before this target adds its own). -->
     <ItemGroup>
       <_OkfLeftover Include="@(Compile);@(Content);@(EmbeddedResource)"
-                    Condition="$([System.String]::Copy('%(FullPath)').ToLowerInvariant().StartsWith('$(_OkfThisDirLower)'))" />
+                    Condition="'$(_OkfFold)' == 'true' and $([System.String]::Copy('%(FullPath)').ToLowerInvariant().StartsWith('$(_OkfThisDirLower)'))" />
+      <_OkfLeftover Include="@(Compile);@(Content);@(EmbeddedResource)"
+                    Condition="'$(_OkfFold)' != 'true' and $([System.String]::Copy('%(FullPath)').StartsWith('$(_OkfThisDir)'))" />
     </ItemGroup>
     <Error Code="OKFEMB006"
            Condition="'@(_OkfLeftover)' != ''"

@@ -308,6 +308,7 @@ commentaire.
 | `OKFEMB004` | Un nom que le stockage embarqué ne peut pas tenir : `\`, `"`, `|`, caractère de contrôle, ou jumeau de casse dans le même bundle. |
 | `OKFEMB005` | Un lien symbolique ou une jonction : le répertoire du bundle, un sous-répertoire ou un fichier (D6). |
 | `OKFEMB006` | Un item `Compile`, `Content` ou `EmbeddedResource` remis, par une cible, sous un répertoire de bundle après le retrait de §5.3. |
+| `OKFEMB007` | Le répertoire du bundle est, ou contient, le répertoire du projet (il embarquerait `obj/`, `bin/` et les fichiers du projet). |
 
 ### 5.6 Emballage
 
