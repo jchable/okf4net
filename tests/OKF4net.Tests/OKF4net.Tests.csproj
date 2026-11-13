@@ -55,6 +55,12 @@
     <OkfBundle Include="Providers\EmbeddedResources\Assets\contract\" Prefix="contract" />
     <OkfBundle Include="Providers\EmbeddedResources\Assets\contract2\" Prefix="contract2" />
     <OkfBundle Include="Providers\EmbeddedResources\Assets\names\" Prefix="names" />
+    <!-- Parity (spec §6.3): embedded, never edited. -->
+    <OkfBundle Include="..\fixtures\okf_v02\" Prefix="fixture-okf_v02" />
+    <OkfBundle Include="..\fixtures\okf_v02_computation\" Prefix="fixture-okf_v02_computation" />
+    <OkfBundle Include="..\fixtures\okf_v02_reserved\" Prefix="fixture-okf_v02_reserved" />
+    <OkfBundle Include="..\fixtures\appendix_a\" Prefix="fixture-appendix_a" />
+    <OkfBundle Include="..\..\bundles\acme_retail\" Prefix="acme_retail" />
     <!-- Not under the convention: GetBundlePrefixes must ignore them. Two files: one item per file (NETSDK1022 refuses a duplicate EmbeddedResource). -->
     <EmbeddedResource Include="Providers\EmbeddedResources\Assets\stray1.txt" LogicalName="okf:/stray.md" WithCulture="false" Type="Non-Resx" />
     <EmbeddedResource Include="Providers\EmbeddedResources\Assets\stray2.txt" LogicalName="okf:noslash" WithCulture="false" Type="Non-Resx" />
