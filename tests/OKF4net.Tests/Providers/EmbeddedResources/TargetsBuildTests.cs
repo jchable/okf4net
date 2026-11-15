@@ -221,6 +221,33 @@ public class TargetsBuildTests
     }
 
     [SkippableFact]
+    public void Refuses_a_special_file_instead_of_blocking_on_it()
+    {
+        // A FIFO is a regular file to MSBuild (its attributes read "Normal") and reading it blocks until a writer
+        // shows up: the build would hang. The check is made by the platform's own find, before anything reads.
+        Skip.If(OperatingSystem.IsWindows(), "Windows has no FIFO.");
+        using var tmp = new TempDir();
+        tmp.Write("knowledge/a.md", "a\n");
+        Directory.CreateDirectory(Path.Combine(tmp.Path, "knowledge", "sub"));
+        var fifo = Path.Combine(tmp.Path, "knowledge", "sub", "pipe");
+        try
+        {
+            using var mkfifo = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("mkfifo") { ArgumentList = { fifo }, UseShellExecute = false })!;
+            mkfifo.WaitForExit();
+            Skip.IfNot(mkfifo.ExitCode == 0, "mkfifo failed.");
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            Skip.If(true, "mkfifo is not installed.");
+        }
+
+        var result = EmbeddedBuild.Build(tmp.Path, Bundle);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("OKFEMB008", result.Output, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public void Refuses_the_project_directory_named_through_a_link_to_it()
     {
         // Same class as the 8.3 alias, one MSBuild never normalises: the project built through a link (a junction,

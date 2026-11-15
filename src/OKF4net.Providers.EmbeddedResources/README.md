@@ -15,7 +15,7 @@ Every file under `knowledge/` becomes the manifest resource `okf:kb/<relative pa
 
 A `None` item with `CopyToOutputDirectory`/`CopyToPublishDirectory` on the bundle's files copies them beside the binary too — which works, but defeats the purpose. The same on a `Content` item has no effect: it is detached.
 
-The project that builds the assembly must hold a **direct** `PackageReference` to this package: a package's `build/` assets do not flow through a `ProjectReference`, so an `OkfBundle` declared in a project that only reaches the package transitively embeds nothing. Not supported: special files (FIFOs, devices) under the bundle directory, which MSBuild cannot tell from regular files and which can hang the build.
+The project that builds the assembly must hold a **direct** `PackageReference` to this package: a package's `build/` assets do not flow through a `ProjectReference`, so an `OkfBundle` declared in a project that only reaches the package transitively embeds nothing. Special files (FIFOs, devices, sockets) under the bundle directory are refused outside Windows (`OKFEMB008`): MSBuild reads them as regular files and the build would block on them. The check runs the platform's `find`, which every Linux and macOS system has.
 
 ## Read
 
@@ -44,6 +44,7 @@ Supported assemblies: those loaded at run time from a file, a single-file bundle
 | `OKFEMB005` | A symbolic link or junction under the bundle directory (or the directory itself). Links are refused, never followed: a link to `~/.ssh` must not end up in a published binary. |
 | `OKFEMB006` | A target of your own put a bundle file back into `Compile`, `Content`, `EmbeddedResource`, `Page`, `ApplicationDefinition` or `Resource` after the package detached it (a `Compile` or `EmbeddedResource` one is also caught just before and just after the compiler runs, whatever the target's hooks). |
 | `OKFEMB007` | The bundle directory is, or holds, the project directory: it would embed `obj/`, `bin/` and the project's own files. Point `OkfBundle` at a subdirectory. A directory that directly holds a file named like the project file is refused whatever the spelling of its path (8.3 alias, link, `subst` drive); a bundle directory that holds the project in a subdirectory is recognised by its path text only. |
+| `OKFEMB008` | A FIFO, device or socket under the bundle directory (outside Windows). |
 
 ## In a knowledge catalog
 

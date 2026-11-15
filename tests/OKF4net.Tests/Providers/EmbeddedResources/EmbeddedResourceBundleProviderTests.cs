@@ -169,6 +169,17 @@ public class EmbeddedResourceBundleProviderTests
     }
 
     [Fact]
+    public void The_core_grants_this_package_no_internals()
+    {
+        // A package that calls an internal of the core breaks at run time (MissingMethodException) when a host
+        // pairs it with another version of the core, which NuGet's minimum-version dependency allows. The package
+        // keeps its own copy of the one helper it needed, so no such grant may come back.
+        var granted = typeof(Bundle).Assembly.GetCustomAttributes<System.Runtime.CompilerServices.InternalsVisibleToAttribute>()
+            .Select(a => a.AssemblyName);
+        Assert.DoesNotContain(granted, name => name.StartsWith("OKF4net.Providers.EmbeddedResources", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void A_dynamic_assembly_is_refused()
     {
         var dynamic = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName("okf-dynamic"), AssemblyBuilderAccess.Run);

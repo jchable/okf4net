@@ -226,6 +226,24 @@
            Condition="'%(_OkfWalked.OkfIsLink)' == 'true'"
            Text="OkfBundle '$(_OkfThisDir)': '%(_OkfWalked.Identity)' is a symbolic link or junction; links are refused." />
 
+    <!--
+      OKFEMB008: a FIFO, device or socket reads as a regular file to MSBuild ("Normal" attributes) and
+      reading one blocks the build. Only the platform's find tells them apart: stat-only, it never opens
+      anything, and it does not follow links (they are refused above). The directory travels in an
+      environment variable, never in the command text, so no character of its name reaches the shell as
+      syntax. Windows has none of these files. Only whether the output is empty is read: the lines become
+      items, which a ';' in a name would split but cannot make empty.
+    -->
+    <Exec Condition="!$([MSBuild]::IsOSPlatform('Windows'))"
+          Command="find &quot;$OKF_DIR&quot; \( -type p -o -type c -o -type b -o -type s \) -print"
+          EnvironmentVariables="OKF_DIR=$([MSBuild]::Escape('$(_OkfThisDir)'))"
+          ConsoleToMSBuild="true" StandardOutputImportance="low" StandardErrorImportance="low" IgnoreExitCode="true">
+      <Output TaskParameter="ConsoleOutput" ItemName="_OkfSpecial" />
+    </Exec>
+    <Error Code="OKFEMB008"
+           Condition="'@(_OkfSpecial)' != ''"
+           Text="OkfBundle '$(_OkfThisDir)' holds a FIFO, device or socket (@(_OkfSpecial, ', ')): an assembly cannot hold it and reading it would block the build." />
+
     <!-- OKFEMB006: an item a target put back after _OkfDetachDefaultItems (checked before this target adds its own). -->
     <ItemGroup>
       <_OkfLeftover Include="@(Compile);@(Content);@(EmbeddedResource);@(Page);@(ApplicationDefinition);@(Resource)"
@@ -284,6 +302,7 @@
       <_OkfThisName Remove="@(_OkfThisName)" />
       <_OkfTwin Remove="@(_OkfTwin)" />
       <_OkfLeftover Remove="@(_OkfLeftover)" />
+      <_OkfSpecial Remove="@(_OkfSpecial)" />
       <_OkfWalked Remove="@(_OkfWalked)" />
     </ItemGroup>
   </Target>
