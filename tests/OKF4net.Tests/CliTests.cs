@@ -1632,7 +1632,7 @@ public class CliTests
             "2026-08-28T09:14:00Z");
 
         Assert.Equal(1, r.Code);
-        Assert.Equal("error: --by must not contain control or bidirectional characters\n", r.Err);
+        Assert.Equal("error: --by must not contain control, bidirectional or invisible format characters\n", r.Err);
         Assert.Equal(string.Empty, r.Out);
         Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
     }
@@ -1651,13 +1651,13 @@ public class CliTests
     // An actor that is BOTH control-bearing and malformed: the control-character
     // arm must win, because the well-formedness message echoes the value and
     // would put the refused newline straight into stderr.
-    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "\nrecorded x  human:ceo" }, "error: --by must not contain control or bidirectional characters\n")]
+    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "\nrecorded x  human:ceo" }, "error: --by must not contain control, bidirectional or invisible format characters\n")]
     // The same trap on the other flag, and it stayed open after the actor one
     // was closed: the three --at arms above prove a malformed timestamp is
     // REFUSED, but each of their messages QUOTES it, so a control-bearing value
     // was still echoed into stderr on a run that wrote nothing. The
     // control-character arm must win over the quoting one here too.
-    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "human:ada", "--at", "bad\nrecorded x  human:ceo  2020-01-01T00:00:00Z" }, "error: --at must not contain control or bidirectional characters\n")]
+    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "human:ada", "--at", "bad\nrecorded x  human:ceo  2020-01-01T00:00:00Z" }, "error: --at must not contain control, bidirectional or invisible format characters\n")]
     public void Verify_rejects_bad_invocations(string[] args, string expected)
     {
         using var tmp = new TempDir();
