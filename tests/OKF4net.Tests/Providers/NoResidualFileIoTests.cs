@@ -247,8 +247,7 @@ public class NoResidualFileIoTests
             NotError(await Call("okf_changes_since", ("sinceDate", "2020-01-01")));
             NotError(await Call("okf_read_concept", ("conceptId", "computations/revenue")));
             NotError(await Call("okf_get_computation", ("conceptId", "computations/revenue")));
-            NotError(await Call("okf_run_computation", ("conceptId", "computations/revenue"), ("parameterValues", Year)));
-            AssertAttesterSourceRead(c);
+            AssertRan(c, await Call("okf_run_computation", ("conceptId", "computations/revenue"), ("parameterValues", Year)));
             NotError(await Call("okf_verify", ("conceptIds", "metrics/revenue"), ("by", "human:ada")));
             NotError(await Call("okf_append_log", ("kind", "Update"), ("text", "probe")));
             _ = await Call("okf_read_concept", ("conceptId", "p/gt")); // an absent observation, which the write gate requires
@@ -276,12 +275,19 @@ public class NoResidualFileIoTests
         Assert.Contains(c.Mem.Calls, call => call.StartsWith($"write {id}.md", StringComparison.Ordinal));
     }
 
+    /// <summary>A run that succeeded: a rendered outcome starts with its header even when it is not displayable, so the displayable line is what proves the run went through.</summary>
     private static void AssertRan(Ctx c, string result)
     {
         NotError(result);
+        Assert.StartsWith("# Attestation outcome\n\n- displayable: yes\n", result, StringComparison.Ordinal);
         AssertAttesterSourceRead(c);
     }
 
+    /// <summary>
+    /// The attester was read after <see cref="NewContext"/> cleared the calls. Both images (the
+    /// <see cref="Ctx.Bundle"/> and the handle's) are loaded before that, so the load's resource
+    /// survey cannot satisfy this: the read is the capture's.
+    /// </summary>
     private static void AssertAttesterSourceRead(Ctx c) =>
         Assert.Contains(c.Mem.Calls, call => call.StartsWith("read references/attesters/revenue.py", StringComparison.Ordinal));
 
@@ -302,6 +308,10 @@ public class NoResidualFileIoTests
         }));
         var orchestrator = new AttestationOrchestrator(new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime }));
         var ctx = new Ctx { Mem = mem, Bundle = Bundle.Load(mem), Handle = new BundleHandle(mem), Orchestrator = orchestrator };
+
+        // The handle loads lazily: load it now, so that its resource survey (which reads the
+        // attester) is not among the calls a case asserts on (see AssertAttesterSourceRead).
+        _ = ctx.Handle.Current;
         mem.ClearCalls();
         return ctx;
     }

@@ -634,7 +634,7 @@ public static class OkfCli
         // spelling out its own character test.
         if (LineSafeText.ContainsControlCharacter(by))
         {
-            throw new CliOperationException("--by must not contain control characters");
+            throw new CliOperationException("--by must not contain control or bidirectional characters");
         }
 
         if (!Actor.Parse(by).IsWellFormed)
@@ -648,7 +648,7 @@ public static class OkfCli
         // that wrote nothing. Refused before it is quoted.
         if (at is not null && LineSafeText.ContainsControlCharacter(at))
         {
-            throw new CliOperationException("--at must not contain control characters");
+            throw new CliOperationException("--at must not contain control or bidirectional characters");
         }
 
         // The writer applies the same strict UTC rule; checking here too turns a

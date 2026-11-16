@@ -59,6 +59,9 @@ public sealed class FileMemoryStore : IMemoryStore
     /// <summary>Test seam: the depth bound of <see cref="RemoveScopeDirectories"/>, <see cref="MaxScopeDirectoryDepth"/> unless a test lowers it.</summary>
     internal int ScopeDirectoryDepthBoundForTest { get; set; } = MaxScopeDirectoryDepth;
 
+    /// <summary>Test seam: the bounds a scope's listing is consumed under in <see cref="ProbeAsync"/>, <see cref="BundleLimits.Default"/> unless a test lowers them (its ten million entries are too many to reach in a test).</summary>
+    internal BundleLimits ProbeLimitsForTest { get; set; } = BundleLimits.Default;
+
     /// <summary>Creates a store over the given per-tier, resolved absolute source roots: one <see cref="FileSystemBundleProvider"/> per tier root, each scope read through a provider rooted at its directory and confined to the tier root, and a deleted scope's emptied directories removed (see <see cref="RemoveScopeDirectories"/>).</summary>
     public FileMemoryStore(IReadOnlyDictionary<MemoryTier, string> tierRoots)
     {
@@ -95,8 +98,17 @@ public sealed class FileMemoryStore : IMemoryStore
         ArgumentNullException.ThrowIfNull(tierProviders);
         _tierProviders = tierProviders.ToDictionary(
             pair => pair.Key,
-            pair => new TierStorage(pair.Value ?? throw new ArgumentException($"The provider of memory tier '{pair.Key}' is null.", nameof(tierProviders)), null));
+            pair => new TierStorage(HostProvider(pair.Value ?? throw new ArgumentException($"The provider of memory tier '{pair.Key}' is null.", nameof(tierProviders))), null));
     }
+
+    /// <summary>
+    /// A host-given tier provider as the store uses it: a <see cref="FileSystemBundleProvider"/>
+    /// as is (the library's own; the writer derives its lock key from its root), any other behind
+    /// <see cref="TypeOnlyFailuresProvider"/>, so a failure of the host's provider reaches a result
+    /// by its type only, never by its text (spec §7).
+    /// </summary>
+    private static IBundleProvider HostProvider(IBundleProvider provider) =>
+        provider is FileSystemBundleProvider ? provider : new TypeOnlyFailuresProvider(provider);
 
     /// <summary>A tier's provider, and the same provider as a <see cref="FileSystemBundleProvider"/> when the store built it from a tier root (the directory constructor), which alone gives a scope its own filesystem provider and the removal of its emptied directories.</summary>
     private sealed record TierStorage(IBundleProvider Provider, FileSystemBundleProvider? FileSystem);
@@ -116,8 +128,21 @@ public sealed class FileMemoryStore : IMemoryStore
         Unavailable,
     }
 
-    /// <summary>What <see cref="Probe"/> found: the state, the failure's type name when it is <see cref="ScopeState.Unavailable"/>, and the keys listed under the scope's prefix.</summary>
-    private readonly record struct ScopeProbe(ScopeState State, string? Failure, IReadOnlyList<BundleListing> Listings);
+    /// <summary>What <see cref="ProbeAsync"/> found: the state, the failure's type name when it is <see cref="ScopeState.Unavailable"/>, and the full raw names listed under the scope's prefix.</summary>
+    private readonly record struct ScopeProbe(ScopeState State, string? Failure, IReadOnlyList<string> Names);
+
+    /// <summary>The type a failure is reported by: the original's for a host provider's failure (<see cref="HostProviderFailureException"/>), the exception's own otherwise.</summary>
+    private static string FailureName(Exception e) => e is HostProviderFailureException host ? host.FailureType : e.GetType().Name;
+
+    /// <summary>
+    /// Whether <paramref name="e"/>, caught from a tier's provider, is reported as data (named by
+    /// its type only): everything but a cancellation of the caller's own token and an
+    /// <see cref="OutOfMemoryException"/>, the policy <see cref="BundleHandle"/> applies to a
+    /// load. A host provider's own timeout surfacing as a <see cref="TaskCanceledException"/> is
+    /// such a failure: the caller did not ask to stop.
+    /// </summary>
+    private static bool IsReportable(Exception e, CancellationToken ct) =>
+        e is not OutOfMemoryException && !(e is OperationCanceledException && ct.IsCancellationRequested);
 
     /// <inheritdoc/>
     public async ValueTask<MemoryReadResult> ReadAsync(KnowledgeAccessScope scope, KnowledgeQuery query, CancellationToken ct = default)
@@ -148,7 +173,7 @@ public sealed class FileMemoryStore : IMemoryStore
             }
 
             var scopeProvider = ScopeProvider(tierStorage, prefix);
-            var probe = Probe(tierStorage.Provider, scopeProvider, prefix);
+            var probe = await ProbeAsync(tierStorage.Provider, scopeProvider, prefix, ct).ConfigureAwait(false);
             switch (probe.State)
             {
                 case ScopeState.Absent:
@@ -169,6 +194,12 @@ public sealed class FileMemoryStore : IMemoryStore
             catch (OkfException e)
             {
                 diagnostics.Add(new KnowledgeDiagnostic(KnowledgeDiagnosticCode.SourceUnavailable, $"memory:{tier}", $"Memory tier '{tier}' could not be loaded: {e.Message}"));
+                continue;
+            }
+            catch (Exception e) when (IsReportable(e, ct))
+            {
+                // A host provider's raw failure: its type only, never its text (spec §7).
+                diagnostics.Add(new KnowledgeDiagnostic(KnowledgeDiagnosticCode.SourceUnavailable, $"memory:{tier}", $"Memory tier '{tier}' could not be loaded: {FailureName(e)}"));
                 continue;
             }
 
@@ -195,7 +226,7 @@ public sealed class FileMemoryStore : IMemoryStore
     }
 
     /// <inheritdoc/>
-    public ValueTask<MemoryWriteResult> WriteAsync(KnowledgeAccessScope scope, MemoryEntry entry, MemoryTier tier, CancellationToken ct = default)
+    public async ValueTask<MemoryWriteResult> WriteAsync(KnowledgeAccessScope scope, MemoryEntry entry, MemoryTier tier, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(scope);
         ArgumentNullException.ThrowIfNull(entry);
@@ -203,7 +234,7 @@ public sealed class FileMemoryStore : IMemoryStore
 
         if (!_tierProviders.TryGetValue(tier, out var tierStorage))
         {
-            return new ValueTask<MemoryWriteResult>(new MemoryWriteResult(false, $"No memory source configured for tier '{tier}'."));
+            return new MemoryWriteResult(false, $"No memory source configured for tier '{tier}'.");
         }
 
         var conceptId = $"{MemoryPath.For(tier, scope)}/{entry.ConceptName}";
@@ -212,24 +243,30 @@ public sealed class FileMemoryStore : IMemoryStore
         string result;
         try
         {
-            result = writer.AppendToConceptAtomic(
+            result = await writer.AppendToConceptAtomicAsync(
                 conceptId,
                 entry.FrontmatterYamlIfCreating,
-                current => current is null ? section : current.TrimEnd('\n') + "\n\n" + section);
+                current => current is null ? section : current.TrimEnd('\n') + "\n\n" + section,
+                ct).ConfigureAwait(false);
         }
         catch (BundleReadOnlyException e)
         {
             // The writer leaves a read-only provider to its caller (a host mistake for it); a memory write fails as data.
-            return new ValueTask<MemoryWriteResult>(new MemoryWriteResult(false, $"Error: Memory tier '{tier}' could not be written: {e.Message}"));
+            return new MemoryWriteResult(false, $"Error: Memory tier '{tier}' could not be written: {e.Message}");
+        }
+        catch (Exception e) when (IsReportable(e, ct))
+        {
+            // A host provider's raw failure: its type only, never its text (spec §7).
+            return new MemoryWriteResult(false, $"Error: Memory tier '{tier}' could not be written ({FailureName(e)})");
         }
 
         return result.StartsWith("Error:", StringComparison.Ordinal)
-            ? new ValueTask<MemoryWriteResult>(new MemoryWriteResult(false, result))
-            : new ValueTask<MemoryWriteResult>(new MemoryWriteResult(true, null));
+            ? new MemoryWriteResult(false, result)
+            : new MemoryWriteResult(true, null);
     }
 
     /// <inheritdoc/>
-    public ValueTask<MemoryDeleteResult> DeleteScopeAsync(KnowledgeAccessScope scope, MemoryTier? tier = null, CancellationToken ct = default)
+    public async ValueTask<MemoryDeleteResult> DeleteScopeAsync(KnowledgeAccessScope scope, MemoryTier? tier = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(scope);
 
@@ -258,7 +295,7 @@ public sealed class FileMemoryStore : IMemoryStore
                 continue;
             }
 
-            var probe = Probe(tierProvider, ScopeProvider(tierStorage, prefix), prefix);
+            var probe = await ProbeAsync(tierProvider, ScopeProvider(tierStorage, prefix), prefix, ct).ConfigureAwait(false);
             switch (probe.State)
             {
                 case ScopeState.Absent:
@@ -284,28 +321,29 @@ public sealed class FileMemoryStore : IMemoryStore
 
             var deleted = new List<BundleKey>();
             var failed = new List<BundleWriteFailure>();
-            foreach (var listing in probe.Listings)
+            foreach (var name in probe.Names)
             {
                 ct.ThrowIfCancellationRequested();
-                if (!BundleKey.TryParse(listing.RawName, out var key, out var why))
+                if (!BundleKey.TryParse(name, out var key, out var why))
                 {
-                    failed.Add(new BundleWriteFailure(prefix, $"{DebugQuote.Quote(listing.RawName)} is not a key ({why}), so it cannot be deleted through the provider."));
+                    failed.Add(new BundleWriteFailure(prefix, $"{DebugQuote.Quote(name)} is not a key ({why}), so it cannot be deleted through the provider."));
                     continue;
                 }
 
                 try
                 {
-                    tierProvider.Delete(key, BundleWriteCondition.None);
+                    await tierProvider.DeleteAsync(key, BundleWriteCondition.None, ct).ConfigureAwait(false);
                     deleted.Add(key);
                 }
                 catch (BundleProviderException e)
                 {
                     failed.Add(new BundleWriteFailure(key, e.Message));
                 }
-                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                catch (Exception e) when (IsReportable(e, ct))
                 {
-                    // The type only, with the key: the runtime's message can name a host path (#211).
-                    failed.Add(new BundleWriteFailure(key, $"'{key}' could not be deleted ({e.GetType().Name})"));
+                    // The type only, with the key: the runtime's message can name a host path (#211),
+                    // and a host provider's own exception can carry anything (spec §7).
+                    failed.Add(new BundleWriteFailure(key, $"'{key}' could not be deleted ({FailureName(e)})"));
                 }
             }
 
@@ -323,7 +361,7 @@ public sealed class FileMemoryStore : IMemoryStore
         }
 
         var error = errors.Count > 0 ? string.Join("; ", errors) : null;
-        return new ValueTask<MemoryDeleteResult>(new MemoryDeleteResult(deletions.AsReadOnly(), error));
+        return new MemoryDeleteResult(deletions.AsReadOnly(), error);
     }
 
     /// <inheritdoc/>
@@ -347,7 +385,7 @@ public sealed class FileMemoryStore : IMemoryStore
             }
 
             var scopeProvider = ScopeProvider(tierStorage, prefix);
-            if (Probe(tierStorage.Provider, scopeProvider, prefix).State != ScopeState.Present)
+            if ((await ProbeAsync(tierStorage.Provider, scopeProvider, prefix, ct).ConfigureAwait(false)).State != ScopeState.Present)
             {
                 continue;
             }
@@ -357,7 +395,7 @@ public sealed class FileMemoryStore : IMemoryStore
             {
                 bundle = await Bundle.LoadAsync(scopeProvider, null, ct).ConfigureAwait(false);
             }
-            catch (OkfException)
+            catch (Exception e) when (e is OkfException || IsReportable(e, ct))
             {
                 continue;
             }
@@ -397,26 +435,31 @@ public sealed class FileMemoryStore : IMemoryStore
     /// The scope's state and keys: the chain from the tier root to the scope is checked first
     /// (<see cref="IBundleProvider.ExistsAsync"/> on the scope provider runs its boundary check
     /// before anything is listed, and answers for an absent root without throwing), then the
-    /// tier provider lists the keys under the scope's prefix. The listing walks the whole
-    /// subtree, so it can fail for reasons other than a refusal (a subdirectory that denies
-    /// listing, an I/O failure, a bound of the limits): that is <see cref="ScopeState.Unavailable"/>,
-    /// reported by the exception's type only. Nothing here throws for a storage condition.
+    /// tier provider lists the keys under the scope's prefix, consumed under the core's own
+    /// bounds (<see cref="Bundle.ListNamesAsync"/>: a provider that ignores
+    /// <see cref="BundleLimits.MaxEntries"/> is stopped there, not trusted), the names kept in full
+    /// so a deletion can name every key. The listing walks the whole subtree, so it can fail for
+    /// reasons other than a refusal (a subdirectory that denies listing, an I/O failure, a bound
+    /// of the limits, a host provider's own failure): that is <see cref="ScopeState.Unavailable"/>,
+    /// reported by the exception's type only. Nothing here throws for a storage condition; a
+    /// cancellation of <paramref name="ct"/> propagates.
     /// </summary>
-    private static ScopeProbe Probe(IBundleProvider tierProvider, IBundleProvider scopeProvider, BundleKey prefix)
+    private async ValueTask<ScopeProbe> ProbeAsync(IBundleProvider tierProvider, IBundleProvider scopeProvider, BundleKey prefix, CancellationToken ct)
     {
         try
         {
-            scopeProvider.Exists(ProbeKey);
-            var listings = tierProvider.Enumerate(prefix, BundleLimits.Default).ToList();
-            return new ScopeProbe(listings.Count > 0 ? ScopeState.Present : ScopeState.Absent, null, listings);
+            await scopeProvider.ExistsAsync(ProbeKey, ct).ConfigureAwait(false);
+            var (names, overLength) = await Bundle.ListNamesAsync(tierProvider, ProbeLimitsForTest, ct, prefix).ConfigureAwait(false);
+            List<string> all = [.. names, .. overLength];
+            return new ScopeProbe(all.Count > 0 ? ScopeState.Present : ScopeState.Absent, null, all);
         }
         catch (BundleAccessRefusedException)
         {
             return new ScopeProbe(ScopeState.Refused, null, []);
         }
-        catch (Exception e) when (e is BundleProviderException or IOException or UnauthorizedAccessException)
+        catch (Exception e) when (IsReportable(e, ct))
         {
-            return new ScopeProbe(ScopeState.Unavailable, e.GetType().Name, []);
+            return new ScopeProbe(ScopeState.Unavailable, FailureName(e), []);
         }
     }
 
@@ -491,7 +534,7 @@ public sealed class FileMemoryStore : IMemoryStore
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            return $"a directory under the scope could not be listed ({e.GetType().Name}) - its directories were left in place";
+            return $"a directory under the scope could not be listed ({FailureName(e)}) - its directories were left in place";
         }
 
         if (failure is not null)
@@ -515,7 +558,7 @@ public sealed class FileMemoryStore : IMemoryStore
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            return $"a directory under the scope is not empty or could not be removed ({e.GetType().Name}) - its directories were left in place";
+            return $"a directory under the scope is not empty or could not be removed ({FailureName(e)}) - its directories were left in place";
         }
 
         return null;

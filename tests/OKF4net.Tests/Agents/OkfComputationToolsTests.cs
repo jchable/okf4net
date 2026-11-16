@@ -274,8 +274,6 @@ public class OkfComputationToolsTests
             "c/rev.md",
             "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\nattester: { resource: att.py }\n---\n# Computation\n\n```\nX\n```\n");
         tmp.Write("att.py", "def attest(**_):\n    return {}\n");
-        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
-
         // The timeout is armed before the attester is entered, and that setup (bundle
         // load, binder and executor pool hops) can outlast 30 ms on a loaded runner. An
         // attempt that times out before entry never exercised the attester, so it proves
@@ -283,6 +281,11 @@ public class OkfComputationToolsTests
         const int maxAttempts = 5;
         for (var attempt = 1; ; attempt++)
         {
+            // Per attempt, like the gate below: an attempt that timed out before its attester
+            // was entered can still enter it later, and a runtime shared across attempts would
+            // then call the NEXT attempt's AttestFunc, setting that attempt's enteredAt.
+            var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
+
             // Per attempt and not disposed: the abandoned attester may still be waiting
             // on its gate when the attempt ends, and Set() in finally is what releases it.
             var gate = new ManualResetEventSlim(false);
