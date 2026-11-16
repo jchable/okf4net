@@ -1,7 +1,13 @@
 # Model-facing output boundary (#122) — design
 
-Status: draft for arbitration (2026-11-16). Approach chosen by the maintainer:
-**both** a type that folds by construction and an enumerating test.
+Status: decided (2026-11-16). Approach chosen by the maintainer: **both** a
+type that folds by construction and an enumerating test. The §4 questions
+were settled the same day, following the proposals:
+
+- **Q1:** a stray control becomes U+FFFD.
+- **Q2:** a CHANGELOG entry under Changed, with no breaking note.
+- **Q3:** tool blocks use fences longer than any backtick run in the content;
+  injected context uses the `<okf-context>` element with `<` escaped inside.
 
 ## 1. Problem
 
