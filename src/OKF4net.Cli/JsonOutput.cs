@@ -214,8 +214,8 @@ internal static class JsonOutput
                 AuditVocabulary.Name(f.Lifecycle.Status),
                 f.Lifecycle.StaleAfterRaw,
                 f.IsStale,
-                f.LastVerifiedAt is { } verified ? OkfTimestamp.FormatUtc(verified.UtcDateTime) : null,
-                f.LastChangedAt is { } changed ? OkfTimestamp.FormatUtc(changed.UtcDateTime) : null,
+                f.LastVerifiedAt is { } verified ? OkfTimestamp.FormatInstantUtc(verified) : null,
+                f.LastChangedAt is { } changed ? OkfTimestamp.FormatInstantUtc(changed) : null,
                 f.IsReviewOutdated))
             .ToList();
 

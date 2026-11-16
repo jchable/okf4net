@@ -116,6 +116,16 @@ internal static class OkfTimestamp
     internal static string FormatUtc(DateTime utc) =>
         utc.ToString(EmittedUtcFormat, CultureInfo.InvariantCulture);
 
+    /// <summary>
+    /// Formats <paramref name="instant"/> as UTC, keeping its fractional seconds when it has any
+    /// (<c>yyyy-MM-ddTHH:mm:ss[.fffffff]Z</c>, trailing zeros dropped), so a reader of the output can
+    /// reproduce a comparison of two instants that <see cref="FormatUtc"/> would show as equal (#156).
+    /// A whole-second instant is spelled exactly as <see cref="FormatUtc"/> spells it. Not a form
+    /// <see cref="IsEmittedUtcForm"/> accepts: it is for reporting, never for writing a stamp.
+    /// </summary>
+    internal static string FormatInstantUtc(DateTimeOffset instant) =>
+        instant.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.FFFFFFF'Z'", CultureInfo.InvariantCulture);
+
     /// <summary>Whether <paramref name="raw"/> is spelled exactly as <see cref="FormatUtc"/> spells a stamp.</summary>
     internal static bool IsEmittedUtcForm(string raw) =>
         DateTime.TryParseExact(raw, EmittedUtcFormat, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out _);
