@@ -85,8 +85,9 @@ round-trip — and only happens once a caller explicitly opts in via
 `OkfContextProviderOptions.MemoryCapture = MemoryCaptureMode.Enabled`,
 which writes captured exchanges into the same bundle the agent reads from.
 Note: the token budget is a soft chars/4 estimate
-(can be exceeded slightly), its `<okf-context>` fences are readability
-markers rather than a security boundary, and same-day memory capture is safe
+(can be exceeded slightly), its `<okf-context>` elements keep their
+structure (every `<` inside is written `&lt;`, so bundle content cannot close
+one) but are not a security boundary, and same-day memory capture is safe
 across concurrent sessions **within one process** — `OkfBundleTools` shares
 its write lock, via a process-wide registry, across every instance whose
 bundle root resolves to the same directory when the lock is taken (a junction
