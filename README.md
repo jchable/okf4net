@@ -539,6 +539,22 @@ Without filter flags it selects exactly what `--stale` selects and prints the
 summary form; with any filter flag it prints one line per matching concept, so
 the output pipes. `--json` always emits the full document.
 
+A `verified` stamp attests a moment, not a version (§5.2: content can change
+without re-confirmation). `--review-outdated` selects the concepts whose content
+changed after their latest review: `generated.at` (or the legacy `timestamp`,
+§13.1) strictly later than the latest `verified[].at`, whoever the actor. It is
+a signal for a reviewer and leaves the trust tier alone. A concept without
+either date is never selected. Each `--json` finding carries the two instants
+compared (`lastVerifiedAt`, `lastChangedAt`) and the verdict (`reviewOutdated`).
+Only the frontmatter is read, so a file edited without updating `generated.at` is
+not detected. To compare with the file's history instead, take `lastVerifiedAt`
+from the JSON and `git log -1 --format=%cI -- <path>` from git.
+
+```sh
+# Which reviewed concepts were regenerated since their last review?
+okf audit bundles/acme_retail --review-outdated
+```
+
 `--as-of <YYYY-MM-DD>` pins the date staleness is evaluated against, on both
 `okf audit` and `okf validate`; it pins to midnight UTC on that date, since §5
 makes `stale_after` an instant. Without it, anything touching `stale_after`

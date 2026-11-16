@@ -488,3 +488,9 @@ Arbitration: `docs/superpowers/specs/2026-09-22-golden-fixtures-authority-design
 
 - **`golden/index-input/`'s five bundle copies** (`log.md`, `datasets/sales.md`, `tables/{customers,orders,users}.md`) are deleted. `Index_generation_matches_golden` copies `appendix_a/` into a temporary directory and reads only the three generated `index.md` files, so no assertion changes. What is lost is a standalone historical archive of the input bundle as it was captured on 2026-07-21; what is kept is the three `index.md` outputs and the file-count assertion (which catches an extra file or a net deletion, not a modified original).
 - **The four `*.exitcode` files** are deleted. Each held one ASCII digit; the values now live in `GoldenParityTests` as assertions with their reason: `0` for `appendix_a`, `okf_v02` and `okf_v02_computation` (warnings only, still conformant), `1` for `okf_v02_reserved` (§11 condition 3 fails; the integer is this CLI's contract, not the spec's).
+
+## `okf audit --json`: review dates (2026-11-16, #156)
+
+Arbitration: the maintainer, 2026-11-16 — #156 compares the latest review with `generated.at` (§5.2, falling back to the legacy `timestamp`, §13.1) inside the library, and exposes the result additively: new `--json` fields and a new filter, the text lines unchanged. Semantic (criteria 1 and 2: new facts, new elements), hence recorded here.
+
+- **`golden/audit-v02.json`**: `query` gains `reviewOutdated` (`false` here, no `--review-outdated`), and each finding gains `lastVerifiedAt`, `lastChangedAt` (the compared instants, emitted UTC form, `null` when unknown) and `reviewOutdated`. No existing value moves. `audit-v02.out` is unchanged.

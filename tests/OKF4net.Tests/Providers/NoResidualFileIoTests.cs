@@ -183,7 +183,7 @@ public class NoResidualFileIoTests
         Add(t, "OkfBundleTools.BrowseAsync(String,CancellationToken)", async c => NotError(await Tools(c).BrowseAsync()));
         Add(t, "OkfBundleTools.GraphAsync(String,CancellationToken)", async c => NotError(await Tools(c).GraphAsync()));
         Add(t, "OkfBundleTools.SearchAsync(String,String,CancellationToken)", async c => NotError(await Tools(c).SearchAsync("revenue")));
-        Add(t, "OkfBundleTools.AuditAsync(Nullable`1,String,String,String,CancellationToken)", async c => NotError(await Tools(c).AuditAsync()));
+        Add(t, "OkfBundleTools.AuditAsync(Nullable`1,String,String,String,Nullable`1,CancellationToken)", async c => NotError(await Tools(c).AuditAsync()));
         Add(t, "OkfBundleTools.WriteConceptAsync(String,String,String,CancellationToken)", async c => Written(c, await Tools(c).WriteConceptAsync("p/ta", Fm, "b\n"), "p/ta"));
         Add(t, "OkfBundleTools.VerifyAsync(String,String,String,CancellationToken)", async c => NotError(await Tools(c).VerifyAsync("metrics/revenue", "human:ada")));
         Add(t, "OkfBundleTools.AppendLogAsync(String,String,CancellationToken)", async c => NotError(await Tools(c).AppendLogAsync("Update", "probe")));

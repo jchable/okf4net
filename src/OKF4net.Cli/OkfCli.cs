@@ -68,7 +68,7 @@ public static class OkfCli
         "        --by <actor>     Who is recording the review, for `verify` (required)\n" +
         "        --at <ts>        UTC timestamp yyyy-MM-ddTHH:mm:ssZ for `verify` (default: now)\n" +
         "        --dry-run        Show what `verify` would record, write nothing\n" +
-        "        --stale, --trust <tiers>, --status <s>, --type <t>\n" +
+        "        --stale, --trust <tiers>, --status <s>, --type <t>, --review-outdated\n" +
         "                         Filter `audit`'s worklist";
 
     /// <summary>
@@ -86,7 +86,7 @@ public static class OkfCli
     // `Verbs` capture a null array.
 
     /// <summary>The flags that make <c>audit</c> a filtered query rather than a report.</summary>
-    private static readonly string[] AuditFilterFlags = ["--stale", "--trust", "--status", "--type"];
+    private static readonly string[] AuditFilterFlags = ["--stale", "--trust", "--status", "--type", "--review-outdated"];
 
     /// <summary>The flag that pins "today", shared by <c>validate</c> and <c>audit</c>.</summary>
     private const string AsOfFlag = "--as-of";
@@ -146,11 +146,12 @@ public static class OkfCli
         ["audit"] = new(
             "okf audit <bundle> [filters] [--as-of <date>] [--json]",
             "Report trust, freshness and lifecycle across the bundle (§5.3–§5.5).",
-            AuditValuedFlags, ["--stale", "--json"],
+            AuditValuedFlags, ["--stale", "--review-outdated", "--json"],
             ["    --stale           Only concepts past their stale_after",
              "    --trust <tiers>   Filter by trust tier (comma-separated)",
              "    --status <s>      Filter by lifecycle status",
              "    --type <t>        Filter by concept type",
+             "    --review-outdated Only concepts changed (generated.at) after their latest review",
              "    --as-of <date>    Evaluate staleness as of YYYY-MM-DD, not today",
              "    --json            Machine-readable output"],
             CmdAudit),
@@ -568,7 +569,8 @@ public static class OkfCli
             args.Has("--stale"),
             tiers,
             status,
-            args.Value("--type"));
+            args.Value("--type"),
+            args.Has("--review-outdated"));
     }
 
     /// <summary>Renders the report form: summary counters over the whole bundle, then the worklist.</summary>
