@@ -1752,7 +1752,7 @@ public sealed class BundleConceptWriter
     /// persisted verbatim into the user's repository, where every other
     /// consumer inherits them. Refusing them too would fail a call over a
     /// character most callers cannot see, so they are folded and the call
-    /// succeeds. Same rule as the read side (<c>OkfBundleTools.OneLine</c>): nothing
+    /// succeeds. Same rule as the read side (<c>ModelText.Fold</c>): nothing
     /// downstream can start a new line.</para>
     ///
     /// <para><see cref="string.ReplaceLineEndings(string)"/> rather than a

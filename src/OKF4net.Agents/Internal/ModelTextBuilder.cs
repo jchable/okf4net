@@ -120,6 +120,19 @@ internal sealed class ModelTextBuilder
     }
 
     /// <summary>
+    /// Everything <paramref name="part"/> holds, appended as it is: text
+    /// another builder already built under the same rules (a section rendered
+    /// apart, then placed).
+    /// </summary>
+    /// <param name="part">The builder whose text to append.</param>
+    public ModelTextBuilder Include(ModelTextBuilder part)
+    {
+        ArgumentNullException.ThrowIfNull(part);
+        Buffer.Append(part._text);
+        return this;
+    }
+
+    /// <summary>
     /// A line <c>AuditText</c> rendered, then <c>\n</c>. Its bytes are the
     /// CLI's (golden-locked) and already line-safe (#123); it is folded once
     /// more all the same, which changes nothing but a bidi control a quoted

@@ -58,7 +58,11 @@ public static class ConceptSearch
     /// containing any of the query's whitespace-separated terms
     /// (<see cref="StringComparison.OrdinalIgnoreCase"/> substring match), or
     /// <c>null</c> if none does (including when the query splits into zero
-    /// terms).
+    /// terms). The line is returned as ONE line: every line terminator it
+    /// holds (a CR, NEL, VT, FF, U+2028 or U+2029 inside an LF-delimited line)
+    /// becomes a space, a control U+FFFD, and a bidirectional control is
+    /// removed, the one model-facing fold rule (<c>ModelText.Fold</c>), applied
+    /// before the line is trimmed and matched.
     /// </summary>
     /// <param name="body">The concept body to search for an excerpt line.</param>
     /// <param name="query">The search query (whitespace-separated, case-insensitive substring terms).</param>
@@ -72,7 +76,10 @@ public static class ConceptSearch
 
         foreach (var rawLine in LfLines.Split(body))
         {
-            var line = rawLine.Trim();
+            // Folded before anything else (#122): LfLines splits on LF only, so a lone CR,
+            // NEL, VT, FF, U+2028 or U+2029 inside a body line used to survive into the
+            // returned excerpt, which every consumer prints on one line of its own.
+            var line = ModelText.Fold(rawLine).Trim();
             if (line.Length == 0)
             {
                 continue;
