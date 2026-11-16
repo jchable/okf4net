@@ -7,8 +7,8 @@ using Xunit.Abstractions;
 namespace OKF4net.Tests.Providers;
 
 /// <summary>
-/// #151: <see cref="Bundle.EstimatedMemoryBytes"/> against the bytes an image really retains, measured with
-/// <see cref="GC.GetTotalMemory(bool)"/> around a load whose provider is built beforehand (its own storage is in
+/// #151: <see cref="Bundle.EstimatedMemoryBytes"/> against the bytes an image really retains: what dropping it frees, measured with
+/// <see cref="GC.GetTotalMemory(bool)"/> with the image alive and then dropped (the provider stays alive throughout, so its storage is in
 /// the baseline). Four shapes — many tiny concepts, medium ones, a few large ones, link-heavy ones — so the two
 /// constants of the linear model are pinned on more than one point. The tolerance is stated, not tuned per shape:
 /// the estimate must stay within a factor of <see cref="Tolerance"/> of the measurement, either way.
@@ -41,14 +41,31 @@ public class SnapshotMemoryCalibrationTests(ITestOutputHelper output)
         Assert.InRange(ratio, 1 / Tolerance, Tolerance);
     }
 
-    [MethodImpl(MethodImplOptions.NoInlining)]
+    /// <summary>
+    /// The bytes the image retains: the heap with the image alive minus the heap once it is dropped. Measuring
+    /// what dropping it frees, rather than what loading it added, keeps out anything the load allocates that
+    /// outlives it without belonging to it (lazily built statics, a runtime's own caches, the provider's call
+    /// log), which the "after minus before" form counted and which differed between runtimes (macOS read about
+    /// twice the Windows and Linux figure). A warm-up load runs first for the same reason.
+    /// </summary>
     private static (long Estimate, long Measured) Measure(InMemoryBundleProvider provider)
     {
-        var before = GC.GetTotalMemory(forceFullCollection: true);
+        _ = LoadHeld(provider, out _, out _); // warm-up: first-use allocations happen here, not in the measure
+        var image = LoadHeld(provider, out var estimate, out var held);
+        var released = GC.GetTotalMemory(forceFullCollection: true);
+        Assert.False(image.IsAlive, "the image was still reachable when its release was measured");
+        return (estimate, held - released);
+    }
+
+    /// <summary>Loads an image, measures the heap while it is alive, and returns it only weakly, so that it is unreachable once this returns.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference LoadHeld(InMemoryBundleProvider provider, out long estimate, out long held)
+    {
         var bundle = Bundle.Load(provider);
-        var after = GC.GetTotalMemory(forceFullCollection: true);
+        estimate = bundle.EstimatedMemoryBytes;
+        held = GC.GetTotalMemory(forceFullCollection: true);
         GC.KeepAlive(bundle);
-        return (bundle.EstimatedMemoryBytes, after - before);
+        return new WeakReference(bundle);
     }
 
     internal static InMemoryBundleProvider Build(int count, int bodyBytes, int linksPerConcept)
