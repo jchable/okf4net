@@ -179,9 +179,14 @@ internal sealed class ModelTextBuilder
     {
         ArgumentNullException.ThrowIfNull(id);
         ArgumentNullException.ThrowIfNull(content);
-        _text.Append("<okf-context id=\"").Append(EscapeContextAttribute(id)).Append("\">\n");
+        // A tag alone on its line is a CommonMark HTML block (start condition 7) that
+        // runs to the next blank line: the blank lines after the opening tag and before
+        // the closing one end it, so the fence opens and closes outside any HTML block
+        // (#122 re-review, C-NEW). Nothing else in an element starts an HTML block: the
+        // content is fenced, and its '<' are escaped anyway.
+        _text.Append("<okf-context id=\"").Append(EscapeContextAttribute(id)).Append("\">\n\n");
         AppendFenced(_text, EscapeContextText(content), string.Empty);
-        _text.Append("\n</okf-context>");
+        _text.Append("\n\n</okf-context>");
         return this;
     }
 
@@ -235,7 +240,41 @@ internal sealed class ModelTextBuilder
     internal static void AppendValue(StringBuilder text, string value)
     {
         var folded = ModelText.Fold(value);
-        text.Append(BeginsBlock(text) ? Neutralise(folded) : folded);
+        text.Append(EscapePipes(BeginsBlock(text) ? Neutralise(folded) : folded));
+    }
+
+    /// <summary>
+    /// <paramref name="value"/> with every <c>|</c> escaped, wherever it stands
+    /// (#122 re-review, m1): a GFM table needs an unescaped pipe in its header
+    /// row and its delimiter row, and the only literal pipes in model-facing text
+    /// are the <c>&gt; status: … | trust: … | stale: …</c> line's, which a blank
+    /// line follows; so with every pipe a value brings escaped, no two lines can
+    /// form a table. A run of k backslashes right before a pipe becomes 2k+1, so
+    /// the pipe stays escaped and the run still reads back as written.
+    /// </summary>
+    /// <param name="value">The value.</param>
+    internal static string EscapePipes(string value)
+    {
+        if (!value.Contains('|', StringComparison.Ordinal))
+        {
+            return value;
+        }
+
+        var sb = new StringBuilder(value.Length + 8);
+        var backslashes = 0;
+        foreach (var c in value)
+        {
+            if (c == Backslash)
+            {
+                backslashes++;
+                continue;
+            }
+
+            sb.Append(Backslash, c == '|' ? (2 * backslashes) + 1 : backslashes).Append(c);
+            backslashes = 0;
+        }
+
+        return sb.Append(Backslash, backslashes).ToString();
     }
 
     /// <summary>Whether the next character appended to <paramref name="text"/> begins a Markdown block.</summary>
@@ -259,13 +298,16 @@ internal sealed class ModelTextBuilder
     /// text. Escaped: <c>#</c> before an ATX heading (1–6 <c>#</c> then a space,
     /// a tab or the end); <c>-</c>, <c>+</c>, <c>*</c> before a space, a tab or
     /// the end (a list item) or as a thematic break; <c>_</c> as a thematic
-    /// break; <c>=</c> as a setext underline; <c>&gt;</c> (a blockquote);
+    /// break; a value that is only <c>=</c> or only <c>-</c>, any length, with
+    /// trailing spaces (a setext underline); <c>&gt;</c> (a blockquote);
     /// <c>`</c> and <c>~</c> before three of them (a fence); <c>&lt;</c> (an HTML
-    /// block); <c>[</c> before <c>…]:</c> (a link reference definition);
-    /// <c>|</c> (a table row); and the <c>.</c> or <c>)</c> of 1–9 leading
-    /// digits before a space, a tab or the end (an ordered-list item). A value
-    /// that starts otherwise — a word, a concept id, a path — is returned as
-    /// is, so ordinary values print as they always did.
+    /// block); <c>[</c> always (a link reference definition: the literal
+    /// <c>": "</c> after a frontmatter key can complete one); <c>|</c>; and the
+    /// <c>.</c> or <c>)</c> of 1–9 leading digits before a space, a tab or the
+    /// end (an ordered-list item). Every <c>|</c> of a value, wherever it stands,
+    /// is escaped too, by <see cref="EscapePipes"/> (a GFM table). A value that
+    /// starts otherwise — a word, a concept id, a path — is returned as is, so
+    /// ordinary values print as they always did.
     /// </summary>
     /// <param name="folded">The folded value.</param>
     internal static string Neutralise(string folded)
@@ -290,12 +332,15 @@ internal sealed class ModelTextBuilder
         return c switch
         {
             '#' => AtxHeading(value),
-            '-' or '+' or '*' => SpaceOrEnd(value, 1) || Thematic(value, c),
+            '-' or '+' or '*' => SpaceOrEnd(value, 1) || Thematic(value, c) || (c == '-' && SetextUnderline(value, '-')),
             '_' => Thematic(value, '_'),
-            '=' => value.TrimEnd(' ', '\t').All(ch => ch == '='),
+            '=' => SetextUnderline(value, '='),
             '>' or '<' or '|' => true,
             '`' or '~' => value.Length >= 3 && value[1] == c && value[2] == c,
-            '[' => value.IndexOf("]:", StringComparison.Ordinal) > 0,
+
+            // Always, not only before "]:": a value is often followed by a literal
+            // ": " (a frontmatter key), which completes a reference definition.
+            '[' => true,
             _ => false,
         };
     }
@@ -323,6 +368,10 @@ internal sealed class ModelTextBuilder
 
         return count >= 3;
     }
+
+    /// <summary>A setext underline: a run of <paramref name="c"/>, any length, then only spaces or tabs (#122 re-review, m2).</summary>
+    private static bool SetextUnderline(string value, char c) =>
+        value.TrimEnd(' ', '\t').All(ch => ch == c);
 
     private static bool SpaceOrEnd(string value, int index) =>
         index >= value.Length || value[index] is ' ' or '\t';
@@ -384,7 +433,7 @@ internal sealed class ModelTextBuilder
             if (fenceLength > 0)
             {
                 var run = rest.TakeWhile(c => c == fenceChar).Count();
-                if (run >= fenceLength && rest[run..].All(c => c is ' ' or '\t'))
+                if (run >= fenceLength && rest[run..].All(c => c is ' ' or '\t' or '\r'))
                 {
                     fenceLength = 0;
                 }

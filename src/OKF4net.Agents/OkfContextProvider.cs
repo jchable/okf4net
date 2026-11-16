@@ -628,7 +628,7 @@ public sealed class OkfContextProvider : AIContextProvider
         // the result can land a little under or, rarely, a little over
         // tokenBudget: a soft budget, not a hard cap.
         var fence = ModelTextBuilder.Fence(ModelTextBuilder.EscapeContextText(content));
-        var framingOverhead = TokenEstimate.Chars($"<okf-context id=\"{ModelTextBuilder.EscapeContextAttribute(id)}\">\n{fence}\n\n{fence}\n</okf-context>")
+        var framingOverhead = TokenEstimate.Chars($"<okf-context id=\"{ModelTextBuilder.EscapeContextAttribute(id)}\">\n\n{fence}\n\n{fence}\n\n</okf-context>")
             + TokenEstimate.Chars("\n" + fence + "\n" + TruncatedMarker);
         var innerBudget = Math.Max(0, tokenBudget - framingOverhead);
 
