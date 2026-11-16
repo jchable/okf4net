@@ -25,6 +25,7 @@ public sealed class AttestationOrchestrator
     private readonly IAttestationRuntimeRegistry _runtimes;
     private readonly IOkfClock _clock;
     private readonly StalePolicy _defaultPolicy;
+    private readonly HashSet<string>? _allowedDigests;
 
     /// <summary>
     /// Creates an orchestrator over <paramref name="runtimes"/>.
@@ -33,10 +34,34 @@ public sealed class AttestationOrchestrator
     /// <param name="clock">Supplies the instant staleness gating is evaluated at. Defaults to <see cref="SystemClock"/>.</param>
     /// <param name="defaultPolicy">The gating policy used when <see cref="RunAsync"/> is not given one. Defaults to <see cref="StalePolicy.Use"/>.</param>
     public AttestationOrchestrator(IAttestationRuntimeRegistry runtimes, IOkfClock? clock = null, StalePolicy? defaultPolicy = null)
+        : this(runtimes, new AttestationOrchestratorOptions { Clock = clock, DefaultPolicy = defaultPolicy })
     {
+    }
+
+    /// <summary>Creates an orchestrator over <paramref name="runtimes"/> with <paramref name="options"/>, an allowlist of sanctioned code included (#154).</summary>
+    /// <param name="runtimes">Resolves an <see cref="IAttestationRuntime"/> by the concept's <c>runtime</c> field.</param>
+    /// <param name="options">The clock, the default policy and the allowlist.</param>
+    /// <exception cref="ArgumentException">An allowlist entry that is not a digest of the form <see cref="AttestationCodeDigest.Of"/> produces: a configuration mistake is refused at construction, never read as an entry that matches nothing.</exception>
+    public AttestationOrchestrator(IAttestationRuntimeRegistry runtimes, AttestationOrchestratorOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
         _runtimes = runtimes;
-        _clock = clock ?? new SystemClock();
-        _defaultPolicy = defaultPolicy ?? StalePolicy.Use;
+        _clock = options.Clock ?? new SystemClock();
+        _defaultPolicy = options.DefaultPolicy ?? StalePolicy.Use;
+        if (options.AllowedCodeDigests is { } allowed)
+        {
+            // Copied: a host mutating its set after construction does not change what this orchestrator allows.
+            _allowedDigests = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var digest in allowed)
+            {
+                if (!AttestationCodeDigest.IsWellFormed(digest))
+                {
+                    throw new ArgumentException("every allowed code digest must be 64 hexadecimal digits (SHA-256, AttestationCodeDigest.Of)", nameof(options));
+                }
+
+                _allowedDigests.Add(digest.ToLowerInvariant());
+            }
+        }
     }
 
     /// <summary>
@@ -345,6 +370,35 @@ public sealed class AttestationOrchestrator
         var contract = frontmatter.ComputationContract;
         var resolved = capture.Computation;
         var attesterSourceText = capture.AttesterSourceText;
+
+        // The host's allowlist of sanctioned code (#154), before any runtime stage: the digests are taken over
+        // the exact texts the stages would receive. The reasons a model may be shown name the roles only; the
+        // digests go to the host, on the outcome.
+        if (_allowedDigests is not null)
+        {
+            var unapproved = new List<UnapprovedCode>();
+            var computationDigest = AttestationCodeDigest.Of(resolved.InlineCode ?? string.Empty);
+            if (!_allowedDigests.Contains(computationDigest))
+            {
+                unapproved.Add(new UnapprovedCode(SanctionedCodeRole.Computation, computationDigest));
+            }
+
+            var attesterDigest = AttestationCodeDigest.Of(attesterSourceText);
+            if (!_allowedDigests.Contains(attesterDigest))
+            {
+                unapproved.Add(new UnapprovedCode(SanctionedCodeRole.Attester, attesterDigest));
+            }
+
+            if (unapproved.Count > 0)
+            {
+                return Fail(unapproved.Select(u => u.Role == SanctionedCodeRole.Computation
+                    ? "the computation is not approved by the host's allowlist of sanctioned code, and is not run"
+                    : "the attester is not approved by the host's allowlist of sanctioned code, and is not run").ToList()) with
+                {
+                    UnapprovedCode = unapproved,
+                };
+            }
+        }
 
         // Step 3: resolve the runtime.
         if (string.IsNullOrEmpty(contract.Runtime) || !_runtimes.TryGet(contract.Runtime, out var runtime) || runtime is null)

@@ -945,6 +945,14 @@ else
 }
 ```
 
+An orchestrator runs whatever sanctioned code the bundle references. A host
+that does not trust everyone who can write to the bundle's source passes
+`AttestationOrchestratorOptions.AllowedCodeDigests`. That is an allowlist of
+SHA-256 digests of the exact computation and attester texts
+(`AttestationCodeDigest.Of`). Anything else is refused before any runtime
+stage, and the refused digests are reported to the host on
+`outcome.UnapprovedCode`, never in the reasons a model sees (#154).
+
 `OKF4net.Agents`' `okf_get_computation` tool (read-only, always available)
 surfaces a computation's contract and source without running anything; pass
 an `AttestationOrchestrator` to `new OkfBundleTools(bundleRoot,

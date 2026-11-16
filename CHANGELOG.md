@@ -10,6 +10,22 @@ and this project adheres to
 
 ### Added
 
+- **Allowlist of sanctioned-code digests for attested computations (#154).**
+  `AttestationOrchestratorOptions` (`Clock`, `DefaultPolicy`,
+  `AllowedCodeDigests`) and a new `AttestationOrchestrator(runtimes, options)`
+  constructor; the existing constructor is unchanged.
+  - `AllowedCodeDigests` is `null` by default, which means no allowlist and no
+    change. When set, a run whose computation (inline or file) or attester source
+    is not in it is refused before any runtime stage.
+  - The digest is `AttestationCodeDigest.Of`: SHA-256 of the UTF-8 encoding of
+    the exact text the runtime receives, 64 lowercase hex digits, no
+    normalisation.
+  - The refused roles appear in `Reasons` without their digests; the digests go
+    to the host on the new `AttestationOutcome.UnapprovedCode` (`UnapprovedCode`:
+    `SanctionedCodeRole` + `Digest`).
+  - A malformed entry is refused at construction (`ArgumentException`).
+  - `okf_run_computation` shows the refusal without the digest.
+
 - **Bundle provider seam (#139, lot A).** `OKF4net.Providers`: `IBundleProvider`
   and its value types, `BundleKey` with three-layer validation
   (`BundleKeyConstraints`, `BundleKeyPolicy`, `BundleKeyValidator`),
