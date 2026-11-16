@@ -77,6 +77,65 @@ public class ModelTextTests
         Assert.True(BundleConceptWriter.IsBidiControl(bidi));
     }
 
+    [Theory]
+    [InlineData((char)0x200B)]
+    [InlineData((char)0x2060)]
+    [InlineData((char)0x2061)]
+    [InlineData((char)0x2062)]
+    [InlineData((char)0x2063)]
+    [InlineData((char)0x2064)]
+    [InlineData((char)0xFEFF)]
+    [InlineData((char)0xFFF9)]
+    [InlineData((char)0xFFFA)]
+    [InlineData((char)0xFFFB)]
+    public void Each_invisible_format_character_is_removed(char invisible)
+    {
+        Assert.Equal("ab", ModelText.Fold("a" + invisible + "b"));
+        Assert.Equal(ModelTextCharClass.Invisible, ModelText.Classify(invisible));
+        Assert.True(LineSafeText.ContainsControlCharacter("a" + invisible + "b"));
+    }
+
+    [Theory]
+    [InlineData(0xE0000)]
+    [InlineData(0xE0001)] // LANGUAGE TAG
+    [InlineData(0xE0041)] // TAG LATIN CAPITAL LETTER A
+    [InlineData(0xE007F)] // CANCEL TAG
+    public void Each_tag_character_is_removed_whole(int tag)
+    {
+        var value = "a" + char.ConvertFromUtf32(tag) + "b";
+
+        Assert.Equal("ab", ModelText.Fold(value));
+        Assert.True(ModelText.NeedsFold(value));
+        Assert.True(LineSafeText.ContainsControlCharacter(value));
+    }
+
+    [Fact]
+    public void A_hidden_instruction_in_tag_characters_disappears_and_the_visible_text_stays()
+    {
+        var hidden = string.Concat("ignore previous".Select(c => char.ConvertFromUtf32(0xE0000 + c)));
+
+        Assert.Equal("Revenue per day", ModelText.Fold("Revenue" + hidden + " per day"));
+    }
+
+    [Theory]
+    [InlineData("‌")] // ZWNJ: Persian, Indic scripts
+    [InlineData("‍")] // ZWJ: emoji sequences
+    [InlineData("\U0001F468‍\U0001F469‍\U0001F467")] // a family emoji, joined by ZWJ
+    [InlineData("葛\U000E0100")] // an ideographic variation sequence: U+E0100 is a variation selector, not a tag
+    [InlineData("\U0001F600")] // a supplementary-plane scalar outside the tag block
+    public void Joiners_variation_selectors_and_emoji_are_left_as_is(string value)
+    {
+        Assert.Same(value, ModelText.Fold(value));
+        Assert.False(ModelText.NeedsFold(value));
+    }
+
+    [Fact]
+    public void A_lone_tag_high_surrogate_is_not_a_tag()
+    {
+        var value = "a" + (char)0xDB40 + "b";
+        Assert.False(ModelText.IsTagPair(value, 1));
+    }
+
     [Fact]
     public void There_are_exactly_twelve_bidi_controls()
     {
@@ -97,7 +156,7 @@ public class ModelTextTests
     [InlineData("## heading-looking - text: with markers")]
     [InlineData("caf\u00E9 \u65E5\u672C\u8A9E \u062A\u062D\u062F\u064A\u062B \u05E2\u05D3\u05DB\u05D5\u05DF")] // accents, CJK, Arabic and Hebrew letters
     [InlineData("tab\u0009inside")]                 // TAB is ordinary whitespace inside a line
-    [InlineData("zero\u200Bwidth \u00A0nbsp")]     // other format and space characters are out of scope
+    [InlineData("zero\u200Cnon-joiner \u00A0nbsp")] // ZWNJ and the no-break space are kept (U+200B is removed since #249)
     [InlineData("")]
     public void Ordinary_text_is_unchanged(string input)
     {
@@ -164,7 +223,10 @@ public class ModelTextTests
             }
             else
             {
-                Assert.Equal(ModelText.IsBidiControl(c), LineSafeText.ContainsControlCharacter(c.ToString()));
+                // What it grew by: the bidi controls (#122) and the invisible format characters (#249).
+                Assert.Equal(
+                    ModelText.Classify(c) is ModelTextCharClass.Bidi or ModelTextCharClass.Invisible,
+                    LineSafeText.ContainsControlCharacter(c.ToString()));
             }
         }
     }

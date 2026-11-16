@@ -20,6 +20,13 @@ internal enum ModelTextCharClass
 
     /// <summary>A bidirectional control (U+061C, U+200E, U+200F, U+202A–U+202E, U+2066–U+2069): removed.</summary>
     Bidi,
+
+    /// <summary>
+    /// An invisible format character a model reads and a reviewer does not see (#249): U+200B, U+2060–U+2064,
+    /// U+FEFF, U+FFF9–U+FFFB, and the tag characters U+E0000–U+E007F (a surrogate pair, classified by
+    /// <see cref="ModelText.IsTagPair"/>): removed.
+    /// </summary>
+    Invisible,
 }
 
 /// <summary>
@@ -38,6 +45,13 @@ internal enum ModelTextCharClass
 /// and meaningless (arbitration Q1);</item>
 /// <item>the twelve bidirectional controls are removed: each reorders what a
 /// reader is shown without changing the bytes;</item>
+/// <item>the invisible format characters a model reads and a reviewer does not
+/// see are removed (#249): the tag characters U+E0000–U+E007F, which mirror
+/// ASCII invisibly and can carry a hidden instruction, the zero-width space
+/// U+200B, the word joiner and invisible operators U+2060–U+2064, U+FEFF inside
+/// a value, and the interlinear annotation characters U+FFF9–U+FFFB. ZWNJ and
+/// ZWJ (U+200C, U+200D) are kept: emoji sequences and scripts such as Persian
+/// and the Indic ones need them;</item>
 /// <item>everything else is left as is — accents, right-to-left letters,
 /// supplementary-plane scalars (a surrogate pair is never split) — so an
 /// ordinary value prints unchanged.</item>
@@ -79,8 +93,26 @@ internal static class ModelText
             return ModelTextCharClass.Control;
         }
 
-        return IsBidiControl(c) ? ModelTextCharClass.Bidi : ModelTextCharClass.Ordinary;
+        if (IsBidiControl(c))
+        {
+            return ModelTextCharClass.Bidi;
+        }
+
+        return c is (char)0x200B or (char)0x2060 or (char)0x2061 or (char)0x2062 or (char)0x2063 or (char)0x2064
+            or (char)0xFEFF or (char)0xFFF9 or (char)0xFFFA or (char)0xFFFB
+            ? ModelTextCharClass.Invisible
+            : ModelTextCharClass.Ordinary;
     }
+
+    /// <summary>
+    /// Whether <paramref name="value"/> holds, at <paramref name="i"/>, the surrogate pair of a tag character
+    /// U+E0000–U+E007F (high surrogate U+DB40, low surrogate U+DC00–U+DC7F): a character <see cref="Classify"/>,
+    /// which sees one UTF-16 unit at a time, cannot recognise.
+    /// </summary>
+    /// <param name="value">The text.</param>
+    /// <param name="i">The index of a candidate high surrogate.</param>
+    internal static bool IsTagPair(string value, int i) =>
+        value[i] == (char)0xDB40 && i + 1 < value.Length && value[i + 1] is >= (char)0xDC00 and <= (char)0xDC7F;
 
     /// <summary>
     /// The twelve Unicode bidirectional CONTROL characters: the marks U+061C
@@ -100,9 +132,9 @@ internal static class ModelText
     /// <param name="value">The value about to be interpolated into one line.</param>
     internal static bool NeedsFold(string value)
     {
-        foreach (var c in value)
+        for (var i = 0; i < value.Length; i++)
         {
-            if (Classify(c) != ModelTextCharClass.Ordinary)
+            if (Classify(value[i]) != ModelTextCharClass.Ordinary || IsTagPair(value, i))
             {
                 return true;
             }
@@ -130,6 +162,12 @@ internal static class ModelText
         for (var i = 0; i < value.Length; i++)
         {
             var c = value[i];
+            if (IsTagPair(value, i))
+            {
+                i++; // the whole tag character, both halves of its pair, is removed
+                continue;
+            }
+
             switch (Classify(c))
             {
                 case ModelTextCharClass.LineTerminator:
@@ -145,6 +183,7 @@ internal static class ModelText
                     sb.Append(Replacement);
                     break;
                 case ModelTextCharClass.Bidi:
+                case ModelTextCharClass.Invisible:
                     break;
                 default:
                     sb.Append(c);

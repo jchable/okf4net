@@ -54,7 +54,7 @@ public sealed class OkfBundleTools
     /// would put the newline it is refusing into this very message.
     /// </summary>
     private const string VerifyControlCharacterMessage =
-        "Error: a §7 actor must not contain control or bidirectional characters.";
+        "Error: a §7 actor must not contain control, bidirectional or invisible format characters.";
 
     /// <summary>
     /// The core write primitive this tool set delegates every write to:
@@ -1070,7 +1070,7 @@ public sealed class OkfBundleTools
     [Description("Record a review of one or more concepts: adds or replaces the caller's { by, at } entry in each concept's `verified` list. The stamp is a dated declaration, not a proof — the same rules as the okf verify CLI verb.")]
     public async Task<string> VerifyAsync(
         [Description("Comma-separated concept ids (paths without .md). Explicit ids only — there is no whole-bundle form.")] string conceptIds,
-        [Description("The §7 actor recording the review — one of exactly three forms: human:<id> (e.g. human:ada), process:<id> (e.g. process:nightly), or <producer>/<version> for an agent or tool (e.g. assistant/1.0). There is no agent: prefix: writing agent:assistant/1.0 stores the producer name \"agent:assistant\". Must not contain control or bidirectional characters.")] string by,
+        [Description("The §7 actor recording the review — one of exactly three forms: human:<id> (e.g. human:ada), process:<id> (e.g. process:nightly), or <producer>/<version> for an agent or tool (e.g. assistant/1.0). There is no agent: prefix: writing agent:assistant/1.0 stores the producer name \"agent:assistant\". Must not contain control, bidirectional or invisible format characters.")] string by,
         [Description("UTC timestamp in the exact form yyyy-MM-ddTHH:mm:ssZ, e.g. 2026-08-28T09:14:00Z — no fractional seconds, no offset, no bare date. Omit for now.")] string? at = null,
         CancellationToken ct = default)
     {
