@@ -96,6 +96,30 @@ public class OkfBundleToolsHandleTests
     }
 
     [Fact]
+    public async Task Every_asynchronous_write_method_throws_over_a_read_only_provider_whatever_its_arguments()
+    {
+        var storage = Storage(canWrite: false);
+        using var handle = new BundleHandle(storage);
+        var tools = new OkfBundleTools(handle);
+        storage.ClearCalls();
+
+        // The four public write entry points of the tool set are exactly the model-facing write tools (#218).
+        Assert.Equal(["okf_append_log", "okf_regenerate_indexes", "okf_verify", "okf_write_concept"], OkfBundleTools.WriteToolNames.Order(StringComparer.Ordinal));
+
+        const string Frontmatter = "type: Note\ntitle: B\ndescription: b.\n";
+        await Assert.ThrowsAsync<BundleReadOnlyException>(() => tools.WriteConceptAsync("notes/b", Frontmatter, "B.\n"));
+        await Assert.ThrowsAsync<BundleReadOnlyException>(() => tools.WriteConceptAsync("not a valid id!", string.Empty, string.Empty));
+        await Assert.ThrowsAsync<BundleReadOnlyException>(() => tools.AppendLogAsync("Update", "x"));
+        await Assert.ThrowsAsync<BundleReadOnlyException>(() => tools.AppendLogAsync(string.Empty, string.Empty));
+        await Assert.ThrowsAsync<BundleReadOnlyException>(() => tools.RegenerateIndexesAsync());
+        await Assert.ThrowsAsync<BundleReadOnlyException>(() => tools.VerifyAsync("tables/orders", "human:ada", "2026-07-22T00:00:00Z"));
+        await Assert.ThrowsAsync<BundleReadOnlyException>(() => tools.VerifyAsync(string.Empty, "not an actor"));
+        await Assert.ThrowsAsync<BundleReadOnlyException>(() => tools.VerifyAsync("tables/orders", "human:ada\nforged"));
+
+        Assert.DoesNotContain(storage.Calls, c => c.StartsWith("write ", StringComparison.Ordinal) || c.StartsWith("delete ", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Browse_reads_the_index_and_lists_prefixes_through_the_provider()
     {
         using var handle = new BundleHandle(Storage());

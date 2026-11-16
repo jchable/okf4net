@@ -43,7 +43,12 @@ effective write = `provider.Capabilities.CanWrite && mode != OkfToolMode.ReadOnl
 `GetTools(OkfToolMode.ReadOnly)` omits the write tools, and so does any mode over
 a provider whose `CanWrite` is false (it is treated as `ReadOnly`);
 `RequireApprovalForWrites` wraps them in an approval gate. A direct call to a
-public write method over a read-only provider throws `BundleReadOnlyException`.
+public write method over a read-only provider (`WriteConceptAsync`,
+`AppendLogAsync`, `RegenerateIndexesAsync`, `VerifyAsync`, and their obsolete
+`string` spellings) throws `BundleReadOnlyException` before any argument is
+checked and before anything is written. (The `string` spellings first refuse,
+with `InvalidOperationException`, a provider that does not complete
+synchronously.)
 
 ## The twelve tools
 
