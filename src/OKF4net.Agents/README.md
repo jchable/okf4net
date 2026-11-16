@@ -46,9 +46,15 @@ a provider whose `CanWrite` is false (it is treated as `ReadOnly`);
 public write method over a read-only provider (`WriteConceptAsync`,
 `AppendLogAsync`, `RegenerateIndexesAsync`, `VerifyAsync`, and their obsolete
 `string` spellings) throws `BundleReadOnlyException` before any argument is
-checked and before anything is written. (The `string` spellings first refuse,
-with `InvalidOperationException`, a provider that does not complete
-synchronously.)
+checked and before anything is written. The obsolete `string` spellings also
+refuse a provider that does not complete synchronously, with
+`InvalidOperationException`; which exception a provider that is *both*
+read-only and asynchronous gets depends on the method, because each checks in
+its own order. `WriteConcept` and `AppendLog` check writability first and throw
+`BundleReadOnlyException`; `RegenerateIndexes` and `Verify` check synchronous
+completion first and throw `InvalidOperationException`. A host should not rely
+on that order: the spellings are obsolete, and the asynchronous methods throw
+`BundleReadOnlyException` whatever the provider's completion.
 
 ## The twelve tools
 

@@ -119,6 +119,24 @@ public class OkfBundleToolsHandleTests
         Assert.DoesNotContain(storage.Calls, c => c.StartsWith("write ", StringComparison.Ordinal) || c.StartsWith("delete ", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void Over_a_provider_both_read_only_and_asynchronous_the_obsolete_spellings_name_the_exception_of_their_own_first_check()
+    {
+        var gated = new GatedProvider(Storage(canWrite: false), canWrite: false);
+        using var handle = new BundleHandle(gated);
+        var tools = new OkfBundleTools(handle);
+
+        // WriteConcept and AppendLog go straight to the writer, whose first check is writability.
+        Assert.Throws<BundleReadOnlyException>(() => tools.WriteConcept("notes/b", "type: Note\ntitle: B\ndescription: b.\n", "B.\n"));
+        Assert.Throws<BundleReadOnlyException>(() => tools.AppendLog("Update", "x"));
+
+        // RegenerateIndexes and Verify run through RunSync, whose first check is synchronous completion.
+        Assert.Throws<InvalidOperationException>(() => tools.RegenerateIndexes());
+        Assert.Throws<InvalidOperationException>(() => tools.Verify("tables/orders", "human:ada", "2026-07-22T00:00:00Z"));
+
+        Assert.Equal(0, gated.Calls);
+    }
+
     /// <summary>
     /// What okf_browse returns for a directory with an index.md (#122, review I1): a
     /// literal line naming whose index it is, then the file's text in a markdown fence
