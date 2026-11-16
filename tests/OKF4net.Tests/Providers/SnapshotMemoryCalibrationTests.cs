@@ -46,16 +46,28 @@ public class SnapshotMemoryCalibrationTests(ITestOutputHelper output)
     /// what dropping it frees, rather than what loading it added, keeps out anything the load allocates that
     /// outlives it without belonging to it (lazily built statics, a runtime's own caches, the provider's call
     /// log), which the "after minus before" form counted and which differed between runtimes (macOS read about
-    /// twice the Windows and Linux figure). A warm-up load runs first for the same reason.
+    /// twice the Windows and Linux figure). A warm-up load runs first for the same reason, and the smallest of
+    /// <see cref="Repetitions"/> measures is kept: outside noise can only add to a measure (one macOS run read
+    /// 24.6 MB for an image the other runs and platforms put at 6.2 MB), never take from it.
     /// </summary>
     private static (long Estimate, long Measured) Measure(InMemoryBundleProvider provider)
     {
         _ = LoadHeld(provider, out _, out _); // warm-up: first-use allocations happen here, not in the measure
-        var image = LoadHeld(provider, out var estimate, out var held);
-        var released = GC.GetTotalMemory(forceFullCollection: true);
-        Assert.False(image.IsAlive, "the image was still reachable when its release was measured");
-        return (estimate, held - released);
+        var estimate = 0L;
+        var smallest = long.MaxValue;
+        for (var i = 0; i < Repetitions; i++)
+        {
+            var image = LoadHeld(provider, out estimate, out var held);
+            var released = GC.GetTotalMemory(forceFullCollection: true);
+            Assert.False(image.IsAlive, "the image was still reachable when its release was measured");
+            smallest = Math.Min(smallest, held - released);
+        }
+
+        return (estimate, smallest);
     }
+
+    /// <summary>How many times each shape is measured; the smallest measure is kept.</summary>
+    private const int Repetitions = 3;
 
     /// <summary>Loads an image, measures the heap while it is alive, and returns it only weakly, so that it is unreachable once this returns.</summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
