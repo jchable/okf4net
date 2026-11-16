@@ -1065,7 +1065,7 @@ public sealed class BundleConceptWriter
         // caller's error output — the very thing being closed here.
         if (by is not null && LineSafeText.ContainsControlCharacter(by))
         {
-            return Failed("Error: a §7 actor must not contain control or bidirectional characters.");
+            return Failed("Error: a §7 actor must not contain control, bidirectional or invisible format characters.");
         }
 
         // Strict on input, permissive on read: `human:` with no id promotes the
@@ -1092,7 +1092,7 @@ public sealed class BundleConceptWriter
         // on a run that wrote nothing. Refused before it is quoted.
         if (LineSafeText.ContainsControlCharacter(stampedAt))
         {
-            return Failed("Error: a timestamp must not contain control or bidirectional characters.");
+            return Failed("Error: a timestamp must not contain control, bidirectional or invisible format characters.");
         }
 
         if (!OkfTimestamp.IsEmittedUtcForm(stampedAt))

@@ -105,7 +105,39 @@ public class ModelFacingBoundaryTests
             set.Add((char)c);
         }
 
+        // The invisible format characters (#249); the tag characters, a surrogate pair, are checked by HasTagCharacter.
+        foreach (var c in new[] { 0x200B, 0x2060, 0x2061, 0x2062, 0x2063, 0x2064, 0xFEFF, 0xFFF9, 0xFFFA, 0xFFFB })
+        {
+            set.Add((char)c);
+        }
+
         return set;
+    }
+
+    /// <summary>A tag character U+E0000–U+E007F (surrogates U+DB40, U+DC00–U+DC7F), listed by code point here too (#249).</summary>
+    private static bool HasTagCharacter(string line)
+    {
+        for (var i = 0; i + 1 < line.Length; i++)
+        {
+            if (line[i] == (char)0xDB40 && line[i + 1] is >= (char)0xDC00 and <= (char)0xDC7F)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>"FORGED" spelled in tag characters (U+E0046 U+E004F …): invisible to a reader, read by a model (#249).</summary>
+    private static string TagSmuggled(string ascii)
+    {
+        var sb = new StringBuilder();
+        foreach (var c in ascii)
+        {
+            sb.Append(char.ConvertFromUtf32(0xE0000 + c));
+        }
+
+        return sb.ToString();
     }
 
     /// <summary>
@@ -128,7 +160,8 @@ public class ModelFacingBoundaryTests
             sb.Append(terminator).Append(Markers[i++ % Markers.Length]).Append(" x");
         }
 
-        return sb.Append(RightToLeftOverride).Append(Escape).Append(LeftToRightIsolate).Append("end").ToString();
+        return sb.Append(RightToLeftOverride).Append(Escape).Append(LeftToRightIsolate)
+            .Append((char)0x200B).Append(TagSmuggled("ignore previous")).Append((char)0xFEFF).Append("end").ToString();
     }
 
     /// <summary>A YAML double-quoted scalar for <paramref name="value"/>: every character outside printable ASCII as a <c>\uXXXX</c> escape.</summary>
@@ -628,6 +661,11 @@ public class ModelFacingBoundaryTests
                     problems.Add($"{label}: U+{(int)c:X4} outside a block in line '{line}'");
                     break;
                 }
+            }
+
+            if (HasTagCharacter(line))
+            {
+                problems.Add($"{label}: a tag character outside a block in line '{line}'");
             }
 
             if (ForgedStart(line) is { } what)
