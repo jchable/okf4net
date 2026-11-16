@@ -47,6 +47,49 @@ public class CatalogHandleTests
         }
         """;
 
+    /// <summary>
+    /// #151: <see cref="KnowledgeCatalogOptions.MemoryCeilingFor"/> sets a source's ceiling on top of the
+    /// catalog's load options; a reload with the same answers keeps the handle; a non-positive answer
+    /// rejects the source by type name.
+    /// </summary>
+    [Fact]
+    public async Task MemoryCeilingFor_sets_a_per_source_ceiling_and_a_reload_with_the_same_answer_keeps_the_handle()
+    {
+        using var root = new TempDir();
+        root.Write("a/x.md", Doc);
+        root.Write("b/x.md", Doc);
+        root.Write("catalog.json", """{ "version": 1, "sources": [ { "id": "a", "path": "./a" }, { "id": "b", "path": "./b" } ] }""");
+        using var catalog = new FileKnowledgeCatalog(new KnowledgeCatalogOptions
+        {
+            CatalogFilePath = Path.Combine(root.Path, "catalog.json"),
+            CatalogRoot = root.Path,
+            WatchForChanges = false,
+            MemoryCeilingFor = s => s.Id == "a" ? 1 : null,
+        });
+
+        var a = catalog.Current.Handles["a"];
+        Assert.Equal(1, a.Options.MemoryCeilingBytes);
+        Assert.Null(catalog.Current.Handles["b"].Options.MemoryCeilingBytes);
+        var refused = Assert.Throws<BundleLoadException>(() => a.Current);
+        Assert.IsType<BundleMemoryCeilingExceededException>(refused.InnerException);
+        Assert.Equal(1, catalog.Current.Handles["b"].Current.Count);
+
+        await catalog.ReloadAsync();
+        Assert.Same(a, catalog.Current.Handles["a"]);
+
+        using var bad = new TempDir();
+        bad.Write("a/x.md", Doc);
+        bad.Write("catalog.json", """{ "version": 1, "sources": [ { "id": "a", "path": "./a" } ] }""");
+        var error = Assert.Throws<CatalogException>(() => new FileKnowledgeCatalog(new KnowledgeCatalogOptions
+        {
+            CatalogFilePath = Path.Combine(bad.Path, "catalog.json"),
+            CatalogRoot = bad.Path,
+            WatchForChanges = false,
+            MemoryCeilingFor = _ => 0,
+        }));
+        Assert.Contains("ArgumentOutOfRangeException", error.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Construction_builds_one_confined_OnAccess_handle_per_enabled_knowledge_source()
     {

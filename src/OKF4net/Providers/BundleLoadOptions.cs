@@ -24,4 +24,28 @@ public sealed record BundleLoadOptions
 
     /// <summary>Host validators that may only restrict further; each returns a reason or <see langword="null"/>.</summary>
     public IReadOnlyList<Func<BundleKey, string?>>? ExtraKeyValidators { get; init; }
+
+    /// <summary>
+    /// The most memory the image may take, in bytes, as <see cref="Bundle.EstimatedMemoryBytes"/> estimates it
+    /// (#151), or <see langword="null"/> (the default) for no ceiling. A load that would exceed it is refused
+    /// with <see cref="BundleMemoryCeilingExceededException"/> (inside the <see cref="BundleLoadException"/>):
+    /// before any concept is read when the sizes the listing declares already exceed it, else as soon as the
+    /// running estimate crosses it. It bounds one image: during a refresh the previous image is still held, so
+    /// the peak can reach twice the ceiling. Refused, a <see cref="BundleHandle"/> keeps serving its previous
+    /// image, flagged stale.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">A ceiling that is not positive.</exception>
+    public long? MemoryCeilingBytes
+    {
+        get;
+        init
+        {
+            if (value is <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, "a memory ceiling must be positive");
+            }
+
+            field = value;
+        }
+    }
 }

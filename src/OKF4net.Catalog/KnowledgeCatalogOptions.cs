@@ -71,4 +71,16 @@ public sealed class KnowledgeCatalogOptions
 
     /// <summary>The options every handle loads its bundle with (bounds, key policy); <see cref="BundleLoadOptions.Default"/> by default.</summary>
     public BundleLoadOptions LoadOptions { get; init; } = BundleLoadOptions.Default;
+
+    /// <summary>
+    /// Chooses a source's memory ceiling in bytes (#151, <see cref="BundleLoadOptions.MemoryCeilingBytes"/>);
+    /// <see langword="null"/> (the default), or a <see langword="null"/> answer for a source, keeps the
+    /// ceiling of <see cref="LoadOptions"/> (none by default). Set by the host, never read from
+    /// <c>catalog.json</c>. A source whose load is refused for its ceiling is reported like any failed load:
+    /// <see cref="KnowledgeDiagnosticCode.SourceUnavailable"/> on a first load,
+    /// <see cref="KnowledgeDiagnosticCode.SourceStale"/> (its previous image served) on a refresh. A
+    /// non-positive answer, or a callback that throws, rejects the source as
+    /// <see cref="CatalogDiagnosticCode.ProviderUnavailable"/>.
+    /// </summary>
+    public Func<KnowledgeCatalogSource, long?>? MemoryCeilingFor { get; init; }
 }

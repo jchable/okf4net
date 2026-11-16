@@ -10,6 +10,28 @@ and this project adheres to
 
 ### Added
 
+- **Snapshot memory estimate and per-source ceiling (#151).** `Bundle.EstimatedMemoryBytes`
+  reports what an image takes in memory, as an estimate. It is a linear model over
+  the size of the concept objects read and the links they hold, calibrated against
+  retained bytes on four bundle shapes (`SnapshotMemoryCalibrationTests`, within a
+  factor of 1.25). It is approximate, not a heap measurement.
+  `BundleLoadOptions.MemoryCeilingBytes` (`null`, no ceiling, by default: loading
+  is unchanged) refuses a load that would exceed it with the new
+  `BundleMemoryCeilingExceededException` (`CeilingBytes`, `EstimatedBytes`),
+  inside the `BundleLoadException` (`the bundle exceeds the memory bound (N)`).
+  The refusal comes before any read when the sizes the listing declares already
+  exceed the ceiling, otherwise as soon as the running estimate crosses it. A
+  parallel load stops starting reads once its finished reads are over, and
+  refuses at the same object. The ceiling bounds one image: during a refresh the
+  previous one is still held, so the peak can reach twice the ceiling. A
+  `BundleHandle` whose reload is refused keeps serving its previous image,
+  flagged stale. Catalog: `KnowledgeCatalogOptions.MemoryCeilingFor` sets a
+  source's ceiling from the host, never from `catalog.json`. A source over it is
+  `SourceUnavailable` on a first load and `SourceStale` on a refresh. New
+  `BundleBound.Memory`. `BundleLimitExceededException` is no longer `sealed`, so
+  the new exception can derive from it: a host catching it still catches the
+  memory refusal.
+
 - **Review dates in the audit (#156, spec §5.2).** `AuditFinding` gains
   `LastVerifiedAt` (the latest `verified[].at` that reads as a §5 timestamp),
   `LastChangedAt` (`generated.at`, falling back to the legacy `timestamp`,
