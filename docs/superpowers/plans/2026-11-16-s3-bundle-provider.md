@@ -21,7 +21,9 @@
 - Test category for anything that needs a container: `[Trait("Category", "S3Integration")]`. Image `docker.io/rustfs/rustfs:1.0.3`, never `latest`. `ci.yml` and `release.yml` filter `Category!=ContainerIntegration&Category!=S3Integration`.
 - Fixed clock for every validation/audit comparison: `new FixedClock(new DateTimeOffset(2026, 11, 1, 0, 0, 0, TimeSpan.Zero))`.
 - `tests/fixtures/` and `bundles/` are read, never edited; no golden is regenerated. `docs/spec/SPEC.md` untouched.
-- New files start with `// SPDX-License-Identifier: LGPL-3.0-or-later` (C#) or `<!-- SPDX-License-Identifier: LGPL-3.0-or-later -->` (XML/MSBuild). XML doc comments on public API. `ConfigureAwait(false)` on every `await` in `src/` (CA2007 is an error there).
+- New files start with `// SPDX-License-Identifier: LGPL-3.0-or-later` (C#) or `<!-- SPDX-License-Identifier: LGPL-3.0-or-later -->` (XML/MSBuild). XML doc comments on public API. `ConfigureAwait(false)` on every `await` in `src/` (CA2007 is an error there) — **including the implicit `DisposeAsync` of an `await using`**: acquire first, then `await using (x.ConfigureAwait(false)) { … }`, keeping `x` for its members. Every task compiles on its own before its commit.
+- **Cleanup never masks.** In `src/`, a resource whose disposal can fail (an SDK response, a stream) is disposed in a `finally` that catches the disposal's exception and records it only if no failure was recorded first; a cancellation callback never throws.
+- **Child processes are bounded.** Every `Process` a test starts drains stdout and stderr concurrently, waits with a real deadline (`WaitForExitAsync` under a `CancellationTokenSource`), kills the whole tree on expiry (`Kill(entireProcessTree: true)`), and a container is removed in a `finally`.
 - Per task, before committing: `dotnet build OKF4net.sln`, `dotnet test OKF4net.sln --filter "Category!=ContainerIntegration&Category!=S3Integration"`, `dotnet format OKF4net.sln --verify-no-changes`. Commit messages end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - **Stop rule.** If any measurement of Task 1 contradicts the spec, or a later task meets SDK behaviour the gate did not record, stop and report to the maintainer: the spec section is reopened, nothing is worked around silently.
 
@@ -79,71 +81,88 @@ Failure modes the spec implies that no happy-path test exercises; each is pinned
 ### Task 1: The gate — measure spec §9 before any production code
 
 **Files:**
-- Create (throwaway, NOT committed): `<scratchpad>/s3gate/` — a console prototype per version, reusing the measurement harness of the D1 prototypes in `<scratchpad>/s3proto/sdk/` (wire-logging handler, TCP forward proxy, redirect fake). `<scratchpad>` is the session scratchpad directory.
-- Modify: `docs/superpowers/specs/2026-11-16-s3-bundle-provider-design.md` — append **Annexe B — résultats de la porte** (French, like the spec), one row per point G1–G12 below, with the command, the raw result and "conforme / contredit".
+- Create (throwaway, NOT committed): `<scratchpad>/s3gate/` — a console prototype per SDK version, reusing the measurement harness of the D1 prototypes in `<scratchpad>/s3proto/sdk/` (wire-logging handler, TCP forward proxy, redirect fake). `<scratchpad>` is the session scratchpad directory.
+- Modify: `docs/superpowers/specs/2026-11-16-s3-bundle-provider-design.md` — append **Annexe B — résultats de la porte** (French, like the spec): exactly twelve rows G1–G12, **G*n* = item *n* of spec §9**, each with its scenario, its oracle (what was observed, raw), the verdict "conforme / contredit", for both SDK versions.
 
 **Interfaces:**
-- Produces, for later tasks (recorded in Annexe B, referenced by row id):
-  - G1: the exact settings (`AmazonS3Config` properties or per-request flags) that stop region detection and CSM **for this client only**, or a contradiction (→ stop).
-  - G2: the full list of ambient settings read by `AWSSDK.Core`/`AWSSDK.S3` and the setting that neutralizes each.
-  - G3: the authority and path for each addressing row of spec §4.4; whether the SDK ever switches addressing on its own; what it does with a dotted bucket.
-  - G4: whether the SDK re-calls credentials per signature and synchronously on redirect; the neutral `ClientAppId` value.
-  - G5–G12: as listed in the steps.
+- Produces, for later tasks (referenced by row id): G1 the per-client neutralizations of region detection and CSM, and the scenario that triggers each for a plain client (the positive witnesses of Task 10); G2 the ambient settings and their overrides (`ClientBuilder.ApplyGateRows`); G3 the authority/path table of §4.4 and the raw path encoding the SDK sends for every name of the T2 battery (`S3KeyCodec.EncodePath`); G4 the credentials calls and the neutral `ClientAppId`; G5 the `HttpClient` lifetime; G6 the non-retried guard exception type; G7 how to interrupt a stalled body; G8 the integrity exception (`ErrorClassifier.IsIntegrity`); G9 bounding before deserialization and `AsyncLocal` flow; G10 memory; G11 the RustFS fixture recipe; G12 listing decoding and order.
 
-Run every measurement twice: with `AWSSDK.S3` 4.1.0 (which resolves `AWSSDK.Core` 4.1.0) and with the latest published `AWSSDK.S3`/`AWSSDK.Core` (record exact versions).
+Run every measurement on two prototypes: `AWSSDK.S3` 4.1.0 with `AWSSDK.Core` 4.1.0, and the latest published `AWSSDK.S3` with the latest `AWSSDK.Core` (exact versions in Annexe B's header). **Stop rule:** a row that is "contredit" on either version stops the plan; report it to the maintainer.
 
-- [ ] **Step 1: Set up the two prototype projects**
+- [ ] **Step 1: Set up the two prototypes**
 
 ```bash
 S=<scratchpad>/s3gate
 mkdir -p $S/min $S/latest
-cd $S/min && dotnet new console -f net10.0 && dotnet add package AWSSDK.S3 --version 4.1.0
+cd $S/min && dotnet new console -f net10.0 && dotnet add package AWSSDK.S3 --version 4.1.0 && dotnet add package AWSSDK.Core --version 4.1.0
 cd $S/latest && dotnet new console -f net10.0 && dotnet add package AWSSDK.S3 && dotnet add package AWSSDK.Core
 dotnet list $S/min package --include-transitive
 dotnet list $S/latest package --include-transitive
 ```
 
-Record the resolved versions in Annexe B header.
+- [ ] **Step 2: G1 — every network egress, at socket level**
+  - *Scenario:* a client whose `SocketsHttpHandler.ConnectCallback` maps every DNS name to a loopback listener of its own; the process's `HttpClient.DefaultProxy` and `WebRequest.DefaultWebProxy` pointed at a counting listener (the detector's transport); a UDP listener; responses 301 + `Location`, 307 + `Location`, 301 `PermanentRedirect` with `<Endpoint>`, 400 `AuthorizationHeaderMalformed` with and without `<Region>`, 200/403 with `x-amz-bucket-region`; `GetObject`, `HeadObject`, `ListObjectsV2`; with and without `AWS_CSM_ENABLED=true` / `AWS_CSM_PORT=<udp>`; both for `Region` and `ServiceUrl` configurations.
+  - *Oracle:* for a plain client, which scenarios make the detector connect (counting proxy > 0) and CSM send (datagrams > 0) — they become Task 10's witnesses; then the minimal set of **per-client** settings (never `AWSConfigs.*`, never `RuntimePipelineCustomizerRegistry`) under which every scenario gives zero detector connections and zero datagrams.
+  - *Stop:* no per-client setting suppresses one of the two.
 
-- [ ] **Step 2 (G1): every network egress, socket level**
+- [ ] **Step 3: G2 — ambient settings**
+  - *Scenario:* list every environment variable and profile key the two assemblies read (their string literals: `[Text.Encoding]::Unicode.GetString(bytes)` + regex `AWS_[A-Z0-9_]+`, plus `FallbackInternalConfigurationFactory`, `EnvironmentVariableInternalConfiguration`, `CredentialProfile`); in a child process, set each to a hostile value and point `AWS_CONFIG_FILE` to a hostile profile (`endpoint_url`, `sdk_ua_app_id`, `retry_mode`, `max_attempts`, `use_fips_endpoint`, `use_dualstack_endpoint`, `s3_us_east_1_regional_endpoint`, `defaults_mode`, `request_checksum_calculation`, `response_checksum_validation`); run three requests through a client with every override.
+  - *Oracle:* request line, every signed header and value, `SignedHeaders`, credential scope and User-Agent equal to an empty-environment run; the override of each item, recorded.
+  - *Stop:* a difference no per-client override closes.
 
-Start TCP listeners on loopback for the configured endpoint and for every host a redirect may name, and resolve those names to loopback by giving the client a `SocketsHttpHandler` whose `ConnectCallback` maps *every* DNS name to `127.0.0.1:<listener port for that name>` (no hosts-file change). Start a UDP listener on a free port. Script responses: 301 + `Location`, 307 + `Location`, 301 `PermanentRedirect` XML with `<Endpoint>`, 400 `AuthorizationHeaderMalformed` with and without `<Region>`, a 200/403 with `x-amz-bucket-region`. Run `GetObject`, `HeadObject` and `ListObjectsV2` with `AWS_CSM_ENABLED=true`, `AWS_CSM_PORT=<udp>` and without. Because `BucketRegionDetector` uses its own transport (`WebRequest`), also run the same scenario with the process's `HttpClient.DefaultProxy` set to a logging proxy listener, to see requests that bypass the client's handler. Record: which transports fire, to which host, `http://` or `https://`, and with which credentials header.
+- [ ] **Step 4: G3 — authorities, paths, the bucket swap, the path encoding**
+  - *Scenario:* a guard that refuses everything and logs `RequestUri` (raw `AbsolutePath`); `Region` ∈ {`us-east-1`, `eu-west-1`, `cn-north-1`} × {path-style, virtual-hosted} × bucket ∈ {`demo`, `my.dotted.bucket`}; `ServiceUrl` `http://127.0.0.1:9000` × {path-style, virtual-hosted}; then a virtual-hosted `GET demo.s3.eu-west-1.amazonaws.com/kb/x` answered `307 Location: https://s3.eu-west-1.amazonaws.com/kb/x`, and the path-style mirror; then `GetObject` of every name of the T2 battery.
+  - *Oracle:* the §4.4 table (authority, path prefix) per row; whether the SDK ever changes addressing itself; `us-east-1`'s host; `RegionEndpoint.PartitionDnsSuffix` per region; the second request of the swap (expected: authority replaced, path kept); for each battery name, the raw `AbsolutePath` sent, which must equal `PathPrefix + S3KeyCodec.EncodePath(key)` as written in Task 5.
+  - *Stop:* addressing switched by the SDK, or an encoding `EncodePath` cannot reproduce.
 
-Then try, one at a time, each candidate neutralization **on the client's config only** (not `AWSConfigs.*`, not `RuntimePipelineCustomizerRegistry`): for CSM, any `ClientConfig`/`AmazonS3Config` member or credentials/telemetry setting that disables monitoring for this client; for region detection, the settings that make the SDK never need it (explicit region, regional endpoints, `UseArnRegion=false`, `DisableMultiregionAccessPoints=true`, path-style vs virtual-hosted). Record the minimal set that makes **zero** out-of-band egress in every scenario.
+- [ ] **Step 5: G4 — credentials calls; neutral `ClientAppId`**
+  - *Scenario:* a counting `AWSCredentials` (override `GetCredentials`, and `GetCredentialsAsync` if virtual); an operation with no error, with a retried 503, with a same-URL 307; then a delegating `AWSCredentials` returning a fixed `ImmutableCredentials`; `AWS_SDK_UA_APP_ID=AMBIENTMARK` with `ClientAppId` = null, `""`, and other candidates.
+  - *Oracle:* calls per signature and the member the redirect path calls; zero calls on the host provider behind the delegating one; the `ClientAppId` value for which the User-Agent carries neither `AMBIENTMARK` nor an `app/` token.
+  - *Stop:* the SDK reaches the host credentials despite the delegating instance, or no value neutralizes the fallback.
 
-**Stop condition:** if no per-client setting suppresses one of the two transports, write "contredit" in G1 and stop the plan here (spec D3: D1 is reopened).
+- [ ] **Step 6: G5 — the `HttpClient` lifetime**
+  - *Scenario:* a custom `HttpClientFactory` returning one `HttpClient` over a counting handler (sends, `Dispose` calls), `UseSDKHttpClientCaching=false`, `DisposeHttpClientsAfterUse=false`; two clients from two factories in one process; successful calls, failing calls, then disposal of each client.
+  - *Oracle:* every send of client A goes through A's handler only; zero disposals by the SDK during use; the factory's client not disposed by the SDK client's disposal.
+  - *Stop:* the SDK shares, caches or disposes the factory's client.
 
-- [ ] **Step 3 (G2): ambient settings**
+- [ ] **Step 7: G6 — the guard exception is not retried**
+  - *Scenario:* an inner handler throwing a marker deriving from `Exception` (the `GuardException` shape), `MaxErrorRetry = 2`, `RetryMode = Standard`.
+  - *Oracle:* exactly one handler call; the exception reaching the call site (type, wrapped or not).
+  - *Stop:* a retry.
 
-Search both assemblies for every environment variable and profile key they read (`Environment.GetEnvironmentVariable` call sites, `FallbackInternalConfigurationFactory`, `CredentialProfile`, `EnvironmentVariableInternalConfiguration`), e.g. with the decompiled IL (`ilspycmd` or reflection over string literals: `[Text.Encoding]::Unicode.GetString(bytes)` then a regex `AWS_[A-Z0-9_]+`). For each, record the `ClientConfig`/`AmazonS3Config` property that overrides it when set explicitly. Then, in a child process with every variable set to a hostile value and `AWS_CONFIG_FILE` pointing to a hostile profile (`endpoint_url`, `sdk_ua_app_id`, `retry_mode`, `max_attempts`, `use_fips_endpoint`, `use_dualstack_endpoint`, `s3_us_east_1_regional_endpoint`, `defaults_mode`, `request_checksum_calculation`), run three requests through a client built with all the overrides and compare URIs, headers (minus `X-Amz-Date`, `amz-sdk-invocation-id`, `amz-sdk-request`) and signatures with an empty-environment run at a fixed clock. Record each difference; each must be closed by an override, or it is a contradiction (stop).
+- [ ] **Step 8: G7 — deadlines**
+  - *Scenario:* a 200 `GetObject` whose body stalls after 10 bytes, read with a token cancelled at 1 s, then with `token.Register(() => response.Dispose())`; a 503 storm under a 1 s linked token; a credentials provider whose `GetCredentials` blocks, called as `Task.Run(() => creds.GetCredentialsAsync()).WaitAsync(1 s)`.
+  - *Oracle:* which mechanism unblocks the body read and with which exception; the retry wait cut at the deadline; the credentials wait returning at the deadline.
+  - *Stop:* nothing unblocks a stalled body.
 
-- [ ] **Step 4 (G3): authorities and paths**
+- [ ] **Step 9: G8 — response integrity**
+  - *Scenario:* `GetObject` with an `x-amz-checksum-crc32` that does not match the body, checksum validation `WhenSupported`.
+  - *Oracle:* the exception type and message, and when it is raised (during the read, at the end, at disposal) — Task 8's `IsIntegrity` matches exactly this.
+  - *Stop:* none; if nothing is detected, record it — the README says so and Task 8's integrity test is replaced by one asserting the documented absence.
 
-With a guard handler that refuses everything and logs `RequestUri`, record the authority and path of `GetObject`, `HeadObject`, `ListObjectsV2` for: `Region` ∈ {`us-east-1`, `eu-west-1`, `cn-north-1`} × {path-style, virtual-hosted} × bucket ∈ {`demo`, `my.dotted.bucket`}; `ServiceUrl` `http://127.0.0.1:9000` × {path-style, virtual-hosted}. Record whether the SDK switches to path-style for a dotted bucket; whether `us-east-1` uses `s3.amazonaws.com` or `s3.us-east-1.amazonaws.com`; `RegionEndpoint.PartitionDnsSuffix` for each region. Then reproduce the bucket-swap: answer a virtual-hosted `GET demo.s3.eu-west-1.amazonaws.com/kb/x` with `307 Location: https://s3.eu-west-1.amazonaws.com/kb/x` and record the second request (expected: same path, bucket now `kb`).
+- [ ] **Step 10: G9 — bounding before deserialization; `AsyncLocal` flow**
+  - *Scenario:* a `DelegatingHandler` below the SDK reading a listing body to 8 MiB + 1 bytes and returning a NEW `HttpResponseMessage` (`ByteArrayContent`) or throwing the marker; an `AsyncLocal<T>` set before `ListObjectsV2Async`, read in the handler on a first and on a retried attempt.
+  - *Oracle:* the SDK parses the new response normally; on excess, the original content stream is read by nobody but the handler and the unmarshaller is never reached; the `AsyncLocal` value seen on every attempt.
+  - *Stop:* the SDK reads the original stream, or the value does not flow.
 
-- [ ] **Step 5 (G4): credentials and `ClientAppId`**
+- [ ] **Step 11: G10 — memory**
+  - *Scenario:* through the D1 prototype provider modified to buffer and hash bodies, load 16 concepts of 64 MiB each — **valid UTF-8 Markdown**: front matter, then lines of base64 text from a seeded generator — from RustFS, and from a fake serving them without `Content-Length`; check that all 16 concepts are loaded with their full body length.
+  - *Oracle:* `Process.PeakWorkingSet64` and `GC.GetTotalAllocatedBytes(true)` against the spec's `4B` per read in flight (+ `2B` without `Content-Length`).
+  - *Stop:* a peak above the spec's bound beyond the runtime's baseline — §4.3 is reopened.
 
-Give the client a counting `AWSCredentials` (override `GetCredentials` and, if virtual, `GetCredentialsAsync`); count calls per operation with and without a 307 and with a retried 503. Record which method is called on the redirect path. Then give it a delegating `AWSCredentials` that returns a fixed `ImmutableCredentials` and verify the counts on the host provider stay zero. For `ClientAppId`: set `AWS_SDK_UA_APP_ID=AMBIENTMARK`, then try `ClientAppId = ""` and other candidate values, and record the one for which the `User-Agent` contains no `AMBIENTMARK` and no `app/` token.
+- [ ] **Step 12: G11 — RustFS driven from a test process**
+  - *Scenario:* engine detection (`podman version --format {{.Server.Version}}`, else `docker`); `docker.io/rustfs/rustfs:1.0.3` started with `-p 127.0.0.1::9000` and generated `RUSTFS_ACCESS_KEY`/`RUSTFS_SECRET_KEY`; port read with `<engine> port`; readiness by `PutBucket` with a 5 s timeout per attempt within 60 s; `<engine> rm -f` in a `finally`; once under Podman with no `docker` on `PATH`, once under Docker on Linux (WSL).
+  - *Oracle:* start, readiness and removal; no container left (`<engine> ps -a`).
+  - *Stop:* a regime where the fixture cannot run.
 
-- [ ] **Step 6 (G5, G6): guard exception retries; deadlines**
+- [ ] **Step 13: G12 — listing decoding and order**
+  - *Scenario:* upload the T2 battery (accepted names) to RustFS; list with `EncodingType=url` and without.
+  - *Oracle:* the raw XML `<Key>` values; whether `S3Object.Key` is decoded by the SDK; equality of Task 7's strict decoding of the encoded listing with the unencoded listing; the order (strictly increasing by code point).
+  - *Stop:* RustFS does not list in code-point order, or the two listings disagree after strict decoding.
 
-From an inner `DelegatingHandler`, throw a marker exception deriving directly from `Exception` (not `IOException`, not `HttpRequestException`); with `MaxErrorRetry = 2`, record the number of handler calls (expected 1). Then: a 200 `GetObject` whose body stalls after 10 bytes — read the response stream with a token cancelled after 1 s, and separately with `cts.Token.Register(() => response.Dispose())`; record which unblocks the read and the exception type. A 503 storm with a 1 s linked token: record that the retry wait is cut. A credentials provider whose `GetCredentials` blocks: record that `Task.Run(...).WaitAsync(timeout)` returns at the deadline.
+- [ ] **Step 14: Record and decide**
 
-- [ ] **Step 7 (G7, G8): checksum failure; bounding before deserialization**
-
-Serve a `GetObject` whose `x-amz-checksum-crc32` does not match: record the exception type and when it is raised (during read, at end, at dispose). In a `DelegatingHandler` below the SDK, read a listing response body to 8 MiB + 1 bytes and return a **new** `HttpResponseMessage` with `ByteArrayContent` on success, or throw the marker on excess; verify the SDK parses the new response normally and that, on excess, it never reaches its unmarshaller (count calls to a stream wrapper on the original content: never read by anyone but the handler). Also verify an `AsyncLocal<T>` value set before `ListObjectsV2Async` is visible inside the handler, including on a retried attempt.
-
-- [ ] **Step 8 (G9): memory**
-
-Load, through the D1 prototype provider modified to buffer and hash bodies, a bundle of 16 objects of 64 MiB each (generated, random bytes in a fenced Markdown body) from RustFS, with and without `Content-Length` (serve without it from a fake), and record peak working set (`Process.PeakWorkingSet64`) and `GC.GetTotalAllocatedBytes`. Compare with the spec's `4B` per read estimate.
-
-- [ ] **Step 9 (G10–G12): RustFS and listing decoding**
-
-From a C# test-like console: detect `podman` (`podman version --format "{{.Server.Version}}"`), else `docker`; start `docker.io/rustfs/rustfs:1.0.3` with `-p 127.0.0.1::9000` and generated `RUSTFS_ACCESS_KEY`/`RUSTFS_SECRET_KEY`; read the port with `<engine> port <id> 9000`; poll `ListBuckets` until ready (≤ 60 s); stop with `<engine> rm -f`. Run once under Podman with no `docker` binary on `PATH` (Windows: temporarily remove it from `PATH` in the child process) and once under Docker on Linux (WSL or a Linux machine). Then upload the hostile names of spec T2 and list them with `EncodingType=url`: record the raw XML `<Key>` values, what the SDK's `S3Object.Key` contains (decoded or not), and the order (strictly increasing by code point?). Compare with a second listing **without** `EncodingType`.
-
-- [ ] **Step 10: Record and decide**
-
-Fill Annexe B (G1–G12 with "conforme" or "contredit"). If any row says "contredit": stop and report to the maintainer with the row. Otherwise commit the annex:
+Fill Annexe B (G1–G12, both versions). Any "contredit": stop and report. Otherwise commit:
 
 ```bash
 git add docs/superpowers/specs/2026-11-16-s3-bundle-provider-design.md
@@ -239,18 +258,58 @@ public class LoadOrderTests
         Assert.Contains(second.Concepts, c => c.Id.ToString() == "b");
     }
 
+    /// <summary>Changes a.md to B right after the token is read, and back to A right after a.md is read: the image holds B under A's token.</summary>
+    private sealed class AbaDuringLoadProvider(InMemoryBundleProvider inner) : IBundleProvider
+    {
+        private int _armed = 1;
+
+        public string Id => inner.Id;
+        public string Location => inner.Location;
+        public BundleProviderCapabilities Capabilities => inner.Capabilities;
+        public BundleKeyConstraints NativeConstraints => inner.NativeConstraints;
+
+        public async ValueTask<BundleVersion> GetVersionAsync(BundleLimits limits, CancellationToken ct)
+        {
+            var v = await inner.GetVersionAsync(limits, ct);
+            if (Volatile.Read(ref _armed) == 1)
+            {
+                inner.Add("a.md", Changed);
+            }
+
+            return v;
+        }
+
+        public IAsyncEnumerable<BundleListing> EnumerateAsync(BundleKey? prefix, BundleLimits limits, CancellationToken ct) => inner.EnumerateAsync(prefix, limits, ct);
+
+        public async ValueTask<BundleObject> ReadAsync(BundleKey key, BundleObjectVersion? expected, CancellationToken ct)
+        {
+            var o = await inner.ReadAsync(key, expected, ct);
+            if (key.ToString() == "a.md" && Interlocked.Exchange(ref _armed, 0) == 1)
+            {
+                inner.Add("a.md", Note);
+            }
+
+            return o;
+        }
+
+        public ValueTask<bool> ExistsAsync(BundleKey key, CancellationToken ct) => inner.ExistsAsync(key, ct);
+        public ValueTask<BundleObjectVersion> WriteAsync(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition, CancellationToken ct) => inner.WriteAsync(key, content, condition, ct);
+        public ValueTask DeleteAsync(BundleKey key, BundleWriteCondition condition, CancellationToken ct) => inner.DeleteAsync(key, condition, ct);
+    }
+
+    private const string Changed = "---\ntype: Note\ntitle: T\ndescription: D.\n---\n\nChanged.\n";
+
     [Fact]
-    public async Task A_change_undone_before_the_next_comparison_is_not_reloaded_the_documented_ABA_limit()
+    public async Task A_change_undone_before_the_next_comparison_keeps_the_intermediate_bytes_the_documented_ABA_limit()
     {
         var store = new InMemoryBundleProvider().Add("a.md", Note);
-        using var handle = new BundleHandle(store, refreshPolicy: BundleRefreshPolicy.OnAccess);
+        using var handle = new BundleHandle(new AbaDuringLoadProvider(store), refreshPolicy: BundleRefreshPolicy.OnAccess);
         var first = await handle.GetCurrentAsync();
+        Assert.Contains("Changed.", first.Concepts.Single().Body, StringComparison.Ordinal); // B was read during the load
 
-        store.Add("a.md", Note.Replace("Body.", "Changed.", StringComparison.Ordinal));
-        store.Add("a.md", Note);
         var second = await handle.GetCurrentAsync();
 
-        Assert.Same(first, second); // A -> B -> A between two comparisons: same token, no reload (spec §4.3, limit 1)
+        Assert.Same(first, second); // the token is A's again: no reload, B stays served (spec §4.3, limit 1)
     }
 }
 ```
@@ -258,7 +317,7 @@ public class LoadOrderTests
 - [ ] **Step 2: Run it and watch the first test fail**
 
 Run: `dotnet test OKF4net.sln --filter "FullyQualifiedName~LoadOrderTests"`
-Expected: `An_object_added_between_the_token_and_the_listing_is_never_served_stale_forever` FAILS (the listing runs first, b.md is added before `GetVersionAsync`, the token already counts b.md, the second access sees the same token and keeps the image without b). The ABA test passes (it documents a limit). If `InMemoryBundleProvider.Add` refuses to replace an existing name, replace the two `Add("a.md", …)` calls with a fresh `store.Add` of the changed text through `WriteAsync(BundleKey.Parse("a.md"), …, BundleWriteCondition.None, default)` on a `new InMemoryBundleProvider(canWrite: true)`.
+Expected: `An_object_added_between_the_token_and_the_listing_is_never_served_stale_forever` FAILS (the listing runs first, b.md is added before `GetVersionAsync`, the token already counts b.md, the second access sees the same token and keeps the image without b). The ABA test passes in both orders (the token is read before a.md either way): it pins the limit the new order keeps, not the fix. If `InMemoryBundleProvider.Add` refuses to replace an existing name, construct the store with `canWrite: true` and replace each `inner.Add("a.md", text)` with `await inner.WriteAsync(BundleKey.Parse("a.md"), Encoding.UTF8.GetBytes(text), BundleWriteCondition.None, default)`. Check `Concept.Body` is the member holding the body (else use the one `Concept` exposes).
 
 - [ ] **Step 3: Move the version read before the listing**
 
@@ -275,7 +334,17 @@ No other line moves.
 - [ ] **Step 4: Run the tests**
 
 Run: `dotnet test OKF4net.sln --filter "Category!=ContainerIntegration&Category!=S3Integration"`
-Expected: all pass, `GoldenParityTests` included (no golden changes). If a test that counts provider calls in order fails (e.g. one asserting `["list", "version", …]` on `InMemoryBundleProvider.Calls`), read it: if it pins the *order* of the two calls only, update its expected order and say so in the commit message; if it pins anything else, stop and report.
+Expected: all pass, `GoldenParityTests` included (no golden changes), **except one known test**: `BundleHandleTests.An_unreadable_token_counts_as_changed_and_never_throws_from_Current` (`tests/OKF4net.Tests/Providers/BundleHandleTests.cs:334`) asserts `Loads(storage) > loadsBefore`, where `Loads` counts listings; with the token read first, the reload attempt now fails on `GetVersionAsync` **before** listing, so no listing is added. Its intent is "a reload was attempted". Change that oracle to count the token reads instead — the failed comparison plus the reload's own failed token read:
+
+```csharp
+        var versionsBefore = storage.Calls.Count(c => c == "version");
+        Assert.Same(first, handle.Current); // the comparison fails, the reload fails too: the previous image is served
+        Assert.True(handle.IsStale);
+        Assert.IsType<BundleLoadException>(handle.LastLoadError);
+        Assert.True(storage.Calls.Count(c => c == "version") >= versionsBefore + 2); // the comparison, then the reload's first step
+```
+
+(replacing the `loadsBefore` lines of that test; check `InMemoryBundleProvider.Calls` records `"version"` — it does, `Record("version")` in `GetVersionSync`). Name the test in the commit message. If a test that counts provider calls in order fails (e.g. one asserting `["list", "version", …]`), read it: if it pins the *order* of the two calls only, update its expected order and say so in the commit message. Any other failure: stop and report.
 
 - [ ] **Step 5: Commit**
 
@@ -311,11 +380,13 @@ namespace OKF4net.Tests.Providers;
 public class ResolveFailureTests
 {
     private const string Sentinel = "https://secret.example/bucket-name?X-Amz-Signature=SENTINEL";
-    private const string WithResource = "---\ntype: Note\ntitle: T\ndescription: D.\nsources:\n  - refs/q.sql\n---\n\nBody.\n";
+    // A `sources` entry is read only when it is a mapping (Provenance.ParseSources): `- resource: …`, never a bare string.
+    private const string WithResource = "---\ntype: Note\ntitle: T\ndescription: D.\nsources:\n  - resource: refs/q.sql\n---\n\nBody.\n";
 
-    /// <summary>A provider whose ExistsAsync throws what the test gives it.</summary>
+    /// <summary>A provider whose ExistsAsync throws what the test gives it, counting the calls.</summary>
     private sealed class FailingExists(InMemoryBundleProvider inner, Exception failure) : IBundleProvider
     {
+        public int ExistsCalls;
         public string Id => inner.Id;
         public string Location => inner.Location;
         public BundleProviderCapabilities Capabilities => inner.Capabilities;
@@ -323,7 +394,12 @@ public class ResolveFailureTests
         public ValueTask<BundleVersion> GetVersionAsync(BundleLimits limits, CancellationToken ct) => inner.GetVersionAsync(limits, ct);
         public IAsyncEnumerable<BundleListing> EnumerateAsync(BundleKey? prefix, BundleLimits limits, CancellationToken ct) => inner.EnumerateAsync(prefix, limits, ct);
         public ValueTask<BundleObject> ReadAsync(BundleKey key, BundleObjectVersion? expected, CancellationToken ct) => inner.ReadAsync(key, expected, ct);
-        public ValueTask<bool> ExistsAsync(BundleKey key, CancellationToken ct) => ValueTask.FromException<bool>(failure);
+        public ValueTask<bool> ExistsAsync(BundleKey key, CancellationToken ct)
+        {
+            Interlocked.Increment(ref ExistsCalls);
+            return ValueTask.FromException<bool>(failure);
+        }
+
         public ValueTask<BundleObjectVersion> WriteAsync(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition, CancellationToken ct) => inner.WriteAsync(key, content, condition, ct);
         public ValueTask DeleteAsync(BundleKey key, BundleWriteCondition condition, CancellationToken ct) => inner.DeleteAsync(key, condition, ct);
     }
@@ -360,15 +436,22 @@ public class ResolveFailureTests
         Assert.DoesNotContain("secret.example", e.Message, StringComparison.Ordinal);
         Assert.Contains(failure.GetType().Name, e.Message, StringComparison.Ordinal);
         Assert.Same(failure, e.InnerException);
+
+        var provider = (FailingExists)bundle.Provider;
+        var before = provider.ExistsCalls;
         await Assert.ThrowsAsync<BundleLoadException>(async () => await BundleValidator.ValidateAsync(bundle));
+        Assert.True(provider.ExistsCalls > before, "the validation resolved the frontmatter resource"); // the test exercises the resolver
     }
 
     [Theory]
     [MemberData(nameof(Failures))]
-    public async Task The_validation_tool_never_shows_the_providers_text(Exception failure)
+    public async Task The_validation_tool_reports_a_translated_failure_without_the_providers_text(Exception failure)
     {
-        using var handle = new BundleHandle(new FailingExists(Store(), failure));
+        var provider = new FailingExists(Store(), failure);
+        using var handle = new BundleHandle(provider);
         var text = await new OkfBundleTools(handle).ValidateBundleAsync();
+        Assert.True(provider.ExistsCalls > 0);
+        Assert.Contains("provider failure resolving 'refs/q.sql'", text, StringComparison.Ordinal); // the core's own message
         Assert.DoesNotContain("SENTINEL", text, StringComparison.Ordinal);
         Assert.DoesNotContain("secret.example", text, StringComparison.Ordinal);
         Assert.DoesNotContain("escapes the bundle", text, StringComparison.Ordinal);
@@ -391,7 +474,7 @@ Note: `Bundle.LoadAsync` itself calls `ResolveResourceKeyAsync` only for §10 co
 - [ ] **Step 2: Run them and watch them fail**
 
 Run: `dotnet test OKF4net.sln --filter "FullyQualifiedName~ResolveFailureTests"`
-Expected: `A_refusal_is_still_Unsafe` passes; the three theories FAIL (today the failure reads as `Unsafe`, nothing is thrown, the tool prints "escapes the bundle").
+Expected: `A_refusal_is_still_Unsafe` passes; the theories FAIL (today the failure reads as `Unsafe`, nothing is thrown, the tool prints "escapes the bundle" and no "provider failure resolving"). If `A_refusal_is_still_Unsafe` fails because `Bundle.Provider` is not the member name, use the one `Bundle` exposes for its provider. If `OkfBundleTools.ValidateBundleAsync` formats the failure without the exception message, assert instead on the text it documents for a failed validation plus the absence of the sentinels — and record which in the commit message.
 
 - [ ] **Step 3: Change the catch**
 
@@ -529,6 +612,7 @@ public class SourceTests
         Local() with { DisplayName = "a/b" }, Local() with { DisplayName = "a:b" }, Local() with { DisplayName = "" },
         Local(bucket: "arn:aws:s3:eu-west-1:123:accesspoint/x"), Local(bucket: "Upper"), Local(bucket: "ab"),
         Local(bucket: "my-bucket--x-s3"), Local(bucket: "my-bucket--ol-s3"), Local(bucket: "my-bucket-s3alias"), Local(bucket: "a..b"), Local(bucket: "192.168.0.1"),
+        Local(bucket: "demo\n"), Local(bucket: "demo\r\n"), Local(bucket: "de\u0001mo"), Local(prefix: "kb\n"),
         Local() with { ServiceUrl = new Uri("http://user:pw@127.0.0.1:9000") },
         Local() with { ServiceUrl = new Uri("http://127.0.0.1:9000/gateway") },
         Local() with { ServiceUrl = new Uri("http://127.0.0.1:9000/?x=1") },
@@ -815,10 +899,11 @@ internal static partial class SourceRules
 {
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
-    [GeneratedRegex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", RegexOptions.CultureInvariant)]
+    // \A and \z, never ^ and $: '$' also matches before a final LF ("demo\n" would pass).
+    [GeneratedRegex(@"\A[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]\z", RegexOptions.CultureInvariant)]
     private static partial Regex BucketShape();
 
-    [GeneratedRegex(@"^\d{1,3}(\.\d{1,3}){3}$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"\A\d{1,3}(\.\d{1,3}){3}\z", RegexOptions.CultureInvariant)]
     private static partial Regex IpShape();
 
     private static readonly string[] RefusedSuffixes = ["--x-s3", "--ol-s3", "-s3alias", "--table-s3"];
@@ -940,7 +1025,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Create (tests): `tests/OKF4net.Tests/Providers/S3/FakeS3Handler.cs`, `tests/OKF4net.Tests/Providers/S3/GuardTests.cs`, `tests/OKF4net.Tests/Providers/S3/TransportBoundsTests.cs`
 
 **Interfaces:**
-- Consumes: `NormalizedSource` (Task 4); gate rows G1, G2, G3, G4 (`ClientAppId` value), G5, G7.
+- Consumes: `NormalizedSource` (Task 4); gate rows G1, G2, G3, G4 (`ClientAppId` value), G5 (`HttpClient` lifetime), G6 (no retry of the guard exception), G9 (bounding, `AsyncLocal`).
 - Produces:
   - `internal sealed class AddressingPlan { static AddressingPlan For(NormalizedSource s); string Scheme; string Host; int Port; string PathPrefix /* "/bucket/" or "/" */; string S3Key(string bundleKeyOrEmpty); string ListPrefix(string? bundleKeyPrefix); string ObjectPath(string s3Key) /* decoded */; }`
   - `internal sealed class OperationContext { static AsyncLocal<OperationContext?> Current; S3Operation Operation; string? ExpectedObjectS3Key; string? ExpectedListPrefix; ImmutableCredentials? Credentials; ListPageCapture? Capture; }`, `internal sealed class ListPageCapture { byte[]? Body; }`
@@ -1044,9 +1129,10 @@ public class GuardTests
     private static async Task<Exception?> Get(AmazonS3Client client, string bucket, string s3Key)
     {
         OperationContext.Current.Value = new OperationContext(S3Operation.Read) { ExpectedObjectS3Key = s3Key, Credentials = Creds };
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10)); // a scripted loop of redirects cannot hang the test
         try
         {
-            using var r = await client.GetObjectAsync(new GetObjectRequest { BucketName = bucket, Key = s3Key });
+            using var r = await client.GetObjectAsync(new GetObjectRequest { BucketName = bucket, Key = s3Key }, deadline.Token);
             return null;
         }
         catch (Exception e)
@@ -1059,20 +1145,30 @@ public class GuardTests
         }
     }
 
-    public static TheoryData<S3BundleSource, string> TwoAuthorities => new()
+    // (source, Location the store answers, URL the SDK really sends next). The SDK replaces the authority and
+    // KEEPS the original path (RedirectHandler.FinalizeForRedirect; gate G3): from path-style "/demo/kb/x" it sends
+    // "/demo/kb/x" to the virtual-hosted host (bucket demo, key demo/kb/x); from virtual-hosted "/kb/x" it sends
+    // "/kb/x" to the regional host (bucket kb, key x). Either way another object than the one asked for.
+    public static TheoryData<S3BundleSource, string, string> TwoAuthorities => new()
     {
-        { new S3BundleSource { Bucket = "demo", Region = RegionEndpoint.EUWest1 }, "https://s3.eu-west-1.amazonaws.com/kb/x" },
-        { new S3BundleSource { Bucket = "demo", Region = RegionEndpoint.EUWest1, ForcePathStyle = true }, "https://demo.s3.eu-west-1.amazonaws.com/kb/x" },
+        { new S3BundleSource { Bucket = "demo", Region = RegionEndpoint.EUWest1 }, "https://s3.eu-west-1.amazonaws.com/kb/x", "https://s3.eu-west-1.amazonaws.com/kb/x" },
+        { new S3BundleSource { Bucket = "demo", Region = RegionEndpoint.EUWest1, ForcePathStyle = true }, "https://demo.s3.eu-west-1.amazonaws.com/kb/x", "https://demo.s3.eu-west-1.amazonaws.com/demo/kb/x" },
     };
+
+    private static void RedirectOnceThenServe(FakeS3Handler fake, string location)
+    {
+        var first = 0;
+        fake.Respond = (req, _) => Task.FromResult(Interlocked.Exchange(ref first, 1) == 0
+            ? FakeS3Handler.Redirect(HttpStatusCode.TemporaryRedirect, location)
+            : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("FROM-TARGET") });
+    }
 
     [Theory]
     [MemberData(nameof(TwoAuthorities))]
-    public async Task A_307_between_the_two_authorities_of_one_bucket_is_refused_both_ways(S3BundleSource source, string target)
+    public async Task A_307_between_the_two_authorities_of_one_bucket_is_refused_both_ways(S3BundleSource source, string location, string _)
     {
         var (client, fake) = Build(source);
-        fake.Respond = (req, _) => Task.FromResult(req.RequestUri!.ToString() == target
-            ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("FROM-TARGET") }
-            : FakeS3Handler.Redirect(HttpStatusCode.TemporaryRedirect, target));
+        RedirectOnceThenServe(fake, location);
 
         var e = await Get(client, "demo", "kb/x");
 
@@ -1083,16 +1179,14 @@ public class GuardTests
 
     [Theory]
     [MemberData(nameof(TwoAuthorities))]
-    public async Task Counter_proof_without_the_guard_the_same_307_reaches_the_other_bucket(S3BundleSource source, string target)
+    public async Task Counter_proof_without_the_guard_the_same_307_reaches_another_object(S3BundleSource source, string location, string sentNext)
     {
         var (client, fake) = Build(source, guarded: false);
-        fake.Respond = (req, _) => Task.FromResult(req.RequestUri!.ToString() == target
-            ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("FROM-TARGET") }
-            : FakeS3Handler.Redirect(HttpStatusCode.TemporaryRedirect, target));
+        RedirectOnceThenServe(fake, location);
 
         Assert.Null(await Get(client, "demo", "kb/x"));
-        Assert.Equal(2, fake.Requests.Count);
-        Assert.Equal(target, fake.Requests[1].RequestUri!.ToString());
+        Assert.Equal(2, fake.Requests.Count); // bounded: the fake redirects once
+        Assert.Equal(sentNext, fake.Requests[1].RequestUri!.ToString());
     }
 
     [Fact]
@@ -1129,10 +1223,49 @@ public class GuardTests
         Assert.Empty(fake.Requests);
     }
 
+    private static (HttpMessageInvoker Invoker, FakeS3Handler Fake) Guard()
+    {
+        var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)) };
+        var plan = AddressingPlan.For(SourceRules.Normalize(new S3BundleSource { Bucket = "okf", ServiceUrl = new Uri("http://127.0.0.1:9000"), ForcePathStyle = true, AllowInsecureHttp = true }));
+        return (new HttpMessageInvoker(new PinningHandler(plan) { InnerHandler = fake }), fake);
+    }
+
+    private static async Task<bool> Admitted(OperationContext? context, string url)
+    {
+        var (invoker, fake) = Guard();
+        OperationContext.Current.Value = context;
+        try
+        {
+            using var _ = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, url), default);
+            return fake.Requests.Count == 1;
+        }
+        catch (GuardException g) when (g.Kind == S3FailureKind.RefusedHost)
+        {
+            Assert.Empty(fake.Requests);
+            return false;
+        }
+        finally
+        {
+            OperationContext.Current.Value = null;
+        }
+    }
+
     [Fact]
-    public async Task A_request_outside_any_operation_is_refused() =>
-        await Assert.ThrowsAnyAsync<Exception>(() => Build(new S3BundleSource { Bucket = "okf", ServiceUrl = new Uri("http://127.0.0.1:9000"), ForcePathStyle = true, AllowInsecureHttp = true })
-            .Client.GetObjectAsync(new GetObjectRequest { BucketName = "okf", Key = "kb/a.md" }));
+    public async Task The_guard_alone_admits_exactly_the_expected_requests()
+    {
+        // Directly on the handler, with a context that has usable credentials: nothing else can refuse first.
+        var read = new OperationContext(S3Operation.Read) { ExpectedObjectS3Key = "kb/a b.md", Credentials = Creds };
+        var list = new OperationContext(S3Operation.List) { ExpectedListPrefix = "kb/", Credentials = Creds };
+        Assert.True(await Admitted(read, "http://127.0.0.1:9000/okf/kb/a%20b.md"));
+        Assert.False(await Admitted(null, "http://127.0.0.1:9000/okf/kb/a%20b.md"));                 // outside any operation
+        Assert.False(await Admitted(read, "http://127.0.0.1:9000/okf/kb/a+b.md"));                   // another key
+        Assert.False(await Admitted(read, "http://127.0.0.1:9000/okf/kb/a%2520b.md"));               // another encoding of another key
+        Assert.False(await Admitted(read, "http://127.0.0.1:9001/okf/kb/a%20b.md"));                 // another port
+        Assert.True(await Admitted(list, "http://127.0.0.1:9000/okf/?list-type=2&prefix=kb%2F&encoding-type=url"));
+        Assert.False(await Admitted(list, "http://127.0.0.1:9000/okf/?list-type=2&prefix=kb2%2F&encoding-type=url")); // an altered prefix
+        Assert.False(await Admitted(list, "http://127.0.0.1:9000/okf/?list-type=2&prefix=kb%2F&prefix=x&encoding-type=url")); // a repeated prefix
+        Assert.False(await Admitted(list, "http://127.0.0.1:9000/other/?list-type=2&prefix=kb%2F"));  // another bucket path
+    }
 
     public static TheoryData<S3BundleSource, string, string> Table => new()
     {
@@ -1151,16 +1284,10 @@ public class GuardTests
         Assert.Equal(pathPrefix, plan.PathPrefix);
     }
 
-    [Fact]
-    public void Two_providers_share_no_HttpClient()
-    {
-        var s = SourceRules.Normalize(new S3BundleSource { Bucket = "okf", ServiceUrl = new Uri("http://127.0.0.1:9000"), ForcePathStyle = true, AllowInsecureHttp = true });
-        _ = ClientBuilder.Build(new SnapshotCredentials(), s, new FakeS3Handler(), out var a);
-        _ = ClientBuilder.Build(new SnapshotCredentials(), s, new FakeS3Handler(), out var b);
-        Assert.NotSame(a, b);
-    }
 }
 ```
+
+(The `HttpClient` lifetime — one per provider, really used, disposed once — is tested through the provider in Task 8, `Each_provider_uses_and_disposes_only_its_own_HttpClient`.)
 
 (`SnapshotCredentials` is created in this task as a minimal internal `AWSCredentials` returning `OperationContext.Current.Value?.Credentials ?? throw new GuardException(S3FailureKind.Credentials)`; Task 6 completes it with the isolated resolution.) Note on the virtual-hosted `ServiceUrl` row: its authority is `okf.127.0.0.1` — G3 records what the SDK actually sends for an IP origin without path-style; if the SDK forces path-style there, refuse that configuration in `SourceRules` instead and drop the row (record it in the commit message).
 
@@ -1255,19 +1382,55 @@ public class TransportBoundsTests
     }
 
     [Theory]
-    [InlineData(HttpStatusCode.OK, BoundingHandler.ListBodyBytes + 1, true)]
-    [InlineData(HttpStatusCode.NotFound, BoundingHandler.ErrorBodyBytes + 1, false)]
-    [InlineData(HttpStatusCode.Forbidden, BoundingHandler.ErrorBodyBytes + 1, true)]
+    [InlineData(HttpStatusCode.OK, BoundingHandler.ListBodyBytes * 4, true)]
+    [InlineData(HttpStatusCode.NotFound, BoundingHandler.ErrorBodyBytes * 64, false)]
+    [InlineData(HttpStatusCode.Forbidden, BoundingHandler.ErrorBodyBytes * 64, true)]
     public async Task Past_the_bound_nothing_reaches_the_sdk_and_at_most_one_byte_more_was_read(HttpStatusCode status, int size, bool list)
     {
+        // Bodies far larger than the bound: an implementation reading everything before checking would read `size`.
+        var bound = list && status == HttpStatusCode.OK ? BoundingHandler.ListBodyBytes : BoundingHandler.ErrorBodyBytes;
         foreach (var withLength in new[] { true, false })
         {
             var (r, e, w) = await Send(status, size, list, withLength);
             Assert.Null(r);
             Assert.Equal(S3FailureKind.InvalidResponse, Assert.IsType<GuardException>(e).Kind);
-            Assert.True(w.BytesRead <= size, "the handler read past B + 1");
-            Assert.True(w.BytesRead <= (list && status == HttpStatusCode.OK ? BoundingHandler.ListBodyBytes : BoundingHandler.ErrorBodyBytes) + 1);
+            Assert.True(w.BytesRead <= bound + 1, $"the handler read {w.BytesRead} bytes, past B + 1");
         }
+    }
+
+    [Fact]
+    public async Task An_endless_body_without_length_stops_at_B_plus_one()
+    {
+        long read = 0;
+        var endless = new StreamContent(new CountingStream(new EndlessStream(), n => Interlocked.Add(ref read, n)));
+        var inner = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = endless }) };
+        using var invoker = new HttpMessageInvoker(new BoundingHandler { InnerHandler = inner });
+        OperationContext.Current.Value = new OperationContext(S3Operation.List) { Capture = new ListPageCapture() };
+        try
+        {
+            var e = await Assert.ThrowsAsync<GuardException>(() => invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "http://127.0.0.1:9000/okf/?list-type=2&prefix=kb%2F"), default));
+            Assert.Equal(S3FailureKind.InvalidResponse, e.Kind);
+        }
+        finally
+        {
+            OperationContext.Current.Value = null;
+        }
+
+        Assert.True(Interlocked.Read(ref read) <= BoundingHandler.ListBodyBytes + 1);
+    }
+
+    private sealed class EndlessStream : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => count; // zeros forever
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     [Fact]
@@ -1294,7 +1457,7 @@ namespace OKF4net.Providers.S3.Internal;
 
 /// <summary>
 /// Thrown by the provider's own handlers to stop a request (refused authority, transport bound). It derives from
-/// <see cref="Exception"/> only, so the SDK does not retry it (gate G5), and it carries no text from the request.
+/// <see cref="Exception"/> only, so the SDK does not retry it (gate G6), and it carries no text from the request.
 /// </summary>
 internal sealed class GuardException(S3FailureKind kind) : Exception("request stopped by the S3 provider's guard: " + kind)
 {
@@ -1308,7 +1471,7 @@ using Amazon.Runtime;
 
 namespace OKF4net.Providers.S3.Internal;
 
-/// <summary>What the handlers expect of the requests one provider operation sends (spec §4.4). Flows through the SDK's pipeline by <see cref="AsyncLocal{T}"/> (gate G7).</summary>
+/// <summary>What the handlers expect of the requests one provider operation sends (spec §4.4). Flows through the SDK's pipeline by <see cref="AsyncLocal{T}"/> (gate G9).</summary>
 internal sealed class OperationContext(S3Operation operation)
 {
     public static readonly AsyncLocal<OperationContext?> Current = new();
@@ -1395,10 +1558,11 @@ namespace OKF4net.Providers.S3.Internal;
 
 /// <summary>
 /// Refuses, before anything is sent, a request outside the current operation (spec D3, §4.4): another scheme,
-/// host or port than the plan's one authority; a path that does not start with the plan's prefix; a read whose
-/// path is not exactly the expected key; a listing whose <c>prefix</c> is not the expected one; any request made
-/// outside a provider operation. Paths are compared after STRICT percent-decoding (<see cref="S3KeyCodec"/>),
-/// so an encoding variant cannot pass and a canonicalized path ('..' removed) fails closed.
+/// host or port than the plan's one authority; a read whose RAW path (<see cref="Uri.AbsolutePath"/>, not decoded)
+/// is not exactly the plan's prefix followed by the expected key's encoding (<see cref="S3KeyCodec.EncodePath"/>,
+/// the encoding the SDK sends — gate G3); a listing whose raw path is not the plan's prefix alone, or whose query
+/// has a repeated parameter or a <c>prefix</c> other than the expected one; any request made outside a provider
+/// operation. A canonicalized path ('..' removed) or another encoding fails closed.
 /// </summary>
 internal sealed class PinningHandler(AddressingPlan plan) : DelegatingHandler
 {
@@ -1422,23 +1586,19 @@ internal sealed class PinningHandler(AddressingPlan plan) : DelegatingHandler
             return false;
         }
 
-        if (!S3KeyCodec.TryDecodePath(uri.AbsolutePath, out var path) || !path.StartsWith(plan.PathPrefix, StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        var rest = path[plan.PathPrefix.Length..];
         return context.Operation switch
         {
-            S3Operation.Read => context.ExpectedObjectS3Key is { } key && string.Equals(rest, key, StringComparison.Ordinal),
-            _ => rest.Length == 0 && context.ExpectedListPrefix is { } prefix
-                && S3KeyCodec.TryGetQueryValue(uri.Query, "prefix", out var actual) && string.Equals(actual, prefix, StringComparison.Ordinal),
+            S3Operation.Read => context.ExpectedObjectS3Key is { } key
+                && string.Equals(uri.AbsolutePath, plan.PathPrefix + S3KeyCodec.EncodePath(key), StringComparison.Ordinal),
+            _ => string.Equals(uri.AbsolutePath, plan.PathPrefix, StringComparison.Ordinal)
+                && context.ExpectedListPrefix is { } prefix
+                && S3KeyCodec.TryGetUniqueQueryValue(uri.Query, "prefix", out var actual) && string.Equals(actual, prefix, StringComparison.Ordinal),
         };
     }
 }
 ```
 
-`S3KeyCodec.TryDecodePath` and `TryGetQueryValue` are written in Task 7; add them **now** in `Internal/S3KeyCodec.cs` with this minimal content, which Task 7 completes and tests in depth:
+`S3KeyCodec` is completed and tested in depth in Task 7; create it **now** in `Internal/S3KeyCodec.cs` with this content (`TryDecode`, `EncodePath`, `TryGetUniqueQueryValue`):
 
 ```csharp
 // SPDX-License-Identifier: LGPL-3.0-or-later
@@ -1500,22 +1660,52 @@ internal static class S3KeyCodec
         }
     }
 
-    public static bool TryDecodePath(string absolutePath, [NotNullWhen(true)] out string? path) => TryDecode(absolutePath, out path);
-
-    public static bool TryGetQueryValue(string query, string name, out string? value)
+    /// <summary>
+    /// The path encoding of an S3 key as the SDK sends it (gate G3 confirms it on the hostile battery): RFC 3986
+    /// unreserved characters and '/' kept, every other UTF-8 byte as %XX with uppercase hex.
+    /// </summary>
+    public static string EncodePath(string s3Key)
     {
-        value = null;
-        foreach (var pair in query.TrimStart('?').Split('&'))
+        var sb = new StringBuilder(s3Key.Length);
+        foreach (var b in StrictUtf8.GetBytes(s3Key))
         {
-            var eq = pair.IndexOf('=', StringComparison.Ordinal);
-            var key = eq < 0 ? pair : pair[..eq];
-            if (string.Equals(key, name, StringComparison.Ordinal))
+            var c = (char)b;
+            if (char.IsAsciiLetterOrDigit(c) || c is '-' or '.' or '_' or '~' or '/')
             {
-                return TryDecode(eq < 0 ? "" : pair[(eq + 1)..], out value);
+                sb.Append(c);
+            }
+            else
+            {
+                sb.Append('%').Append(b.ToString("X2", System.Globalization.CultureInfo.InvariantCulture));
             }
         }
 
-        return false;
+        return sb.ToString();
+    }
+
+    /// <summary>The strictly decoded value of <paramref name="name"/>; false when absent, repeated, or not decodable.</summary>
+    public static bool TryGetUniqueQueryValue(string query, string name, [NotNullWhen(true)] out string? value)
+    {
+        value = null;
+        var found = false;
+        foreach (var pair in query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var eq = pair.IndexOf('=', StringComparison.Ordinal);
+            if (!string.Equals(eq < 0 ? pair : pair[..eq], name, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (found || !TryDecode(eq < 0 ? "" : pair[(eq + 1)..], out value))
+            {
+                value = null;
+                return false;
+            }
+
+            found = true;
+        }
+
+        return found;
     }
 
     private static bool IsHex(char c) => c is (>= '0' and <= '9') or (>= 'a' and <= 'f') or (>= 'A' and <= 'F');
@@ -1557,42 +1747,51 @@ internal sealed class BoundingHandler : DelegatingHandler
             return response;
         }
 
-        byte[] body;
-        using (response)
+        byte[]? body;
+        try
         {
-            body = await ReadBoundedAsync(response.Content, bound.Value, ct).ConfigureAwait(false)
-                ?? throw new GuardException(S3FailureKind.InvalidResponse);
-            if (isList && status < 300 && OperationContext.Current.Value?.Capture is { } capture)
-            {
-                capture.Body = body;
-            }
-
-            var copy = new HttpResponseMessage(response.StatusCode)
-            {
-                Version = response.Version,
-                ReasonPhrase = response.ReasonPhrase,
-                RequestMessage = response.RequestMessage,
-                Content = new ByteArrayContent(body),
-            };
-            foreach (var h in response.Headers)
-            {
-                copy.Headers.TryAddWithoutValidation(h.Key, h.Value);
-            }
-
-            foreach (var h in response.Content.Headers)
-            {
-                if (!string.Equals(h.Key, "Content-Length", StringComparison.OrdinalIgnoreCase))
-                {
-                    copy.Content.Headers.TryAddWithoutValidation(h.Key, h.Value);
-                }
-            }
-
-            copy.Content.Headers.ContentLength = body.Length;
-            return copy;
+            body = await ReadBoundedAsync(response.Content, bound.Value, ct).ConfigureAwait(false);
         }
+        finally
+        {
+            DisposeQuietly(response); // the original never reaches the SDK; its disposal cannot mask the outcome
+        }
+
+        if (body is null)
+        {
+            throw new GuardException(S3FailureKind.InvalidResponse);
+        }
+
+        if (isList && status < 300 && OperationContext.Current.Value?.Capture is { } capture)
+        {
+            capture.Body = body;
+        }
+
+        var copy = new HttpResponseMessage(response.StatusCode)
+        {
+            Version = response.Version,
+            ReasonPhrase = response.ReasonPhrase,
+            RequestMessage = response.RequestMessage,
+            Content = new ByteArrayContent(body),
+        };
+        foreach (var h in response.Headers)
+        {
+            copy.Headers.TryAddWithoutValidation(h.Key, h.Value);
+        }
+
+        foreach (var h in response.Content.Headers)
+        {
+            if (!string.Equals(h.Key, "Content-Length", StringComparison.OrdinalIgnoreCase))
+            {
+                copy.Content.Headers.TryAddWithoutValidation(h.Key, h.Value);
+            }
+        }
+
+        copy.Content.Headers.ContentLength = body.Length;
+        return copy;
     }
 
-    /// <returns>The body, or null when it is longer than <paramref name="bound"/>.</returns>
+    /// <returns>The body, or null when it is longer than <paramref name="bound"/>. Never reads more than B + 1 bytes.</returns>
     private static async Task<byte[]?> ReadBoundedAsync(HttpContent content, int bound, CancellationToken ct)
     {
         if (content.Headers.ContentLength is { } declared && declared > bound)
@@ -1602,19 +1801,34 @@ internal sealed class BoundingHandler : DelegatingHandler
 
         var buffer = new byte[bound + 1];
         var total = 0;
-        await using var stream = await content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-        while (total < buffer.Length)
+        var stream = await content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+        await using (stream.ConfigureAwait(false))
         {
-            var n = await stream.ReadAsync(buffer.AsMemory(total, Math.Min(81920, buffer.Length - total)), ct).ConfigureAwait(false);
-            if (n == 0)
+            while (total < buffer.Length)
             {
-                return buffer.AsSpan(0, total).ToArray();
-            }
+                var n = await stream.ReadAsync(buffer.AsMemory(total, Math.Min(81920, buffer.Length - total)), ct).ConfigureAwait(false);
+                if (n == 0)
+                {
+                    return buffer.AsSpan(0, total).ToArray();
+                }
 
-            total += n;
+                total += n;
+            }
         }
 
         return null; // B + 1 bytes: an excess
+    }
+
+    private static void DisposeQuietly(IDisposable d)
+    {
+        try
+        {
+            d.Dispose();
+        }
+        catch (Exception e) when (e is not OutOfMemoryException)
+        {
+            // Ignored on purpose: the response is discarded either way, and the outcome is already decided.
+        }
     }
 }
 ```
@@ -1629,7 +1843,7 @@ using Amazon.Runtime;
 
 namespace OKF4net.Providers.S3.Internal;
 
-/// <summary>Always the provider's own HttpClient: never cached across clients, never disposed by the SDK (spec §4.4, gate G4).</summary>
+/// <summary>Always the provider's own HttpClient: never cached across clients, never disposed by the SDK (spec §4.4, gate G5).</summary>
 internal sealed class ProviderHttpClientFactory(HttpClient client) : HttpClientFactory
 {
     public override HttpClient CreateHttpClient(IClientConfig clientConfig) => client;
@@ -2053,31 +2267,36 @@ internal sealed class OperationScope : IAsyncDisposable
     /// <summary>Keeps the permit until <paramref name="abandoned"/> ends (an isolated credentials call that outlived its deadline).</summary>
     public void HoldPermitUntil(Task abandoned) => _holdUntil = abandoned;
 
+    /// <summary>Whether the caller's own token asked to stop (not the deadline).</summary>
+    public bool CallerCancelled => _caller.IsCancellationRequested;
+
     /// <summary>
-    /// The exception this operation ends with, given a failure just observed (spec §4.5): the caller's cancellation
-    /// if it was requested; else the FIRST principal failure retained (a bound, or the first classified failure);
-    /// a cancellation that is not the caller's is a Timeout. Never throws.
+    /// The exception this operation ends with, given a failure just observed (spec §4.5). The FIRST call decides and
+    /// the result is kept for good: every later call returns it, whatever it observes. At that first call: the
+    /// caller's cancellation if it was already requested; else the observed failure if it is already a contract
+    /// exception (a bound, an absent or refused object, a version mismatch, an S3RequestException); else, if the
+    /// deadline has fired, a Timeout — whatever the interrupted read threw (an OperationCanceledException, or an
+    /// ObjectDisposedException/IOException because the response was disposed to unblock it); else the closed table
+    /// (ErrorClassifier). Never throws.
     /// </summary>
     public Exception Fail(Exception observed)
     {
-        if (_caller.IsCancellationRequested)
-        {
-            return observed as OperationCanceledException ?? new OperationCanceledException(_caller);
-        }
-
         if (_principal is not null)
         {
             return _principal;
         }
 
-        _principal = observed switch
-        {
-            BundleObjectTooLargeException or BundleLimitExceededException or BundleObjectNotFoundException
-                or BundleVersionMismatchException or BundleAccessRefusedException or S3RequestException => observed,
-            OperationCanceledException => new S3RequestException(Operation, S3FailureKind.Timeout, null, Key, observed),
-            GuardException g => new S3RequestException(Operation, g.Kind, null, Key, g),
-            _ => ErrorClassifier.Classify(Operation, Key, observed),
-        };
+        _principal = _caller.IsCancellationRequested
+            ? observed as OperationCanceledException ?? new OperationCanceledException(_caller)
+            : observed switch
+            {
+                BundleObjectTooLargeException or BundleLimitExceededException or BundleObjectNotFoundException
+                    or BundleVersionMismatchException or BundleAccessRefusedException or S3RequestException => observed,
+                _ when _deadline.IsCancellationRequested => new S3RequestException(Operation, S3FailureKind.Timeout, null, Key, observed),
+                OperationCanceledException => new S3RequestException(Operation, S3FailureKind.Timeout, null, Key, observed),
+                GuardException g => new S3RequestException(Operation, g.Kind, null, Key, g),
+                _ => ErrorClassifier.Classify(Operation, Key, observed),
+            };
         return _principal;
     }
 
@@ -2113,9 +2332,17 @@ Append to `SnapshotCredentials.cs`:
 /// </summary>
 internal sealed class CredentialResolver(AWSCredentials host)
 {
+    /// <summary>
+    /// Resolves, or throws an exception that is ALREADY final: an S3RequestException with Kind Credentials (a
+    /// failure, a null result, or the deadline reached while waiting), or the caller's OperationCanceledException.
+    /// It never calls <see cref="OperationScope.Fail"/>: the caller's catch passes that final exception to Fail
+    /// first, which keeps it as is (spec §4.5), so a credentials timeout reads Credentials through every member.
+    /// </summary>
     public async Task<ImmutableCredentials> ResolveAsync(OperationScope scope)
     {
-        var call = Task.Run(host.GetCredentials, CancellationToken.None);
+        // The asynchronous member a refreshing provider overrides, isolated on the pool: a provider whose async
+        // path runs a synchronous call before returning its task cannot hold the caller's thread either.
+        var call = Task.Run(() => host.GetCredentialsAsync(), CancellationToken.None);
         try
         {
             var snapshot = await call.WaitAsync(scope.Token).ConfigureAwait(false);
@@ -2124,12 +2351,14 @@ internal sealed class CredentialResolver(AWSCredentials host)
         catch (OperationCanceledException e)
         {
             scope.HoldPermitUntil(call);
-            var failure = scope.Fail(e); // the caller's cancellation, or a Timeout
-            throw failure is S3RequestException { Kind: S3FailureKind.Timeout }
-                ? new S3RequestException(scope.Operation, S3FailureKind.Credentials, null, scope.Key, failure)
-                : failure;
+            if (scope.CallerCancelled)
+            {
+                throw;
+            }
+
+            throw new S3RequestException(scope.Operation, S3FailureKind.Credentials, null, scope.Key, e);
         }
-        catch (Exception e) when (e is not S3RequestException)
+        catch (Exception e) when (e is not S3RequestException and not OutOfMemoryException)
         {
             throw new S3RequestException(scope.Operation, S3FailureKind.Credentials, null, scope.Key, e);
         }
@@ -2137,7 +2366,7 @@ internal sealed class CredentialResolver(AWSCredentials host)
 }
 ```
 
-(`GetCredentials()` is used rather than `GetCredentialsAsync()` because the latter may itself run the synchronous call on the caller's thread before returning a task, spec §4.4; inside `Task.Run` both are equivalent. Add the four `using`s: `Amazon.Runtime`.)
+(Add `using Amazon.Runtime;`. If `GetCredentialsAsync` is not public in the resolved SDK — gate G4 — use `host.GetCredentials` in the `Task.Run`.)
 
 - [ ] **Step 5: Record the per-operation resolution in the spec**
 
@@ -2257,7 +2486,27 @@ public class ListPageParserTests
     public void A_page_decodes_its_keys_strictly()
     {
         var p = Parse(Page([("kb/caf%C3%A9.md", "\"e1\"", 3)], truncated: false, token: null));
-        Assert.Equal("kb/café.md", Assert.Single(p.Entries).S3Key);
+        var e = Assert.Single(p.Entries);
+        Assert.Equal("kb/café.md", e.S3Key);
+        Assert.Equal("\"e1\"", e.ETag);
+        Assert.Equal(3, e.Size);
+    }
+
+    [Fact]
+    public void Compact_and_indented_pages_parse_alike_and_no_field_is_skipped()
+    {
+        var compact = Page([("kb/a.md", "\"e1\"", 1), ("kb/b.md", "\"e2\"", 2)], truncated: true, token: "t1");
+        var indented = System.Xml.Linq.XDocument.Parse(compact).ToString(); // whitespace between every element
+        foreach (var xml in new[] { compact, indented })
+        {
+            var p = Parse(xml);
+            Assert.Equal(["kb/a.md", "kb/b.md"], p.Entries.Select(x => x.S3Key));
+            Assert.Equal(["\"e1\"", "\"e2\""], p.Entries.Select(x => x.ETag));
+            Assert.Equal([1L, 2L], p.Entries.Select(x => x.Size));
+            Assert.True(p.IsTruncated);
+            Assert.Equal("t1", p.NextToken);
+            Assert.Equal(1000, p.MaxKeys);
+        }
     }
 
     public static TheoryData<string> Refused => new()
@@ -2271,6 +2520,10 @@ public class ListPageParserTests
         Page([("kb/a.md", "\"e\"", 1)], true, new string('t', 1025)),
         "<not-xml",
         "<?xml version=\"1.0\"?><!DOCTYPE x [<!ENTITY e \"x\">]><ListBucketResult/>",
+        "<?xml version=\"1.0\"?><Other><EncodingType>url</EncodingType><IsTruncated>false</IsTruncated></Other>", // another root
+        Page([("kb/a.md", "\"e\"", 1)], false, null).Replace("<ETag>", "<ETag>\"x\"</ETag><ETag>", StringComparison.Ordinal), // a repeated field
+        Page([("kb/a.md", "\"e\"", 1)], false, null).Replace("<IsTruncated>false</IsTruncated>", "<IsTruncated>false</IsTruncated><IsTruncated>true</IsTruncated>", StringComparison.Ordinal),
+        Page([("kb/a.md", "\"e\"", 1)], false, null).Replace("<Size>1</Size>", "", StringComparison.Ordinal), // a missing field
     };
 
     [Theory]
@@ -2341,74 +2594,110 @@ internal static class ListPageParser
         {
             return ParseCore(body);
         }
-        catch (XmlException)
+        catch (Exception e) when (e is XmlException or FormatException or OverflowException or InvalidOperationException)
         {
             throw new GuardException(S3FailureKind.InvalidResponse);
         }
     }
 
+    /// <summary>
+    /// Structured parse with EXPLICIT reader advancement: ReadElementContentAsString already moves past the end
+    /// tag, so the loop advances with Read() only for nodes it did not consume. The root must be ListBucketResult;
+    /// page fields are its children (depth 1), entry fields are children of Contents (depth 2); every field appears
+    /// at most once in its parent, and each Contents has exactly Key, ETag and Size.
+    /// </summary>
     private static ListPage ParseCore(byte[] body)
     {
-        var settings = new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null, IgnoreComments = true, IgnoreWhitespace = true };
+        var settings = new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null, IgnoreComments = true, IgnoreWhitespace = true, IgnoreProcessingInstructions = true };
         using var reader = XmlReader.Create(new MemoryStream(body), settings);
-        var entries = new List<S3Entry>();
-        string? encodingType = null, token = null;
-        bool? truncated = null;
-        var maxKeys = 0;
-        string? key = null, etag = null;
-        long? size = null;
-        while (reader.Read())
+        if (reader.MoveToContent() != XmlNodeType.Element || reader.LocalName != "ListBucketResult")
         {
-            if (reader.NodeType == XmlNodeType.EndElement && reader.LocalName == "Contents")
+            throw new GuardException(S3FailureKind.InvalidResponse);
+        }
+
+        var entries = new List<S3Entry>();
+        var page = new Dictionary<string, string>(StringComparer.Ordinal);
+        Dictionary<string, string>? entry = null;
+        reader.Read(); // into the root
+        while (!reader.EOF)
+        {
+            if (reader.NodeType == XmlNodeType.EndElement && reader.LocalName == "Contents" && reader.Depth == 1 && entry is not null)
             {
-                entries.Add(Entry(key, etag, size));
-                (key, etag, size) = (null, null, null);
+                entries.Add(Entry(entry));
+                entry = null;
+                reader.Read();
                 continue;
             }
 
             if (reader.NodeType != XmlNodeType.Element)
             {
+                reader.Read();
                 continue;
             }
 
-            switch (reader.LocalName)
+            if (reader.Depth == 1 && reader.LocalName == "Contents" && !reader.IsEmptyElement)
             {
-                case "EncodingType": encodingType = reader.ReadElementContentAsString(); break;
-                case "IsTruncated": truncated = bool.Parse(reader.ReadElementContentAsString()); break;
-                case "NextContinuationToken": token = reader.ReadElementContentAsString(); break;
-                case "MaxKeys": maxKeys = int.Parse(reader.ReadElementContentAsString(), NumberStyles.None, CultureInfo.InvariantCulture); break;
-                case "Key": key = reader.ReadElementContentAsString(); break;
-                case "ETag": etag = reader.ReadElementContentAsString(); break;
-                case "Size": size = long.Parse(reader.ReadElementContentAsString(), NumberStyles.None, CultureInfo.InvariantCulture); break;
+                entry = new Dictionary<string, string>(StringComparer.Ordinal);
+                reader.Read();
+                continue;
             }
+
+            if (reader.Depth == 2 && entry is not null && reader.LocalName is "Key" or "ETag" or "Size")
+            {
+                var name = reader.LocalName;
+                if (!entry.TryAdd(name, reader.ReadElementContentAsString()))
+                {
+                    throw new GuardException(S3FailureKind.InvalidResponse);
+                }
+
+                continue; // ReadElementContentAsString has advanced
+            }
+
+            if (reader.Depth == 1 && reader.LocalName is "EncodingType" or "IsTruncated" or "NextContinuationToken" or "MaxKeys")
+            {
+                var name = reader.LocalName;
+                if (!page.TryAdd(name, reader.ReadElementContentAsString()))
+                {
+                    throw new GuardException(S3FailureKind.InvalidResponse);
+                }
+
+                continue;
+            }
+
+            reader.Skip(); // any other element, with its subtree (Name, Prefix, KeyCount, Owner, StorageClass, …)
         }
 
-        if (encodingType != "url" || truncated is null)
+        if (entry is not null || page.GetValueOrDefault("EncodingType") != "url" || !page.TryGetValue("IsTruncated", out var truncatedText))
         {
             throw new GuardException(S3FailureKind.InvalidResponse);
         }
 
-        if (truncated.Value && (string.IsNullOrEmpty(token) || Encoding.UTF8.GetByteCount(token) > BoundingHandler.TokenBytes))
+        var truncated = bool.Parse(truncatedText);
+        var token = page.GetValueOrDefault("NextContinuationToken");
+        if (truncated && (string.IsNullOrEmpty(token) || Encoding.UTF8.GetByteCount(token) > BoundingHandler.TokenBytes))
         {
             throw new GuardException(S3FailureKind.InvalidResponse);
         }
 
-        return new ListPage(entries, truncated.Value, token, maxKeys);
+        var maxKeys = page.TryGetValue("MaxKeys", out var mk) ? int.Parse(mk, NumberStyles.None, CultureInfo.InvariantCulture) : 0;
+        return new ListPage(entries, truncated, token, maxKeys);
     }
 
-    private static S3Entry Entry(string? encodedKey, string? etag, long? size)
+    private static S3Entry Entry(Dictionary<string, string> fields)
     {
-        if (encodedKey is null || string.IsNullOrEmpty(etag) || size is not >= 0 || !S3KeyCodec.TryDecode(encodedKey, out var decoded))
+        if (!fields.TryGetValue("Key", out var encodedKey) || !fields.TryGetValue("ETag", out var etag) || etag.Length == 0
+            || !fields.TryGetValue("Size", out var sizeText) || !long.TryParse(sizeText, NumberStyles.None, CultureInfo.InvariantCulture, out var size)
+            || !S3KeyCodec.TryDecode(encodedKey, out var decoded))
         {
             throw new GuardException(S3FailureKind.InvalidResponse);
         }
 
-        return new S3Entry(decoded, etag, size.Value);
+        return new S3Entry(decoded, etag, size);
     }
 }
 ```
 
-(`bool.Parse`/`int.Parse` failures throw `FormatException`; catch it with `XmlException` in `Parse` too: `catch (Exception e) when (e is XmlException or FormatException or OverflowException)`.)
+(`NumberStyles.None` refuses a sign, so a negative size fails `TryParse`.)
 
 - [ ] **Step 4: Run codec/parser tests**
 
@@ -2450,9 +2739,9 @@ internal static class S3Test
                 var uri = req.RequestUri!;
                 if (uri.Query.Contains("list-type=2", StringComparison.Ordinal))
                 {
-                    OKF4net.Providers.S3.Internal.S3KeyCodec.TryGetQueryValue(uri.Query, "prefix", out var prefix);
-                    OKF4net.Providers.S3.Internal.S3KeyCodec.TryGetQueryValue(uri.Query, "continuation-token", out var token);
-                    _ = OKF4net.Providers.S3.Internal.S3KeyCodec.TryGetQueryValue(uri.Query, "max-keys", out var mk);
+                    OKF4net.Providers.S3.Internal.S3KeyCodec.TryGetUniqueQueryValue(uri.Query, "prefix", out var prefix);
+                    OKF4net.Providers.S3.Internal.S3KeyCodec.TryGetUniqueQueryValue(uri.Query, "continuation-token", out var token);
+                    _ = OKF4net.Providers.S3.Internal.S3KeyCodec.TryGetUniqueQueryValue(uri.Query, "max-keys", out var mk);
                     var max = Math.Min(pageSize, mk is null ? 1000 : int.Parse(mk, System.Globalization.CultureInfo.InvariantCulture));
                     var start = token is null ? 0 : int.Parse(token, System.Globalization.CultureInfo.InvariantCulture);
                     var matching = sorted.Where(k => k.StartsWith(prefix ?? "", StringComparison.Ordinal)).ToArray();
@@ -2791,30 +3080,46 @@ internal sealed class ListingWalker(AmazonS3Client client, string bucket, Operat
 
     private async Task<ListPage> FetchAsync(string listPrefix, int maxKeys, string? token, TimeSpan timeout, S3Operation operation, CancellationToken ct)
     {
-        await using var scope = await gate.EnterAsync(operation, timeout, ct, null).ConfigureAwait(false);
-        var capture = new ListPageCapture();
-        try
+        var scope = await gate.EnterAsync(operation, timeout, ct, null).ConfigureAwait(false);
+        await using (scope.ConfigureAwait(false))
         {
-            var context = new OperationContext(operation) { ExpectedListPrefix = listPrefix, Capture = capture };
-            OperationContext.Current.Value = context;
-            context.Credentials = await credentials.ResolveAsync(scope).ConfigureAwait(false);
-            _ = await client.ListObjectsV2Async(new ListObjectsV2Request
+            var capture = new ListPageCapture();
+            Exception? failure = null;
+            ListObjectsV2Response? response = null;
+            try
             {
-                BucketName = bucket,
-                Prefix = listPrefix,
-                MaxKeys = maxKeys,
-                ContinuationToken = token,
-                EncodingType = EncodingType.Url,
-            }, scope.Token).ConfigureAwait(false);
-            return ListPageParser.Parse(capture.Body ?? throw new GuardException(S3FailureKind.InvalidResponse));
-        }
-        catch (Exception e) when (e is not OutOfMemoryException)
-        {
-            throw scope.Fail(e);
-        }
-        finally
-        {
-            OperationContext.Current.Value = null;
+                var context = new OperationContext(operation) { ExpectedListPrefix = listPrefix, Capture = capture };
+                OperationContext.Current.Value = context;
+                context.Credentials = await credentials.ResolveAsync(scope).ConfigureAwait(false);
+                response = await client.ListObjectsV2Async(new ListObjectsV2Request
+                {
+                    BucketName = bucket,
+                    Prefix = listPrefix,
+                    MaxKeys = maxKeys,
+                    ContinuationToken = token,
+                    EncodingType = EncodingType.Url,
+                }, scope.Token).ConfigureAwait(false);
+                return ListPageParser.Parse(capture.Body ?? throw new GuardException(S3FailureKind.InvalidResponse));
+            }
+            catch (Exception e) when (e is not OutOfMemoryException)
+            {
+                failure = scope.Fail(e); // recorded before any cleanup
+            }
+            finally
+            {
+                try
+                {
+                    (response as IDisposable)?.Dispose(); // the listing body is already buffered; a disposal failure after success is ignored by the return
+                }
+                catch (Exception e) when (e is not OutOfMemoryException)
+                {
+                    failure = scope.Fail(e); // the first failure if any; this one otherwise
+                }
+
+                OperationContext.Current.Value = null;
+            }
+
+            throw failure ?? scope.Fail(new GuardException(S3FailureKind.InvalidResponse));
         }
     }
 }
@@ -3072,9 +3377,230 @@ public class ReadTests
     [Fact]
     public async Task A_body_longer_than_its_bound_without_length_is_refused_at_the_bound()
     {
-        var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new MemoryStream(new byte[11])) }) };
+        // A NON-seekable stream: StreamContent cannot compute a length, so no Content-Length reaches the SDK.
+        var stream = new NonSeekable(new byte[1000]);
+        var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(stream) }) };
         using var p = S3Test.Provider(fake, S3Test.Local() with { MaxObjectBytes = 10 });
         await Assert.ThrowsAsync<BundleObjectTooLargeException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
+        Assert.True(stream.BytesRead <= 11 + 8192, $"read {stream.BytesRead} bytes"); // the SDK's own buffering may read ahead one chunk; never the whole body
+    }
+
+    [Fact]
+    public async Task A_body_exactly_at_the_bound_without_length_is_accepted()
+    {
+        var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new NonSeekable(new byte[10])) }) };
+        using var p = S3Test.Provider(fake, S3Test.Local() with { MaxObjectBytes = 10 });
+        using var o = await p.ReadAsync(BundleKey.Parse("a.md"), null, default);
+        Assert.Equal(10, o.Length);
+    }
+
+    [Fact]
+    public async Task A_stream_that_ignores_the_token_and_only_yields_to_disposal_is_a_Timeout()
+    {
+        var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new DeafUntilDisposed()) }) };
+        using var p = S3Test.Provider(fake, S3Test.Local() with { RequestTimeout = TimeSpan.FromMilliseconds(300) });
+        var e = await Assert.ThrowsAsync<S3RequestException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
+        Assert.Equal(S3FailureKind.Timeout, e.Kind); // not Transport, though the read ended with ObjectDisposedException
+    }
+
+    [Fact]
+    public async Task A_failed_read_then_a_failed_disposal_reports_the_read()
+    {
+        var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new FailsReadAndDispose(new IOException("reset"), new Amazon.Runtime.AmazonClientException("Expected hash not equal to calculated hash"))) }) };
+        using var p = S3Test.Provider(fake);
+        var e = await Assert.ThrowsAsync<S3RequestException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
+        Assert.Equal(S3FailureKind.Transport, e.Kind); // the read's failure, first; the disposal's never masks it
+    }
+
+    [Fact]
+    public async Task A_bound_then_a_failed_disposal_reports_the_bound()
+    {
+        var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new FailsReadAndDispose(null, new IOException("dispose"), length: 100)) }) };
+        using var p = S3Test.Provider(fake, S3Test.Local() with { MaxObjectBytes = 10 });
+        await Assert.ThrowsAsync<BundleObjectTooLargeException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
+    }
+
+    [Fact]
+    public async Task A_wrong_response_checksum_is_Integrity_through_the_real_pipeline()
+    {
+        var fake = new FakeS3Handler
+        {
+            Respond = (_, _) =>
+            {
+                var r = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent("hello"u8.ToArray()) };
+                r.Headers.TryAddWithoutValidation("x-amz-checksum-crc32", "AAAAAA=="); // not the CRC32 of "hello"
+                return Task.FromResult(r);
+            },
+        };
+        using var p = S3Test.Provider(fake);
+        var e = await Assert.ThrowsAsync<S3RequestException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
+        Assert.Equal(S3FailureKind.Integrity, e.Kind);
+    }
+
+    [Fact]
+    public async Task A_credentials_provider_that_blocks_fails_a_read_as_Credentials()
+    {
+        var never = new ManualResetEventSlim();
+        using var p = S3Test.Provider(S3Test.Serving(S3Test.Objects(("kb/a.md", "x"))), S3Test.Local() with { RequestTimeout = TimeSpan.FromMilliseconds(300) },
+            new CountingCredentials(() => { never.Wait(); return null!; }));
+        var e = await Assert.ThrowsAsync<S3RequestException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
+        Assert.Equal(S3FailureKind.Credentials, e.Kind); // through the public member: not Timeout
+        never.Set();
+    }
+
+    [Fact]
+    public async Task A_307_on_the_same_authority_re_signs_with_the_snapshot_never_the_host_provider()
+    {
+        var calls = 0;
+        var host = new CountingCredentials(() => Interlocked.Increment(ref calls) == 1 ? new ImmutableCredentials("A", "S", "T") : throw new InvalidOperationException("called from the pipeline"));
+        var sent = 0;
+        var fake = new FakeS3Handler
+        {
+            Respond = (req, _) => Task.FromResult(Interlocked.Increment(ref sent) == 1
+                ? FakeS3Handler.Redirect(HttpStatusCode.TemporaryRedirect, req.RequestUri!.ToString()) // the same URL: admitted by the guard
+                : new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent("x"u8.ToArray()) }),
+        };
+        using var p = S3Test.Provider(fake, creds: host);
+        using var o = await p.ReadAsync(BundleKey.Parse("a.md"), null, default);
+        Assert.Equal(2, fake.Requests.Count);
+        Assert.Equal(1, Volatile.Read(ref calls));
+        Assert.All(fake.Requests, r => Assert.Contains("Credential=A/", r.Headers.Authorization!.Parameter, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Never_more_than_MaxConcurrentRequests_mixed_operations_bodies_included()
+    {
+        var inFlight = 0;
+        var peak = 0;
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var serving = S3Test.Serving(S3Test.Objects(("kb/a.md", "x"), ("kb/b.md", "y")));
+        var fake = new FakeS3Handler
+        {
+            Respond = async (req, ct) =>
+            {
+                var now = Interlocked.Increment(ref inFlight);
+                int seen;
+                while ((seen = Volatile.Read(ref peak)) < now && Interlocked.CompareExchange(ref peak, now, seen) != seen) { }
+                await release.Task.WaitAsync(ct);
+                Interlocked.Decrement(ref inFlight);
+                return await serving.Respond(req, ct);
+            },
+        };
+        using var p = S3Test.Provider(fake, S3Test.Local() with { MaxConcurrentRequests = 2 });
+        var ops = new List<Task>
+        {
+            p.ReadAsync(BundleKey.Parse("a.md"), null, default).AsTask(),
+            p.ReadAsync(BundleKey.Parse("b.md"), null, default).AsTask(),
+            p.ExistsAsync(BundleKey.Parse("a.md"), default).AsTask(),
+            p.GetVersionAsync(BundleLimits.Default, default).AsTask(),
+            p.ReadAsync(BundleKey.Parse("a.md"), null, default).AsTask(),
+        };
+        await Task.Delay(300);
+        Assert.Equal(2, Volatile.Read(ref peak));
+        release.SetResult();
+        await Task.WhenAll(ops);
+        Assert.Equal(2, Volatile.Read(ref peak));
+    }
+
+    [Fact]
+    public async Task Each_provider_uses_and_disposes_only_its_own_HttpClient()
+    {
+        var a = new CountingHandler(S3Test.Serving(S3Test.Objects(("kb/a.md", "x"))));
+        var b = new CountingHandler(S3Test.Serving(S3Test.Objects(("kb/a.md", "y"))));
+        var pa = new S3BundleProvider(S3Test.Creds, S3Test.Local(), a);
+        var pb = new S3BundleProvider(S3Test.Creds, S3Test.Local(), b);
+        using (var o = await pa.ReadAsync(BundleKey.Parse("a.md"), null, default)) { }
+        await Assert.ThrowsAnyAsync<Exception>(async () => await pa.ReadAsync(BundleKey.Parse("missing.md"), null, default)); // an error
+        using (var o = await pa.ReadAsync(BundleKey.Parse("a.md"), null, default)) { }        // the same client still serves
+        Assert.Equal(3, a.Sends);
+        Assert.Equal(0, b.Sends);
+        Assert.Equal(0, a.Disposals);
+        pa.Dispose();
+        pa.Dispose();
+        Assert.Equal(1, a.Disposals);
+        Assert.Equal(0, b.Disposals);
+        pb.Dispose();
+    }
+
+    private sealed class CountingHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
+    {
+        public int Sends;
+        public int Disposals;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Interlocked.Increment(ref Sends);
+            return base.SendAsync(request, ct);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                Interlocked.Increment(ref Disposals);
+            }
+
+            base.Dispose(disposing);
+        }
+    }
+
+    private sealed class NonSeekable(byte[] bytes) : Stream
+    {
+        private readonly MemoryStream _inner = new(bytes);
+        public long BytesRead;
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) { var n = _inner.Read(buffer, offset, count); Interlocked.Add(ref BytesRead, n); return n; }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    /// <summary>Ignores every token; a read blocks until the stream is disposed, then throws ObjectDisposedException.</summary>
+    private sealed class DeafUntilDisposed : Stream
+    {
+        private readonly TaskCompletionSource _disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            await _disposed.Task; // deliberately not WaitAsync(ct)
+            throw new ObjectDisposedException(nameof(DeafUntilDisposed));
+        }
+        protected override void Dispose(bool disposing) { _disposed.TrySetResult(); base.Dispose(disposing); }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    /// <summary>Gives <paramref name="length"/> bytes then fails with <paramref name="onRead"/> (or ends when null); its disposal throws <paramref name="onDispose"/>.</summary>
+    private sealed class FailsReadAndDispose(Exception? onRead, Exception onDispose, int length = 0) : Stream
+    {
+        private int _left = length;
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (_left > 0) { var n = Math.Min(_left, count); _left -= n; return n; }
+            return onRead is null ? 0 : throw onRead;
+        }
+        protected override void Dispose(bool disposing) { base.Dispose(disposing); if (disposing) throw onDispose; }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     [Fact]
@@ -3187,6 +3713,8 @@ public class ErrorTests
         { HttpStatusCode.Found, "Moved", typeof(S3RequestException), S3FailureKind.InvalidResponse },
         { HttpStatusCode.PermanentRedirect, "Moved", typeof(S3RequestException), S3FailureKind.InvalidResponse },
         { (HttpStatusCode)599, "Odd", typeof(S3RequestException), S3FailureKind.ServerError },
+        { HttpStatusCode.NotFound, "SignatureDoesNotMatch", typeof(S3RequestException), S3FailureKind.ClientError }, // an incoherent pair: its status range, not its code
+        { (HttpStatusCode)600, "Odd", typeof(S3RequestException), S3FailureKind.InvalidResponse },
     };
 
     [Theory]
@@ -3280,21 +3808,55 @@ Replace the placeholder in `S3BundleProvider`:
         ArgumentNullException.ThrowIfNull(key);
         ThrowIfDisposed(S3Operation.Read);
         var s3Key = _plan.S3Key(key);
-        await using var scope = await _gate.EnterAsync(S3Operation.Read, _source.RequestTimeout, ct, key).ConfigureAwait(false);
-        var context = new OperationContext(S3Operation.Read) { ExpectedObjectS3Key = s3Key };
-        OperationContext.Current.Value = context;
-        try
+        var scope = await _gate.EnterAsync(S3Operation.Read, _source.RequestTimeout, ct, key).ConfigureAwait(false);
+        await using (scope.ConfigureAwait(false))
         {
-            context.Credentials = await _credentials.ResolveAsync(scope).ConfigureAwait(false);
-            using var response = await _client.GetObjectAsync(new Amazon.S3.Model.GetObjectRequest { BucketName = _source.Bucket, Key = s3Key }, scope.Token).ConfigureAwait(false);
-            if (response.ContentLength > _source.MaxObjectBytes)
+            var context = new OperationContext(S3Operation.Read) { ExpectedObjectS3Key = s3Key };
+            OperationContext.Current.Value = context;
+            Amazon.S3.Model.GetObjectResponse? response = null;
+            Exception? failure = null;
+            ArraySegment<byte> bytes = default;
+            try
             {
-                throw new BundleObjectTooLargeException(key, response.ContentLength, _source.MaxObjectBytes);
+                context.Credentials = await _credentials.ResolveAsync(scope).ConfigureAwait(false);
+                response = await _client.GetObjectAsync(new Amazon.S3.Model.GetObjectRequest { BucketName = _source.Bucket, Key = s3Key }, scope.Token).ConfigureAwait(false);
+                if (response.ContentLength > _source.MaxObjectBytes)
+                {
+                    throw new BundleObjectTooLargeException(key, response.ContentLength, _source.MaxObjectBytes);
+                }
+
+                // A stalled body: cancelling the token may not unblock the SDK's stream (gate G7), disposing the
+                // response does. The callback never throws; the read it interrupts is classified Timeout by
+                // scope.Fail, since the deadline has fired.
+                using var abort = scope.Token.Register(static r => DisposeQuietly((IDisposable)r!), response);
+                bytes = await ReadAllAsync(response.ResponseStream, response.ContentLength, key, scope.Token).ConfigureAwait(false);
+            }
+            catch (Exception e) when (e is not OutOfMemoryException)
+            {
+                failure = scope.Fail(e); // recorded BEFORE any cleanup can fail
+            }
+            finally
+            {
+                if (response is not null)
+                {
+                    try
+                    {
+                        response.Dispose(); // the SDK may verify a checksum here
+                    }
+                    catch (Exception e) when (e is not OutOfMemoryException)
+                    {
+                        failure = scope.Fail(e); // returns the first failure if there was one; classifies this one otherwise
+                    }
+                }
+
+                OperationContext.Current.Value = null;
             }
 
-            // A stalled body: cancelling the token may not unblock the SDK's stream (gate G6), disposing the response does.
-            using var abort = scope.Token.Register(static r => ((IDisposable)r!).Dispose(), response);
-            var bytes = await ReadAllAsync(response.ResponseStream, response.ContentLength, key, scope.Token).ConfigureAwait(false);
+            if (failure is not null)
+            {
+                throw failure;
+            }
+
             var version = new BundleObjectVersion(Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes.AsSpan())));
             if (expected is { } wanted && wanted != version)
             {
@@ -3303,32 +3865,38 @@ Replace the placeholder in `S3BundleProvider`:
 
             return new BundleObject(new MemoryStream(bytes.Array!, bytes.Offset, bytes.Count, writable: false), version, bytes.Count);
         }
-        catch (Exception e) when (e is not OutOfMemoryException)
-        {
-            throw scope.Fail(e);
-        }
-        finally
-        {
-            OperationContext.Current.Value = null;
-        }
     }
 
-    /// <summary>Reads the whole body into one buffer sized by Content-Length when known, else grown by doubling, never past MaxObjectBytes.</summary>
+    /// <summary>
+    /// Reads the whole body into one buffer, never holding more than MaxObjectBytes nor allocating past it: the
+    /// buffer starts at Content-Length when known (at most max), else at min(80 KiB, max), and doubles up to max;
+    /// when it is full, ONE probe byte, read into a separate array, tells the end from an excess — so max may be
+    /// Array.MaxLength itself.
+    /// </summary>
     private async Task<ArraySegment<byte>> ReadAllAsync(Stream body, long declared, BundleKey key, CancellationToken ct)
     {
-        var max = _source.MaxObjectBytes;
-        var buffer = new byte[declared is > 0 ? (int)declared + 1 : 81920];
+        var max = (int)_source.MaxObjectBytes; // at most Array.MaxLength (SourceRules)
+        var buffer = new byte[declared > 0 ? (int)declared : Math.Min(81920, max)];
+        var probe = new byte[1];
         var total = 0;
         while (true)
         {
             if (total == buffer.Length)
             {
-                if (buffer.Length > max)
+                var p = await body.ReadAsync(probe, ct).ConfigureAwait(false);
+                if (p == 0)
                 {
-                    throw new BundleObjectTooLargeException(key, total, max);
+                    return new ArraySegment<byte>(buffer, 0, total);
                 }
 
-                Array.Resize(ref buffer, (int)Math.Min((long)buffer.Length * 2, max + 1));
+                if (total == max)
+                {
+                    throw new BundleObjectTooLargeException(key, (long)total + 1, max);
+                }
+
+                Array.Resize(ref buffer, (int)Math.Min(Math.Max((long)buffer.Length * 2, 1), max));
+                buffer[total++] = probe[0];
+                continue;
             }
 
             var n = await body.ReadAsync(buffer.AsMemory(total), ct).ConfigureAwait(false);
@@ -3338,15 +3906,23 @@ Replace the placeholder in `S3BundleProvider`:
             }
 
             total += n;
-            if (total > max)
-            {
-                throw new BundleObjectTooLargeException(key, total, max);
-            }
+        }
+    }
+
+    private static void DisposeQuietly(IDisposable d)
+    {
+        try
+        {
+            d.Dispose();
+        }
+        catch (Exception e) when (e is not OutOfMemoryException)
+        {
+            // A cancellation callback never throws; the interrupted read reports the outcome.
         }
     }
 ```
 
-(When `declared` is known, the buffer is `declared + 1` so the final zero-byte read confirms the end without a resize; a body that disagrees with its `Content-Length` is a transport error raised by `HttpClient` itself and classified `Transport`. The `MemoryStream` over `buffer` is the one copy the provider holds; `Array.MaxLength` caps `max`, so the `(int)` casts are safe.)
+(A body shorter than its `Content-Length` makes `HttpClient` throw during the read, classified `Transport`; a body longer than a declared length is impossible over HTTP/1.1 framing, and a lying length larger than `max` was refused before reading. `ReadAllAsync` never reads past `max + 1` bytes: reads go into the buffer's free space only, and the probe is one byte.)
 
 - [ ] **Step 4: Write `ErrorClassifier`**
 
@@ -3358,14 +3934,32 @@ using Amazon.S3;
 
 namespace OKF4net.Providers.S3.Internal;
 
-/// <summary>The closed table of spec §4.6. A pair (status, code) it does not recognize falls into its status's row; anything not from the service is Transport.</summary>
+/// <summary>
+/// The closed table of spec §4.6, as (status, code) PAIRS: a code counts only with the status S3 sends it with.
+/// A pair the table does not list falls into its status range (5xx ServerError, 4xx ClientError); any other
+/// status (1xx, 2xx, 3xx not followed, ≥ 600) is InvalidResponse — the terminal rule. Anything not from the
+/// service is Transport, except the response-integrity failure gate G8 recorded.
+/// </summary>
 internal static class ErrorClassifier
 {
-    private static readonly HashSet<string> CredentialCodes = new(StringComparer.Ordinal)
-        { "InvalidAccessKeyId", "SignatureDoesNotMatch", "ExpiredToken", "InvalidToken", "TokenRefreshRequired" };
+    private static readonly Dictionary<(int Status, string Code), S3FailureKind> Pairs = new()
+    {
+        [(403, "InvalidAccessKeyId")] = S3FailureKind.Credentials,
+        [(403, "SignatureDoesNotMatch")] = S3FailureKind.Credentials,
+        [(403, "ExpiredToken")] = S3FailureKind.Credentials,
+        [(400, "ExpiredToken")] = S3FailureKind.Credentials,
+        [(400, "InvalidToken")] = S3FailureKind.Credentials,
+        [(400, "TokenRefreshRequired")] = S3FailureKind.Credentials,
+        [(404, "NoSuchBucket")] = S3FailureKind.BucketUnavailable,
+        [(301, "PermanentRedirect")] = S3FailureKind.BucketUnavailable,
+        [(301, "")] = S3FailureKind.BucketUnavailable,
+        [(400, "AuthorizationHeaderMalformed")] = S3FailureKind.BucketUnavailable,
+        [(400, "IllegalLocationConstraintException")] = S3FailureKind.BucketUnavailable,
+        [(503, "SlowDown")] = S3FailureKind.Throttled,
+    };
 
-    private static readonly HashSet<string> BucketCodes = new(StringComparer.Ordinal)
-        { "NoSuchBucket", "PermanentRedirect", "AuthorizationHeaderMalformed", "IllegalLocationConstraintException" };
+    /// <summary>The message HashStream.CalculateHash raises (AWSSDK.Core 4.1.0) when a response hash does not match; gate G8 confirms it is the path a wrong checksum takes, and records any other.</summary>
+    internal const string HashMismatchMessage = "Expected hash not equal to calculated hash";
 
     public static Exception Classify(S3Operation operation, BundleKey? key, Exception e)
     {
@@ -3375,7 +3969,7 @@ internal static class ErrorClassifier
             return e switch
             {
                 GuardException g => new S3RequestException(operation, g.Kind, null, key, g),
-                AmazonClientException c when IsChecksum(c) => new S3RequestException(operation, S3FailureKind.Integrity, null, key, c),
+                AmazonClientException c when IsIntegrity(c) => new S3RequestException(operation, S3FailureKind.Integrity, null, key, c),
                 _ => new S3RequestException(operation, S3FailureKind.Transport, null, key, e),
             };
         }
@@ -3395,21 +3989,20 @@ internal static class ErrorClassifier
             }
         }
 
-        var kind = CredentialCodes.Contains(code) ? S3FailureKind.Credentials
-            : BucketCodes.Contains(code) || (status is 301 && code.Length == 0) ? S3FailureKind.BucketUnavailable
-            : status is 503 && code == "SlowDown" || status == 429 ? S3FailureKind.Throttled
-            : status >= 500 ? S3FailureKind.ServerError
-            : status >= 400 ? S3FailureKind.ClientError
-            : S3FailureKind.InvalidResponse; // 3xx not followed, and the terminal rule
+        var kind = Pairs.TryGetValue((status, code), out var paired) ? paired
+            : status == 429 ? S3FailureKind.Throttled
+            : status is >= 500 and <= 599 ? S3FailureKind.ServerError
+            : status is >= 400 and <= 499 ? S3FailureKind.ClientError
+            : S3FailureKind.InvalidResponse;
         return new S3RequestException(operation, kind, status, key, service);
     }
 
-    private static bool IsChecksum(AmazonClientException c) =>
-        c.GetType().Name.Contains("Checksum", StringComparison.Ordinal) || c.Message.Contains("checksum", StringComparison.OrdinalIgnoreCase);
+    private static bool IsIntegrity(AmazonClientException c) =>
+        c.Message.StartsWith(HashMismatchMessage, StringComparison.Ordinal);
 }
 ```
 
-(`IsChecksum` matches the exception gate G7 recorded; if G7 recorded a specific type, test `c is <that type>` instead of the name and message heuristics.)
+(Replace `IsIntegrity`'s test with the exception type or message gate G8 recorded for the real path, and keep the constant's comment in step. The pairs table carries 403 `ExpiredToken` beside 400 — S3 has sent both — and 400 for the token codes; spec §4.6 lists these codes under 403: record this precision in the spec's table in this task's commit.)
 
 - [ ] **Step 5: Run the tests, remove Task 7's two skips, run again**
 
@@ -3469,7 +4062,7 @@ public class ConsumersTests
         await Assert.ThrowsAsync<BundleReadOnlyException>(async () => await writer.WriteConceptAsync("notes/c", Fm, "C\n"));
         await Assert.ThrowsAsync<BundleReadOnlyException>(async () => await writer.AppendLogAsync("Update", "x"));
         await Assert.ThrowsAsync<BundleReadOnlyException>(async () => await IndexGenerator.RegenerateIndexesAsync(p));
-        Assert.DoesNotContain(fake.Requests, r => r.Method != HttpMethod.Get);
+        Assert.Empty(fake.Requests); // every write path refuses before any request, reads included
     }
 
     [Fact]
@@ -3598,18 +4191,62 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 10: Hostile environment and out-of-band egress, in a child process
+### Task 10: Hostile environment, CSM and region-detection egress
 
 **Files:**
 - Create: `tests/S3HostileEnvProbe/S3HostileEnvProbe.csproj`, `tests/S3HostileEnvProbe/Program.cs`
 - Modify: `tests/OKF4net.Tests/OKF4net.Tests.csproj` (`<ProjectReference Include="..\S3HostileEnvProbe\S3HostileEnvProbe.csproj" ReferenceOutputAssembly="false" />`, next to `YamlHostileProbe`)
-- Test: `tests/OKF4net.Tests/Providers/S3/HostileEnvironmentTests.cs`
+- Create (tests): `tests/OKF4net.Tests/TestProcess.cs` (bounded child-process runner, reused by Task 11), `tests/OKF4net.Tests/Providers/S3/HostileEnvironmentTests.cs`, `tests/OKF4net.Tests/Providers/S3/RegionDetectionEgressTests.cs`
 
 **Interfaces:**
-- Consumes: the **public** `S3BundleProvider` constructor only (D10 grants internals to `OKF4net.Tests` alone), against loopback listeners the probe starts itself (a `TcpListener` playing the S3 endpoint, a UDP listener for CSM).
-- Produces: the probe prints one line per request it served — `request line | sorted headers minus X-Amz-Date, amz-sdk-invocation-id, amz-sdk-request and Authorization | the Authorization credential scope (access key, date, region, service)` — then `concepts=<n>` and `UDP <count>`. The signature itself is not compared: it depends on the time; the scope, the signed path and every header that enters the signature are.
+- The probe uses the **public** `S3BundleProvider` constructor only (D10 grants internals to `OKF4net.Tests` alone), against loopback listeners it starts on ports **the test passes in**, identical for both runs, so every line (the `Host` header included) can be compared.
+- Signature oracle (spec D2/T1 — **awaiting the maintainer's ruling**; the plan is not executable past this task until it is recorded here with its date): the signature value depends on `X-Amz-Date`, which two runs cannot share; the probe prints instead **every canonical input** of the signature except the date — method, raw path, raw query, every header the `SignedHeaders` list names (values verbatim), the `SignedHeaders` list itself and the credential scope — so two runs with equal lines produce equal signatures for an equal date. If the maintainer rules otherwise, this is the one place to change.
+- `TestProcess.RunAsync(string file, IEnumerable<string> args, IDictionary<string,string?>? env, TimeSpan deadline) : Task<(int Code, string Out, string Err)>` — drains both streams concurrently, kills the tree on expiry and throws `TimeoutException`.
 
-- [ ] **Step 1: Write the probe**
+- [ ] **Step 1: The bounded process runner**
+
+```csharp
+// SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Diagnostics;
+
+namespace OKF4net.Tests;
+
+/// <summary>A child process with a real deadline: both streams drained concurrently, the whole tree killed on expiry.</summary>
+internal static class TestProcess
+{
+    public static async Task<(int Code, string Out, string Err)> RunAsync(string file, IEnumerable<string> args, IDictionary<string, string?>? env, TimeSpan deadline)
+    {
+        var start = new ProcessStartInfo(file) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        foreach (var a in args)
+        {
+            start.ArgumentList.Add(a);
+        }
+
+        foreach (var (k, v) in env ?? new Dictionary<string, string?>())
+        {
+            if (v is null) start.Environment.Remove(k); else start.Environment[k] = v;
+        }
+
+        using var p = Process.Start(start) ?? throw new InvalidOperationException("process did not start: " + file);
+        var stdout = p.StandardOutput.ReadToEndAsync();
+        var stderr = p.StandardError.ReadToEndAsync();
+        using var cts = new CancellationTokenSource(deadline);
+        try
+        {
+            await p.WaitForExitAsync(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            try { p.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+            throw new TimeoutException($"{file} did not exit within {deadline}");
+        }
+
+        return (p.ExitCode, await stdout, await stderr);
+    }
+}
+```
+
+- [ ] **Step 2: The probe**
 
 `S3HostileEnvProbe.csproj`:
 
@@ -3629,7 +4266,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 </Project>
 ```
 
-`Program.cs`:
+`Program.cs` — arguments: `<s3 port> <udp port> <witness: provider|plain>`:
 
 ```csharp
 // SPDX-License-Identifier: LGPL-3.0-or-later
@@ -3637,86 +4274,110 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using Amazon.Runtime;
+using Amazon.S3;
+using Amazon.S3.Model;
 using OKF4net;
 using OKF4net.Providers.S3;
 
-// Serves a three-object bucket on a loopback TcpListener, loads it through S3BundleProvider (public API only),
-// prints what the provider sent, then how many UDP datagrams (CSM) arrived. Exit 0 on success.
-var udp = new UdpClient(new IPEndPoint(IPAddress.Loopback, int.Parse(args[0])));
+// Serves a one-object bucket on 127.0.0.1:<s3 port>, one connection per request (Connection: close, each accepted
+// connection served on its own task, so concurrent reads never wait on an idle connection). Mode "provider" loads
+// through S3BundleProvider (public API); mode "plain" is the POSITIVE WITNESS: a plain AmazonS3Client configured
+// like a careless host would, which must show the ambient effects the provider suppresses. Prints the canonical
+// signature inputs of every request, then "UDP <n>" (CSM datagrams received).
+var s3Port = int.Parse(args[0], System.Globalization.CultureInfo.InvariantCulture);
+var udpPort = int.Parse(args[1], System.Globalization.CultureInfo.InvariantCulture);
+var mode = args[2];
+
+using var udp = new UdpClient(new IPEndPoint(IPAddress.Loopback, udpPort));
 var datagrams = 0;
 _ = Task.Run(async () => { while (true) { await udp.ReceiveAsync(); Interlocked.Increment(ref datagrams); } });
 
-var listener = new TcpListener(IPAddress.Loopback, 0);
-listener.Start();
-var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+var body = Encoding.UTF8.GetBytes("---\ntype: Note\ntitle: T\ndescription: D.\n---\n\nBody text.\n");
+var listing = Encoding.UTF8.GetBytes(
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListBucketResult><EncodingType>url</EncodingType><IsTruncated>false</IsTruncated><MaxKeys>1000</MaxKeys>"
+    + $"<Contents><Key>kb/a.md</Key><ETag>\"e\"</ETag><Size>{body.Length}</Size></Contents></ListBucketResult>");
 var lines = new List<string>();
-_ = Task.Run(() => Serve(listener, lines));
-
-using var provider = new S3BundleProvider(new BasicAWSCredentials("AKIDEXAMPLE", "secret"), new S3BundleSource
-{
-    Bucket = "okf", Prefix = "kb", ServiceUrl = new Uri($"http://127.0.0.1:{port}"), ForcePathStyle = true, AllowInsecureHttp = true,
-});
-var bundle = await Bundle.LoadAsync(provider);
-await Task.Delay(500); // let a CSM datagram arrive if one was sent
-lock (lines)
-{
-    foreach (var l in lines) Console.WriteLine(l);
-}
-
-Console.WriteLine($"concepts={bundle.Concepts.Count}");
-Console.WriteLine($"UDP {Volatile.Read(ref datagrams)}");
-return 0;
-
-static async Task Serve(TcpListener listener, List<string> lines)
+var listener = new TcpListener(new IPEndPoint(IPAddress.Loopback, s3Port));
+listener.Server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+listener.Start();
+_ = Task.Run(async () =>
 {
     while (true)
     {
-        using var client = await listener.AcceptTcpClientAsync();
-        var stream = client.GetStream();
-        var reader = new StreamReader(stream, Encoding.ASCII);
-        while (await reader.ReadLineAsync() is { Length: > 0 } requestLine)
-        {
-            var headers = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            string? h;
-            while ((h = await reader.ReadLineAsync()) is { Length: > 0 })
-            {
-                var i = h.IndexOf(':');
-                headers[h[..i].Trim()] = h[(i + 1)..].Trim();
-            }
-
-            var kept = headers.Where(kv => kv.Key is not ("X-Amz-Date" or "amz-sdk-invocation-id" or "amz-sdk-request" or "Authorization"))
-                .Select(kv => $"{kv.Key.ToLowerInvariant()}={kv.Value}");
-            lock (lines)
-            {
-                lines.Add($"{requestLine} | {string.Join(";", kept)} | auth-scope={Scope(headers.GetValueOrDefault("Authorization"))}");
-            }
-
-            var body = requestLine.Contains("list-type=2", StringComparison.Ordinal)
-                ? "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListBucketResult><EncodingType>url</EncodingType><IsTruncated>false</IsTruncated><MaxKeys>1000</MaxKeys><Contents><Key>kb/a.md</Key><ETag>\"e\"</ETag><Size>52</Size></Contents></ListBucketResult>"
-                : "---\ntype: Note\ntitle: T\ndescription: D.\n---\n\nBody text.\n";
-            var bytes = Encoding.UTF8.GetBytes(body);
-            await stream.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Length: {bytes.Length}\r\nContent-Type: application/xml\r\n\r\n"));
-            await stream.WriteAsync(bytes);
-        }
+        var client = await listener.AcceptTcpClientAsync();
+        _ = Task.Run(() => ServeOneAsync(client, lines, listing, body));
     }
+});
+
+var creds = new BasicAWSCredentials("AKIDEXAMPLE", "secret");
+var endpoint = new Uri($"http://127.0.0.1:{s3Port}");
+if (mode == "provider")
+{
+    using var provider = new S3BundleProvider(creds, new S3BundleSource { Bucket = "okf", Prefix = "kb", ServiceUrl = endpoint, ForcePathStyle = true, AllowInsecureHttp = true });
+    var bundle = await Bundle.LoadAsync(provider);
+    Console.WriteLine($"concepts={bundle.Concepts.Count}");
+}
+else
+{
+    using var plain = new AmazonS3Client(creds, new AmazonS3Config { ServiceURL = endpoint.ToString(), ForcePathStyle = true, AuthenticationRegion = "us-east-1" });
+    try { using var _ = await plain.GetObjectAsync(new GetObjectRequest { BucketName = "okf", Key = "kb/a.md" }); } catch (Exception e) { Console.WriteLine("plain-error=" + e.GetType().Name); }
 }
 
-static string Scope(string? authorization) => authorization is null ? "none" : authorization.Split(',')[0]; // "AWS4-HMAC-SHA256 Credential=AKID/date/region/s3/aws4_request"
+await Task.Delay(1000); // let a CSM datagram arrive if one was sent
+lock (lines)
+{
+    foreach (var l in lines.Order(StringComparer.Ordinal)) Console.WriteLine(l);
+}
+
+Console.WriteLine($"UDP {Volatile.Read(ref datagrams)}");
+return 0;
+
+static async Task ServeOneAsync(TcpClient client, List<string> lines, byte[] listing, byte[] body)
+{
+    using (client)
+    {
+        var stream = client.GetStream();
+        var reader = new StreamReader(stream, Encoding.ASCII);
+        var requestLine = await reader.ReadLineAsync() ?? "";
+        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        string? h;
+        while ((h = await reader.ReadLineAsync()) is { Length: > 0 })
+        {
+            var i = h.IndexOf(':');
+            headers[h[..i].Trim()] = h[(i + 1)..].Trim();
+        }
+
+        // Canonical signature inputs: the signed headers (verbatim) and the scope; never the date or the signature.
+        var auth = headers.GetValueOrDefault("Authorization") ?? "";
+        var signed = auth.Split("SignedHeaders=")[^1].Split(',')[0].Split(';', StringSplitOptions.RemoveEmptyEntries);
+        var scope = auth.Split(',')[0];
+        var signedValues = signed.Where(n => !n.Equals("x-amz-date", StringComparison.OrdinalIgnoreCase))
+            .Select(n => $"{n.ToLowerInvariant()}={headers.GetValueOrDefault(n)}");
+        var line = $"{requestLine} | signed={string.Join(";", signed)} | {string.Join(";", signedValues)} | ua={headers.GetValueOrDefault("User-Agent")} | {scope}";
+        lock (lines)
+        {
+            lines.Add(line);
+        }
+
+        var payload = requestLine.Contains("list-type=2", StringComparison.Ordinal) ? listing : body;
+        await stream.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Length: {payload.Length}\r\nContent-Type: application/xml\r\nConnection: close\r\n\r\n"));
+        await stream.WriteAsync(payload);
+    }
+}
 ```
 
-(Adjust `Size` to the byte length of the served body: compute it in code rather than hard-coding 52.)
+(The `ua=` field is compared too: the provider's User-Agent must not change with the environment. If gate G2 found a User-Agent part that varies per process — an invocation counter, a PID — strip that part only, by the exact pattern G2 recorded, and say so in a comment.)
 
-- [ ] **Step 2: Write the test**
+- [ ] **Step 3: The hostile-environment test, with its positive witness**
 
 ```csharp
 // SPDX-License-Identifier: LGPL-3.0-or-later
-using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 
 namespace OKF4net.Tests.Providers.S3;
 
-/// <summary>Spec D2, D3, T1 "Environnement hostile": the provider's requests do not depend on the environment, and nothing leaves by UDP.</summary>
+/// <summary>Spec D2, D3, T1 "Environnement hostile": nothing ambient changes what the provider sends, and no CSM datagram leaves.</summary>
 public class HostileEnvironmentTests
 {
     private static string ProbeDll() =>
@@ -3728,75 +4389,192 @@ public class HostileEnvironmentTests
 #endif
             "net10.0", "S3HostileEnvProbe.dll");
 
-    private static (int Code, string[] Lines) Run(IDictionary<string, string> env, int udpPort)
+    private static int FreePort(bool udp)
     {
-        var start = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
-        start.ArgumentList.Add(ProbeDll());
-        start.ArgumentList.Add(udpPort.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        foreach (var name in start.Environment.Keys.Where(k => k.StartsWith("AWS_", StringComparison.Ordinal) || k.EndsWith("_PROXY", StringComparison.OrdinalIgnoreCase)).ToArray())
+        if (udp)
         {
-            start.Environment.Remove(name);
+            using var u = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+            return ((IPEndPoint)u.Client.LocalEndPoint!).Port;
         }
 
-        foreach (var (k, v) in env)
-        {
-            start.Environment[k] = v;
-        }
-
-        using var p = Process.Start(start)!;
-        var output = p.StandardOutput.ReadToEnd();
-        p.WaitForExit(60_000);
-        return (p.ExitCode, output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        var t = new TcpListener(IPAddress.Loopback, 0);
+        t.Start();
+        var port = ((IPEndPoint)t.LocalEndpoint).Port;
+        t.Stop();
+        return port;
     }
 
-    private static int FreeUdpPort()
-    {
-        using var u = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
-        return ((IPEndPoint)u.Client.LocalEndPoint!).Port;
-    }
+    private static Dictionary<string, string?> Clean() =>
+        Environment.GetEnvironmentVariables().Keys.Cast<string>()
+            .Where(k => k.StartsWith("AWS_", StringComparison.OrdinalIgnoreCase) || k.EndsWith("_PROXY", StringComparison.OrdinalIgnoreCase))
+            .ToDictionary(k => k, _ => (string?)null);
 
-    [Fact]
-    public void A_hostile_environment_changes_nothing_the_provider_sends()
+    private static Dictionary<string, string?> Hostile(string config, int udp)
     {
-        using var home = new TempDir();
-        var config = Path.Combine(home.Path, "config");
-        File.WriteAllText(config, "[default]\nendpoint_url = http://evil.example\nsdk_ua_app_id = AMBIENTMARK\nretry_mode = adaptive\nmax_attempts = 9\nuse_fips_endpoint = true\nuse_dualstack_endpoint = true\nrequest_checksum_calculation = when_required\ndefaults_mode = in-region\n");
-        var udp = FreeUdpPort();
-        var clean = Run(new Dictionary<string, string>(), udp);
-        var hostile = Run(new Dictionary<string, string>
+        var env = Clean();
+        foreach (var (k, v) in new Dictionary<string, string>
         {
             ["AWS_ENDPOINT_URL_S3"] = "http://evil.example", ["AWS_ENDPOINT_URL"] = "http://evil.example",
             ["AWS_USE_FIPS_ENDPOINT"] = "true", ["AWS_USE_DUALSTACK_ENDPOINT"] = "true",
             ["AWS_RETRY_MODE"] = "adaptive", ["AWS_MAX_ATTEMPTS"] = "9", ["AWS_SDK_UA_APP_ID"] = "AMBIENTMARK",
             ["AWS_CSM_ENABLED"] = "true", ["AWS_CSM_PORT"] = udp.ToString(System.Globalization.CultureInfo.InvariantCulture), ["AWS_CSM_HOST"] = "127.0.0.1",
+            ["AWS_REQUEST_CHECKSUM_CALCULATION"] = "when_required",
             ["HTTPS_PROXY"] = "http://127.0.0.1:9", ["HTTP_PROXY"] = "http://127.0.0.1:9",
             ["AWS_CONFIG_FILE"] = config, ["AWS_PROFILE"] = "default",
-        }, udp);
+        })
+        {
+            env[k] = v;
+        }
 
-        Assert.Equal(0, clean.Code);
-        Assert.Equal(0, hostile.Code);
-        Assert.Equal(clean.Lines, hostile.Lines);
-        Assert.DoesNotContain(hostile.Lines, l => l.Contains("AMBIENTMARK", StringComparison.Ordinal));
-        Assert.Contains("UDP 0", hostile.Lines);
+        return env;
+    }
+
+    private static async Task<string[]> Run(Dictionary<string, string?> env, int s3, int udp, string mode)
+    {
+        var (code, output, error) = await TestProcess.RunAsync("dotnet", [ProbeDll(), s3.ToString(System.Globalization.CultureInfo.InvariantCulture), udp.ToString(System.Globalization.CultureInfo.InvariantCulture), mode], env, TimeSpan.FromSeconds(60));
+        Assert.True(code == 0, error);
+        return output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    }
+
+    [Fact]
+    public async Task A_hostile_environment_changes_nothing_the_provider_sends_and_the_witness_proves_it_is_hostile()
+    {
+        using var home = new TempDir();
+        var config = Path.Combine(home.Path, "config");
+        File.WriteAllText(config, "[default]\nendpoint_url = http://evil.example\nsdk_ua_app_id = AMBIENTMARK\nretry_mode = adaptive\nmax_attempts = 9\nuse_fips_endpoint = true\nuse_dualstack_endpoint = true\nrequest_checksum_calculation = when_required\ndefaults_mode = in-region\n");
+        var s3 = FreePort(udp: false);
+        var udp = FreePort(udp: true);
+
+        // Positive witness: a plain client under the same environment DOES show the hostility, else the test proves nothing.
+        var witness = await Run(Hostile(config, udp), s3, udp, "plain");
+        Assert.True(witness.Any(l => l.Contains("AMBIENTMARK", StringComparison.Ordinal)) || !witness.Contains("UDP 0") || witness.Any(l => l.StartsWith("plain-error=", StringComparison.Ordinal)),
+            "the hostile environment had no visible effect on a plain client: the test environment is not hostile");
+
+        var clean = await Run(Clean(), s3, udp, "provider");
+        var hostile = await Run(Hostile(config, udp), s3, udp, "provider");
+
+        Assert.Equal(clean, hostile); // same request lines, signed headers and values, User-Agent, scope; same UDP count
+        Assert.DoesNotContain(hostile, l => l.Contains("AMBIENTMARK", StringComparison.Ordinal));
+        Assert.Contains("UDP 0", hostile);
+        Assert.Contains("concepts=1", hostile);
     }
 }
 ```
 
-Add to the dictionary every further variable gate G2 listed. The `user-agent` header is part of the compared lines, so `AMBIENTMARK` in either run fails the test; the probe's own `Assert.Equal` of the two line sets covers `x-amz-checksum-*` headers, the authorization scope (region) and the path.
+Add to `Hostile(...)` every further variable gate G2 listed. **The witness assertion must hold**: if it does not (the SDK under test ignores all of them), the gate's G2 list is wrong for that version — stop and report.
 
-**Out-of-band egress (region detection).** Extend the probe and the test so the region-detection transport, which bypasses the client's `HttpClientFactory` and uses the process's default proxy, is watched too: the probe starts a third loopback `TcpListener` that only counts accepted connections and prints `PROXY <count>`; the test sets `HTTP_PROXY` and `HTTPS_PROXY` (in the hostile run) to that listener's address, passed to the probe as a second argument it binds to (replace `http://127.0.0.1:9`); and the probe's fake answers the **first** `GetObject` with `400` + `<Error><Code>AuthorizationHeaderMalformed</Code><Region>eu-west-3</Region></Error>` and the header `x-amz-bucket-region: eu-west-3` (then serves normally, so the load ends with `S3RequestException` `BucketUnavailable` for that read and the probe catches it and prints `read-region=refused`). Assert `PROXY 0` and `UDP 0` in both runs, and `read-region=refused` in both. A connection counted there is a request the guard never saw: fix `ClientBuilder.ApplyGateRows` (gate G1), never the test.
+- [ ] **Step 4: The region-detection egress test, in process, with its positive witness**
 
-- [ ] **Step 3: Run it**
+Region detection (`BucketRegionDetector`, gate G1) takes a separate transport that ignores the client's `HttpClientFactory` and follows the process's default proxy, and it fires only for an endpoint the SDK recognizes as Amazon S3 — so it cannot be driven against a `ServiceUrl`. This test runs in the test process (internal constructor allowed) in a non-parallel collection, sets `HttpClient.DefaultProxy` (and `WebRequest.DefaultWebProxy`, saved and restored) to a loopback listener that only **counts** connection attempts (a CONNECT is enough: no TLS needed), and drives the scenario gate G1 recorded as triggering detection (expected: a `Region` source whose first request gets `400 AuthorizationHeaderMalformed` **without** `<Region>`, or a `301` without `x-amz-bucket-region`; use exactly G1's), the S3 traffic itself going to `FakeS3Handler` as the network handler.
 
-Run: `dotnet build OKF4net.sln && dotnet test OKF4net.sln --filter "FullyQualifiedName~HostileEnvironmentTests"`
-Expected: PASS. A failure means `ClientBuilder.ApplyGateRows` misses a row of Annexe B: fix it there (Task 5's file), never in the test.
+```csharp
+// SPDX-License-Identifier: LGPL-3.0-or-later
+#pragma warning disable SYSLIB0014 // WebRequest.DefaultWebProxy: the detector's transport reads it
+using System.Net;
+using System.Net.Sockets;
+using Amazon;
+using Amazon.Runtime;
+using Amazon.S3;
+using Amazon.S3.Model;
+using OKF4net.Providers.S3;
 
-- [ ] **Step 4: Full checks and commit**
+namespace OKF4net.Tests.Providers.S3;
+
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class ProcessProxyCollection
+{
+    public const string Name = "process-wide proxy";
+}
+
+/// <summary>Spec D3, gate G1: region detection never leaves through its own transport.</summary>
+[Collection(ProcessProxyCollection.Name)]
+public class RegionDetectionEgressTests
+{
+    private static async Task<int> CountingProxy(Func<Task> scenario)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var count = 0;
+        using var stop = new CancellationTokenSource();
+        var accept = Task.Run(async () =>
+        {
+            try { while (true) { using var c = await listener.AcceptTcpClientAsync(stop.Token); Interlocked.Increment(ref count); } }
+            catch (OperationCanceledException) { }
+        });
+        var proxy = new WebProxy($"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}") { BypassProxyOnLocal = false };
+        var (savedHttp, savedWeb) = (HttpClient.DefaultProxy, WebRequest.DefaultWebProxy);
+        HttpClient.DefaultProxy = proxy;
+        WebRequest.DefaultWebProxy = proxy;
+        try
+        {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            await scenario().WaitAsync(deadline.Token);
+            await Task.Delay(500);
+        }
+        finally
+        {
+            (HttpClient.DefaultProxy, WebRequest.DefaultWebProxy) = (savedHttp, savedWeb);
+            await stop.CancelAsync();
+            listener.Stop();
+            await accept;
+        }
+
+        return Volatile.Read(ref count);
+    }
+
+    /// <summary>The response gate G1 recorded as triggering region detection (replace with G1's if it differs).</summary>
+    private static FakeS3Handler Triggering() => new()
+    {
+        Respond = (_, _) => Task.FromResult(FakeS3Handler.Xml(HttpStatusCode.BadRequest, FakeS3Handler.Error("AuthorizationHeaderMalformed"))),
+    };
+
+    [Fact]
+    public async Task Witness_a_plain_client_does_leave_through_the_detector()
+    {
+        var count = await CountingProxy(async () =>
+        {
+            using var plain = new AmazonS3Client(new BasicAWSCredentials("A", "S"), new AmazonS3Config { RegionEndpoint = RegionEndpoint.EUWest1, HttpClientFactory = new FixedFactory(new HttpClient(Triggering())) });
+            try { using var _ = await plain.GetObjectAsync(new GetObjectRequest { BucketName = "demo", Key = "kb/a.md" }); } catch (AmazonServiceException) { }
+        });
+        Assert.True(count >= 1, "the scenario does not trigger region detection: use gate G1's triggering scenario");
+    }
+
+    [Fact]
+    public async Task The_provider_never_leaves_through_the_detector()
+    {
+        Exception? seen = null;
+        var count = await CountingProxy(async () =>
+        {
+            using var p = new S3BundleProvider(new BasicAWSCredentials("A", "S"), new S3BundleSource { Bucket = "demo", Prefix = "kb", Region = RegionEndpoint.EUWest1 }, Triggering());
+            seen = await Record.ExceptionAsync(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
+        });
+        Assert.Equal(0, count);
+        Assert.Equal(S3FailureKind.BucketUnavailable, Assert.IsType<S3RequestException>(seen).Kind); // ReadAsync's own exception (a load would wrap it in BundleLoadException)
+    }
+
+    private sealed class FixedFactory(HttpClient c) : Amazon.Runtime.HttpClientFactory
+    {
+        public override HttpClient CreateHttpClient(IClientConfig clientConfig) => c;
+        public override bool UseSDKHttpClientCaching(IClientConfig clientConfig) => false;
+        public override bool DisposeHttpClientsAfterUse(IClientConfig clientConfig) => false;
+    }
+}
+#pragma warning restore SYSLIB0014
+```
+
+The CSM witness is covered by Step 3's witness (`UDP` > 0 for the plain client is one of the accepted signs; if gate G1 shows CSM needs more than the variables to fire, add those to `Hostile`).
+
+- [ ] **Step 5: Run them**
+
+Run: `dotnet build OKF4net.sln && dotnet test OKF4net.sln --filter "FullyQualifiedName~HostileEnvironmentTests|FullyQualifiedName~RegionDetectionEgressTests"`
+Expected: PASS, both witnesses positive. A provider failure means `ClientBuilder.ApplyGateRows` misses a row of Annexe B: fix it there (Task 5's file), never the test. A witness failure means the scenario is not the one the gate measured: fix the scenario from Annexe B.
+
+- [ ] **Step 6: Full checks and commit**
 
 ```bash
 dotnet build OKF4net.sln && dotnet test OKF4net.sln --filter "Category!=ContainerIntegration&Category!=S3Integration" && dotnet format OKF4net.sln --verify-no-changes
-git add tests/S3HostileEnvProbe tests/OKF4net.Tests/OKF4net.Tests.csproj tests/OKF4net.Tests/Providers/S3/HostileEnvironmentTests.cs src/OKF4net.Providers.S3
-git commit -m "test(s3): hostile environment and CSM egress, in a child process (#142)
+git add tests/S3HostileEnvProbe tests/OKF4net.Tests src/OKF4net.Providers.S3
+git commit -m "test(s3): hostile environment, CSM and region-detection egress, each with a positive witness (#142)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -3843,36 +4621,53 @@ public sealed class RustFsFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        _engine = new[] { "podman", "docker" }.FirstOrDefault(e => Run(e, "version", "--format", "{{.Server.Version}}").Code == 0);
+        foreach (var candidate in new[] { "podman", "docker" })
+        {
+            if ((await Run(candidate, TimeSpan.FromSeconds(20), "version", "--format", "{{.Server.Version}}")).Code == 0)
+            {
+                _engine = candidate;
+                break;
+            }
+        }
+
         if (_engine is null)
         {
             SkipReason = "no container engine answers (podman, docker)";
             return;
         }
 
-        var creds = Credentials.GetCredentials();
-        var run = Run(_engine, "run", "-d", "--rm", "-p", "127.0.0.1::9000", "-e", "RUSTFS_ACCESS_KEY=" + creds.AccessKey, "-e", "RUSTFS_SECRET_KEY=" + creds.SecretKey, Image);
-        if (run.Code != 0)
+        try
         {
-            throw new InvalidOperationException($"{_engine} run failed: {run.Error}");
-        }
+            var creds = Credentials.GetCredentials();
+            var run = await Run(_engine, TimeSpan.FromMinutes(3), "run", "-d", "--rm", "-p", "127.0.0.1::9000", "-e", "RUSTFS_ACCESS_KEY=" + creds.AccessKey, "-e", "RUSTFS_SECRET_KEY=" + creds.SecretKey, Image);
+            if (run.Code != 0)
+            {
+                throw new InvalidOperationException($"{_engine} run failed: {run.Error}");
+            }
 
-        _container = run.Output.Trim();
-        var port = Run(_engine, "port", _container, "9000").Output.Trim().Split(':')[^1];
-        Endpoint = new Uri($"http://127.0.0.1:{port}");
-        Admin = new AmazonS3Client(Credentials, new AmazonS3Config { ServiceURL = Endpoint.ToString(), ForcePathStyle = true, AuthenticationRegion = "us-east-1" });
-        var deadline = DateTime.UtcNow.AddSeconds(60);
-        while (true)
+            _container = run.Output.Trim();
+            var port = (await Run(_engine, TimeSpan.FromSeconds(20), "port", _container, "9000")).Output.Trim().Split(':')[^1];
+            Endpoint = new Uri($"http://127.0.0.1:{port}");
+            Admin = new AmazonS3Client(Credentials, new AmazonS3Config { ServiceURL = Endpoint.ToString(), ForcePathStyle = true, AuthenticationRegion = "us-east-1", MaxErrorRetry = 0 });
+            var deadline = DateTime.UtcNow.AddSeconds(60);
+            while (true)
+            {
+                using var attempt = new CancellationTokenSource(TimeSpan.FromSeconds(5)); // each readiness call is bounded too
+                try
+                {
+                    await Admin.PutBucketAsync(new PutBucketRequest { BucketName = Bucket }, attempt.Token);
+                    return;
+                }
+                catch (Exception) when (DateTime.UtcNow < deadline)
+                {
+                    await Task.Delay(500);
+                }
+            }
+        }
+        catch
         {
-            try
-            {
-                await Admin.PutBucketAsync(Bucket);
-                return;
-            }
-            catch (Exception) when (DateTime.UtcNow < deadline)
-            {
-                await Task.Delay(500);
-            }
+            await StopAsync(); // a container that started is removed even when the fixture fails
+            throw;
         }
     }
 
@@ -3888,34 +4683,28 @@ public sealed class RustFsFixture : IAsyncLifetime
     public Task PutAsync(string key, byte[] bytes) =>
         Admin.PutObjectAsync(new PutObjectRequest { BucketName = Bucket, Key = key, InputStream = new MemoryStream(bytes) });
 
-    public Task StopAsync()
+    public async Task StopAsync()
     {
         if (_engine is not null && _container is not null)
         {
-            Run(_engine, "rm", "-f", _container);
+            var container = _container;
             _container = null;
+            await Run(_engine, TimeSpan.FromSeconds(60), "rm", "-f", container);
         }
-
-        return Task.CompletedTask;
     }
 
-    public Task DisposeAsync()
+    public async Task DisposeAsync()
     {
         Admin?.Dispose();
-        return StopAsync();
+        await StopAsync();
     }
 
-    private static (int Code, string Output, string Error) Run(string file, params string[] args)
+    /// <summary>Through <see cref="TestProcess"/> (both streams drained, tree killed at the deadline); a missing binary is code -1.</summary>
+    private static async Task<(int Code, string Output, string Error)> Run(string file, TimeSpan deadline, params string[] args)
     {
         try
         {
-            var start = new ProcessStartInfo(file) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
-            foreach (var a in args) start.ArgumentList.Add(a);
-            using var p = Process.Start(start)!;
-            var output = p.StandardOutput.ReadToEnd();
-            var error = p.StandardError.ReadToEnd();
-            p.WaitForExit(120_000);
-            return (p.ExitCode, output, error);
+            return await TestProcess.RunAsync(file, args, null, deadline);
         }
         catch (System.ComponentModel.Win32Exception)
         {
@@ -4046,12 +4835,14 @@ public class S3IntegrationTests(RustFsFixture fx)
         const string note = "---\ntype: Note\ntitle: T\ndescription: D.\n---\n";
         await fx.PutAsync("t-fresh/a.md", Encoding.UTF8.GetBytes(note));
         using var onAccess = new BundleHandle(Provider("t-fresh"), refreshPolicy: BundleRefreshPolicy.OnAccess);
-        using var every = new BundleHandle(Provider("t-fresh"), refreshPolicy: BundleRefreshPolicy.Every(TimeSpan.FromHours(1)));
+        using var every = new BundleHandle(Provider("t-fresh"), refreshPolicy: BundleRefreshPolicy.Every(TimeSpan.FromSeconds(3)));
         _ = await onAccess.GetCurrentAsync();
         _ = await every.GetCurrentAsync();
         await fx.PutAsync("t-fresh/b.md", Encoding.UTF8.GetBytes(note));
         Assert.Contains((await onAccess.GetCurrentAsync()).Concepts, c => c.Id.ToString() == "b");
-        Assert.DoesNotContain((await every.GetCurrentAsync()).Concepts, c => c.Id.ToString() == "b");
+        Assert.DoesNotContain((await every.GetCurrentAsync()).Concepts, c => c.Id.ToString() == "b"); // within the interval
+        await Task.Delay(TimeSpan.FromSeconds(4));
+        Assert.Contains((await every.GetCurrentAsync()).Concepts, c => c.Id.ToString() == "b");       // after it
     }
 
     [SkippableFact]
@@ -4086,14 +4877,61 @@ public class S3IntegrationTests(RustFsFixture fx)
 
 (`RustFsFixture` implements `IAsyncLifetime`; for the last test, make it also implement `IAsyncDisposable` with `ValueTask IAsyncDisposable.DisposeAsync() => new(DisposeAsync())`. If `ImageOutdated` turns out false for a changed pinned file, read `AttestationOrchestrator.CaptureAsync` and assert the `Failure` it documents for "the file changed since the load" instead — never drop the assertion.)
 
-`S3ParityTests.cs` — the same five bundles as `EmbeddedResources/ParityTests.Bundles`, each uploaded once under its prefix, loaded through `FileSystemBundleProvider` and through `S3BundleProvider`, asynchronously. Copy the helpers and the five theories of `tests/OKF4net.Tests/Providers/EmbeddedResources/ParityTests.cs` into this class (do not share code with it: it is the embedded package's test), replacing `EmbeddedResourceBundleProvider` with an `S3BundleProvider` over `fx`, every synchronous call (`Bundle.Load`, `BundleValidator.Validate`, `bundle.ReadResourceText`, `IndexGenerator.RegenerateIndexes`) with its `…Async` spelling, and — in the executable-resources theory — compare the **versions as well** (both sides are SHA-256 hex now), then re-read pinned on each side with `ReadResourceTextAsync`. Uploads go in the class constructor, guarded by a static `ConcurrentDictionary<string, Task>` so each bundle is uploaded once per run.
+`S3ParityTests.cs` — the same five bundles as `EmbeddedResources/ParityTests.Bundles`, each uploaded once under its prefix, loaded through `FileSystemBundleProvider` and through `S3BundleProvider`, asynchronously. Copy the helpers and the five theories of `tests/OKF4net.Tests/Providers/EmbeddedResources/ParityTests.cs` into this class (do not share code with it: it is the embedded package's test), replacing `EmbeddedResourceBundleProvider` with an `S3BundleProvider` over `fx`, every synchronous call (`Bundle.Load`, `BundleValidator.Validate`, `bundle.ReadResourceText`, `IndexGenerator.RegenerateIndexes`) with its `…Async` spelling, and — in the executable-resources theory — compare the **versions as well** (both sides are SHA-256 hex now), then re-read pinned on each side with `ReadResourceTextAsync`. Its set-up is explicit and awaited, and every theory is skippable:
+
+```csharp
+[Trait("Category", "S3Integration")]
+[Collection(RustFsCollection.Name)]
+public class S3ParityTests(RustFsFixture fx) : IAsyncLifetime
+{
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Lazy<Task>> Uploads = new(StringComparer.Ordinal);
+
+    public static TheoryData<string, string> Bundles => new()
+    {
+        { "fixture-okf_v02", "tests/fixtures/okf_v02" },
+        { "fixture-okf_v02_computation", "tests/fixtures/okf_v02_computation" },
+        { "fixture-okf_v02_reserved", "tests/fixtures/okf_v02_reserved" },
+        { "fixture-appendix_a", "tests/fixtures/appendix_a" },
+        { "acme_retail", "bundles/acme_retail" },
+    };
+
+    /// <summary>Every bundle uploaded once per run, awaited before any theory of this class runs.</summary>
+    public async Task InitializeAsync()
+    {
+        if (fx.SkipReason is not null)
+        {
+            return;
+        }
+
+        foreach (var row in Bundles)
+        {
+            var (prefix, relative) = ((string)row[0], (string)row[1]);
+            await Uploads.GetOrAdd(prefix, _ => new Lazy<Task>(() => fx.UploadDirectoryAsync(Path.Combine(TestPaths.RepoRoot(), relative), prefix))).Value;
+        }
+    }
+
+    public Task DisposeAsync() => Task.CompletedTask;
+
+    [SkippableTheory]
+    [MemberData(nameof(Bundles))]
+    public async Task Same_keys_and_bytes(string prefix, string relative)
+    {
+        Skip.If(fx.SkipReason is not null, fx.SkipReason);
+        // …the embedded ParityTests body, asynchronous, over S3BundleProvider(fx.Credentials, new S3BundleSource { Bucket = RustFsFixture.Bucket, Prefix = prefix, ServiceUrl = fx.Endpoint, ForcePathStyle = true, AllowInsecureHttp = true })
+    }
+
+    // The four other theories of the embedded ParityTests, each [SkippableTheory] with the same first line.
+}
+```
+
+(The comment lines above stand for the copied bodies, which are the embedded test's code with the substitutions listed; write them out in full in the file.) Verify the three regimes once by hand: engine available (all pass, 0 skipped), engine absent (all skipped with the reason), engine present but the image unavailable (`InitializeAsync` throws: all fail).
 
 The three load races (spec §4.3 table) and the persistent-ETag-constant case cannot be produced by RustFS deterministically; they are covered by a scripted double **over** RustFS: add to `S3IntegrationTests` a test that wraps the real provider in an `IBundleProvider` decorator deleting (through `fx.Admin`) the concept, the surveyed resource and the root `index.md` between `EnumerateAsync` and the first `ReadAsync`, one per run, asserting respectively `BundleLoadException` with the previous image kept by a handle, `ExecutableResourceState.Missing`, and a null `OkfVersion`. Add the ETag-constant limit as a T1 test instead (Task 8's `ReadTests`): a fake that serves different bytes under the same listing triplet, a handle under `OnAccess` that keeps the old image, and `ReadResourceTextAsync` with the old version refused — name it `A_persistent_change_with_a_constant_triplet_is_not_reloaded_but_pinned_code_is_refused`.
 
 - [ ] **Step 3: Run the integration tests locally, with the engine running**
 
 Run: `dotnet test tests/OKF4net.Tests --filter Category=S3Integration`
-Expected: all PASS, **0 skipped**. Then stop the engine (or remove `podman`/`docker` from `PATH` in a shell) and run again: every test reported **skipped** with the reason, none failed. Then run once under Podman with no `docker` on `PATH`, and once under Docker on Linux (WSL), as gate G10 established.
+Expected: all PASS, **0 skipped**. Then stop the engine (or remove `podman`/`docker` from `PATH` in a shell) and run again: every test reported **skipped** with the reason, none failed. Then run once under Podman with no `docker` on `PATH`, and once under Docker on Linux (WSL), as gate G11 established.
 
 - [ ] **Step 4: Amend the spec's oracle**
 
@@ -4129,8 +4967,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
   <!--
     Not in OKF4net.sln: it consumes the REAL packages, packed by ci.yml's "S3 provider AOT smoke test" job at a
-    run-unique version passed as OkfProbeVersion. OkfAwsSdkVersion selects the AWSSDK.S3 under test: the package's
-    minimum, or the latest published (spec T3).
+    run-unique version passed as OkfProbeVersion. OkfAwsSdkVersion and OkfAwsCoreVersion select the AWSSDK.S3 and
+    AWSSDK.Core under test: the package's minimum (4.1.0 / 4.1.0), or the latest published of each (spec D1, T3).
   -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -4143,17 +4981,19 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   <ItemGroup>
     <PackageReference Include="OKF4net.Providers.S3" Version="$(OkfProbeVersion)" />
     <PackageReference Include="AWSSDK.S3" Version="$(OkfAwsSdkVersion)" />
+    <PackageReference Include="AWSSDK.Core" Version="$(OkfAwsCoreVersion)" />
   </ItemGroup>
 
 </Project>
 ```
 
-`Program.cs` — serves a fake S3 on a loopback `TcpListener` (same HTTP/1.1 loop as `S3HostileEnvProbe`, rewritten here: the probe consumes packages only), hosting `bundles/acme_retail` read from the path given as `args[0]`:
+`Program.cs` — one HTTP/1.1 server helper, **concurrent**: every accepted connection is served on its own task and answered with `Connection: close`, so `Bundle.LoadAsync`'s concurrent reads (`MaxConcurrentRequests` in flight) never wait behind an idle connection. Usage: `S3ProviderAotProbe <bundle dir>`. Exit codes: 0 success; 1 summaries differ; 2 the guard did not refuse; 3 a counter-proof did not reach its target; 4 the server failed its own concurrency check.
 
 ```csharp
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using Amazon.Runtime;
 using Amazon.S3;
@@ -4162,55 +5002,97 @@ using OKF4net;
 using OKF4net.Providers;
 using OKF4net.Providers.S3;
 
-// Usage: S3ProviderAotProbe <bundle dir>
-// 1. serves <bundle dir> as bucket "okf", prefix "kb", on loopback; loads it through S3BundleProvider and through
-//    FileSystemBundleProvider; prints both summaries; exit 1 if they differ.
-// 2. guard under AOT: the fake answers a 307 to another bucket's host; the provider must fail with Kind RefusedHost.
-// 3. counter-proof: a plain AmazonS3Client (no guard) whose handler proxies to a second listener follows the same 307;
-//    the second listener's count must be 1.
 var root = Path.GetFullPath(args[0]);
 var files = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
     .ToDictionary(f => "kb/" + Path.GetRelativePath(root, f).Replace('\\', '/'), File.ReadAllBytes, StringComparer.Ordinal);
 
-var redirectMode = false;
-var main = Listen(req => redirectMode
-    ? Redirect("http://other.s3.eu-west-1.amazonaws.com/kb/a.md")
-    : Answer(req, files));
-var second = 0;
-var target = Listen(_ => { Interlocked.Increment(ref second); return Ok("X"u8.ToArray()); });
+// The "other" server: target of every redirect; records the Host and path of what reaches it.
+var reached = new List<string>();
+using var other = Server.Start(req => { lock (reached) reached.Add(req.Host + " " + req.Path); return Server.Ok("X"u8.ToArray()); });
 
+// The main server: the bucket, or (in redirect mode) a 307 to the location the test sets.
+string? redirectTo = null;
+using var main = Server.Start(req => redirectTo is { } loc ? Server.Redirect(loc) : Server.Answer(req, files));
+
+// 0. The server serves concurrent requests (the load relies on it).
+using (var http = new HttpClient())
+{
+    var gets = Enumerable.Range(0, 8).Select(_ => http.GetAsync($"http://127.0.0.1:{main.Port}/okf/kb/{files.Keys.First()["kb/".Length..]}"));
+    var answered = await Task.WhenAll(gets).WaitAsync(TimeSpan.FromSeconds(10));
+    if (answered.Any(r => r.StatusCode != HttpStatusCode.OK)) return 4;
+}
+
+// 1. Summaries: S3 provider (public API) vs filesystem.
 var clock = new FixedClock(new DateTimeOffset(2026, 11, 1, 0, 0, 0, TimeSpan.Zero));
+var creds = new BasicAWSCredentials("AKID", "secret");
 var source = new S3BundleSource { Bucket = "okf", Prefix = "kb", ServiceUrl = new Uri($"http://127.0.0.1:{main.Port}"), ForcePathStyle = true, AllowInsecureHttp = true };
-using var s3 = new S3BundleProvider(new BasicAWSCredentials("AKID", "secret"), source);
-var a = Summary(await Bundle.LoadAsync(s3), clock);
-var b = Summary(await Bundle.LoadAsync(new FileSystemBundleProvider(root)), clock);
+using var s3 = new S3BundleProvider(creds, source);
+var a = await Summary(await Bundle.LoadAsync(s3), clock);
+var b = await Summary(await Bundle.LoadAsync(new FileSystemBundleProvider(root)), clock);
 foreach (var line in a) Console.WriteLine(line);
 if (!a.SequenceEqual(b)) { Console.Error.WriteLine("S3 and filesystem summaries differ"); return 1; }
 
-redirectMode = true;
-try
+// 2. Two redirects, each refused by the guard UNDER AOT, then followed by a witness client without the guard.
+//    Case A: another bucket's host. Case B: the other authority of the SAME bucket (virtual-hosted form of a
+//    path-style source), where the unchanged path names another object.
+var cases = new[]
 {
-    await s3.ReadAsync(BundleKey.Parse("a.md"), null, default);
-    Console.Error.WriteLine("the guard did not refuse the 307");
-    return 2;
-}
-catch (S3RequestException e) when (e.Kind == S3FailureKind.RefusedHost)
+    (Name: "other-host", Location: $"http://evil.s3.eu-west-1.amazonaws.com:{other.Port}/kb/a.md", Host: "evil.s3.eu-west-1.amazonaws.com"),
+    (Name: "same-bucket-other-authority", Location: $"http://okf.127.0.0.1:{other.Port}/kb/a.md", Host: "okf.127.0.0.1"),
+};
+foreach (var c in cases)
 {
-    Console.WriteLine("guard=refused");
+    redirectTo = c.Location;
+    try
+    {
+        using var o = await s3.ReadAsync(BundleKey.Parse(files.Keys.First()["kb/".Length..]), null, default);
+        Console.Error.WriteLine($"guard did not refuse ({c.Name})");
+        return 2;
+    }
+    catch (S3RequestException e) when (e.Kind == S3FailureKind.RefusedHost)
+    {
+        Console.WriteLine($"guard[{c.Name}]=refused");
+    }
+
+    lock (reached) reached.Clear();
+    // The witness: a plain client, no guard; DNS for the redirect host goes to the "other" server, every other
+    // name to the main one, by ConnectCallback — no hosts file, no proxy, plain http.
+    var handler = new SocketsHttpHandler
+    {
+        AllowAutoRedirect = false,
+        UseProxy = false,
+        ConnectCallback = async (ctx, ct) =>
+        {
+            var port = string.Equals(ctx.DnsEndPoint.Host, c.Host, StringComparison.OrdinalIgnoreCase) ? other.Port : main.Port;
+            var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+            await socket.ConnectAsync(new IPEndPoint(IPAddress.Loopback, port), ct);
+            return new NetworkStream(socket, ownsSocket: true);
+        },
+    };
+    using var witness = new AmazonS3Client(creds, new AmazonS3Config
+    {
+        ServiceURL = $"http://127.0.0.1:{main.Port}", ForcePathStyle = true, AuthenticationRegion = "us-east-1", HttpClientFactory = new Fixed(new HttpClient(handler)),
+    });
+    try { using var _ = await witness.GetObjectAsync(new GetObjectRequest { BucketName = "okf", Key = files.Keys.First() }); } catch (AmazonServiceException) { } catch (ArgumentException) { }
+    lock (reached)
+    {
+        // The SDK keeps the original path ("/okf/kb/…") on the new authority: another object than the one asked for.
+        if (reached.Count != 1 || !reached[0].StartsWith(c.Host, StringComparison.OrdinalIgnoreCase))
+        {
+            Console.Error.WriteLine($"counter-proof [{c.Name}] reached: {string.Join(", ", reached)}");
+            return 3;
+        }
+
+        Console.WriteLine($"counter-proof[{c.Name}]={reached[0]}");
+    }
 }
 
-var http = new HttpClient(new SocketsHttpHandler { AllowAutoRedirect = false, Proxy = new WebProxy($"http://127.0.0.1:{target.Port}"), UseProxy = true });
-using var witness = new AmazonS3Client(new BasicAWSCredentials("AKID", "secret"), new AmazonS3Config
-{
-    ServiceURL = $"http://127.0.0.1:{main.Port}", ForcePathStyle = true, AuthenticationRegion = "us-east-1", HttpClientFactory = new Fixed(http),
-});
-try { using var _ = await witness.GetObjectAsync(new GetObjectRequest { BucketName = "okf", Key = "kb/a.md" }); } catch (AmazonServiceException) { }
-Console.WriteLine($"counter-proof={second}");
-return second == 1 ? 0 : 3;
+redirectTo = null;
+return 0;
 
-static string[] Summary(Bundle bundle, IOkfClock clock)
+static async Task<string[]> Summary(Bundle bundle, IOkfClock clock)
 {
-    var report = BundleValidator.ValidateAsync(bundle, clock).AsTask().GetAwaiter().GetResult();
+    var report = await BundleValidator.ValidateAsync(bundle, clock);
     return [
         $"concepts={bundle.Concepts.Count}",
         .. bundle.Concepts.Select(c => "key=" + c.Key).Order(StringComparer.Ordinal),
@@ -4218,9 +5100,107 @@ static string[] Summary(Bundle bundle, IOkfClock clock)
         $"audit={ConceptAudit.Run(bundle, default, clock).Findings.Count}",
     ];
 }
+
+sealed class Fixed(HttpClient c) : HttpClientFactory
+{
+    public override HttpClient CreateHttpClient(IClientConfig clientConfig) => c;
+    public override bool UseSDKHttpClientCaching(IClientConfig clientConfig) => false;
+    public override bool DisposeHttpClientsAfterUse(IClientConfig clientConfig) => false;
+}
+
+sealed record Request(string Method, string Host, string Path, string Query);
+
+/// <summary>A minimal HTTP/1.1 server: one task per accepted connection, one request per connection (Connection: close).</summary>
+sealed class Server : IDisposable
+{
+    private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
+    private readonly CancellationTokenSource _stop = new();
+
+    private Server(Func<Request, byte[]> respond)
+    {
+        _listener.Start();
+        _ = Task.Run(async () =>
+        {
+            while (!_stop.IsCancellationRequested)
+            {
+                TcpClient client;
+                try { client = await _listener.AcceptTcpClientAsync(_stop.Token); } catch (OperationCanceledException) { return; }
+                _ = Task.Run(async () =>
+                {
+                    using (client)
+                    {
+                        var stream = client.GetStream();
+                        var reader = new StreamReader(stream, Encoding.ASCII);
+                        var line = (await reader.ReadLineAsync() ?? "").Split(' ');
+                        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        string? h;
+                        while ((h = await reader.ReadLineAsync()) is { Length: > 0 }) { var i = h.IndexOf(':'); headers[h[..i].Trim()] = h[(i + 1)..].Trim(); }
+                        var target = line.Length > 1 ? line[1] : "/";
+                        var q = target.IndexOf('?');
+                        var req = new Request(line[0], (headers.GetValueOrDefault("Host") ?? "").Split(':')[0], q < 0 ? target : target[..q], q < 0 ? "" : target[q..]);
+                        await stream.WriteAsync(respond(req));
+                    }
+                });
+            }
+        });
+    }
+
+    public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
+
+    public static Server Start(Func<Request, byte[]> respond) => new(respond);
+
+    public static byte[] Ok(byte[] body, string type = "application/octet-stream") =>
+        [.. Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Length: {body.Length}\r\nContent-Type: {type}\r\nConnection: close\r\n\r\n"), .. body];
+
+    public static byte[] Redirect(string location) =>
+        Encoding.ASCII.GetBytes($"HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+
+    public static byte[] Answer(Request req, Dictionary<string, byte[]> files)
+    {
+        if (req.Query.Contains("list-type=2", StringComparison.Ordinal))
+        {
+            var sb = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListBucketResult><EncodingType>url</EncodingType><IsTruncated>false</IsTruncated><MaxKeys>1000</MaxKeys>");
+            var prefix = Uri.UnescapeDataString(req.Query.Split('&').FirstOrDefault(p => p.TrimStart('?').StartsWith("prefix=", StringComparison.Ordinal))?.Split('=')[1] ?? "");
+            foreach (var key in files.Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).Order(Comparer<string>.Create(CompareByCodePoint)))
+            {
+                sb.Append("<Contents><Key>").Append(Encode(key)).Append("</Key><ETag>\"").Append(Convert.ToHexStringLower(MD5.HashData(files[key])))
+                  .Append("\"</ETag><Size>").Append(files[key].Length).Append("</Size></Contents>");
+            }
+
+            return Ok(Encoding.UTF8.GetBytes(sb.Append("</ListBucketResult>").ToString()), "application/xml");
+        }
+
+        var path = Uri.UnescapeDataString(req.Path); // the probe's own test data has no hostile names
+        return files.TryGetValue(path["/okf/".Length..], out var bytes)
+            ? Ok(bytes)
+            : Encoding.ASCII.GetBytes("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    }
+
+    private static string Encode(string key) =>
+        string.Concat(Encoding.UTF8.GetBytes(key).Select(b => char.IsAsciiLetterOrDigit((char)b) || "-._~/".Contains((char)b) ? ((char)b).ToString() : "%" + b.ToString("X2", System.Globalization.CultureInfo.InvariantCulture)));
+
+    private static int CompareByCodePoint(string x, string y)
+    {
+        var (ex, ey) = (x.EnumerateRunes(), y.EnumerateRunes());
+        while (true)
+        {
+            var (hx, hy) = (ex.MoveNext(), ey.MoveNext());
+            if (!hx || !hy) return hx == hy ? 0 : hx ? 1 : -1;
+            var c = ex.Current.Value.CompareTo(ey.Current.Value);
+            if (c != 0) return c;
+        }
+    }
+
+    public void Dispose()
+    {
+        _stop.Cancel();
+        _listener.Stop();
+        _stop.Dispose();
+    }
+}
 ```
 
-Complete the file with: `Listen(Func<string, byte[]> respond)` returning an object with `Port`, starting a `TcpListener` on `IPAddress.Loopback, 0` and an accept loop that parses the request line and headers (as in `S3HostileEnvProbe`) and writes the bytes `respond(requestLine)` returns; `Answer(requestLine, files)` producing a `ListBucketResult` with `<EncodingType>url</EncodingType>`, keys percent-encoded byte by byte (unreserved and `/` kept), `ETag` `"<md5 hex>"`, `Size`, and object bodies by path; `Ok(bytes)` and `Redirect(location)` building `HTTP/1.1 200 OK`/`307 Temporary Redirect` responses with `Content-Length`; `sealed class Fixed(HttpClient c) : Amazon.Runtime.HttpClientFactory` returning `c`, `UseSDKHttpClientCaching => false`, `DisposeHttpClientsAfterUse => false`. Check the `AuditReport` member that counts findings (`Findings` or other) in `src/OKF4net/Audit.cs` and use it.
+(Case B's guard refusal relies on the same-bucket other authority, `okf.127.0.0.1`, differing from the source's one authority `127.0.0.1` — the `ServiceUrl` rows of spec §4.4's table; the witness shows the SDK sends the original path there. If gate G3 found the SDK refuses a `Location` whose host is not an S3 endpoint before following — as M3 measured for a plain IP — the witness's `ArgumentException` is caught and `reached` stays empty: then case B's witness uses `Location = http://okf.s3.eu-west-1.amazonaws.com:{other.Port}/kb/a.md` with `Host` set accordingly, which G3 shows the SDK follows; keep both guard cases either way.)
 
 - [ ] **Step 2: Extend the test filters**
 
@@ -4265,10 +5245,10 @@ Append after `embedded-aot`:
           echo "PROBE_FEED=${{ runner.temp }}/okf-s3-feed" >> $env:GITHUB_ENV
           echo "NUGET_PACKAGES=${{ runner.temp }}/okf-s3-packages" >> $env:GITHUB_ENV
           $minimum = (Select-String -Path src/OKF4net.Providers.S3/OKF4net.Providers.S3.csproj -Pattern 'Include="AWSSDK.S3" Version="([^"]*)"').Matches[0].Groups[1].Value
-          if ('${{ matrix.sdk }}' -eq 'minimum') { $sdk = $minimum } else {
-            $sdk = ((Invoke-RestMethod https://api.nuget.org/v3-flatcontainer/awssdk.s3/index.json).versions | Where-Object { $_ -notmatch '-' } | Select-Object -Last 1)
-          }
+          function Latest($id) { (Invoke-RestMethod "https://api.nuget.org/v3-flatcontainer/$id/index.json").versions | Where-Object { $_ -notmatch '-' } | Select-Object -Last 1 }
+          if ('${{ matrix.sdk }}' -eq 'minimum') { $sdk = $minimum; $core = $minimum } else { $sdk = Latest 'awssdk.s3'; $core = Latest 'awssdk.core' }
           echo "AWS_SDK_VERSION=$sdk" >> $env:GITHUB_ENV
+          echo "AWS_CORE_VERSION=$core" >> $env:GITHUB_ENV
 
       - name: Pack the core and the provider
         shell: pwsh
@@ -4301,7 +5281,7 @@ Append after `embedded-aot`:
             '  </packageSources>',
             '</configuration>'
           ) | Set-Content $config
-          dotnet publish tests/S3ProviderAotProbe/S3ProviderAotProbe.csproj -c Release -r ${{ matrix.rid }} -p:PublishAot=true "-p:OkfProbeVersion=$env:PROBE_VERSION" "-p:OkfAwsSdkVersion=$env:AWS_SDK_VERSION" "-p:RestoreConfigFile=$config" -o probe-out
+          dotnet publish tests/S3ProviderAotProbe/S3ProviderAotProbe.csproj -c Release -r ${{ matrix.rid }} -p:PublishAot=true "-p:OkfProbeVersion=$env:PROBE_VERSION" "-p:OkfAwsSdkVersion=$env:AWS_SDK_VERSION" "-p:OkfAwsCoreVersion=$env:AWS_CORE_VERSION" "-p:RestoreConfigFile=$config" -o probe-out
           if ($LASTEXITCODE -ne 0) { throw "publish failed" }
           $assets = Get-Content tests/S3ProviderAotProbe/obj/project.assets.json -Raw | ConvertFrom-Json
           foreach ($id in 'OKF4net', 'OKF4net.Providers.S3') {
@@ -4310,6 +5290,7 @@ Append after `embedded-aot`:
           $resolved = $assets.libraries.PSObject.Properties.Name | Where-Object { $_ -like 'AWSSDK.*' }
           Write-Host "Resolved AWS packages: $($resolved -join ', ')"
           if (-not ($resolved -contains "AWSSDK.S3/$env:AWS_SDK_VERSION")) { throw "AWSSDK.S3 is not $env:AWS_SDK_VERSION" }
+          if (-not ($resolved -contains "AWSSDK.Core/$env:AWS_CORE_VERSION")) { throw "AWSSDK.Core is not $env:AWS_CORE_VERSION" }
 
       - name: Run the probe
         shell: pwsh
@@ -4340,7 +5321,7 @@ dotnet pack src/OKF4net/OKF4net.csproj -c Release -o <scratchpad>/feed -p:Versio
 dotnet pack src/OKF4net.Providers.S3/OKF4net.Providers.S3.csproj -c Release -o <scratchpad>/feed -p:Version=0.7.0-local.1
 ```
 
-then publish the probe as the job does (with `-p:OkfProbeVersion=0.7.0-local.1 -p:OkfAwsSdkVersion=4.1.0`, a `nuget.config` naming `<scratchpad>/feed` and nuget.org, `NUGET_PACKAGES` set to `<scratchpad>/pkgs`, under `vcvars64.bat` with `-p:IlcUseEnvironmentalTools=true` as the D1 prototypes needed), run it on `bundles/acme_retail`, and expect exit 0 with `guard=refused` and `counter-proof=1`.
+then publish the probe as the job does (with `-p:OkfProbeVersion=0.7.0-local.1 -p:OkfAwsSdkVersion=4.1.0 -p:OkfAwsCoreVersion=4.1.0`, a `nuget.config` naming `<scratchpad>/feed` and nuget.org, `NUGET_PACKAGES` set to `<scratchpad>/pkgs`, under `vcvars64.bat` with `-p:IlcUseEnvironmentalTools=true` as the D1 prototypes needed), run it on `bundles/acme_retail`, and expect exit 0 with both `guard[…]=refused` lines and both `counter-proof[…]=<host> /okf/kb/…` lines (the redirected request reaching the other server, with the original path kept).
 
 - [ ] **Step 6: Commit**
 
