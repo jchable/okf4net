@@ -1097,7 +1097,11 @@ and this project adheres to
   Those reads now get 1 s after teardown; one that has not finished by then is
   reported as empty output in the timeout's `ContainerExecutionException`. The
   output of a refused `create` and of a run that ends on its own is still read
-  to its end, as before.
+  to its end, as before. Whichever way a run ends, a read it no longer waits for
+  (that one, or `create`'s once `start` runs) is then cancelled and both pipes
+  of each client closed: disposing a `Process` whose output was read leaves its
+  readers open, so the pipe and its buffer used to stay allocated until the
+  descendant exited.
 - `OKF4net.Attestation.Containers`: a `start -a -i` that exits non-zero is now
   followed by the same teardown as a cancelled run (`kill`, then `rm -f` and
   `inspect` until the name is unknown, within the 3 s budget). A `start` that

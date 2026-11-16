@@ -180,10 +180,13 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
 
         // `create` reads nothing: close its stdin at once. Its stdout is the container id
         // and its stderr the pull progress or the reason it failed; both are kept (bounded)
-        // only so a failure can be reported.
+        // only so a failure can be reported. Their pipes are released whichever way this
+        // method leaves (see ClientOutput): on the paths that go on to `start`, nothing
+        // awaits these drains again.
         var createStdin = WriteStdinAsync(create.StandardInput, null);
-        var createStdout = ReadBoundedAsync(create.StandardOutput.BaseStream, LenientUtf8, MaxOutputChars);
-        var createStderr = ReadBoundedAsync(create.StandardError.BaseStream, LenientUtf8, MaxOutputChars);
+        using var createOutput = new ClientOutput(create, LenientUtf8);
+        var createStdout = createOutput.Stdout;
+        var createStderr = createOutput.Stderr;
         try
         {
             await create.WaitForExitAsync(linked.Token).ConfigureAwait(false);
@@ -225,8 +228,9 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
         // wrote. stderr keeps the lenient decoder on purpose: it is host-side
         // diagnostics, never authenticated, and a strict decoder there would hide the
         // very traceback a host needs to see why a run failed.
-        var stdoutTask = ReadBoundedAsync(process.StandardOutput.BaseStream, StrictUtf8, MaxOutputChars);
-        var stderrTask = ReadBoundedAsync(process.StandardError.BaseStream, LenientUtf8, MaxOutputChars);
+        using var output = new ClientOutput(process, StrictUtf8);
+        var stdoutTask = output.Stdout;
+        var stderrTask = output.Stderr;
 
         try
         {
@@ -360,15 +364,12 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     /// <summary>
     /// The exception <see cref="RunAsync"/> throws once teardown has run for a cancelled
     /// wait: the caller's own cancellation, or this project's timeout. Never waits on the
-    /// output drains for more than <see cref="TimeoutDrainBound"/>, and never throws.
+    /// output drains for more than <see cref="TimeoutDrainBound"/>, and never throws. A
+    /// drain still running when it returns is ended, and its fault observed, by the
+    /// <see cref="ClientOutput"/> that owns it once <see cref="RunAsync"/> leaves.
     /// </summary>
     private static async Task<Exception> CancellationOutcomeAsync(CancellationToken callerToken, Task<BoundedRead> stdout, Task<BoundedRead> stderr)
     {
-        // Whatever happens below, a drain left running must not end as an unobserved
-        // task exception (its stream is disposed with the client once RunAsync returns).
-        ObserveFault(stdout);
-        ObserveFault(stderr);
-
         if (callerToken.IsCancellationRequested)
         {
             // The CALLER asked to stop -- propagate a real
@@ -412,6 +413,69 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             CancellationToken.None,
             TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
+
+    /// <summary>
+    /// The two output drains of one started engine client, and the readers they drain,
+    /// which this object owns: <see cref="Dispose"/> releases both pipes, whether or not
+    /// the drains have reached end of stream.
+    /// <para>
+    /// <see cref="Process"/> does not do it. Reading <see cref="Process.StandardOutput"/>
+    /// or <see cref="Process.StandardError"/> puts it in synchronous read mode, and in that
+    /// mode disposing the <see cref="Process"/> leaves the readers to whoever took them. A drain
+    /// <see cref="RunAsync"/> stops waiting for (the timeout's, bounded by
+    /// <see cref="TimeoutDrainBound"/>; <c>create</c>'s, once <c>start</c> runs) only ends
+    /// when the last writer closes the pipe, and a descendant of the client can hold it for
+    /// as long as it lives: until then the pipe and its buffer stayed allocated.
+    /// </para>
+    /// <para>
+    /// Disposing the reader alone is not enough on Windows: the pipe is read through a
+    /// synchronous handle on a pool thread, and a handle with a read in flight is only
+    /// closed once that read returns -- which, under a descendant that holds the pipe
+    /// without writing, is when the descendant exits. So the reads are first cancelled
+    /// (on Windows this cancels the blocked read itself), then the readers disposed. An
+    /// abandoned drain then ends cancelled or faulted, and its fault is observed here, so
+    /// it never surfaces as an unobserved task exception.
+    /// </para>
+    /// </summary>
+    internal sealed class ClientOutput : IDisposable
+    {
+        private readonly CancellationTokenSource _release = new();
+        private readonly StreamReader _stdout;
+        private readonly StreamReader _stderr;
+
+        /// <summary>
+        /// Starts draining <paramref name="client"/>'s stdout, decoded with
+        /// <paramref name="stdoutEncoding"/>, and its stderr, decoded leniently, each
+        /// bounded by <see cref="MaxOutputChars"/>. <paramref name="client"/> must be started.
+        /// </summary>
+        public ClientOutput(Process client, UTF8Encoding stdoutEncoding)
+        {
+            _stdout = client.StandardOutput;
+            _stderr = client.StandardError;
+            Stdout = ReadBoundedAsync(_stdout.BaseStream, stdoutEncoding, MaxOutputChars, _release.Token);
+            Stderr = ReadBoundedAsync(_stderr.BaseStream, LenientUtf8, MaxOutputChars, _release.Token);
+        }
+
+        /// <summary>The drain of the client's stdout.</summary>
+        public Task<BoundedRead> Stdout { get; }
+
+        /// <summary>The drain of the client's stderr.</summary>
+        public Task<BoundedRead> Stderr { get; }
+
+        /// <summary>
+        /// Ends a drain still running and releases both pipes. A drain that already
+        /// completed keeps its result.
+        /// </summary>
+        public void Dispose()
+        {
+            ObserveFault(Stdout);
+            ObserveFault(Stderr);
+            _release.Cancel();
+            _stdout.Dispose();
+            _stderr.Dispose();
+            _release.Dispose();
+        }
+    }
 
     /// <summary>
     /// The whole teardown budget for <see cref="TearDownContainerAsync"/>: the stop
@@ -857,8 +921,13 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     /// that reader also switched to UTF-16 or UTF-32 on their marks, which here are
     /// simply bytes — invalid UTF-8 for the strict decoder.
     /// </para>
+    /// <para>
+    /// <paramref name="cancellationToken"/> abandons the drain: the read in flight is
+    /// cancelled and nothing is returned (see <see cref="ClientOutput"/>, the only caller
+    /// that passes one).
+    /// </para>
     /// </summary>
-    internal static async Task<BoundedRead> ReadBoundedAsync(Stream stream, UTF8Encoding encoding, int maxChars)
+    internal static async Task<BoundedRead> ReadBoundedAsync(Stream stream, UTF8Encoding encoding, int maxChars, CancellationToken cancellationToken = default)
     {
         var decoder = encoding.GetDecoder();
         var bytes = new byte[ReadBufferBytes];
@@ -895,7 +964,7 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
         }
 
         int read;
-        while ((read = await stream.ReadAsync(bytes.AsMemory()).ConfigureAwait(false)) > 0)
+        while ((read = await stream.ReadAsync(bytes.AsMemory(), cancellationToken).ConfigureAwait(false)) > 0)
         {
             if (invalid)
             {

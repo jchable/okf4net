@@ -812,6 +812,66 @@ public class CliContainerEngineRunTests
     }
 
     /// <summary>
+    /// A drain the run stops waiting for must not keep its pipe for as long as a descendant
+    /// of the client holds the other end. <see cref="Process"/> does not release it: once
+    /// its output is read, disposing it leaves the readers open. Here the client exits at
+    /// once and leaves behind a process that holds both pipes for
+    /// <see cref="PipeHoldingDescendantSeconds"/> without writing -- the case where, on
+    /// Windows, disposing the reader alone is not enough, because the read in flight keeps
+    /// the handle open until it returns. Disposing the
+    /// <see cref="CliContainerEngine.ClientOutput"/> must end both drains (cancelled or
+    /// faulted, never at end of stream: the descendant is still alive) within 5 s, a sixth
+    /// of the descendant's lifetime. <see cref="CliContainerEngine.RunAsync"/> owns one
+    /// such object per client, with <c>using</c>, so every way it leaves releases both.
+    /// </summary>
+    [Fact]
+    public async Task Disposing_a_clients_output_ends_drains_a_descendant_still_holds_open()
+    {
+        using var tmp = new TempDir();
+        string script;
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            // The inner cmd inherits the pipes and waits on a ping writing to nul.
+            script = tmp.Write("client.cmd", $"@echo off\r\nstart \"\" /b cmd /c \"ping -n {PipeHoldingDescendantSeconds + 1} 127.0.0.1 >nul\"\r\nexit /b 0\r\n");
+        }
+        else
+        {
+            script = tmp.Write("client.sh", $"#!/bin/sh\nsleep {PipeHoldingDescendantSeconds} &\nexit 0\n");
+            File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        using var client = new Process
+        {
+            StartInfo = new ProcessStartInfo(script)
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            },
+        };
+        client.Start();
+        var output = new CliContainerEngine.ClientOutput(client, CliContainerEngine.StrictUtf8);
+        await client.WaitForExitAsync();
+
+        // The client is gone, its descendant is not: neither drain can reach end of stream.
+        await Task.Delay(TimeSpan.FromMilliseconds(500));
+        Assert.False(output.Stdout.IsCompleted, "stdout's drain ended on its own: no descendant held the pipe, the scenario is not what this test needs");
+        Assert.False(output.Stderr.IsCompleted, "stderr's drain ended on its own: no descendant held the pipe, the scenario is not what this test needs");
+
+        var released = Stopwatch.StartNew();
+        output.Dispose();
+        var bound = TimeSpan.FromSeconds(5);
+        var both = Task.WhenAll(output.Stdout, output.Stderr);
+        await Task.WhenAny(both, Task.Delay(bound));
+        released.Stop();
+        _ = both.Exception; // observed: a drain ended by the release may fault
+
+        Assert.True(both.IsCompleted, $"the drains were still pending {released.Elapsed} after the output was disposed: the descendant ({PipeHoldingDescendantSeconds} s) still holds the pipes and nothing released them");
+        Assert.False(output.Stdout.IsCompletedSuccessfully, "stdout's drain reached end of stream rather than being ended");
+        Assert.False(output.Stderr.IsCompletedSuccessfully, "stderr's drain reached end of stream rather than being ended");
+    }
+
+    /// <summary>
     /// An engine that refuses the <c>create</c> (image not found, a bad flag, a daemon that
     /// is down) leaves no container: the run reports the engine's exit code and message as
     /// the failed result a single <c>run</c> would have, and never starts anything.
