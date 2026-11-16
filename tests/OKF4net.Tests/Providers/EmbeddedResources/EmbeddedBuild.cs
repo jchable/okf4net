@@ -29,7 +29,7 @@ internal static class EmbeddedBuild
         }
     }
 
-    public static Result Build(string projectDir, string itemsXml, string? directoryBuildTargetsXml = null, string verbosity = "minimal", IEnumerable<string>? extraArgs = null, string targetFramework = "net10.0", string extraPropertiesXml = "")
+    public static Result Build(string projectDir, string itemsXml, string? directoryBuildTargetsXml = null, string verbosity = "minimal", IEnumerable<string>? extraArgs = null, string targetFramework = "net10.0", string extraPropertiesXml = "", IReadOnlyDictionary<string, string>? environment = null)
     {
         Directory.CreateDirectory(Path.Combine(projectDir, "obj"));
         WriteIfChanged(Path.Combine(projectDir, "probe.csproj"), $"""
@@ -82,6 +82,11 @@ internal static class EmbeddedBuild
         foreach (var name in new[] { "MSBuildSDKsPath", "MSBUILD_EXE_PATH", "MSBuildExtensionsPath", "MSBuildLoadMicrosoftTargetsReadOnly" })
         {
             start.Environment.Remove(name);
+        }
+
+        foreach (var (name, value) in environment ?? new Dictionary<string, string>())
+        {
+            start.Environment[name] = value;
         }
 
         using var process = Process.Start(start)!;

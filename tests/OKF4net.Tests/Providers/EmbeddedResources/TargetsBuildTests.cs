@@ -247,6 +247,34 @@ public class TargetsBuildTests
         Assert.Contains("OKFEMB008", result.Output, StringComparison.Ordinal);
     }
 
+    [SkippableTheory]
+    [InlineData("exit 1")]
+    [InlineData("echo 'find: not found' >&2; exit 127")]
+    public void A_failed_inspection_is_refused_and_not_reported_as_a_special_file(string fakeFindBody)
+    {
+        // External review, 2026-11-16: with IgnoreExitCode only the output decided, so a find that failed
+        // silently let a FIFO through, and one that printed "find: not found" was announced as a special file.
+        Skip.If(OperatingSystem.IsWindows(), "No find to replace on Windows.");
+        using var tmp = new TempDir();
+        tmp.Write("knowledge/a.md", "a\n");
+        var bin = Path.Combine(tmp.Path, "fakebin");
+        Directory.CreateDirectory(bin);
+        var fake = Path.Combine(bin, "find");
+        File.WriteAllText(fake, "#!/bin/sh\n" + fakeFindBody + "\n");
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(fake, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        var result = EmbeddedBuild.Build(
+            tmp.Path, Bundle,
+            environment: new Dictionary<string, string> { ["PATH"] = bin + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH") });
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("OKFEMB009", result.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain("OKFEMB008", result.Output, StringComparison.Ordinal);
+    }
+
     [SkippableFact]
     public void Refuses_the_project_directory_named_through_a_link_to_it()
     {

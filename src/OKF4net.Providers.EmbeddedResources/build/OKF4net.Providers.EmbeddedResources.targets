@@ -233,16 +233,27 @@
       environment variable, never in the command text, so no character of its name reaches the shell as
       syntax. Windows has none of these files. Only whether the output is empty is read: the lines become
       items, which a ';' in a name would split but cannot make empty.
+      The inspection fails CLOSED (OKFEMB009, external review 2026-11-16): an empty output means "nothing
+      found" only when find itself succeeded, so its exit code is read (IgnoreExitCode keeps Exec from
+      reporting its own error) and stderr is sent to /dev/null, so a "find: not found" is never taken for
+      the name of a special file. The property is reset first: it outlives a batch.
     -->
+    <PropertyGroup>
+      <_OkfFindExit></_OkfFindExit>
+    </PropertyGroup>
     <Exec Condition="!$([MSBuild]::IsOSPlatform('Windows'))"
-          Command="find &quot;$OKF_DIR&quot; \( -type p -o -type c -o -type b -o -type s \) -print"
+          Command="find &quot;$OKF_DIR&quot; \( -type p -o -type c -o -type b -o -type s \) -print 2&gt;/dev/null"
           EnvironmentVariables="OKF_DIR=$([MSBuild]::Escape('$(_OkfThisDir)'))"
           ConsoleToMSBuild="true" StandardOutputImportance="low" StandardErrorImportance="low" IgnoreExitCode="true">
       <Output TaskParameter="ConsoleOutput" ItemName="_OkfSpecial" />
+      <Output TaskParameter="ExitCode" PropertyName="_OkfFindExit" />
     </Exec>
     <Error Code="OKFEMB008"
            Condition="'@(_OkfSpecial)' != ''"
            Text="OkfBundle '$(_OkfThisDir)' holds a FIFO, device or socket (@(_OkfSpecial, ', ')): an assembly cannot hold it and reading it would block the build." />
+    <Error Code="OKFEMB009"
+           Condition="!$([MSBuild]::IsOSPlatform('Windows')) and '$(_OkfFindExit)' != '0'"
+           Text="OkfBundle '$(_OkfThisDir)': find, which looks for FIFOs, devices and sockets before the build reads anything, failed (exit code '$(_OkfFindExit)'): it must be on the PATH and able to read the whole directory. Nothing is embedded rather than risk blocking on a special file." />
 
     <!-- OKFEMB006: an item a target put back after _OkfDetachDefaultItems (checked before this target adds its own). -->
     <ItemGroup>

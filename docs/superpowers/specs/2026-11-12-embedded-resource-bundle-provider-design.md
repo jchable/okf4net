@@ -260,7 +260,9 @@ que MSBuild ne normalise pas.
 Décision du 2026-11-15 (option B de la revue des deux points ouverts). `OKFEMB008` : un FIFO,
 un périphérique ou une socket se lit comme un fichier ordinaire (attributs « Normal ») et
 bloque le build ; hors Windows, un `Exec` de `find -type p/c/b/s` (stat seul, sans ouvrir) le
-détecte avant toute lecture, le répertoire passé par variable d'environnement. Le paquet
+détecte avant toute lecture, le répertoire passé par variable d'environnement. Revue du 2026-11-16 :
+un `find` absent ou en échec ne doit pas se lire « rien trouvé » (`IgnoreExitCode` laissait la sortie décider seule) ;
+le code de sortie est lu, stderr n'est pas mêlé à la sortie, et tout échec est `OKFEMB009`. Le paquet
 garde sa propre copie de `SyncAsyncEnumerable` et le cœur ne lui accorde plus
 `InternalsVisibleTo` : NuGet n'impose qu'un minimum de version du cœur, un appel à un interne
 échouerait à l'exécution contre un autre cœur.
@@ -338,6 +340,7 @@ commentaire.
 | `OKFEMB006` | Un item `Compile`, `Content`, `EmbeddedResource`, `Page`, `ApplicationDefinition` ou `Resource` remis, par une cible, sous un répertoire de bundle après le retrait de §5.3. |
 | `OKFEMB007` | Le répertoire du bundle est, ou contient, le répertoire du projet (il embarquerait `obj/`, `bin/` et les fichiers du projet). |
 | `OKFEMB008` | Un FIFO, un périphérique ou une socket sous le répertoire du bundle (hors Windows) : MSBuild le lit comme un fichier ordinaire et le build se bloquerait. |
+| `OKFEMB009` | Hors Windows, `find` n'a pas pu inspecter le répertoire du bundle (absent du `PATH`, sous-répertoire illisible, tout échec) : le contrôle échoue fermé. |
 
 ### 5.6 Emballage
 
