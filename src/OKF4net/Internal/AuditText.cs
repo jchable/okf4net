@@ -139,16 +139,19 @@ internal static class AuditText
     /// the callers' guards admit), so the CLI's wording stays put. The
     /// trigger is the one shared predicate,
     /// <see cref="LineSafeText.ContainsControlCharacter"/> (every C0/C1
-    /// control, plus U+2028/U+2029), and the spelling is the one shared
+    /// control, U+2028/U+2029 and the bidi controls), and the spelling is the one shared
     /// quoter, <see cref="DebugQuote.Quote"/> -- the same helper every
     /// <c>okf verify</c> refusal already quotes an id with -- so neither the
     /// character test nor the escape format is forked here.</para>
     ///
     /// <para>Escape rather than fold to a space: a folded value reads as an
     /// ordinary one (<c>human:ada recorded x …</c>), where the quoted form
-    /// says exactly what is in the value and that something unusual is. Bidi
-    /// controls (Cf, not Cc) are out of scope, as they are for both shared
-    /// helpers: they reorder a line's display, they do not end it.</para>
+    /// says exactly what is in the value and that something unusual is. A
+    /// bidi control now triggers the quote too (the predicate shares
+    /// <see cref="ModelText"/>'s classes, #122), though
+    /// <see cref="DebugQuote.Quote"/> leaves it in place inside the quotes: it
+    /// reorders a line's display, it does not end it, and the agent tools fold
+    /// these lines once more on their way to a model.</para>
     /// </summary>
     /// <param name="value">A value about to be interpolated into one line.</param>
     private static string Field(string value) =>
