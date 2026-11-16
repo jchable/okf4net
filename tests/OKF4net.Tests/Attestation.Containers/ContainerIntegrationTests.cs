@@ -1130,6 +1130,14 @@ public class ContainerIntegrationTests
     /// their timed <c>WaitForExit</c>, so a docker that hung with its pipe open hung the
     /// test forever and the timeout never ran.
     /// </para>
+    /// <para>
+    /// The two readers are owned here, and both reads take the deadline. Once its output is
+    /// read, disposing a <see cref="Process"/> leaves its readers open, so on expiry the
+    /// abandoned reads kept their pipes for as long as a descendant of docker held the
+    /// other end. Disposing a reader alone does not release it on Windows while a read is
+    /// in flight (the handle closes when that read returns); the deadline cancels the read
+    /// itself, then the readers are disposed as this method leaves.
+    /// </para>
     /// </summary>
     private static DockerResult? RunDockerWithin(string arguments, TimeSpan timeout, string? stdin = null)
     {
@@ -1139,10 +1147,12 @@ public class ContainerIntegrationTests
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         })!;
-        var output = p.StandardOutput.ReadToEndAsync();
-        var error = p.StandardError.ReadToEndAsync();
-        var write = stdin is null ? Task.CompletedTask : WriteAndCloseAsync(p.StandardInput, stdin);
         using var deadline = new CancellationTokenSource(timeout);
+        using var stdoutReader = p.StandardOutput;
+        using var stderrReader = p.StandardError;
+        var output = stdoutReader.ReadToEndAsync(deadline.Token);
+        var error = stderrReader.ReadToEndAsync(deadline.Token);
+        var write = stdin is null ? Task.CompletedTask : WriteAndCloseAsync(p.StandardInput, stdin);
         try
         {
             Task.WhenAll(p.WaitForExitAsync(deadline.Token), output, error, write)
@@ -1160,8 +1170,9 @@ public class ContainerIntegrationTests
             {
             }
 
-            // The reads are abandoned; their eventual fault (the pipe is disposed with the
-            // process) must not surface as an unobserved task exception.
+            // The reads are abandoned, cancelled by the deadline; one that the readers'
+            // disposal as this method leaves overtakes faults instead, and that must not
+            // surface as an unobserved task exception.
             _ = output.ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
             _ = error.ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
             return null;
