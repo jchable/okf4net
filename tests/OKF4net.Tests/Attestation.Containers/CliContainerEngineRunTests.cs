@@ -777,12 +777,20 @@ public class CliContainerEngineRunTests
     /// those drains with no bound. A drain only ends when the last writer of its pipe
     /// closes it, and a client's descendant inherits the pipe: here the <c>create</c>
     /// leaves a background process behind holding both pipes for
-    /// <see cref="PipeHoldingDescendantSeconds"/>, then exits 0 after about a second. The
-    /// 300 ms timeout lands during that second, so teardown waits for the <c>create</c>
-    /// (it exits on its own) and removes the container; what is left is the drain.
-    /// Unbounded, the run returned when the descendant ended, ~30 s; bounded, teardown
-    /// (~1.5-2 s) plus the drain bound (1 s). The 12 s bound sits between the two with a
-    /// wide margin each side.
+    /// <see cref="PipeHoldingDescendantSeconds"/>, writes a <c>create-waiting</c> line,
+    /// and waits for a release file. The spec's timeout fires through the manual clock once
+    /// that line is there, so it lands during <c>create</c> by construction; only then is
+    /// the release file written, and the <c>create</c> exits 0 with its descendant still
+    /// alive. Teardown waits for it (it is not killed) and removes the container; what is
+    /// left is the drain. A short wall-clock timeout could not promise this: the first
+    /// version timed out after 300 ms of a one-second <c>create</c>, and a timer late by
+    /// more than the rest of that second would have let <c>start</c> run, then
+    /// <c>kill</c> it, failing on correct code. Unbounded, the run returned when the
+    /// descendant ended, ~30 s; bounded, teardown (the release poll, about a second at
+    /// most, then two removal rounds) plus the drain bound (1 s). The 12 s bound sits
+    /// between the two with a wide margin each side. A caller token of 60 s keeps a broken
+    /// fake engine from hanging the test: it would end the run with the caller's
+    /// cancellation instead, which fails the assertions below.
     /// </summary>
     [Fact]
     public async Task A_descendant_holding_the_output_pipes_does_not_hold_the_timed_out_run()
@@ -790,16 +798,38 @@ public class CliContainerEngineRunTests
         EnsureThreadPoolHeadroom();
         using var tmp = new TempDir();
         var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
-        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 0, inspectExitCode: 1, createSeconds: 1, createDescendantSeconds: PipeHoldingDescendantSeconds))
+        var release = System.IO.Path.Combine(tmp.Path, "release-create");
+        var timeouts = new ManualTimeProvider();
+        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 0, inspectExitCode: 1, createDescendantSeconds: PipeHoldingDescendantSeconds, createReleaseFile: release))
         {
             TeardownBudget = TimeSpan.FromSeconds(5),
+            TimeProvider = timeouts,
         };
 
-        var clock = Stopwatch.StartNew();
-        var ex = await Assert.ThrowsAsync<ContainerExecutionException>(
-            async () => await engine.RunAsync(Spec(TimeSpan.FromMilliseconds(300))));
-        clock.Stop();
+        using var safety = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var stopWatching = new CancellationTokenSource();
+        var timedOut = WhenLineAppearsAsync(
+            marker,
+            "create-waiting",
+            () =>
+            {
+                // The timeout's timer is created right after `create` is started, so it
+                // is armed long before the shell gets here -- but wait for it rather than
+                // fire nothing.
+                SpinWait.SpinUntil(() => timeouts.IsArmed, TimeSpan.FromSeconds(10));
+                timeouts.Fire();
+                File.WriteAllText(release, "");
+            },
+            stopWatching.Token);
 
+        var clock = Stopwatch.StartNew();
+        var outcome = await Record.ExceptionAsync(
+            async () => await engine.RunAsync(Spec(TimeSpan.FromMilliseconds(300)), safety.Token));
+        clock.Stop();
+        await stopWatching.CancelAsync();
+
+        Assert.True(await timedOut, "the fake engine's create never wrote its create-waiting line");
+        var ex = Assert.IsType<ContainerExecutionException>(outcome);
         Assert.Contains("exceeded its timeout", ex.Message);
         // The timeout landed during `create`, which was waited for, not killed: the drain
         // is the only thing still held open when teardown ends.
@@ -1035,7 +1065,7 @@ public class CliContainerEngineRunTests
         using var caller = new CancellationTokenSource();
         using var stopWatching = new CancellationTokenSource();
         Action end = timeouts is null ? caller.Cancel : timeouts.Fire;
-        var ended = WhenStartLineAppearsAsync(markerFile, end, stopWatching.Token);
+        var ended = WhenLineAppearsAsync(markerFile, "start", end, stopWatching.Token);
 
         // The spec's timeout only fires through `timeouts`: 300 ms is never waited for.
         var spec = Spec(timeouts is null ? TimeSpan.FromSeconds(60) : TimeSpan.FromMilliseconds(300));
@@ -1048,17 +1078,18 @@ public class CliContainerEngineRunTests
 
     /// <summary>
     /// Polls <paramref name="markerFile"/> on a dedicated thread every 5 ms and calls
-    /// <paramref name="end"/> once, as soon as a <c>start</c> line is there; true if it
-    /// did, false if <paramref name="stop"/> was cancelled first. A dedicated thread, like
+    /// <paramref name="end"/> once, as soon as a line whose first token is
+    /// <paramref name="token"/> is there; true if it did, false if <paramref name="stop"/>
+    /// was cancelled first. A dedicated thread, like
     /// <see cref="WhenKillLineAppearsAsync"/>'s, so thread-pool starvation cannot delay it.
     /// </summary>
-    private static Task<bool> WhenStartLineAppearsAsync(string markerFile, Action end, CancellationToken stop) =>
+    private static Task<bool> WhenLineAppearsAsync(string markerFile, string token, Action end, CancellationToken stop) =>
         Task.Factory.StartNew(
             () =>
             {
                 while (!stop.IsCancellationRequested)
                 {
-                    if (ReadMarkerLines(markerFile).Any(static line => FirstToken(line) == "start"))
+                    if (ReadMarkerLines(markerFile).Any(line => FirstToken(line) == token))
                     {
                         end();
                         return true;
@@ -1096,6 +1127,21 @@ public class CliContainerEngineRunTests
             return timer;
         }
 
+        /// <summary>
+        /// Whether a timer created so far is armed and not disposed, i.e. whether
+        /// <see cref="Fire"/> would fire anything now.
+        /// </summary>
+        public bool IsArmed
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _timers.Any(static timer => timer.IsArmed);
+                }
+            }
+        }
+
         /// <summary>Fires, once, every timer created so far that is armed and not disposed.</summary>
         public void Fire()
         {
@@ -1116,6 +1162,17 @@ public class CliContainerEngineRunTests
             private readonly Lock _gate = new();
             private TimeSpan _dueTime = dueTime;
             private bool _disposed;
+
+            public bool IsArmed
+            {
+                get
+                {
+                    lock (_gate)
+                    {
+                        return !_disposed && _dueTime != global::System.Threading.Timeout.InfiniteTimeSpan;
+                    }
+                }
+            }
 
             public bool Change(TimeSpan dueTime, TimeSpan period)
             {
@@ -1294,8 +1351,12 @@ public class CliContainerEngineRunTests
     /// order it against the teardown commands. With <paramref name="createDescendantSeconds"/>,
     /// <c>create</c> first starts a background process that lives that long and inherits
     /// its stdout and stderr, so both pipes stay open after the <c>create</c> client exits.
+    /// With <paramref name="createReleaseFile"/>, <c>create</c> then writes a
+    /// <c>create-waiting</c> line and waits until that file exists (polling about once a
+    /// second on Windows, every 100 ms elsewhere) before going on, so a test decides when
+    /// it exits.
     /// </summary>
-    private static string DispatchingEngine(TempDir tmp, string markerFile, int runHangSeconds, KillMode killMode, int rmExitCode = 1, int inspectExitCode = 1, string inspectStderr = "Error: No such object", int createSeconds = 0, int createDescendantSeconds = 0)
+    private static string DispatchingEngine(TempDir tmp, string markerFile, int runHangSeconds, KillMode killMode, int rmExitCode = 1, int inspectExitCode = 1, string inspectStderr = "Error: No such object", int createSeconds = 0, int createDescendantSeconds = 0, string? createReleaseFile = null)
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
@@ -1321,6 +1382,14 @@ public class CliContainerEngineRunTests
                 // No redirection: the background ping inherits the script's stdout and
                 // stderr, i.e. the create client's pipes.
                 + (createDescendantSeconds > 0 ? $"start \"\" /b ping -n {createDescendantSeconds + 1} 127.0.0.1\r\n" : "")
+                + (createReleaseFile is null
+                    ? ""
+                    : $"echo create-waiting >> \"{markerFile}\"\r\n"
+                        + ":createwait\r\n"
+                        + $"if exist \"{createReleaseFile}\" goto createreleased\r\n"
+                        + "ping -n 2 127.0.0.1 >nul\r\n"
+                        + "goto createwait\r\n"
+                        + ":createreleased\r\n")
                 + (createSeconds > 0 ? $"ping -n {createSeconds + 1} 127.0.0.1 >nul\r\n" : "")
                 + $"echo create-done >> \"{markerFile}\"\r\n"
                 + "exit /b 0\r\n"
@@ -1349,6 +1418,10 @@ public class CliContainerEngineRunTests
             + "if [ \"$1\" = \"create\" ]; then\n"
             + $"  echo create-begin >> '{markerFile}'\n"
             + (createDescendantSeconds > 0 ? $"  sleep {createDescendantSeconds} &\n" : "")
+            + (createReleaseFile is null
+                ? ""
+                : $"  echo create-waiting >> '{markerFile}'\n"
+                    + $"  while [ ! -e '{createReleaseFile}' ]; do sleep 0.1; done\n")
             + (createSeconds > 0 ? $"  sleep {createSeconds}\n" : "")
             + $"  echo create-done >> '{markerFile}'\n"
             + "  exit 0\n"
