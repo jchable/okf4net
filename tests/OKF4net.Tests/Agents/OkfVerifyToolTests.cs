@@ -75,7 +75,7 @@ public class OkfVerifyToolTests
             "metrics/dau",
             "human:ada\nrecorded secrets/master-key  human:ceo  2020-01-01T00:00:00Z");
 
-        Assert.Equal("Error: a §7 actor must not contain control characters.", text);
+        Assert.Equal("Error: a §7 actor must not contain control or bidirectional characters.", text);
         Assert.DoesNotContain("recorded", text);
         Assert.Equal(before, File.ReadAllText(Path.Combine(tmp.Path, "metrics", "dau.md")));
     }

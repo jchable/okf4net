@@ -54,7 +54,7 @@ public sealed class OkfBundleTools
     /// would put the newline it is refusing into this very message.
     /// </summary>
     private const string VerifyControlCharacterMessage =
-        "Error: a §7 actor must not contain control characters.";
+        "Error: a §7 actor must not contain control or bidirectional characters.";
 
     /// <summary>
     /// The core write primitive this tool set delegates every write to:
@@ -606,9 +606,14 @@ public sealed class OkfBundleTools
             {
                 text.Line();
                 AppendContractSummary(text, fm.ComputationContract);
-                text.Line(_orchestrator is not null
-                    ? "(Use okf_get_computation for the full computation source; okf_run_computation to run it.)"
-                    : "(Use okf_get_computation for the full computation source.)");
+                if (_orchestrator is not null)
+                {
+                    text.Line($"(Use okf_get_computation for the full computation source; okf_run_computation to run it.)");
+                }
+                else
+                {
+                    text.Line($"(Use okf_get_computation for the full computation source.)");
+                }
             }
 
             // Recorded only now, after a complete rendering (an exception above shows nothing).
@@ -637,8 +642,9 @@ public sealed class OkfBundleTools
 
     /// <summary>
     /// Browses the bundle via its <c>index.md</c> files (progressive
-    /// disclosure): returns the raw content of the requested directory's
-    /// index if one exists, otherwise a generated listing of the concepts
+    /// disclosure): returns the content of the requested directory's index if
+    /// one exists (after a line naming whose index it is, inside a fence it
+    /// cannot close: <see cref="BlockKind.IndexText"/>), otherwise a generated listing of the concepts
     /// and subdirectories at that level. Never throws for expected errors
     /// (an invalid, traversing, or out-of-bundle path, or a bundle whose
     /// first load fails) — those are reported as a plain-text message
@@ -702,12 +708,22 @@ public sealed class OkfBundleTools
                 // used to drop; the strict reader keeps it as a character. Browse is the
                 // one producer of an index text, for the tool and for the context provider
                 // (its root block is Browse(null)).
-                // The whole result is the file's text: no structure of the tool's own surrounds
-                // it, so it is the one block that is not fenced (BlockKind.WholeIndex).
+                // The file's text is the bundle's, not the tool's (#122): a literal line says
+                // whose index it is, and the text sits in a fence it cannot close, so it can
+                // neither pass for a generated listing or an error message nor leave a fence
+                // open behind it (in the context provider's root element above all).
                 var index = (await bundle.ReadResourceTextAsync(indexKey, null, ct).ConfigureAwait(false)).Text;
-                return new ModelTextBuilder()
-                    .Block(BlockKind.WholeIndex, index.Length > 0 && index[0] == (char)0xFEFF ? index[1..] : index)
-                    .ToString();
+                var text = new ModelTextBuilder();
+                if (segments.Length == 0)
+                {
+                    text.Line($"index.md of the bundle root:");
+                }
+                else
+                {
+                    text.Line($"index.md of '{relPath}':");
+                }
+
+                return text.Block(BlockKind.IndexText, index.Length > 0 && index[0] == (char)0xFEFF ? index[1..] : index).ToString();
             }
             catch (FileNotFoundException)
             {
@@ -1051,7 +1067,7 @@ public sealed class OkfBundleTools
     [Description("Record a review of one or more concepts: adds or replaces the caller's { by, at } entry in each concept's `verified` list. The stamp is a dated declaration, not a proof — the same rules as the okf verify CLI verb.")]
     public async Task<string> VerifyAsync(
         [Description("Comma-separated concept ids (paths without .md). Explicit ids only — there is no whole-bundle form.")] string conceptIds,
-        [Description("The §7 actor recording the review — one of exactly three forms: human:<id> (e.g. human:ada), process:<id> (e.g. process:nightly), or <producer>/<version> for an agent or tool (e.g. assistant/1.0). There is no agent: prefix: writing agent:assistant/1.0 stores the producer name \"agent:assistant\". Must not contain control characters.")] string by,
+        [Description("The §7 actor recording the review — one of exactly three forms: human:<id> (e.g. human:ada), process:<id> (e.g. process:nightly), or <producer>/<version> for an agent or tool (e.g. assistant/1.0). There is no agent: prefix: writing agent:assistant/1.0 stores the producer name \"agent:assistant\". Must not contain control or bidirectional characters.")] string by,
         [Description("UTC timestamp in the exact form yyyy-MM-ddTHH:mm:ssZ, e.g. 2026-08-28T09:14:00Z — no fractional seconds, no offset, no bare date. Omit for now.")] string? at = null,
         CancellationToken ct = default)
     {
@@ -1181,7 +1197,7 @@ public sealed class OkfBundleTools
             // defect 5): folded, like every value.
             if (!outcome.Recorded)
             {
-                text.Line(outcome.Message);
+                text.Line($"{outcome.Message}");
             }
 
             return text.ToString();
@@ -1400,9 +1416,14 @@ public sealed class OkfBundleTools
             var infos = report.Of(Severity.Info).Count();
             text.Line();
             text.Line($"{bundle.Count} concept(s); {errors} error(s), {warnings} warning(s), {infos} info.");
-            text.Line(report.IsConformant
-                ? $"✓ conformant with OKF v{OkfSpec.Version}"
-                : $"✗ not conformant with OKF v{OkfSpec.Version}");
+            if (report.IsConformant)
+            {
+                text.Line($"✓ conformant with OKF v{OkfSpec.Version}");
+            }
+            else
+            {
+                text.Line($"✗ not conformant with OKF v{OkfSpec.Version}");
+            }
 
             return text.ToString();
         }).ConfigureAwait(false);
@@ -1588,7 +1609,7 @@ public sealed class OkfBundleTools
             var text = new ModelTextBuilder();
             text.Line($"# Computation: {id}").Line();
             AppendContractSummary(text, fm.ComputationContract);
-            text.Line().Line("## Source");
+            text.Line().Line($"## Source");
 
             var computation = concept.Document.Computation();
             switch (computation)
@@ -1641,7 +1662,7 @@ public sealed class OkfBundleTools
                     break;
 
                 default:
-                    text.Line(NoneLine);
+                    text.Line($"{NoneLine}");
                     break;
             }
 
@@ -1853,9 +1874,9 @@ public sealed class OkfBundleTools
         {
             // The seconds under the invariant culture, as every number a tool prints.
             return new ModelTextBuilder()
-                .Line("displayable: no")
+                .Line($"displayable: no")
                 .Line()
-                .Line("Reasons:")
+                .Line($"Reasons:")
                 .Line($"- the computation timed out after {ComputationTimeout.TotalSeconds:0.###}s")
                 .ToString();
         }
@@ -2100,12 +2121,12 @@ public sealed class OkfBundleTools
             text.Write($"* {concept.Id} — {title} ({score})");
             if (lc.Status == ConceptStatus.Deprecated)
             {
-                text.Write(" [deprecated]");
+                text.Write($" [deprecated]");
             }
 
             if (lc.IsStale(now))
             {
-                text.Write(" [stale]");
+                text.Write($" [stale]");
             }
 
             text.Line();
@@ -2164,7 +2185,7 @@ public sealed class OkfBundleTools
         text.Line().Line($"{heading} ({report.Findings.Count}):");
         foreach (var finding in report.Findings.Take(MaxResults))
         {
-            text.Write("  ").Rendered(AuditText.AuditLine.Finding(finding));
+            text.Write($"  ").Rendered(AuditText.AuditLine.Finding(finding));
         }
 
         if (report.Findings.Count > MaxResults)
@@ -2250,11 +2271,20 @@ public sealed class OkfBundleTools
         // means the directory exists, and a POSIX directory name may hold a
         // line terminator -- so the H1 this method promises is folded like
         // every other hole.
-        text.Line(segments.Count == 0 ? "# (bundle root)" : $"# {relPath}").Line();
+        if (segments.Count == 0)
+        {
+            text.Line($"# (bundle root)");
+        }
+        else
+        {
+            text.Line($"# {relPath}");
+        }
+
+        text.Line();
 
         if (subdirectories.Count == 0 && concepts.Count == 0)
         {
-            text.Line("(empty)");
+            text.Line($"(empty)");
             return text.ToString();
         }
 
@@ -2286,7 +2316,7 @@ public sealed class OkfBundleTools
         var broken = bundle.BrokenLinks();
 
         var text = new ModelTextBuilder();
-        text.Line("# Bundle graph").Line();
+        text.Line($"# Bundle graph").Line();
         text.Line($"- {bundle.Count} concepts");
         text.Line($"- {totalLinks} links");
         text.Line($"- {broken.Count} broken links");
@@ -2364,7 +2394,7 @@ public sealed class OkfBundleTools
 
         if (!any)
         {
-            text.Line(NoneLine);
+            text.Line($"{NoneLine}");
         }
     }
 
@@ -2415,7 +2445,7 @@ public sealed class OkfBundleTools
     /// </summary>
     private static void AppendContractSummary(ModelTextBuilder text, AttestedComputationContract contract)
     {
-        text.Line("## Contract");
+        text.Line($"## Contract");
         text.Line($"- runtime: {contract.Runtime ?? NoneLine}");
 
         if (contract.Parameters.Count == 0)
@@ -2424,7 +2454,7 @@ public sealed class OkfBundleTools
         }
         else
         {
-            text.Line("- parameters:");
+            text.Line($"- parameters:");
             foreach (var parameter in contract.Parameters)
             {
                 text.Write($"  - {(parameter.Name.Length == 0 ? "(unnamed)" : parameter.Name)}");
@@ -2435,7 +2465,7 @@ public sealed class OkfBundleTools
 
                 if (parameter.Required)
                 {
-                    text.Write(" [required]");
+                    text.Write($" [required]");
                 }
 
                 text.Line();
@@ -2479,7 +2509,7 @@ public sealed class OkfBundleTools
     private static string FormatOutcome(AttestationOutcome outcome)
     {
         var text = new ModelTextBuilder();
-        text.Line("# Attestation outcome").Line();
+        text.Line($"# Attestation outcome").Line();
         text.Line($"- displayable: {(outcome.Displayable ? "yes" : "no")}");
 
         if (outcome.Verdict is { } verdict)
@@ -2505,7 +2535,7 @@ public sealed class OkfBundleTools
 
         if (outcome.Receipt is { } receipt && receipt.Fields.Count > 0)
         {
-            text.Line("- receipt:");
+            text.Line($"- receipt:");
             foreach (var (key, value) in receipt.Fields)
             {
                 // Both the field NAME and its value come from whatever the
