@@ -890,6 +890,7 @@ public sealed class OkfBundleTools
     /// <param name="trust">Comma-separated trust tiers to include.</param>
     /// <param name="status">Only concepts with this lifecycle status.</param>
     /// <param name="type">Only concepts with this frontmatter type (exact match).</param>
+    /// <param name="reviewOutdated">Only concepts whose content changed after their latest review (#156).</param>
     /// <param name="ct">Stops the wait for the image.</param>
     [Description("Audit the bundle's trust, freshness and lifecycle signals: counts by trust tier and status over the whole bundle, plus the concepts the filters select. Called bare it returns the stale worklist; combined with trust/status/type it stops constraining staleness unless you pass stale explicitly.")]
     public async Task<string> AuditAsync(
@@ -897,6 +898,7 @@ public sealed class OkfBundleTools
         [Description("Comma-separated trust tiers to include: unverified, machine-confirmed, human-reviewed.")] string? trust = null,
         [Description("Only concepts with this lifecycle status: draft, stable or deprecated.")] string? status = null,
         [Description("Only concepts with this frontmatter type (exact match).")] string? type = null,
+        [Description("Only concepts whose content changed (generated.at) after their latest review (the latest verified[].at). A signal for a reviewer, not a change of trust tier.")] bool? reviewOutdated = null,
         CancellationToken ct = default)
     {
         HashSet<TrustTier>? tiers = null;
@@ -930,7 +932,8 @@ public sealed class OkfBundleTools
         // The CLI's rule, restated: with no filter flag it reports the stale
         // worklist; the moment one is given, staleness stops being implied.
         // An explicit `stale` always wins over that default.
-        var otherFilterGiven = tiers is not null || parsedStatus is not null || trimmedType is not null;
+        var reviewOutdatedOnly = reviewOutdated ?? false;
+        var otherFilterGiven = tiers is not null || parsedStatus is not null || trimmedType is not null || reviewOutdatedOnly;
         var staleOnly = stale ?? !otherFilterGiven;
 
         // Everything that can touch the filesystem goes through RunTool, the
@@ -944,7 +947,7 @@ public sealed class OkfBundleTools
         {
             var report = ConceptAudit.Run(
                 await GetBundleAsync(ct).ConfigureAwait(false),
-                new AuditQuery(staleOnly, tiers, parsedStatus, trimmedType),
+                new AuditQuery(staleOnly, tiers, parsedStatus, trimmedType, reviewOutdatedOnly),
 
                 // Pinned to Now -- the same UtcNow seam ReadConcept and
                 // Search use -- so the tool's output never depends on the day

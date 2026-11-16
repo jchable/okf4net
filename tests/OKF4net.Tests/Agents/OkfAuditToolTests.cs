@@ -225,4 +225,22 @@ public class OkfAuditToolTests
 
         Assert.Contains("metrics/dau", text);
     }
+
+    /// <summary>
+    /// #156: <c>reviewOutdated</c> is a filter like the others, so it stops implying the stale
+    /// worklist, and selects only the concept regenerated after its latest review.
+    /// </summary>
+    [Fact]
+    public async Task ReviewOutdated_selects_the_concepts_changed_after_their_latest_review()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\ngenerated: { by: okf4net/0.8.0, at: 2026-07-05T11:00:00Z }\nverified:\n  - { by: human:ada, at: 2026-07-05T10:00:00Z }\n---\n");
+        tmp.Write("b.md", "---\ntype: Metric\ngenerated: { by: okf4net/0.8.0, at: 2026-07-05T09:00:00Z }\nverified:\n  - { by: human:ada, at: 2026-07-05T10:00:00Z }\n---\n");
+
+        var text = await ToolsOver(tmp, new DateOnly(2026, 8, 21)).AuditAsync(reviewOutdated: true);
+
+        Assert.Contains("selected (1):", text);
+        Assert.Contains("\n  a  ", text);
+        Assert.DoesNotContain("\n  b  ", text);
+    }
 }

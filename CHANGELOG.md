@@ -10,6 +10,20 @@ and this project adheres to
 
 ### Added
 
+- **Review dates in the audit (#156, spec §5.2).** `AuditFinding` gains
+  `LastVerifiedAt` (the latest `verified[].at` that reads as a §5 timestamp),
+  `LastChangedAt` (`generated.at`, falling back to the legacy `timestamp`,
+  §13.1) and `IsReviewOutdated` (both known, and the change strictly later).
+  `AuditQuery` gains `ReviewOutdatedOnly`, exposed as `okf audit
+  --review-outdated` and as the `reviewOutdated` parameter of `okf_audit`
+  (`AuditAsync`). The signal leaves the trust tier and every count alone. Only
+  the frontmatter is read: for a file's git history, pair `lastVerifiedAt` with
+  `git log -1 --format=%cI -- <path>`. **`okf audit --json` changes**: `query`
+  gains `reviewOutdated`, each finding gains `lastVerifiedAt`, `lastChangedAt`
+  and `reviewOutdated`. The text lines are unchanged. Binary-breaking for a
+  compiled caller of `AuditQuery`'s constructor (a new optional parameter);
+  source-compatible.
+
 - **Bundle provider seam (#139, lot A).** `OKF4net.Providers`: `IBundleProvider`
   and its value types, `BundleKey` with three-layer validation
   (`BundleKeyConstraints`, `BundleKeyPolicy`, `BundleKeyValidator`),
