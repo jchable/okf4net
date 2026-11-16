@@ -81,7 +81,15 @@ public sealed record AttestationOutcome(
     bool ReceiptShapeOk,
     StaleState Stale,
     IReadOnlyList<string> Reasons,
-    Exception? Error);
+    Exception? Error)
+{
+    /// <summary>
+    /// The sanctioned code the host's allowlist refused (#154, <see cref="AttestationOrchestratorOptions.AllowedCodeDigests"/>),
+    /// each with its digest, so the host can approve it deliberately; empty otherwise. For the host and its logs:
+    /// <see cref="Reasons"/> name the refused roles without their digests.
+    /// </summary>
+    public IReadOnlyList<UnapprovedCode> UnapprovedCode { get; init; } = [];
+}
 
 /// <summary>
 /// What one run executes, captured once before any runtime is called (spec §5.4): the

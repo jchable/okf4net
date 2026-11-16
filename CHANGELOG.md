@@ -10,11 +10,28 @@ and this project adheres to
 
 ### Added
 
+- **Allowlist of sanctioned-code digests for attested computations (#154).**
+  `AttestationOrchestratorOptions` (`Clock`, `DefaultPolicy`,
+  `AllowedCodeDigests`) and a new `AttestationOrchestrator(runtimes, options)`
+  constructor; the existing constructor is unchanged.
+  - `AllowedCodeDigests` is `null` by default, which means no allowlist and no
+    change. When set, a run whose computation (inline or file) or attester source
+    is not in it is refused before any runtime stage.
+  - The digest is `AttestationCodeDigest.Of`: SHA-256 of the UTF-8 encoding of
+    the exact text the runtime receives, 64 lowercase hex digits, no
+    normalisation.
+  - The refused roles appear in `Reasons` without their digests; the digests go
+    to the host on the new `AttestationOutcome.UnapprovedCode` (`UnapprovedCode`:
+    `SanctionedCodeRole` + `Digest`).
+  - A malformed entry is refused at construction (`ArgumentException`).
+  - `okf_run_computation` shows the refusal without the digest.
+
 - **Snapshot memory estimate and per-source ceiling (#151).** `Bundle.EstimatedMemoryBytes`
   reports what an image takes in memory, as an estimate. It is a linear model over
   the size of the concept objects read and the links they hold, calibrated against
   retained bytes on four bundle shapes (`SnapshotMemoryCalibrationTests`, within a
-  factor of 1.25). It is approximate, not a heap measurement.
+  factor of 1.25; skipped on macOS, where the CI heap reading is unreliable).
+  It is approximate, not a heap measurement.
   `BundleLoadOptions.MemoryCeilingBytes` (`null`, no ceiling, by default: loading
   is unchanged) refuses a load that would exceed it with the new
   `BundleMemoryCeilingExceededException` (`CeilingBytes`, `EstimatedBytes`),
