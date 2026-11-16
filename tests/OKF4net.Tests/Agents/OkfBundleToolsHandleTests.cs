@@ -89,10 +89,44 @@ public class OkfBundleToolsHandleTests
         Assert.Throws<BundleReadOnlyException>(() => tools.WriteConcept("notes/b", "type: Note\ntitle: B\ndescription: b.\n", "B.\n"));
         Assert.Throws<BundleReadOnlyException>(() => tools.AppendLog("Update", "x"));
         Assert.Throws<BundleReadOnlyException>(() => tools.RegenerateIndexes());
-        // Verify runs inside RunTool, which renders the library's refusal as its Error: text.
-        Assert.Equal("Error: the provider is read-only; the write was refused before being attempted", tools.Verify("tables/orders", "human:ada", "2026-07-22T00:00:00Z"));
+        Assert.Throws<BundleReadOnlyException>(() => tools.Verify("tables/orders", "human:ada", "2026-07-22T00:00:00Z"));
+        // Ahead of the argument checks too: a malformed call does not turn the host mistake into usage text.
+        Assert.Throws<BundleReadOnlyException>(() => tools.Verify(string.Empty, "not an actor"));
         Assert.DoesNotContain(storage.Calls, c => c.StartsWith("write ", StringComparison.Ordinal) || c.StartsWith("delete ", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public async Task Every_asynchronous_write_method_throws_over_a_read_only_provider_whatever_its_arguments()
+    {
+        var storage = Storage(canWrite: false);
+        using var handle = new BundleHandle(storage);
+        var tools = new OkfBundleTools(handle);
+        storage.ClearCalls();
+
+        // The four public write entry points of the tool set are exactly the model-facing write tools (#218).
+        Assert.Equal(["okf_append_log", "okf_regenerate_indexes", "okf_verify", "okf_write_concept"], OkfBundleTools.WriteToolNames.Order(StringComparer.Ordinal));
+
+        const string Frontmatter = "type: Note\ntitle: B\ndescription: b.\n";
+        await Assert.ThrowsAsync<BundleReadOnlyException>(() => tools.WriteConceptAsync("notes/b", Frontmatter, "B.\n"));
+        await Assert.ThrowsAsync<BundleReadOnlyException>(() => tools.WriteConceptAsync("not a valid id!", string.Empty, string.Empty));
+        await Assert.ThrowsAsync<BundleReadOnlyException>(() => tools.AppendLogAsync("Update", "x"));
+        await Assert.ThrowsAsync<BundleReadOnlyException>(() => tools.AppendLogAsync(string.Empty, string.Empty));
+        await Assert.ThrowsAsync<BundleReadOnlyException>(() => tools.RegenerateIndexesAsync());
+        await Assert.ThrowsAsync<BundleReadOnlyException>(() => tools.VerifyAsync("tables/orders", "human:ada", "2026-07-22T00:00:00Z"));
+        await Assert.ThrowsAsync<BundleReadOnlyException>(() => tools.VerifyAsync(string.Empty, "not an actor"));
+        await Assert.ThrowsAsync<BundleReadOnlyException>(() => tools.VerifyAsync("tables/orders", "human:ada\nforged"));
+
+        Assert.DoesNotContain(storage.Calls, c => c.StartsWith("write ", StringComparison.Ordinal) || c.StartsWith("delete ", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// What okf_browse returns for a directory with an index.md (#122, review I1): a
+    /// literal line naming whose index it is, then the file's text in a markdown fence
+    /// (three backticks for a text that holds no backtick or tilde run), so the bundle's
+    /// text can neither pass for the tool's own nor leave a fence open.
+    /// </summary>
+    private static string IndexOf(string where, string index) =>
+        $"index.md of {where}:\n```markdown\n{index.TrimEnd('\n')}\n```\n";
 
     [Fact]
     public void Browse_reads_the_index_and_lists_prefixes_through_the_provider()
@@ -100,7 +134,7 @@ public class OkfBundleToolsHandleTests
         using var handle = new BundleHandle(Storage());
         var tools = new OkfBundleTools(handle);
 
-        Assert.Equal("# tables\n\n* [Orders](orders.md) - One row per order.\n", tools.Browse("tables"));
+        Assert.Equal(IndexOf("'tables'", "# tables\n\n* [Orders](orders.md) - One row per order.\n"), tools.Browse("tables"));
         Assert.StartsWith("# notes/\n", tools.Browse("notes/"), StringComparison.Ordinal); // the heading echoes the path as given, as before
         Assert.Contains("notes/a", tools.Browse("notes"), StringComparison.Ordinal);
         Assert.StartsWith("# (bundle root)", tools.Browse(), StringComparison.Ordinal);
@@ -118,7 +152,7 @@ public class OkfBundleToolsHandleTests
         tools.GetBundle();
 
         storage.Add("tables/index.md", "# tables (rewritten behind the image)\n");
-        Assert.Equal("# tables (rewritten behind the image)\n", tools.Browse("tables"));
+        Assert.Equal(IndexOf("'tables'", "# tables (rewritten behind the image)\n"), tools.Browse("tables"));
 
         using var tmp = new TempDir();
         tmp.Write("tables/orders.md", string.Format(null, Note, "Orders", "o."));
@@ -196,11 +230,11 @@ public class OkfBundleToolsHandleTests
         using var handle = new BundleHandle(storage);
         var tools = new OkfBundleTools(handle);
 
-        Assert.Equal("# tables\n", tools.Browse("tables"));
-        Assert.Equal("# root\n", tools.Browse());
+        Assert.Equal(IndexOf("'tables'", "# tables\n"), tools.Browse("tables"));
+        Assert.Equal(IndexOf("the bundle root", "# root\n"), tools.Browse());
 
         storage.Add("tables/index.md", bom + bom + "# twice\n");
-        Assert.Equal(bom + "# twice\n", tools.Browse("tables"));
+        Assert.Equal(IndexOf("'tables'", bom + "# twice\n"), tools.Browse("tables"));
     }
 
     [Fact]
@@ -216,7 +250,7 @@ public class OkfBundleToolsHandleTests
         tmp.Write("cased/Index.md", "# CASED\n");
         var tools = new OkfBundleTools(tmp.Path);
 
-        Assert.Equal("# tables\n", tools.Browse("tables"));
+        Assert.Equal(IndexOf("'tables'", "# tables\n"), tools.Browse("tables"));
         Assert.Equal("Error: path 'Tables' not found in the bundle. Use okf_browse to list available directories.", tools.Browse("Tables"));
         Assert.Equal("Error: path './tables' not found in the bundle. Use okf_browse to list available directories.", tools.Browse("./tables"));
         Assert.DoesNotContain("CASED", tools.Browse("cased"), StringComparison.Ordinal);

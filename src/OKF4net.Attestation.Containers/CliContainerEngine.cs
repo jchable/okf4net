@@ -12,7 +12,12 @@ namespace OKF4net.Attestation.Containers;
 /// shells to a Docker-CLI-compatible binary (<c>docker</c>, <c>podman</c>,
 /// or <c>nerdctl</c> — their <c>create</c>/<c>start</c> surface is compatible, so one
 /// parameterized class covers all three). A run is two commands, <c>create</c> then
-/// <c>start -a -i</c>, never <c>run</c>: see <see cref="RunAsync"/> for why.
+/// <c>start -a -i</c>, never <c>run</c>: see <see cref="RunAsync"/> for why. The created
+/// container is torn down and checked gone (<see cref="TearDownContainerAsync"/>) whenever
+/// the run does not end with <c>start</c> exiting 0: on cancellation or timeout, when
+/// <c>start</c> cannot be launched, and when it exits non-zero, since a <c>start</c> that
+/// failed before the container ran leaves it in Created state, which <c>--rm</c> never
+/// removes.
 /// <see cref="BuildRunArguments"/> is
 /// the pure argument-construction half: it never spawns a process, so it is
 /// unit-tested directly without Docker. <see cref="RunAsync"/> is the real
@@ -168,17 +173,20 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
         // profile's Timeout for the first run.
         using var create = NewClient(BuildRunArguments(spec, containerName));
         StartClient(create);
-        using var timeoutCts = spec.Timeout is { } timeout ? new CancellationTokenSource(timeout) : null;
+        using var timeoutCts = spec.Timeout is { } timeout ? new CancellationTokenSource(timeout, TimeProvider) : null;
         using var linked = timeoutCts is null
             ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
             : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
         // `create` reads nothing: close its stdin at once. Its stdout is the container id
         // and its stderr the pull progress or the reason it failed; both are kept (bounded)
-        // only so a failure can be reported.
+        // only so a failure can be reported. Their pipes are released whichever way this
+        // method leaves (see ClientOutput): on the paths that go on to `start`, nothing
+        // awaits these drains again.
         var createStdin = WriteStdinAsync(create.StandardInput, null);
-        var createStdout = ReadBoundedAsync(create.StandardOutput.BaseStream, LenientUtf8, MaxOutputChars);
-        var createStderr = ReadBoundedAsync(create.StandardError.BaseStream, LenientUtf8, MaxOutputChars);
+        using var createOutput = new ClientOutput(create, LenientUtf8);
+        var createStdout = createOutput.Stdout;
+        var createStderr = createOutput.Stderr;
         try
         {
             await create.WaitForExitAsync(linked.Token).ConfigureAwait(false);
@@ -194,7 +202,14 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
         {
             // The engine refused to create the container (image not found, bad flag,
             // daemon down): there is none to start or to remove, and the exit code and
-            // message are what `run` would have reported for the same failure.
+            // message are what `run` would have reported for the same failure. Its output
+            // ends when the last writer of the pipe closes it, and a descendant of the
+            // client can hold it: the read is held to the run's own deadline.
+            if (!await SettleWithinDeadlineAsync(Task.WhenAll(createStdout, createStderr), linked.Token).ConfigureAwait(false))
+            {
+                throw await CancellationOutcomeAsync(cancellationToken, createStdout, createStderr).ConfigureAwait(false);
+            }
+
             return new ContainerRunResult(
                 create.ExitCode,
                 await SafeAwaitAsync(createStdout).ConfigureAwait(false),
@@ -220,8 +235,9 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
         // wrote. stderr keeps the lenient decoder on purpose: it is host-side
         // diagnostics, never authenticated, and a strict decoder there would hide the
         // very traceback a host needs to see why a run failed.
-        var stdoutTask = ReadBoundedAsync(process.StandardOutput.BaseStream, StrictUtf8, MaxOutputChars);
-        var stderrTask = ReadBoundedAsync(process.StandardError.BaseStream, LenientUtf8, MaxOutputChars);
+        using var output = new ClientOutput(process, StrictUtf8);
+        var stdoutTask = output.Stdout;
+        var stderrTask = output.Stderr;
 
         try
         {
@@ -242,6 +258,26 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             {
             }
 
+            throw await CancellationOutcomeAsync(cancellationToken, stdoutTask, stderrTask).ConfigureAwait(false);
+        }
+
+        if (process.ExitCode != 0)
+        {
+            // A non-zero exit is either the container's own exit code (`--rm` then
+            // removes it) or `start` failing before the container ran at all -- and then
+            // it stays in Created state, which `--rm` never removes, because it never ran.
+            // The two cannot be told apart from here, so the container is torn down and
+            // checked gone either way, exactly as after a cancellation. Teardown never
+            // throws, and the result reported below is unchanged.
+            await TearDownContainerAsync(containerName, process, clientIsCreate: false).ConfigureAwait(false);
+        }
+
+        // The client has exited, but its output ends only when the last writer of each
+        // pipe closes it, and a descendant of the client can hold one: the reads (and the
+        // stdin write) are held to the run's own deadline, past which the run is the
+        // timeout failure (or the caller's cancellation) like any other run that overran.
+        if (!await SettleWithinDeadlineAsync(Task.WhenAll(stdinTask, stdoutTask, stderrTask), linked.Token).ConfigureAwait(false))
+        {
             throw await CancellationOutcomeAsync(cancellationToken, stdoutTask, stderrTask).ConfigureAwait(false);
         }
 
@@ -331,8 +367,22 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     }
 
     /// <summary>
+    /// How long <see cref="CancellationOutcomeAsync"/> waits, after teardown, for the
+    /// output drains of the client whose wait was cancelled to reach end of stream. The
+    /// client itself is gone by then (killed, or waited for), but a descendant it started
+    /// can still hold the pipe open, and the drain only ends when the last writer closes
+    /// it: unbounded, that wait would hold the run past its timeout and the teardown
+    /// budget alike. Wall-clock time, never <see cref="TimeProvider"/>: it bounds a real
+    /// pipe, not the run's deadline.
+    /// </summary>
+    internal static readonly TimeSpan TimeoutDrainBound = TimeSpan.FromSeconds(1);
+
+    /// <summary>
     /// The exception <see cref="RunAsync"/> throws once teardown has run for a cancelled
-    /// wait: the caller's own cancellation, or this project's timeout.
+    /// wait: the caller's own cancellation, or this project's timeout. Never waits on the
+    /// output drains for more than <see cref="TimeoutDrainBound"/>, and never throws. A
+    /// drain still running when it returns is ended, and its fault observed, by the
+    /// <see cref="ClientOutput"/> that owns it once <see cref="RunAsync"/> leaves.
     /// </summary>
     private static async Task<Exception> CancellationOutcomeAsync(CancellationToken callerToken, Task<BoundedRead> stdout, Task<BoundedRead> stderr)
     {
@@ -347,11 +397,125 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
         }
 
         // Otherwise this project's OWN timeout fired -- a genuine stage
-        // failure, reported the same way a non-zero exit code is.
+        // failure, reported the same way a non-zero exit code is. Its output is
+        // diagnostics only, so it is taken as far as it got: a drain that finished
+        // within the bound keeps its text, one that did not (a descendant still holds
+        // the pipe) or that failed gives "".
+        try
+        {
+            await Task.WhenAll(stdout, stderr).WaitAsync(TimeoutDrainBound).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+        }
+
         return new ContainerExecutionException(
             "container run exceeded its timeout",
-            await SafeAwaitAsync(stdout).ConfigureAwait(false),
-            await SafeAwaitAsync(stderr).ConfigureAwait(false));
+            TextIfDrained(stdout),
+            TextIfDrained(stderr));
+    }
+
+    /// <summary>
+    /// Waits for <paramref name="work"/> (an exited client's output drains, and its stdin
+    /// write) within <paramref name="deadline"/>, the run's own timeout and the caller's
+    /// token together. False only when the deadline ran out first; a fault of
+    /// <paramref name="work"/> itself is left to the awaits that follow, which rethrow it
+    /// as before. Without a deadline (no timeout, a caller token that cannot be cancelled)
+    /// it waits as long as the work does.
+    /// </summary>
+    private static async Task<bool> SettleWithinDeadlineAsync(Task work, CancellationToken deadline)
+    {
+        try
+        {
+            await work.WaitAsync(deadline).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested && !work.IsCompleted)
+        {
+            return false;
+        }
+        catch (Exception)
+        {
+            return true;
+        }
+    }
+
+    /// <summary>The text of a drain that has completed successfully, otherwise <c>""</c>.</summary>
+    private static string TextIfDrained(Task<BoundedRead> drain) =>
+        drain.IsCompletedSuccessfully ? drain.Result.Text : "";
+
+    /// <summary>
+    /// Observes <paramref name="task"/>'s eventual fault, so a task nothing awaits any more
+    /// never surfaces as an unobserved task exception.
+    /// </summary>
+    private static void ObserveFault(Task task) =>
+        _ = task.ContinueWith(
+            static t => _ = t.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+
+    /// <summary>
+    /// The two output drains of one started engine client, and the readers they drain,
+    /// which this object owns: <see cref="Dispose"/> releases both pipes, whether or not
+    /// the drains have reached end of stream.
+    /// <para>
+    /// <see cref="Process"/> does not do it. Reading <see cref="Process.StandardOutput"/>
+    /// or <see cref="Process.StandardError"/> puts it in synchronous read mode, and in that
+    /// mode disposing the <see cref="Process"/> leaves the readers to whoever took them. A drain
+    /// <see cref="RunAsync"/> stops waiting for (the timeout's, bounded by
+    /// <see cref="TimeoutDrainBound"/>; <c>create</c>'s, once <c>start</c> runs) only ends
+    /// when the last writer closes the pipe, and a descendant of the client can hold it for
+    /// as long as it lives: until then the pipe and its buffer stayed allocated.
+    /// </para>
+    /// <para>
+    /// Disposing the reader alone is not enough on Windows: the pipe is read through a
+    /// synchronous handle on a pool thread, and a handle with a read in flight is only
+    /// closed once that read returns -- which, under a descendant that holds the pipe
+    /// without writing, is when the descendant exits. So the reads are first cancelled
+    /// (on Windows this cancels the blocked read itself), then the readers disposed. An
+    /// abandoned drain then ends cancelled or faulted, and its fault is observed here, so
+    /// it never surfaces as an unobserved task exception.
+    /// </para>
+    /// </summary>
+    internal sealed class ClientOutput : IDisposable
+    {
+        private readonly CancellationTokenSource _release = new();
+        private readonly StreamReader _stdout;
+        private readonly StreamReader _stderr;
+
+        /// <summary>
+        /// Starts draining <paramref name="client"/>'s stdout, decoded with
+        /// <paramref name="stdoutEncoding"/>, and its stderr, decoded leniently, each
+        /// bounded by <see cref="MaxOutputChars"/>. <paramref name="client"/> must be started.
+        /// </summary>
+        public ClientOutput(Process client, UTF8Encoding stdoutEncoding)
+        {
+            _stdout = client.StandardOutput;
+            _stderr = client.StandardError;
+            Stdout = ReadBoundedAsync(_stdout.BaseStream, stdoutEncoding, MaxOutputChars, _release.Token);
+            Stderr = ReadBoundedAsync(_stderr.BaseStream, LenientUtf8, MaxOutputChars, _release.Token);
+        }
+
+        /// <summary>The drain of the client's stdout.</summary>
+        public Task<BoundedRead> Stdout { get; }
+
+        /// <summary>The drain of the client's stderr.</summary>
+        public Task<BoundedRead> Stderr { get; }
+
+        /// <summary>
+        /// Ends a drain still running and releases both pipes. A drain that already
+        /// completed keeps its result.
+        /// </summary>
+        public void Dispose()
+        {
+            ObserveFault(Stdout);
+            ObserveFault(Stderr);
+            _release.Cancel();
+            _stdout.Dispose();
+            _stderr.Dispose();
+            _release.Dispose();
+        }
     }
 
     /// <summary>
@@ -383,6 +547,17 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     /// get a comfortable timing margin either side of the assertion.
     /// </summary>
     internal TimeSpan TeardownBudget { get; init; } = DefaultTeardownBudget;
+
+    /// <summary>
+    /// The clock <see cref="ContainerRunSpec.Timeout"/> is measured on, and nothing else:
+    /// the teardown budget, its per-command bounds and <see cref="TimeoutDrainBound"/>
+    /// stay on the wall clock. Internal and settable only so tests can make the timeout
+    /// fire at a chosen point of the run (once <c>start</c> is running, say) rather than
+    /// after a few milliseconds that a loaded machine may spend before <c>create</c> has
+    /// even exited; a real caller always gets <see cref="System.TimeProvider.System"/>. The same
+    /// kind of seam as <see cref="TeardownBudget"/>.
+    /// </summary>
+    internal TimeProvider TimeProvider { get; init; } = TimeProvider.System;
 
     /// <summary>
     /// How much of <see cref="TeardownBudget"/> must remain before another removal round
@@ -421,8 +596,9 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     /// the local client driving it, best-effort, and VERIFIES that the container is
     /// gone rather than trusting any exit code to say so (#110). Never throws.
     /// <list type="number">
-    /// <item>Settling the client. When the run was cancelled during <c>start</c> (the
-    /// container exists, its <c>create</c> long done): <c>kill &lt;name&gt;</c>, once, which
+    /// <item>Settling the client. When the run was cancelled during <c>start</c>, or
+    /// <c>start</c> could not be launched or exited non-zero (the container exists, its
+    /// <c>create</c> long done): <c>kill &lt;name&gt;</c>, once, which
     /// stops a container that is running right now at once (the same SIGKILL on all three
     /// engines this class drives; its result only says the container existed), then the
     /// local client process tree is killed and waited for. When it was cancelled during
@@ -440,8 +616,9 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     /// (observed on Docker 29.4.1), so "succeeded" cannot be told from "never existed
     /// yet". <c>inspect</c> exits non-zero for a name the engine does not know (Docker
     /// 29.4.1: exit 1, "No such object" on stderr); that, seen after the client has exited,
-    /// is the only signal taken as absence. A non-zero exit without that text (daemon down,
-    /// permission error) is unknown and restarts the count. Absence has to be seen in <see cref="AbsentRoundsRequired"/>
+    /// is the only signal taken as absence (<see cref="IsNotFound"/>: "no such object" or
+    /// "no such container"). A non-zero exit without that text (daemon down, a missing
+    /// daemon socket, permission error) is unknown and restarts the count. Absence has to be seen in <see cref="AbsentRoundsRequired"/>
     /// consecutive rounds, a <see cref="RetryDelay"/> apart -- and, only while the create
     /// is unsettled and the engine has not once confirmed the container exists
     /// (<c>kill</c> exiting 0, or <c>inspect</c> finding it), to hold for
@@ -461,8 +638,10 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     /// unsettled, and one the daemon then commits after the last check is not seen. That
     /// needs a create that slow (an image pull, a daemon that has stopped answering), no
     /// longer a create racing a kill. A failure of any command here only means the container
-    /// may be left behind, never an exception: <see cref="RunAsync"/> then reports the
-    /// same <see cref="OperationCanceledException"/> or timeout failure it would have.
+    /// may be left behind, never an exception: <see cref="RunAsync"/> then reports what it
+    /// would have reported without the teardown (the caller's
+    /// <see cref="OperationCanceledException"/>, the timeout failure, or the outcome of a
+    /// <c>start</c> that exited non-zero).
     /// </summary>
     private async Task TearDownContainerAsync(string containerName, Process client, bool clientIsCreate)
     {
@@ -539,8 +718,10 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             }
             else
             {
-                // Unknown: no answer, or a non-zero exit that does not say "no such"
-                // (daemon down, transport or permission error). Not evidence of absence.
+                // Unknown: no answer, or a non-zero exit that does not say "no such
+                // container" or "no such object" (daemon down, a missing socket's "no such
+                // file or directory", a transport or permission error). Not evidence of
+                // absence.
                 absentRounds = 0;
                 firstAbsent = null;
             }
@@ -619,13 +800,18 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     private readonly record struct EngineReply(int ExitCode, string Error);
 
     /// <summary>
-    /// True when an engine's error text says the name is unknown to it. Docker's
+    /// True when an engine's error text says the name is unknown to it: "no such container"
+    /// or "no such object", case-insensitively, and nothing looser. Docker's
     /// <c>inspect</c> of a missing name says "No such object" (29.4.1) or "No such
     /// container"; a daemon that is down, or a permission error, says neither, so it is
-    /// never taken as absence. Podman's and nerdctl's wording is NOT verified by this repo.
+    /// never taken as absence. A bare "no such" is not enough: a client that cannot reach
+    /// its daemon's socket says <c>dial unix /var/run/docker.sock: connect: no such file or
+    /// directory</c>, which says nothing about the container. Podman's and nerdctl's
+    /// wording is NOT verified by this repo.
     /// </summary>
     private static bool IsNotFound(string error) =>
-        error.Contains("no such", StringComparison.OrdinalIgnoreCase);
+        error.Contains("no such container", StringComparison.OrdinalIgnoreCase)
+        || error.Contains("no such object", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Runs one <c>binaryName &lt;arguments&gt;</c> (<c>kill</c>, <c>rm -f</c> or
@@ -666,9 +852,21 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             // container, say) would deadlock the teardown it is part of. Reading
             // to end also means the `catch` below sees a real failure rather than
             // a hang.
-            var drainOut = command.StandardOutput.ReadToEndAsync();
-            var drainErr = command.StandardError.ReadToEndAsync();
+            //
+            // The readers are this method's to release (Process does not dispose them
+            // in synchronous read mode, see ClientOutput), and the reads take the
+            // bound's token: a descendant the kill below cannot reach (the command
+            // already exited, so its tree is gone) can hold a pipe open without
+            // writing, and on Windows only a cancelled read lets the reader's handle
+            // close. A read abandoned that way ends cancelled or faulted; its fault is
+            // observed.
             using var cts = new CancellationTokenSource(bound);
+            using var stdoutReader = command.StandardOutput;
+            using var stderrReader = command.StandardError;
+            var drainOut = stdoutReader.ReadToEndAsync(cts.Token);
+            var drainErr = stderrReader.ReadToEndAsync(cts.Token);
+            ObserveFault(drainOut);
+            ObserveFault(drainErr);
             try
             {
                 await command.WaitForExitAsync(cts.Token).ConfigureAwait(false);
@@ -776,8 +974,13 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     /// that reader also switched to UTF-16 or UTF-32 on their marks, which here are
     /// simply bytes — invalid UTF-8 for the strict decoder.
     /// </para>
+    /// <para>
+    /// <paramref name="cancellationToken"/> abandons the drain: the read in flight is
+    /// cancelled and nothing is returned (see <see cref="ClientOutput"/>, the only caller
+    /// that passes one).
+    /// </para>
     /// </summary>
-    internal static async Task<BoundedRead> ReadBoundedAsync(Stream stream, UTF8Encoding encoding, int maxChars)
+    internal static async Task<BoundedRead> ReadBoundedAsync(Stream stream, UTF8Encoding encoding, int maxChars, CancellationToken cancellationToken = default)
     {
         var decoder = encoding.GetDecoder();
         var bytes = new byte[ReadBufferBytes];
@@ -814,7 +1017,7 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
         }
 
         int read;
-        while ((read = await stream.ReadAsync(bytes.AsMemory()).ConfigureAwait(false)) > 0)
+        while ((read = await stream.ReadAsync(bytes.AsMemory(), cancellationToken).ConfigureAwait(false)) > 0)
         {
             if (invalid)
             {
