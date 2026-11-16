@@ -863,12 +863,15 @@ A few known v1 caveats:
   message tracks the budget closely — but it's still a soft budget, not a
   hard cap: the estimate itself is approximate, so the result can land a
   little under or over.
-- **The `<okf-context id="…">` fences are readability markers, not a security
-  boundary:** the whole injected message is untrusted user-role reference
-  data (a concept body containing a literal `</okf-context>` could visually
-  break out of its fence); this doesn't matter because nothing in that
-  message is ever treated as instructions in the first place (see the
-  security note above).
+- **The `<okf-context id="…">` elements keep their structure, but they are
+  not a security boundary:** inside an element (and in its id) every `&` is
+  written `&amp;` and every `<` `&lt;`, and the content sits in a code fence
+  longer than any fence run it holds, so a concept body containing a literal
+  `</okf-context>`, or an `index.md` that leaves a fence open, can no longer
+  close its element or reach into the next one (#122); still, the whole
+  injected message is untrusted user-role reference data, and nothing in it
+  is ever treated as instructions in the first place (see the security note
+  above).
 - **Memory is bundle-global, unscoped, and opt-in:** captured memory carries
   no session/user/tenant key, so a scored recall in `ProvideAIContextAsync`
   can surface one session's captured exchange in a completely different

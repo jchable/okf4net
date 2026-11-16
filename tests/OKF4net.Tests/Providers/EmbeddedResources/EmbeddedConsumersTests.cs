@@ -53,7 +53,7 @@ public class EmbeddedConsumersTests
             var tools = new OkfBundleTools(handle);
             Assert.Contains("Links to", tools.ReadConcept("notes/a"), StringComparison.Ordinal);
             Assert.Contains("notes/a", tools.Search("first"), StringComparison.Ordinal);
-            Assert.StartsWith("# contract", tools.Browse(), StringComparison.Ordinal); // the root index.md, served as is
+            Assert.StartsWith("index.md of the bundle root:\n```markdown\n# contract", tools.Browse(), StringComparison.Ordinal); // the root index.md, fenced (#122)
         }
         finally
         {

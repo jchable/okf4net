@@ -37,7 +37,7 @@ namespace OKF4net.Internal;
 /// itself into a second, forged <c>recorded</c> line in a refusal that wrote
 /// nothing (executed). Quoting a value for a human to READ and leaving in the
 /// two characters that end the line it is read on are not compatible: this is
-/// the same rule <c>OkfBundleTools.OneLine</c> states, applied at the helper
+/// the same rule <c>ModelText.Fold</c> states, applied at the helper
 /// every such message already goes through, rather than folded one sink at a
 /// time. <c>LineSafeText.ContainsControlCharacter</c> has always counted these
 /// two as line-breaking; this is what closes the disagreement between the two
