@@ -137,6 +137,155 @@ public class TransportBoundsTests
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
+    private static async Task<(HttpResponseMessage? Response, Exception? Error)> SendIn(OperationContext context, HttpMethod method, string url, Func<HttpResponseMessage> respond)
+    {
+        var inner = new FakeS3Handler { Respond = (_, _) => Task.FromResult(respond()) };
+        using var invoker = new HttpMessageInvoker(new BoundingHandler { InnerHandler = inner });
+        OperationContext.Current.Value = context;
+        try
+        {
+            return (await invoker.SendAsync(new HttpRequestMessage(method, url), default), null);
+        }
+        catch (Exception e)
+        {
+            return (null, e);
+        }
+        finally
+        {
+            OperationContext.Current.Value = null;
+        }
+    }
+
+    [Theory]
+    [InlineData(S3Operation.List)]
+    [InlineData(S3Operation.Exists)]
+    public async Task The_listing_bound_follows_the_operation_not_the_query(S3Operation operation)
+    {
+        // No "list-type=2" in the URL: the operation alone decides that a 2xx body is a listing page.
+        var witness = new WitnessContent(new byte[BoundingHandler.ListBodyBytes + 10]);
+        var (r, e) = await SendIn(new OperationContext(operation) { Capture = new ListPageCapture() }, HttpMethod.Get, "http://127.0.0.1:9000/okf/", () => new HttpResponseMessage(HttpStatusCode.OK) { Content = witness });
+        Assert.Null(r);
+        Assert.Equal(S3FailureKind.InvalidResponse, Assert.IsType<GuardException>(e).Kind);
+        Assert.True(witness.BytesRead <= BoundingHandler.ListBodyBytes + 1);
+    }
+
+    [Fact]
+    public async Task A_read_whose_url_looks_like_a_listing_is_still_a_read()
+    {
+        var witness = new WitnessContent(new byte[BoundingHandler.ListBodyBytes + 10]);
+        var (r, e) = await SendIn(new OperationContext(S3Operation.Read), HttpMethod.Get, "http://127.0.0.1:9000/okf/kb/a.md?list-type=2", () => new HttpResponseMessage(HttpStatusCode.OK) { Content = witness });
+        Assert.Null(e);
+        Assert.Same(witness, r!.Content);
+        Assert.Equal(0, witness.BytesRead);
+    }
+
+    [Theory]
+    [InlineData("HEAD", HttpStatusCode.NotFound)]
+    [InlineData("HEAD", HttpStatusCode.Forbidden)]
+    [InlineData("GET", HttpStatusCode.NotModified)]
+    [InlineData("GET", HttpStatusCode.NoContent)]
+    public async Task A_response_without_a_body_is_not_judged_by_its_declared_length(string method, HttpStatusCode status)
+    {
+        // Content-Length on a HEAD answer (and on 204/304) describes a representation that is not sent.
+        var context = new OperationContext(status == HttpStatusCode.NoContent ? S3Operation.List : S3Operation.Read) { Capture = new ListPageCapture() };
+        var (r, e) = await SendIn(context, new HttpMethod(method), "http://127.0.0.1:9000/okf/kb/a.md", () =>
+        {
+            var response = new HttpResponseMessage(status) { Content = new ByteArrayContent([]) };
+            response.Content.Headers.ContentLength = 10L * BoundingHandler.ListBodyBytes;
+            return response;
+        });
+        Assert.Null(e);
+        Assert.Equal(status, r!.StatusCode);
+        Assert.Empty(await r.Content.ReadAsByteArrayAsync());
+    }
+
+    [Fact]
+    public async Task A_body_that_comes_although_none_is_expected_is_still_bounded()
+    {
+        var witness = new WitnessContent(new byte[BoundingHandler.ErrorBodyBytes * 4]);
+        var (r, e) = await SendIn(new OperationContext(S3Operation.Read), HttpMethod.Head, "http://127.0.0.1:9000/okf/kb/a.md", () => new HttpResponseMessage(HttpStatusCode.NotFound) { Content = witness });
+        Assert.Null(r);
+        Assert.Equal(S3FailureKind.InvalidResponse, Assert.IsType<GuardException>(e).Kind);
+        Assert.True(witness.BytesRead <= BoundingHandler.ErrorBodyBytes + 1);
+    }
+
+    [Fact]
+    public async Task A_small_listing_page_does_not_allocate_the_whole_bound()
+    {
+        // Everything below completes synchronously on this thread (in-memory content), so the thread's counter sees it all.
+        var body = new byte[4096];
+        var context = new OperationContext(S3Operation.List) { Capture = new ListPageCapture() };
+        var inner = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new WitnessContent(body) }) };
+        using var invoker = new HttpMessageInvoker(new BoundingHandler { InnerHandler = inner });
+        OperationContext.Current.Value = context;
+        try
+        {
+            (await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "http://127.0.0.1:9000/okf/"), default)).Dispose(); // warm-up
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            var task = invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "http://127.0.0.1:9000/okf/"), default);
+            var after = GC.GetAllocatedBytesForCurrentThread();
+            Assert.True(task.IsCompleted, "the measured send must complete on this thread");
+            using var response = await task;
+            Assert.True(after - before < 1024 * 1024, $"a 4 KiB page allocated {after - before} bytes");
+            Assert.Equal(body.Length, context.Capture!.Body!.Length);
+        }
+        finally
+        {
+            OperationContext.Current.Value = null;
+        }
+    }
+
+    /// <summary>A response that forgets its metadata when disposed: a copy made after disposal would lose it.</summary>
+    private sealed class ForgetfulResponse : HttpResponseMessage
+    {
+        public ForgetfulResponse(HttpStatusCode status)
+            : base(status)
+        {
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            Headers.Clear();
+            Content?.Headers.Clear();
+            ReasonPhrase = null;
+            RequestMessage = null;
+            base.Dispose(disposing);
+        }
+    }
+
+    [Fact]
+    public async Task The_copy_keeps_the_original_metadata()
+    {
+        HttpRequestMessage? seen = null;
+        var inner = new FakeS3Handler
+        {
+            Respond = (req, _) =>
+            {
+                seen = req;
+                var r = new ForgetfulResponse(HttpStatusCode.NotFound) { ReasonPhrase = "Not Found", Content = new ByteArrayContent("<Error/>"u8.ToArray()) };
+                r.Headers.TryAddWithoutValidation("x-amz-request-id", "r1");
+                r.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/xml");
+                return Task.FromResult<HttpResponseMessage>(r);
+            },
+        };
+        using var invoker = new HttpMessageInvoker(new BoundingHandler { InnerHandler = inner });
+        OperationContext.Current.Value = new OperationContext(S3Operation.Read);
+        try
+        {
+            using var copy = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "http://127.0.0.1:9000/okf/kb/a.md"), default);
+            Assert.IsNotType<ForgetfulResponse>(copy);
+            Assert.Equal("r1", Assert.Single(copy.Headers.GetValues("x-amz-request-id")));
+            Assert.Equal("application/xml", copy.Content.Headers.ContentType!.MediaType);
+            Assert.Equal("Not Found", copy.ReasonPhrase);
+            Assert.Same(seen, copy.RequestMessage);
+            Assert.Equal(8, copy.Content.Headers.ContentLength);
+        }
+        finally
+        {
+            OperationContext.Current.Value = null;
+        }
+    }
+
     [Fact]
     public async Task A_successful_object_body_is_passed_through_untouched()
     {

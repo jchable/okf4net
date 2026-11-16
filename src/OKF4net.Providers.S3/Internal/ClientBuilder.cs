@@ -16,9 +16,9 @@ internal static class ClientBuilder
     }
 
     /// <summary>The same client WITHOUT the guard, for the counter-proof tests only (never reachable from the public API).</summary>
-    internal static AmazonS3Client BuildUnguardedForCounterProof(AWSCredentials credentials, NormalizedSource source, HttpMessageHandler network)
+    internal static AmazonS3Client BuildUnguardedForCounterProof(AWSCredentials credentials, NormalizedSource source, HttpMessageHandler network, out HttpClient httpClient)
     {
-        var httpClient = new HttpClient(network, disposeHandler: false) { Timeout = Timeout.InfiniteTimeSpan };
+        httpClient = new HttpClient(network, disposeHandler: false) { Timeout = Timeout.InfiniteTimeSpan };
         return new AmazonS3Client(credentials, Configure(source, new ProviderHttpClientFactory(httpClient)));
     }
 

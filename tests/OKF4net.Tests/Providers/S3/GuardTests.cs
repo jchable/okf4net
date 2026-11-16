@@ -10,17 +10,30 @@ using OKF4net.Providers.S3.Internal;
 namespace OKF4net.Tests.Providers.S3;
 
 /// <summary>Spec D3, §4.4: one authority, one path prefix, refused before sending; counter-proofs without the guard.</summary>
-public class GuardTests
+public sealed class GuardTests : IDisposable
 {
     private static readonly ImmutableCredentials Creds = new("AKIDEXAMPLE", "secret", "TOKEN-CANARY");
 
-    private static (AmazonS3Client Client, FakeS3Handler Fake) Build(S3BundleSource source, bool guarded = true)
+    private readonly List<IDisposable> _owned = [];
+
+    public void Dispose()
+    {
+        foreach (var d in _owned)
+        {
+            d.Dispose();
+        }
+    }
+
+    private (AmazonS3Client Client, FakeS3Handler Fake) Build(S3BundleSource source, bool guarded = true)
     {
         var fake = new FakeS3Handler();
         var normalized = SourceRules.Normalize(source);
+        HttpClient httpClient;
         var client = guarded
-            ? ClientBuilder.Build(new SnapshotCredentials(), normalized, fake, out _)
-            : ClientBuilder.BuildUnguardedForCounterProof(new SnapshotCredentials(), normalized, fake);
+            ? ClientBuilder.Build(new SnapshotCredentials(), normalized, fake, out httpClient)
+            : ClientBuilder.BuildUnguardedForCounterProof(new SnapshotCredentials(), normalized, fake, out httpClient);
+        _owned.Add(client);
+        _owned.Add(httpClient);
         return (client, fake);
     }
 
@@ -131,13 +144,20 @@ public class GuardTests
         return (new HttpMessageInvoker(new PinningHandler(plan) { InnerHandler = fake }), fake);
     }
 
-    private static async Task<bool> Admitted(OperationContext? context, string url)
+    private static async Task<bool> Admitted(OperationContext? context, string url, HttpMethod? method = null, string? hostHeader = null)
     {
         var (invoker, fake) = Guard();
+        using var __ = invoker;
         OperationContext.Current.Value = context;
         try
         {
-            using var _ = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, url), default);
+            var request = new HttpRequestMessage(method ?? HttpMethod.Get, url);
+            if (hostHeader is not null)
+            {
+                Assert.True(request.Headers.TryAddWithoutValidation("Host", hostHeader)); // unvalidated: the guard must read what is sent, not the parsed view
+            }
+
+            using var _ = await invoker.SendAsync(request, default);
             return fake.Requests.Count == 1;
         }
         catch (GuardException g) when (g.Kind == S3FailureKind.RefusedHost)
@@ -166,6 +186,134 @@ public class GuardTests
         Assert.False(await Admitted(list, "http://127.0.0.1:9000/okf/?list-type=2&prefix=kb2%2F&encoding-type=url")); // an altered prefix
         Assert.False(await Admitted(list, "http://127.0.0.1:9000/okf/?list-type=2&prefix=kb%2F&prefix=x&encoding-type=url")); // a repeated prefix
         Assert.False(await Admitted(list, "http://127.0.0.1:9000/other/?list-type=2&prefix=kb%2F"));  // another bucket path
+    }
+
+    [Fact]
+    public async Task The_guard_admits_only_GET()
+    {
+        // Every provider operation is a GET: Read is GetObject, List and Exists are ListObjectsV2 (plan Tasks 7-8). No HEAD.
+        var read = new OperationContext(S3Operation.Read) { ExpectedObjectS3Key = "kb/a.md", Credentials = Creds };
+        var list = new OperationContext(S3Operation.List) { ExpectedListPrefix = "kb/", Credentials = Creds };
+        const string listUrl = "http://127.0.0.1:9000/okf/?list-type=2&prefix=kb%2F&encoding-type=url";
+        Assert.True(await Admitted(read, "http://127.0.0.1:9000/okf/kb/a.md", HttpMethod.Get));
+        Assert.False(await Admitted(read, "http://127.0.0.1:9000/okf/kb/a.md", HttpMethod.Put));
+        Assert.False(await Admitted(read, "http://127.0.0.1:9000/okf/kb/a.md", HttpMethod.Delete));
+        Assert.False(await Admitted(read, "http://127.0.0.1:9000/okf/kb/a.md", HttpMethod.Post));
+        Assert.False(await Admitted(read, "http://127.0.0.1:9000/okf/kb/a.md", HttpMethod.Head));
+        Assert.False(await Admitted(list, listUrl, HttpMethod.Delete));
+        Assert.False(await Admitted(list, listUrl, HttpMethod.Head));
+    }
+
+    [Fact]
+    public async Task A_host_header_must_name_the_admitted_authority()
+    {
+        var read = new OperationContext(S3Operation.Read) { ExpectedObjectS3Key = "kb/a.md", Credentials = Creds };
+        const string url = "http://127.0.0.1:9000/okf/kb/a.md";
+        Assert.True(await Admitted(read, url, hostHeader: "127.0.0.1:9000"));
+        Assert.False(await Admitted(read, url, hostHeader: "evil.127.0.0.1:9000"));      // another bucket's virtual host
+        Assert.False(await Admitted(read, url, hostHeader: "127.0.0.1:9001"));           // another port
+        Assert.False(await Admitted(read, url, hostHeader: "127.0.0.1"));                // the default port, not the plan's
+        Assert.False(await Admitted(read, url, hostHeader: "127.0.0.1:9000:9000"));      // not an authority
+        Assert.False(await Admitted(read, url, hostHeader: "evil.example/x"));           // not an authority either
+    }
+
+    [Fact]
+    public async Task A_host_header_on_a_default_port_may_omit_it()
+    {
+        // Through the real client: whatever Host the SDK sets on a regional source is admitted; then the guard alone on that authority.
+        var (client, fake) = Build(new S3BundleSource { Bucket = "demo", Region = RegionEndpoint.EUWest1 });
+        fake.Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("X") });
+        Assert.Null(await Get(client, "demo", "kb/x"));
+
+        var plan = AddressingPlan.For(SourceRules.Normalize(new S3BundleSource { Bucket = "demo", Region = RegionEndpoint.EUWest1 }));
+        foreach (var (host, admitted) in new[] { ("demo.s3.eu-west-1.amazonaws.com", true), ("DEMO.s3.eu-west-1.amazonaws.com:443", true), ("evil.s3.eu-west-1.amazonaws.com", false), ("demo.s3.eu-west-1.amazonaws.com:80", false) })
+        {
+            var inner = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)) };
+            using var invoker = new HttpMessageInvoker(new PinningHandler(plan) { InnerHandler = inner });
+            OperationContext.Current.Value = new OperationContext(S3Operation.Read) { ExpectedObjectS3Key = "kb/x", Credentials = Creds };
+            try
+            {
+                var request = new HttpRequestMessage(HttpMethod.Get, "https://demo.s3.eu-west-1.amazonaws.com/kb/x");
+                request.Headers.Host = host;
+                using var _ = await invoker.SendAsync(request, default);
+                Assert.True(admitted, host);
+            }
+            catch (GuardException g) when (g.Kind == S3FailureKind.RefusedHost)
+            {
+                Assert.False(admitted, host);
+            }
+            finally
+            {
+                OperationContext.Current.Value = null;
+            }
+        }
+    }
+
+    [Fact]
+    public async Task The_query_is_an_allowlist()
+    {
+        var read = new OperationContext(S3Operation.Read) { ExpectedObjectS3Key = "kb/a.md", Credentials = Creds };
+        var list = new OperationContext(S3Operation.List) { ExpectedListPrefix = "kb/", Credentials = Creds };
+        var whole = new OperationContext(S3Operation.List) { ExpectedListPrefix = "", Credentials = Creds };
+        const string root = "http://127.0.0.1:9000/okf/";
+        Assert.False(await Admitted(read, "http://127.0.0.1:9000/okf/kb/a.md?versionId=1"));        // a read has no query
+        Assert.False(await Admitted(read, "http://127.0.0.1:9000/okf/kb/a.md?"));                    // not even an empty one
+        Assert.True(await Admitted(list, root + "?list-type=2&prefix=kb%2F&encoding-type=url&max-keys=1000&continuation-token=abc%3D"));
+        Assert.False(await Admitted(list, root + "?list-type=2&list-type=2&prefix=kb%2F&encoding-type=url"));   // a repeated list-type
+        Assert.False(await Admitted(list, root + "?list-type=2&prefix=kb%2F&encoding-type=url&encoding-type=url")); // a doubled encoding-type
+        Assert.False(await Admitted(list, root + "?list-type=2&prefix=kb%2F&encoding-type=url&max-keys=1&max-keys=2"));
+        Assert.False(await Admitted(list, root + "?list-type=2&prefix=kb%2F&encoding-type=url&start-after=x"));  // a parameter outside the set
+        Assert.False(await Admitted(list, root + "?list-type=2&prefix=kb%2F&encoding-type=url&delimiter=%2F"));
+        Assert.False(await Admitted(list, root + "?list-type=2&prefix%20=kb%2F&prefix=kb%2F&encoding-type=url")); // an encoded name is not a known name (Uri itself decodes %66 to f before sending, so the guard sees what is sent)
+        Assert.False(await Admitted(list, root + "?prefix=kb%2F&encoding-type=url"));                  // list-type required
+        Assert.False(await Admitted(list, root + "?list-type=1&prefix=kb%2F&encoding-type=url"));      // list-type is exactly 2
+        Assert.False(await Admitted(list, root + "?list-type=2&prefix=kb%2F"));                         // encoding-type required
+        Assert.False(await Admitted(list, root + "?list-type=2&prefix=kb%2F&encoding-type=URL"));      // encoding-type is exactly url
+        Assert.False(await Admitted(list, root + "?list-type=2&encoding-type=url"));                    // the expected prefix is missing
+        Assert.False(await Admitted(list, root + "?list-type=2&prefix=kb%2F&encoding-type=url&continuation-token=%C3%28")); // not UTF-8 once decoded (a lone "%ZZ" would be re-escaped by Uri to %25ZZ)
+        Assert.True(await Admitted(whole, root + "?list-type=2&encoding-type=url"));                    // the whole bucket: no prefix or an empty one
+        Assert.True(await Admitted(whole, root + "?list-type=2&prefix=&encoding-type=url"));
+        Assert.False(await Admitted(whole, root + "?list-type=2&prefix=x&encoding-type=url"));
+    }
+
+    private static string ListingXml(string? nextToken = null) =>
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListBucketResult><Name>demo</Name><EncodingType>url</EncodingType>"
+        + (nextToken is null ? "<IsTruncated>false</IsTruncated>" : $"<IsTruncated>true</IsTruncated><NextContinuationToken>{nextToken}</NextContinuationToken>")
+        + "<MaxKeys>1000</MaxKeys><Contents><Key>kb/a.md</Key><ETag>\"e\"</ETag><Size>1</Size></Contents></ListBucketResult>";
+
+    public static TheoryData<S3BundleSource, string> ListSources => new()
+    {
+        { new S3BundleSource { Bucket = "demo", Region = RegionEndpoint.EUWest1 }, "kb/" },
+        { new S3BundleSource { Bucket = "demo", Region = RegionEndpoint.EUWest1, ForcePathStyle = true }, "kb/" },
+        { new S3BundleSource { Bucket = "okf", ServiceUrl = new Uri("http://127.0.0.1:9000"), ForcePathStyle = true, AllowInsecureHttp = true }, "kb/" },
+        { new S3BundleSource { Bucket = "okf", ServiceUrl = new Uri("http://127.0.0.1:9000"), ForcePathStyle = true, AllowInsecureHttp = true }, "" },
+    };
+
+    [Theory]
+    [MemberData(nameof(ListSources))]
+    public async Task What_the_real_client_sends_for_a_listing_page_and_a_read_is_admitted(S3BundleSource source, string listPrefix)
+    {
+        // The allowlist is measured against the requests ListObjectsV2Async (as plan Task 7 builds it) and GetObjectAsync really send.
+        var (client, fake) = Build(source);
+        fake.Respond = (req, _) => Task.FromResult(req.RequestUri!.Query.Length > 0
+            ? FakeS3Handler.Xml(HttpStatusCode.OK, ListingXml("tok"))
+            : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("X") });
+        foreach (var token in new[] { null, "1/ab+c=" })
+        {
+            OperationContext.Current.Value = new OperationContext(S3Operation.List) { ExpectedListPrefix = listPrefix, Capture = new ListPageCapture(), Credentials = Creds };
+            try
+            {
+                await client.ListObjectsV2Async(new ListObjectsV2Request { BucketName = source.Bucket, Prefix = listPrefix, MaxKeys = 1000, ContinuationToken = token, Encoding = EncodingType.Url });
+            }
+            finally
+            {
+                OperationContext.Current.Value = null;
+            }
+        }
+
+        Assert.Null(await Get(client, source.Bucket, "kb/a b+c.md"));
+        Assert.Equal(3, fake.Requests.Count);
+        Assert.Equal("", fake.Requests[2].RequestUri!.Query);
     }
 
     [Fact]
