@@ -327,9 +327,11 @@ and this project adheres to
   A cancellation is honoured before a commit and between objects only: after a first commit a batch
   (`RecordVerifications`, an index regeneration) stops and returns what landed, the rest reported as
   `not attempted (cancelled)`.
-- **Not measured here:** the size of the `okf` Native AOT binary after the asynchronous core (design
-  R7). The machine this was built on cannot link a native binary, so the figure comes from the CI
-  AOT job.
+- **The `okf` Native AOT binary grows by about 383 KiB (+8.1 %) with the asynchronous core**
+  (design R7). On linux-x64, built with SDK 10.0.404 in `mcr.microsoft.com/dotnet/sdk:10.0`
+  (`dotnet publish src/OKF4net.Cli -c Release -r linux-x64`), it was 4,842,784 bytes before #152
+  (3216bbe) and 5,234,736 bytes after it (3a83070). On `dev` after the rest of this release
+  (32862e3) it is 5,259,808 bytes. Each build was run twice and gave the same digest.
 - **`MemoryDeleteResult` is `(IReadOnlyList<MemoryTierDeletion> Tiers,
   string? Error)`** (#139, lot D; spec §1, §9, §10): `TiersDeleted` counted
   directories removed by `Directory.Delete`; a scope is now a prefix whose
