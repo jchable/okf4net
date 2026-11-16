@@ -1325,10 +1325,12 @@ public sealed class Bundle
 
     /// <summary>
     /// <see cref="TryResolveResourceKey"/> without the blocking: the same resolution, the provider
-    /// asked asynchronously (#152). Never throws for a provider's refusal (§11, permissive): that
-    /// reads as <see cref="ResourceResolutionStatus.Unsafe"/>; only a cancellation propagates.
+    /// asked asynchronously (#152). A provider's refusal of the path reads as
+    /// <see cref="ResourceResolutionStatus.Unsafe"/> (§11, permissive); any other provider failure throws
+    /// <see cref="BundleLoadException"/> naming the exception type only, and a cancellation propagates.
     /// </summary>
     /// <returns>The key (non-<see langword="null"/> only for <see cref="ResourceResolutionStatus.Resolved"/>) and the status.</returns>
+    /// <exception cref="BundleLoadException">The provider failed for another reason than a refusal.</exception>
     public async ValueTask<(BundleKey? Key, ResourceResolutionStatus Status)> ResolveResourceKeyAsync(Concept concept, string rawPath, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(concept);
@@ -1359,9 +1361,17 @@ public sealed class Bundle
                 ? (candidate, ResourceResolutionStatus.Resolved)
                 : (null, ResourceResolutionStatus.Missing);
         }
-        catch (Exception e) when (e is BundleProviderException or IOException or UnauthorizedAccessException)
+        catch (BundleAccessRefusedException)
         {
             return (null, ResourceResolutionStatus.Unsafe);
+        }
+        catch (Exception e) when (e is BundleProviderException or IOException or UnauthorizedAccessException)
+        {
+            // Only a refusal of the key's path is Unsafe (§11, permissive). Anything else is the provider
+            // failing (a network, a credential, a timeout): it surfaces, translated, so a validation never
+            // reports "escapes the bundle" for a store that is down, and no provider text reaches a tool
+            // result (spec of 2026-11-16 §4.7 b). The raw failure is the inner exception (host log).
+            throw new BundleLoadException($"provider failure resolving '{candidate}' ({e.GetType().Name})", e);
         }
     }
 
