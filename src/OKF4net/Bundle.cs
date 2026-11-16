@@ -329,7 +329,9 @@ public sealed class Bundle
             var declared = 0L;
             foreach (var key in conceptKeys)
             {
-                if (declaredLengths.TryGetValue(key.ToString(), out var length))
+                // An object over the byte bound is skipped by the reads as a parse problem and never enters the
+                // estimate, so it is not charged here either: the preflight stays a lower bound of what the load adds.
+                if (declaredLengths.TryGetValue(key.ToString(), out var length) && length <= limits.MaxObjectBytes)
                 {
                     declared += SnapshotMemory.OfObject(length);
                 }
@@ -346,7 +348,15 @@ public sealed class Bundle
         var logKeys = new List<BundleKey>();
         var objectVersions = new Dictionary<BundleKey, BundleObjectVersion>();
         var chunk = new byte[ReadChunkBytes]; // one copy buffer for every object of this load
-        var prefetched = await PrefetchConceptsAsync(provider, conceptKeys, limits, readDegree, ceiling, ct).ConfigureAwait(false);
+
+        // Without a ceiling every concept is read ahead, up to the degree. With one, the reads go a window of `readDegree`
+        // keys at a time, each window started when the loop reaches its first key: a concept's links, which count toward
+        // the ceiling, are known only once it is parsed, so reading everything first would download a bundle the first
+        // concepts' links already refuse. A window is still read in parallel, and the loop still meets the keys in order.
+        var prefetched = ceiling is null
+            ? await PrefetchConceptsAsync(provider, conceptKeys, limits, readDegree, null, ct).ConfigureAwait(false)
+            : new Dictionary<BundleKey, PrefetchedRead>();
+        var conceptRank = 0;
         var estimate = 0L;
         var scannedLinks = new List<IReadOnlyList<ConceptLink>>();
 
@@ -362,6 +372,17 @@ public sealed class Bundle
                     break;
                 default:
                     {
+                        if (ceiling is { } remaining && readDegree > 1 && !prefetched.ContainsKey(key))
+                        {
+                            // The next window, bounded by what the ceiling still allows after what was parsed so far.
+                            var window = await PrefetchConceptsAsync(provider, conceptKeys.GetRange(conceptRank, Math.Min(readDegree, conceptKeys.Count - conceptRank)), limits, readDegree, remaining - estimate, ct).ConfigureAwait(false);
+                            foreach (var (windowKey, windowRead) in window)
+                            {
+                                prefetched[windowKey] = windowRead;
+                            }
+                        }
+
+                        conceptRank++;
                         string text;
                         try
                         {

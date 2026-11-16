@@ -37,9 +37,12 @@ and this project adheres to
   `BundleMemoryCeilingExceededException` (`CeilingBytes`, `EstimatedBytes`),
   inside the `BundleLoadException` (`the bundle exceeds the memory bound (N)`).
   The refusal comes before any read when the sizes the listing declares already
-  exceed the ceiling, otherwise as soon as the running estimate crosses it. A
-  parallel load stops starting reads once its finished reads are over, and
-  refuses at the same object. The ceiling bounds one image: during a refresh the
+  exceed the ceiling (an object over `MaxObjectBytes`, which the load skips, is
+  not counted), otherwise as soon as the running estimate crosses it. With a
+  ceiling a parallel load reads one window of `MaxConcurrentRequests` objects
+  at a time, each started when the parse reaches it, since a concept's links
+  count toward the ceiling only once parsed; it stops starting reads once the
+  window's finished reads are over, and refuses at the same object. The ceiling bounds one image: during a refresh the
   previous one is still held, so the peak can reach twice the ceiling. A
   `BundleHandle` whose reload is refused keeps serving its previous image,
   flagged stale. Catalog: `KnowledgeCatalogOptions.MemoryCeilingFor` sets a

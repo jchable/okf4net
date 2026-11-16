@@ -118,6 +118,51 @@ public class MemoryCeilingTests
     }
 
     [Fact]
+    public void An_object_over_the_byte_bound_is_not_counted_by_the_declared_sizes()
+    {
+        // The read loop skips an object over MaxObjectBytes as a parse problem and never adds it to the estimate,
+        // so the preflight must not charge it either: the ceiling a successful load reports is a ceiling it passes.
+        var store = Store(2);
+        store.Add("huge.md", string.Format(null, Doc, new string('x', 5_000)));
+        var limits = new BundleLimits { MaxObjectBytes = 2_000 };
+
+        var unbounded = Bundle.Load(store, new BundleLoadOptions { Limits = limits });
+        Assert.Equal(2, unbounded.Count);
+        Assert.Single(unbounded.ParseProblems);
+
+        var declared = Bundle.Load(store, new BundleLoadOptions { Limits = limits, MemoryCeilingBytes = unbounded.EstimatedMemoryBytes });
+        var undeclared = Bundle.Load(new UndeclaredSizes(store), new BundleLoadOptions { Limits = limits, MemoryCeilingBytes = unbounded.EstimatedMemoryBytes });
+
+        Assert.Equal(unbounded.EstimatedMemoryBytes, declared.EstimatedMemoryBytes);
+        Assert.Equal(unbounded.EstimatedMemoryBytes, undeclared.EstimatedMemoryBytes);
+    }
+
+    [Fact]
+    public async Task A_parallel_load_refused_by_links_reads_no_more_than_one_window_of_objects()
+    {
+        // The links of a concept are known only after its parse, so with a ceiling the reads are not run ahead of
+        // the parse: a bundle whose bytes fit but whose first concept's links do not is refused after one window
+        // of reads (the degree), never after downloading all of it.
+        // a.md sorts first and holds 500 links, which alone cost more than every other object together.
+        var links = string.Concat(Enumerable.Range(0, 500).Select(i => $"- [n{i}](n{i % 30:D3}.md)\n"));
+        var store = new InMemoryBundleProvider()
+            .Add("a.md", "---\ntype: Note\ntitle: A\ndescription: a.\n---\n\n" + links);
+        for (var i = 0; i < 30; i++)
+        {
+            store.Add($"n{i:D3}.md", string.Format(null, Doc, new string('x', 1_000)));
+        }
+
+        var bytesOnly = (30 * OneObject()) + SnapshotMemory.OfText(ReadText(store, "a.md"));
+        store.ClearCalls();
+        var options = new BundleLoadOptions { MemoryCeilingBytes = bytesOnly + 1, Limits = new BundleLimits { MaxConcurrentRequests = 4 } };
+
+        var failure = await Assert.ThrowsAsync<BundleLoadException>(async () => await Bundle.LoadAsync(new UndeclaredSizes(store), options));
+
+        Assert.IsType<BundleMemoryCeilingExceededException>(failure.InnerException);
+        Assert.True(Reads(store) <= 4, $"the load read {Reads(store)} of 31 objects before refusing on the links of the first");
+    }
+
+    [Fact]
     public async Task A_refresh_over_the_ceiling_keeps_the_previous_image_served_and_stale()
     {
         var store = Store(3);
