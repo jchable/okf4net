@@ -48,7 +48,10 @@ line of model-facing text":
 
 - every line terminator becomes one space: CR, LF, CRLF, NEL (U+0085),
   VT, FF, U+2028, U+2029;
-- every other C0/C1 control (ESC, NUL, …) becomes U+FFFD;
+- every other C0/C1 control (ESC, NUL, …) becomes U+FFFD, except TAB, which
+  is left as is. It cannot forge a line, and an ordinary log entry pins it
+  verbatim. `LineSafeText` still refuses it, so the predicate refuses
+  everything the fold changes (decided during implementation, 2026-11-16);
 - bidi controls (U+061C, U+200E/U+200F, U+202A–U+202E, U+2066–U+2069) are
   removed;
 - everything else is left as is, so an ordinary value prints unchanged.
