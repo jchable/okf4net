@@ -28,10 +28,15 @@ public class SnapshotMemoryCalibrationTests(ITestOutputHelper output)
         { "link-heavy", 600, 1_500, 40 },
     };
 
-    [Theory]
+    [SkippableTheory]
     [MemberData(nameof(Shapes))]
     public void The_estimate_stays_within_its_tolerance_of_the_retained_bytes(string shape, int count, int bodyBytes, int linksPerConcept)
     {
+        // Skipped on macOS by decision (2026-11-16): on the macOS CI runner GC.GetTotalMemory read one shape or
+        // another two to four times too high on each run, even keeping the smallest of three measures, while
+        // Windows and Linux read 0.98-1.04. The heap reading is what is unreliable there, not the model, which
+        // these two platforms pin; the ceiling's behaviour tests (MemoryCeilingTests) run everywhere.
+        Skip.If(OperatingSystem.IsMacOS(), "the heap measure is unreliable on macOS; the model is pinned on Windows and Linux");
         var provider = Build(count, bodyBytes, linksPerConcept);
 
         var (estimate, measured) = Measure(provider);
