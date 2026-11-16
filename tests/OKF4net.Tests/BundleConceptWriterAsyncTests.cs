@@ -112,7 +112,8 @@ public class BundleConceptWriterAsyncTests
             await writer.AppendLogAsync("Update", "x", null, cts.Token));
 
         Assert.Equal(Doc, Text(storage, "m.md"));
-        Assert.DoesNotContain("log.md", string.Join(",", storage.Calls.Where(c => c.StartsWith("Write", StringComparison.Ordinal))), StringComparison.Ordinal);
+        // InMemoryBundleProvider records a write as "write {key} {condition}" (lowercase).
+        Assert.DoesNotContain(storage.Calls, c => c.StartsWith("write log.md", StringComparison.Ordinal));
     }
 
     [Fact]

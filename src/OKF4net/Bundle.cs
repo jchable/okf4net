@@ -281,7 +281,7 @@ public sealed class Bundle
 
             if (MarkdownPaths.HasMarkdownExtension(raw))
             {
-                parseProblems.Add(new BundleParseError(raw, longKey, $"key is longer than the {limits.MaxKeyBytes}-byte bound"));
+                parseProblems.Add(new BundleParseError(raw, longKey, $"key is longer than the {KeyByteBound(provider, limits)}-byte bound"));
             }
         }
 
@@ -679,13 +679,23 @@ public sealed class Bundle
     /// Provider exceptions and the bounds' <see cref="BundleLimitExceededException"/> propagate.
     /// The one listing of the whole bundle that applies every bound (entries, depth, key length) for a load or a regeneration: <see cref="Load(IBundleProvider, BundleLoadOptions?)"/>
     /// and <see cref="IndexGenerator"/> both list through it.
+    /// <para>With <paramref name="under"/>, it is the listing of that prefix of the provider's key
+    /// space as a bundle of its own (how the catalog's memory store lists one scope of a tier
+    /// provider): only the names strictly under <c>under/</c> are kept (a name a provider listed
+    /// outside it is dropped, never returned), the depth is counted below the prefix, and the
+    /// names are returned in full, as keys of the provider.</para>
+    /// <para>A name is over-long past <see cref="KeyByteBound"/>: the limits' bound, lowered for a
+    /// provider whose keys are stored under a longer name (<see cref="IReservedKeyBytes"/>).</para>
     /// </summary>
-    internal static async ValueTask<(List<string> TreeInput, List<string> OverLength)> ListNamesAsync(IBundleProvider provider, BundleLimits limits, CancellationToken ct)
+    internal static async ValueTask<(List<string> TreeInput, List<string> OverLength)> ListNamesAsync(IBundleProvider provider, BundleLimits limits, CancellationToken ct, BundleKey? under = null)
     {
         var treeInput = new List<string>();
         var overLength = new List<string>();
         var count = 0;
-        await foreach (var listing in provider.EnumerateAsync(null, limits, ct).WithCancellation(ct).ConfigureAwait(false))
+        var keyByteBound = KeyByteBound(provider, limits);
+        var strip = under is null ? null : under + "/";
+        var prefixDepth = under?.Segments.Count ?? 0;
+        await foreach (var listing in provider.EnumerateAsync(under, limits, ct).WithCancellation(ct).ConfigureAwait(false))
         {
             if (++count > limits.MaxEntries)
             {
@@ -693,12 +703,17 @@ public sealed class Bundle
             }
 
             var raw = listing.RawName;
-            if (raw.Split('/').Length > limits.MaxDepth)
+            if (strip is not null && !(raw.Length > strip.Length && raw.StartsWith(strip, StringComparison.Ordinal)))
+            {
+                continue;
+            }
+
+            if (raw.Split('/').Length - prefixDepth > limits.MaxDepth)
             {
                 throw new BundleLimitExceededException(BundleBound.Depth, limits.MaxDepth);
             }
 
-            if (System.Text.Encoding.UTF8.GetByteCount(raw) > limits.MaxKeyBytes)
+            if (System.Text.Encoding.UTF8.GetByteCount(raw) > keyByteBound)
             {
                 overLength.Add(raw);
                 continue;
@@ -709,6 +724,17 @@ public sealed class Bundle
 
         return (treeInput, overLength);
     }
+
+    /// <summary>
+    /// The longest name, in UTF-8 bytes, that a listing of <paramref name="provider"/> admits as a
+    /// key: <see cref="BundleLimits.MaxKeyBytes"/>, and, for a provider that stores its keys under a
+    /// longer name (<see cref="IReservedKeyBytes"/>), no more than what is left of
+    /// <see cref="BundleKey.MaxUtf8Bytes"/> once that name's extra bytes are counted.
+    /// </summary>
+    internal static int KeyByteBound(IBundleProvider provider, BundleLimits limits) =>
+        provider is IReservedKeyBytes reserved
+            ? Math.Min(limits.MaxKeyBytes, BundleKey.MaxUtf8Bytes - reserved.ReservedKeyBytes)
+            : limits.MaxKeyBytes;
 
     /// <summary>
     /// <see cref="ListNamesAsync"/> through the non-blocking bridge (#152), for the writer and the

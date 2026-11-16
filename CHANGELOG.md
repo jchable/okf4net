@@ -201,7 +201,23 @@ and this project adheres to
   through a given provider deletes keys only, even when the provider is a
   `FileSystemBundleProvider`; removing a scope's emptied directories, whose
   names carry the lowercased ids, stays the directory constructor's alone.
-  The directory constructor is unchanged.
+  The directory constructor is unchanged. The store awaits its provider
+  throughout (probe, read, enumeration, write, deletion), so a provider that
+  completes asynchronously serves it like any other; a scope's listing is
+  consumed under the core's own bounds, so a provider that ignores
+  `MaxEntries` makes the scope unavailable instead of growing a list; any
+  exception a host provider raises that the library did not author (a storage
+  timeout surfacing as a `TaskCanceledException`, an `IOException`, its own
+  `BundleProviderException` subclass) is reported as data by its type only,
+  never by its text, on every operation including the writer's own reads and
+  writes, while a cancellation of the caller's own token still propagates (a
+  `FileSystemBundleProvider` is not wrapped: its I/O texts are #211's); a
+  scope's view has a version token of its own, built from its listing and its
+  objects' versions, so reading one scope never walks the rest of the tier (an
+  unlistable directory of another tenant no longer makes it unavailable); and a
+  name that is a key of the view but too long once the scope's prefix is added
+  is over-long there, as past the bound in any bundle: never read, a parse
+  problem for a concept, its ancestors still checked by the tree validation.
 
 ### Changed (breaking)
 
@@ -252,8 +268,7 @@ and this project adheres to
   `not attempted (cancelled)`.
 - **Not measured here:** the size of the `okf` Native AOT binary after the asynchronous core (design
   R7). The machine this was built on cannot link a native binary, so the figure comes from the CI
-  AOT job. `FileMemoryStore`'s scope probe, writes and deletions still need a provider that
-  completes synchronously (its reads and listings are asynchronous).
+  AOT job.
 - **`MemoryDeleteResult` is `(IReadOnlyList<MemoryTierDeletion> Tiers,
   string? Error)`** (#139, lot D; spec §1, §9, §10): `TiersDeleted` counted
   directories removed by `Directory.Delete`; a scope is now a prefix whose
