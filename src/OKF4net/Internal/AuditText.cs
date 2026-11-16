@@ -30,36 +30,92 @@ internal static class AuditText
     /// <param name="report">The audit report to summarize.</param>
     public static void WriteSummary(TextWriter w, AuditReport report)
     {
-        w.Write($"as of:      {report.AsOf.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}\n");
-        w.Write($"concepts:   {report.ConceptCount}\n");
-
-        // Labels always come from AuditVocabulary -- never as literals here.
-        // Duplicating them in each renderer is exactly the drift the shared
-        // vocabulary exists to prevent. Only the ORDER is decided locally: the
-        // report shows the strongest tier first, so it walks the canonical
-        // (weakest-first) list in reverse.
-        w.Write("\ntrust:\n");
-        foreach (var tier in AuditVocabulary.TrustTiersInOrder.Reverse())
+        foreach (var line in AuditLine.Summary(report))
         {
-            w.Write($"  {report.TrustCounts[tier],4}  {AuditVocabulary.Name(tier)}\n");
+            w.Write(line.Text + "\n");
         }
-
-        w.Write("\nstatus:\n");
-        foreach (var status in AuditVocabulary.StatusesInOrder)
-        {
-            w.Write($"  {report.StatusCounts[status],4}  {AuditVocabulary.Name(status)}\n");
-        }
-
-        w.Write($"\nstale:      {report.StaleCount} of {report.ConceptCount} past stale_after\n");
     }
 
     /// <summary>Renders one concept line: id, freshness, trust tier, status -- two spaces between fields.</summary>
     /// <param name="finding">The finding to render.</param>
-    public static string FormatFinding(AuditFinding finding)
-    {
-        var freshness = AuditVocabulary.Freshness(finding.Lifecycle, finding.IsStale);
+    public static string FormatFinding(AuditFinding finding) => AuditLine.Finding(finding).Text;
 
-        return $"{finding.Id}  {freshness}  {AuditVocabulary.Name(finding.Trust)}  {AuditVocabulary.Name(finding.Lifecycle.Status)}";
+    /// <summary>
+    /// One line this renderer produced, with no line terminator of its own: the
+    /// only form in which a line of <see cref="AuditText"/> enters an agent tool's
+    /// result (<c>ModelTextBuilder.Rendered</c>, #122). Its constructor is
+    /// private, so the only way to obtain one is one of the renderers below —
+    /// which are this class's own — and no arbitrary string can pass for a
+    /// rendered line. The CLI keeps the <see langword="string"/> methods
+    /// above, whose bytes are these lines' and are golden-locked.
+    /// </summary>
+    internal sealed class AuditLine
+    {
+        private AuditLine(string text) => Text = text;
+
+        /// <summary>The rendered line, without a terminator.</summary>
+        public string Text { get; }
+
+        /// <inheritdoc/>
+        public override string ToString() => Text;
+
+        /// <summary>
+        /// The bundle-wide summary counters, <c>as of:</c> through
+        /// <c>stale:</c>, one item per line (an empty item for each blank
+        /// line). See <see cref="WriteSummary"/>, which writes each followed
+        /// by <c>\n</c>.
+        /// </summary>
+        /// <param name="report">The audit report to summarize.</param>
+        internal static IReadOnlyList<AuditLine> Summary(AuditReport report)
+        {
+            var lines = new List<AuditLine>
+            {
+                new($"as of:      {report.AsOf.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}"),
+                new($"concepts:   {report.ConceptCount}"),
+
+                // Labels always come from AuditVocabulary -- never as literals here.
+                // Duplicating them in each renderer is exactly the drift the shared
+                // vocabulary exists to prevent. Only the ORDER is decided locally: the
+                // report shows the strongest tier first, so it walks the canonical
+                // (weakest-first) list in reverse.
+                new(string.Empty),
+                new("trust:"),
+            };
+
+            foreach (var tier in AuditVocabulary.TrustTiersInOrder.Reverse())
+            {
+                lines.Add(new($"  {report.TrustCounts[tier],4}  {AuditVocabulary.Name(tier)}"));
+            }
+
+            lines.Add(new(string.Empty));
+            lines.Add(new("status:"));
+            foreach (var status in AuditVocabulary.StatusesInOrder)
+            {
+                lines.Add(new($"  {report.StatusCounts[status],4}  {AuditVocabulary.Name(status)}"));
+            }
+
+            lines.Add(new(string.Empty));
+            lines.Add(new($"stale:      {report.StaleCount} of {report.ConceptCount} past stale_after"));
+            return lines;
+        }
+
+        /// <summary>One concept line: see <see cref="FormatFinding"/>.</summary>
+        /// <param name="finding">The finding to render.</param>
+        internal static AuditLine Finding(AuditFinding finding)
+        {
+            var freshness = AuditVocabulary.Freshness(finding.Lifecycle, finding.IsStale);
+
+            return new($"{finding.Id}  {freshness}  {AuditVocabulary.Name(finding.Trust)}  {AuditVocabulary.Name(finding.Lifecycle.Status)}");
+        }
+
+        /// <summary>One verification record line: see <see cref="FormatVerificationRecord"/>.</summary>
+        /// <param name="record">The record <see cref="BundleConceptWriter.RecordVerifications"/> reported.</param>
+        /// <param name="by">The actor the caller verified as.</param>
+        internal static AuditLine Record(VerificationRecord record, string by)
+        {
+            var replaces = record.ReplacedAt is { } previous ? $"  (replaces {Stamp(previous)})" : string.Empty;
+            return new($"recorded {Field(record.ConceptId)}  {Field(by)}  {Stamp(record.At)}{replaces}");
+        }
     }
 
     /// <summary>
@@ -84,11 +140,8 @@ internal static class AuditText
     /// </summary>
     /// <param name="record">The record <see cref="BundleConceptWriter.RecordVerifications"/> reported.</param>
     /// <param name="by">The actor the caller verified as -- echoed as given, not re-read from the record.</param>
-    public static string FormatVerificationRecord(VerificationRecord record, string by)
-    {
-        var replaces = record.ReplacedAt is { } previous ? $"  (replaces {Stamp(previous)})" : string.Empty;
-        return $"recorded {Field(record.ConceptId)}  {Field(by)}  {Stamp(record.At)}{replaces}";
-    }
+    public static string FormatVerificationRecord(VerificationRecord record, string by) =>
+        AuditLine.Record(record, by).Text;
 
     /// <summary>
     /// Renders one <c>okf verify --dry-run</c> line:
