@@ -237,7 +237,8 @@ public class OkfContextProviderTests
         Assert.DoesNotContain(tmp.Path, text, StringComparison.Ordinal);
         Assert.True(tools.Handle.IsStale);
         // The library-authored message names no host path (spec §7); the raw cause does.
-        Assert.StartsWith("I/O error while listing the bundle", tools.Handle.LastLoadError!.Message, StringComparison.Ordinal);
+        // The token is read first (#142 D15 a), so the deleted directory fails at that step.
+        Assert.StartsWith("I/O error while reading the bundle version", tools.Handle.LastLoadError!.Message, StringComparison.Ordinal);
         Assert.Contains(tmp.Path, tools.Handle.LastLoadError.InnerException!.Message, StringComparison.Ordinal);
 
         // The host heard of it: the handle's failure (the obligation stays pending, so each

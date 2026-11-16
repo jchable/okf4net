@@ -60,8 +60,10 @@ public class BundleHandleAsyncTests
         var after = handle.GetCurrentAsync();
 
         // It did not join the load that started before the obligation: it waits for it to end.
+        // The old load is parked at its token read, the first step since #142 D15 (a): the only
+        // operation that has reached the provider is that read.
         Assert.False(after.IsCompleted);
-        Assert.Equal(1, gated.Enumerations);
+        Assert.Equal(1, gated.Calls);
 
         gated.Gate.SetResult();
         var oldImage = await before;

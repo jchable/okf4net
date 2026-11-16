@@ -326,12 +326,12 @@ public class BundleHandleTests
         using var handle = new BundleHandle(storage, refreshPolicy: BundleRefreshPolicy.OnAccess);
         var first = handle.Current;
         storage.FailVersionWith = new IOException("network down");
-        var loadsBefore = Loads(storage);
+        var versionsBefore = storage.Calls.Count(c => c == "version");
 
         Assert.Same(first, handle.Current); // the comparison fails, the reload fails too: the previous image is served
         Assert.True(handle.IsStale);
         Assert.IsType<BundleLoadException>(handle.LastLoadError);
-        Assert.True(Loads(storage) > loadsBefore); // a reload was attempted
+        Assert.True(storage.Calls.Count(c => c == "version") >= versionsBefore + 2); // the comparison, then the reload's first step (the token is read before the listing, #142 D15 a)
     }
 
     [Fact]

@@ -254,6 +254,23 @@ public sealed class Bundle
         // this call (FileSystemBundleProvider's BeginScope says what is and is not reused).
         using var scope = ProviderScopes.Begin(provider);
 
+        // The token is read BEFORE the listing (spec of 2026-11-16 §4.7 a): a change between the two
+        // then gives an image newer than its token, which the next comparison reloads; the opposite
+        // order gave an image older than its token, believed fresh until the storage changed again.
+        BundleVersion version;
+        try
+        {
+            version = await provider.GetVersionAsync(limits, ct).ConfigureAwait(false);
+        }
+        catch (BundleProviderException e)
+        {
+            throw Translate(e, null);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            throw new BundleLoadException($"I/O error while reading the bundle version ({e.GetType().Name})", e);
+        }
+
         List<string> treeInput;
         List<string> overLength;
         var ceiling = options.MemoryCeilingBytes;
@@ -285,20 +302,6 @@ public sealed class Bundle
             {
                 parseProblems.Add(new BundleParseError(raw, longKey, $"key is longer than the {KeyByteBound(provider, limits)}-byte bound"));
             }
-        }
-
-        BundleVersion version;
-        try
-        {
-            version = await provider.GetVersionAsync(limits, ct).ConfigureAwait(false);
-        }
-        catch (BundleProviderException e)
-        {
-            throw Translate(e, null);
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-        {
-            throw new BundleLoadException($"I/O error while reading the bundle version ({e.GetType().Name})", e);
         }
 
         var tree = validator.ValidateTree(treeInput, overLength);
