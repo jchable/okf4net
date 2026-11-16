@@ -124,7 +124,9 @@ export default function Catalog() {
             is seen at the next request (for a directory the token is weak: names, lengths and modification times).
             Set it with <code>KnowledgeOptions.RefreshPolicy</code>, or per source with{' '}
             <code>KnowledgeCatalogOptions.RefreshPolicyFor</code>; <code>Handle.Refresh()</code> and{' '}
-            <code>Invalidate()</code> force a re-read.
+            <code>Invalidate()</code> force a re-read. <code>MemoryCeilingFor</code> gives a source its own memory
+            ceiling, set by the host, never read from <code>catalog.json</code>: a source over it is unavailable on a
+            first load and served stale on a refresh.
           </p>
           <p>
             A reload that fails does not lose a source: its last good image keeps being served and the search reports{' '}

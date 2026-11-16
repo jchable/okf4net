@@ -81,7 +81,10 @@ export default function Library() {
                 'LoadAsync(IBundleProvider, BundleLoadOptions?, CancellationToken) → Bundle',
                 <>
                   Load through any provider, under the <code>Limits</code> and <code>KeyPolicy</code> of the options,
-                  reading concepts with at most <code>MaxConcurrentRequests</code> reads in flight.{' '}
+                  reading concepts with at most <code>MaxConcurrentRequests</code> reads in flight. With{' '}
+                  <code>MemoryCeilingBytes</code> set, a load whose estimated image
+                  (<code>EstimatedMemoryBytes</code>) would exceed it is refused before any read when the listed sizes
+                  already do, otherwise as soon as the running estimate crosses it.{' '}
                   <code>Load(string)</code> is the same implementation over a <code>FileSystemBundleProvider</code>,
                   through a bridge that never waits.
                 </>,

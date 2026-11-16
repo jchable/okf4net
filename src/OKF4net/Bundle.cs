@@ -256,9 +256,11 @@ public sealed class Bundle
 
         List<string> treeInput;
         List<string> overLength;
+        var ceiling = options.MemoryCeilingBytes;
+        var declaredLengths = ceiling is null ? null : new Dictionary<string, long>(StringComparer.Ordinal);
         try
         {
-            (treeInput, overLength) = await ListNamesAsync(provider, limits, ct).ConfigureAwait(false);
+            (treeInput, overLength) = await ListNamesAsync(provider, limits, ct, declaredLengths).ConfigureAwait(false);
         }
         catch (BundleProviderException e)
         {
@@ -318,12 +320,35 @@ public sealed class Bundle
         mdKeys.Sort((a, b) => PathOrdering.CompareComponentWise(a.ToString(), b.ToString()));
         var portabilityIssues = FindPortabilityIssues(provider, options, treeInput, overLength, mdKeys);
 
+        var conceptKeys = mdKeys.Where(k => k.Name is not (IndexFilename or LogFilename)).ToList();
+
+        // The memory ceiling (#151), first from the sizes the listing declared: their estimate is what the
+        // reads would add up to at least, so a bundle already over the ceiling is refused before any read.
+        if (ceiling is { } before && declaredLengths is not null)
+        {
+            var declared = 0L;
+            foreach (var key in conceptKeys)
+            {
+                if (declaredLengths.TryGetValue(key.ToString(), out var length))
+                {
+                    declared += SnapshotMemory.OfObject(length);
+                }
+            }
+
+            if (declared > before)
+            {
+                throw Translate(new BundleMemoryCeilingExceededException(before, declared), null);
+            }
+        }
+
         var concepts = new List<Concept>();
         var indexKeys = new List<BundleKey>();
         var logKeys = new List<BundleKey>();
         var objectVersions = new Dictionary<BundleKey, BundleObjectVersion>();
         var chunk = new byte[ReadChunkBytes]; // one copy buffer for every object of this load
-        var prefetched = await PrefetchConceptsAsync(provider, mdKeys.Where(k => k.Name is not (IndexFilename or LogFilename)).ToList(), limits, readDegree, ct).ConfigureAwait(false);
+        var prefetched = await PrefetchConceptsAsync(provider, conceptKeys, limits, readDegree, ceiling, ct).ConfigureAwait(false);
+        var estimate = 0L;
+        var scannedLinks = new List<IReadOnlyList<ConceptLink>>();
 
         foreach (var key in mdKeys)
         {
@@ -373,6 +398,14 @@ public sealed class Bundle
                             throw new BundleLoadException("I/O error: stream did not contain valid UTF-8");
                         }
 
+                        // Then as the reads go, in key order: the load stops at the first object that takes the
+                        // running estimate over the ceiling, never after reading everything.
+                        estimate += SnapshotMemory.OfText(text);
+                        if (ceiling is { } during && estimate > during)
+                        {
+                            throw Translate(new BundleMemoryCeilingExceededException(during, estimate), null);
+                        }
+
                         OkfDocument document;
                         try
                         {
@@ -388,6 +421,15 @@ public sealed class Bundle
                         {
                             var id = ConceptId.FromKey(key);
                             concepts.Add(new Concept(id, BundleDisplayPath.Compose(provider.Location, key), document) { Key = key });
+
+                            // The links are scanned once, here, for the estimate and for the graph built below.
+                            var links = document.Links();
+                            scannedLinks.Add(links);
+                            estimate += SnapshotMemory.OfLinks(links.Count);
+                            if (ceiling is { } linked && estimate > linked)
+                            {
+                                throw Translate(new BundleMemoryCeilingExceededException(linked, estimate), null);
+                            }
                         }
                         catch (ConceptIdException e)
                         {
@@ -405,7 +447,7 @@ public sealed class Bundle
             index[concepts[i].Id] = i;
         }
 
-        var (outbound, backlinks) = BuildGraph(concepts, index);
+        var (outbound, backlinks) = BuildGraph(concepts, index, scannedLinks);
         var okfVersion = await ComputeOkfVersionAsync(provider, limits, indexKeys, chunk, ct).ConfigureAwait(false);
 
         // One path order for every problem, whatever stage found it (a bound, the tree
@@ -415,7 +457,10 @@ public sealed class Bundle
         // names that compare equal (`a\b.md` and `a/b.md`) keep the order they were found in.
         parseProblems = [.. parseProblems.OrderBy(p => p.RawName, Comparer<string>.Create(PathOrdering.CompareComponentWise))];
 
-        var bundle = new Bundle(provider, options, validator, version, okfVersion, concepts, index, indexKeys, logKeys, parseProblems, rejectedKeys, tree.RejectedPrefixes.ToList(), portabilityIssues, objectVersions, outbound, backlinks);
+        var bundle = new Bundle(provider, options, validator, version, okfVersion, concepts, index, indexKeys, logKeys, parseProblems, rejectedKeys, tree.RejectedPrefixes.ToList(), portabilityIssues, objectVersions, outbound, backlinks)
+        {
+            EstimatedMemoryBytes = estimate,
+        };
 
         // The executable resources of every §10 concept are read and hashed now (spec §5.1),
         // inside the load's scope, so that an execution can later be pinned to the version
@@ -450,7 +495,7 @@ public sealed class Bundle
     /// byte bound) does not stop the starting. A cancellation of the caller's token propagates once every
     /// started read has ended.
     /// </summary>
-    private static async ValueTask<Dictionary<BundleKey, PrefetchedRead>> PrefetchConceptsAsync(IBundleProvider provider, List<BundleKey> keys, BundleLimits limits, int degree, CancellationToken ct)
+    private static async ValueTask<Dictionary<BundleKey, PrefetchedRead>> PrefetchConceptsAsync(IBundleProvider provider, List<BundleKey> keys, BundleLimits limits, int degree, long? ceiling, CancellationToken ct)
     {
         var outcomes = new Dictionary<BundleKey, PrefetchedRead>();
         if (degree <= 1 || keys.Count <= 1)
@@ -460,6 +505,7 @@ public sealed class Bundle
 
         using var slots = new SemaphoreSlim(Math.Min(degree, keys.Count));
         var lowestFailed = int.MaxValue;
+        var readEstimate = 0L; // the memory estimate (#151) of the reads that have ended
         var started = new List<(BundleKey Key, Task<PrefetchedRead> Read)>(keys.Count);
         ExceptionDispatchInfo? cancelled = null;
         try
@@ -467,7 +513,11 @@ public sealed class Bundle
             for (var rank = 0; rank < keys.Count; rank++)
             {
                 await slots.WaitAsync(ct).ConfigureAwait(false);
-                if (Volatile.Read(ref lowestFailed) < rank)
+
+                // No read starts once a lower rank has failed, nor once the reads that ended are over the memory
+                // ceiling: reads start in key order, so what was started is a prefix whose estimate is already over,
+                // and the loop, summing the same reads in key order, refuses inside it.
+                if (Volatile.Read(ref lowestFailed) < rank || (ceiling is { } over && Interlocked.Read(ref readEstimate) > over))
                 {
                     slots.Release();
                     break;
@@ -504,6 +554,11 @@ public sealed class Bundle
             try
             {
                 var read = await ReadTextAtAsync(provider, key, limits, buffer, null, ct).ConfigureAwait(false);
+                if (ceiling is not null)
+                {
+                    Interlocked.Add(ref readEstimate, SnapshotMemory.OfText(read.Text));
+                }
+
                 return new PrefetchedRead(read.Text, read.Version, null);
             }
             catch (Exception e) when (e is not OperationCanceledException && e is not OutOfMemoryException)
@@ -680,7 +735,7 @@ public sealed class Bundle
     /// The one listing of the whole bundle that applies every bound (entries, depth, key length) for a load or a regeneration: <see cref="Load(IBundleProvider, BundleLoadOptions?)"/>
     /// and <see cref="IndexGenerator"/> both list through it.
     /// </summary>
-    internal static async ValueTask<(List<string> TreeInput, List<string> OverLength)> ListNamesAsync(IBundleProvider provider, BundleLimits limits, CancellationToken ct)
+    internal static async ValueTask<(List<string> TreeInput, List<string> OverLength)> ListNamesAsync(IBundleProvider provider, BundleLimits limits, CancellationToken ct, Dictionary<string, long>? declaredLengths = null)
     {
         var treeInput = new List<string>();
         var overLength = new List<string>();
@@ -705,6 +760,10 @@ public sealed class Bundle
             }
 
             treeInput.Add(raw);
+            if (declaredLengths is not null && listing.Length is { } length and >= 0)
+            {
+                declaredLengths[raw] = length;
+            }
         }
 
         return (treeInput, overLength);
@@ -789,6 +848,15 @@ public sealed class Bundle
 
     /// <summary>The provider's bundle token at load time (spec §5.1).</summary>
     public BundleVersion Version { get; }
+
+    /// <summary>
+    /// The memory this image takes, estimated (#151): a linear model over the size of every concept object the
+    /// load read — approximate, not a measurement of the managed heap (a calibration test pins it within its
+    /// tolerance against retained bytes on reference bundles). The figure <see cref="BundleLoadOptions.MemoryCeilingBytes"/>
+    /// is enforced against. Index files, <c>log.md</c> and the executable resources surveyed at the load are not
+    /// held by the image and are not counted.
+    /// </summary>
+    public long EstimatedMemoryBytes { get; private init; }
 
     /// <summary>The keys of every <c>index.md</c>, in load order; <see cref="BundleDisplayPath.Compose"/> with <see cref="Location"/> gives their display paths (the obsolete <c>IndexFiles</c>).</summary>
     public IReadOnlyList<BundleKey> IndexKeys { get; }
@@ -1338,7 +1406,8 @@ public sealed class Bundle
     /// </summary>
     internal static (Dictionary<ConceptId, List<ResolvedLink>> Outbound, Dictionary<ConceptId, List<ConceptId>> Backlinks) BuildGraph(
         List<Concept> concepts,
-        Dictionary<ConceptId, int> index)
+        Dictionary<ConceptId, int> index,
+        List<IReadOnlyList<ConceptLink>>? scannedLinks = null)
     {
         var outbound = new Dictionary<ConceptId, List<ResolvedLink>>();
         var backlinks = new Dictionary<ConceptId, List<ConceptId>>();
@@ -1353,10 +1422,13 @@ public sealed class Bundle
         // concepts share an id, which Load does not prevent.
         var credited = new HashSet<(ConceptId Target, ConceptId Source)>();
 
-        foreach (var c in concepts)
+        for (var i = 0; i < concepts.Count; i++)
         {
+            var c = concepts[i];
             var resolved = new List<ResolvedLink>();
-            foreach (var link in c.Document.Links())
+
+            // The load scanned each concept's links already (one per concept, in the same order); anything else scans here.
+            foreach (var link in scannedLinks?[i] ?? c.Document.Links())
             {
                 var target = link.Resolve(c.Id);
                 if (target is null)

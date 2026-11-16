@@ -231,7 +231,18 @@ never wait — a pending read is cancelled and the call throws
 `InvalidOperationException` naming the async overload, and a synchronous write is
 refused before any I/O starts. `LoadAsync` reads the concepts with at most
 `BundleLimits.MaxConcurrentRequests` reads in flight, and reports the failing key
-of the smallest rank whatever finished first. Keys are validated as a tree
+of the smallest rank whatever finished first. Every image reports the memory it
+takes as an estimate, `Bundle.EstimatedMemoryBytes`: a linear model over the size
+of the concept objects read and the links they hold, calibrated against retained
+bytes. It is an approximation, not a heap measurement. A host can bound it with
+`BundleLoadOptions.MemoryCeilingBytes` (no ceiling by default). A load that would
+exceed the ceiling is refused with `BundleMemoryCeilingExceededException`, inside
+the `BundleLoadException`, carrying the ceiling and the estimate. The refusal
+comes before any read when the sizes the listing declares already exceed it,
+otherwise as soon as the running estimate crosses it, never after loading
+everything. The ceiling bounds one image: during a refresh the previous image is
+still held, so the peak can reach twice the ceiling. A `BundleHandle` whose reload
+is refused keeps serving its previous image, flagged stale. Keys are validated as a tree
 under the `Native` policy by default: the loader refuses only what the
 provider's storage itself cannot hold or would alias (OKF §11 imposes no naming
 constraint), so `Orders.md` beside `orders.md` (on any volume that holds
