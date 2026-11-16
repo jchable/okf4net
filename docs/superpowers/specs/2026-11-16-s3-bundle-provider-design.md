@@ -695,3 +695,54 @@ T1 à T3 couvrent.
 | M6 | Checksums | CRC32 par défaut, accepté | GET signé accepté |
 | M7 | Code | adaptateur 72 lignes | 603 lignes mesurées + ≈ 400 estimées pour la production |
 | M7 | Cadence | ≈ 2 versions par semaine (54 en 6 mois) | — |
+
+## Annexe B — résultats de la porte (tâche 1 du plan, 2026-11-16)
+
+Deux prototypes jetables (hors dépôt) : `AWSSDK.S3` 4.1.0 + `AWSSDK.Core` 4.1.0
+(minimum) et `AWSSDK.S3` 4.1.0 + `AWSSDK.Core` 4.1.0.1 (dernières publiées à
+cette date). Windows 11, .NET 10 ; Podman 5.6.1 ; Docker 28.3.3 sous Ubuntu 24.04
+(WSL, harnais compilé en .NET 9 pour ce seul point). Journaux bruts dans le
+scratchpad de la session. Sauf mention, **résultat identique sur les deux
+versions**.
+
+| # | Point de §9 | Observé | Verdict |
+|---|---|---|---|
+| G1 | Sorties réseau hors `HttpClientFactory` | **CSM** : un client ordinaire envoie 2 datagrammes UDP par appel sous `AWS_CSM_ENABLED` ; une sous-classe d'`AmazonS3Client` qui retire `CSMCallAttemptHandler` et `CSMCallEventHandler` dans `CustomizeRuntimePipeline` (point d'extension **par client**, appelé après l'ajout des gestionnaires CSM) en envoie 0. **Détection de région** : l'inventaire statique de l'IL (appelants transitifs) donne un seul chemin vers le transport à part, `AmazonS3RetryPolicy.SharedRetryForExceptionAsync` → `BucketRegionDetector.DetectMismatchWithHeadBucketFallbackAsync` → `GetBucketRegionNoPipelineAsync` → `AmazonS3HttpUtil.GetHeadAsync` ; remplacer, dans la même sous-classe, le `RetryHandler` par `new RetryHandler(new StandardRetryPolicy(Config))` le rend inatteignable, et les 503 restent réessayés (2 envois). Aucun scénario (301, 400 avec ou sans `<Region>`, 403 avec ou sans `x-amz-bucket-region`, 307 ; `Region` et `ServiceUrl` ; avec et sans identifiants ambiants) n'a déclenché le `HEAD` sur un client ordinaire : pas de témoin dynamique. | **conforme** (neutralisation par client, structurelle) |
+| G2 | Réglages ambiants | Variables lues : `AWS_ENDPOINT_URL[_*]`, `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS`, `AWS_USE_FIPS_ENDPOINT`, `AWS_USE_DUALSTACK_ENDPOINT`, `AWS_MAX_ATTEMPTS`, `AWS_SDK_UA_APP_ID`, `AWS_REQUEST_CHECKSUM_CALCULATION`, `AWS_AUTH_SCHEME_PREFERENCE`, `AWS_DISABLE_CLOCK_SKEW_CORRECTION`, `AWS_EXECUTION_ENV`, `AWS_ACCOUNT_ID`, `AWS_REGION`, `AWS_DEFAULT_REGION`, `AWS_CONFIG_FILE`, `AWS_PROFILE`, `AWS_S3_US_EAST_1_REGIONAL_ENDPOINT`, `AWS_S3_DISABLE_MULTIREGION_ACCESS_POINTS`, `AWS_S3_DISABLE_EXPRESS_SESSION_AUTH`, `AWS_CSM_*`, et les variables d'identifiants. Sous toutes ces variables et un profil hostile, le client durci (configuration de §4.4, `ClientAppId = ""`, sous-classe de G1) envoie des requêtes identiques à l'environnement vide (ligne, chemin, requête, `SignedHeaders`, valeurs signées, portée), **sauf** le jeton `exec-env/<valeur>` que `AWS_EXECUTION_ENV` ajoute au `User-Agent` et qu'aucun réglage du client ne retire. Le `User-Agent` n'est pas signé (`SignedHeaders=host;x-amz-checksum-mode;x-amz-content-sha256;x-amz-date`). Témoin : le client ordinaire est perturbé (échecs). | **conforme**, avec retrait du jeton par le handler du provider (conséquence 2) |
+| G3 | Autorités, chemins, échange de bucket, encodage | `us-east-1` → `s3.us-east-1.amazonaws.com` ; `cn-north-1` → partition `amazonaws.com.cn`. **Le SDK passe de lui-même en path-style** pour un bucket contenant `.` (région et `ServiceUrl`) et pour un `ServiceUrl` dont l'hôte est une adresse IP. Échange confirmé : une 307 entre les deux autorités garde le chemin (`/kb/a.md` de `demo.s3…` vers `s3…`, bucket `kb`). L'encodage du chemin envoyé est celui de `S3KeyCodec.EncodePath` pour les 26 noms de la batterie. | **conforme** : §4.4 prévoit de refuser à la construction ce que le SDK ne sait pas adresser comme demandé (conséquence 3) |
+| G4 | Appels d'identifiants ; `ClientAppId` | Un `AWSCredentials` hôte passé au client est appelé à chaque opération **par `GetCredentials()` synchrone et deux fois par l'asynchrone**, réessais compris ; derrière un `AWSCredentials` qui rend un instantané, l'hôte n'est jamais appelé (0, réessai et redirection compris). `ClientAppId = ""` neutralise `AWS_SDK_UA_APP_ID` (aucun `app/` dans le `User-Agent`) ; `" "` laisse `app/` ; `null` laisse `app/AMBIENTMARK`. Une 307 vers la même URL sur un `ServiceUrl` IP lève `ArgumentException` (le gestionnaire de redirection S3 refuse un hôte non S3). | **conforme** |
+| G5 | Durée de vie du `HttpClient` | Avec `UseSDKHttpClientCaching=false` et `DisposeHttpClientsAfterUse=false`, chaque client n'utilise que son `HttpClient` ; le SDK n'en libère aucun, ni pendant l'usage ni à la libération du client. | **conforme** (le provider le libère lui-même) |
+| G6 | Exception du garde non réessayée | Une exception dérivant d'`Exception`, levée par un handler : 1 appel, remontée telle quelle (`MaxErrorRetry = 2`), client ordinaire comme durci. | **conforme** |
+| G7 | Délais | Corps bloqué qui honore le jeton : annulé à 1 s par le jeton seul. Corps « sourd » au jeton : bloqué au-delà de 6 s par le jeton seul, débloqué à 1 s par la libération de la réponse (`ObjectDisposedException`). Tempête de 503 : coupée à 1 s (`TaskCanceledException`). Identifiants bloquants sous `Task.Run(...).WaitAsync(1 s)` : rendus à 1 s. | **conforme** (les deux mécanismes de §4.5 sont nécessaires) |
+| G8 | Intégrité | `WHEN_SUPPORTED` : `AmazonClientException` « Expected hash not equal to calculated hash », levée **pendant la lecture**. `WHEN_REQUIRED` : non détecté. | **conforme** ; le README dit que `WhenRequired` ne vérifie pas les réponses |
+| G9 | Bornage avant désérialisation ; `AsyncLocal` | Un handler qui rend une **nouvelle** réponse (`ByteArrayContent`) est désérialisé normalement ; au-delà de la borne, l'exception du handler remonte et le flux d'origine n'a été lu que par lui (1 ouverture). La valeur `AsyncLocal` posée avant l'appel est vue par le handler à la première tentative et à la tentative réessayée. | **conforme** |
+| G10 | Mémoire (16 × 64 Mio, Markdown UTF-8 valide) | Avec `Content-Length` : pic de 4 069 Mio au-dessus de la base (borne 4B × 16 = 4 096 Mio). Sans : 2 363 Mio (borne 6B × 16 = 6 144 Mio). Les 16 concepts chargés en entier. | **conforme** |
+| G11 | RustFS piloté par un processus de test | Podman sans aucun `docker` sur le `PATH` : prêt en 3,4 s, retiré, rien ne reste. Docker 28.3.3 sous Linux (WSL) : prêt en 29 s (tirage de l'image), retiré, rien ne reste. | **conforme** |
+| G12 | Décodage et ordre du listing | `ListObjectsV2Request` n'a pas de propriété `EncodingType` : c'est **`Encoding = EncodingType.Url`**. La réponse porte `EncodingType=url` et le SDK **ne décode pas** les clés (`S3Object.Key` encodé) ; le décodage strict coïncide avec le listing non encodé pour les 26 noms ; ordre strictement croissant par point de code. RustFS refuse `a/../b`, `a//b`, `a/./b` (400). | **conforme** |
+
+**Conséquences pour l'implémentation** (consignées comme décisions d'exécution
+dans le plan ; aucune ne contredit une décision D1–D16) :
+
+1. **Client** (G1) : le provider construit une sous-classe interne
+   d'`AmazonS3Client` dont `CustomizeRuntimePipeline` retire les deux
+   gestionnaires CSM s'ils sont présents et remplace le `RetryHandler` par une
+   `StandardRetryPolicy`. Le test de non-régression est structurel : le pipeline
+   du client du provider ne contient aucun gestionnaire CSM ni
+   `AmazonS3RetryPolicy`, alors que celui d'un `AmazonS3Client` ordinaire en
+   contient une (contre-épreuve) ; le test CSM dynamique (datagrammes) reste.
+2. **`User-Agent`** (G2) : le handler du provider retire du `User-Agent` tout
+   jeton `exec-env/…` et `app/…` (non signés) ; `ClientAppId = ""` (G4).
+3. **Adressage** (G3) : refusés à la construction, sans `ForcePathStyle`, un
+   bucket contenant `.` (quel que soit l'endpoint) et un `ServiceUrl` dont
+   l'hôte est une adresse IP. Le SDK ne change alors jamais de mode pour une
+   configuration admise.
+4. **Nombre d'envois par opération** (constat hors des douze points) : une 307
+   répondue indéfiniment vers une URL que le garde admet fait boucler le SDK
+   sans borne (mesuré : 3,6 Go en quelques minutes, arrêt forcé). Le garde
+   refuse donc tout envoi au-delà de **3 par opération** (les 3 tentatives de
+   `MaxErrorRetry = 2`), redirections comprises (`Kind = InvalidResponse`).
+5. **API** (G12) : `ListObjectsV2Request.Encoding = EncodingType.Url` (la
+   propriété `EncodingType` n'existe pas).
+6. **Test de 307 sur la même autorité** (G4) : il se fait sur une source
+   `Region` ; sur un `ServiceUrl` IP, le SDK refuse la redirection par
+   `ArgumentException`.

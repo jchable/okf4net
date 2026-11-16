@@ -623,6 +623,8 @@ public class SourceTests
         Local() with { RequestTimeout = TimeSpan.Zero }, Local() with { MaxConcurrentRequests = 0 },
         Local() with { MaxObjectBytes = 0 }, Local() with { MaxObjectBytes = (long)Array.MaxLength + 1 },
         new S3BundleSource { Bucket = "my.dotted.bucket", Region = RegionEndpoint.EUWest1 }, // virtual-hosted + dots: refused (spec §4.4)
+        new S3BundleSource { Bucket = "my.dotted.bucket", ServiceUrl = new Uri("https://store.example") },      // dots without ForcePathStyle, any endpoint (gate G3)
+        new S3BundleSource { Bucket = "okf", ServiceUrl = new Uri("http://127.0.0.1:9000"), AllowInsecureHttp = true }, // an IP ServiceUrl without ForcePathStyle (gate G3)
         new S3BundleSource { Bucket = "demo", Region = RegionEndpoint.CNNorth1 }, // partition outside amazonaws.com: refused in v1 (gate G3)
     };
 
@@ -942,6 +944,14 @@ internal static partial class SourceRules
             throw new ArgumentException("Timeouts and bounds must be positive (MaxObjectBytes at most Array.MaxLength).", nameof(source));
         }
 
+        // Gate G3 (spec Annexe B, consequence 3): the SDK switches to path-style by itself for a bucket with '.'
+        // (any endpoint) and for an IP-literal ServiceUrl; such configurations need ForcePathStyle, so the SDK
+        // never changes the addressing of an admitted configuration.
+        if (!source.ForcePathStyle && bucket.Contains('.', StringComparison.Ordinal))
+        {
+            throw new ArgumentException("A bucket name with '.' needs ForcePathStyle.", nameof(source));
+        }
+
         string endpoint;
         Uri? serviceUrl = null;
         if (source.ServiceUrl is { } url)
@@ -957,6 +967,11 @@ internal static partial class SourceRules
                 throw new ArgumentException("An http:// ServiceUrl needs AllowInsecureHttp.", nameof(source));
             }
 
+            if (!source.ForcePathStyle && url.HostNameType is UriHostNameType.IPv4 or UriHostNameType.IPv6)
+            {
+                throw new ArgumentException("An IP-address ServiceUrl needs ForcePathStyle.", nameof(source));
+            }
+
             serviceUrl = new Uri(string.Create(CultureInfo.InvariantCulture, $"{url.Scheme}://{url.Host.ToLowerInvariant()}:{url.Port}/"));
             endpoint = string.Create(CultureInfo.InvariantCulture, $"{url.Scheme}://{url.Host.ToLowerInvariant()}:{url.Port}");
         }
@@ -966,11 +981,6 @@ internal static partial class SourceRules
             if (region.PartitionDnsSuffix != "amazonaws.com")
             {
                 throw new ArgumentException("Only regions of the amazonaws.com partition are supported.", nameof(source));
-            }
-
-            if (!source.ForcePathStyle && bucket.Contains('.', StringComparison.Ordinal))
-            {
-                throw new ArgumentException("A bucket name with '.' needs ForcePathStyle on Amazon S3 (TLS would not match a virtual-hosted name).", nameof(source));
             }
 
             endpoint = "aws:" + region.SystemName;
@@ -1267,10 +1277,44 @@ public class GuardTests
         Assert.False(await Admitted(list, "http://127.0.0.1:9000/other/?list-type=2&prefix=kb%2F"));  // another bucket path
     }
 
+    [Fact]
+    public async Task A_307_answered_forever_stops_at_three_sends()
+    {
+        // Gate finding (spec Annexe B, consequence 4): without a cap the SDK followed a same-URL 307 without bound.
+        var (client, fake) = Build(new S3BundleSource { Bucket = "demo", Region = RegionEndpoint.EUWest1 });
+        fake.Respond = (req, _) => Task.FromResult(FakeS3Handler.Redirect(HttpStatusCode.TemporaryRedirect, req.RequestUri!.ToString()));
+        var e = await Get(client, "demo", "kb/x");
+        var guard = Assert.IsType<GuardException>(e is GuardException ? e : e?.InnerException ?? e);
+        Assert.Equal(S3FailureKind.InvalidResponse, guard.Kind);
+        Assert.Equal(PinningHandler.MaxSendsPerOperation, fake.Requests.Count);
+    }
+
+    [Fact]
+    public async Task Ambient_user_agent_tokens_never_leave_and_the_signature_does_not_cover_them()
+    {
+        var (invoker, fake) = Guard();
+        var request = new HttpRequestMessage(HttpMethod.Get, "http://127.0.0.1:9000/okf/kb/a.md");
+        request.Headers.TryAddWithoutValidation("User-Agent", "aws-sdk-dotnet-coreclr/4.1.0.0 lang/.NET_Core#10.0 exec-env/AMBIENTEXEC api/S3#4.1.0.0 app/AMBIENTMARK md/ClientAsync");
+        OperationContext.Current.Value = new OperationContext(S3Operation.Read) { ExpectedObjectS3Key = "kb/a.md", Credentials = Creds };
+        try
+        {
+            using var _ = await invoker.SendAsync(request, default);
+        }
+        finally
+        {
+            OperationContext.Current.Value = null;
+        }
+
+        var ua = string.Join(' ', fake.Requests.Single().Headers.GetValues("User-Agent"));
+        Assert.DoesNotContain("exec-env/", ua, StringComparison.Ordinal);
+        Assert.DoesNotContain("app/", ua, StringComparison.Ordinal);
+        Assert.Contains("api/S3#4.1.0.0", ua, StringComparison.Ordinal);
+    }
+
     public static TheoryData<S3BundleSource, string, string> Table => new()
     {
         { new S3BundleSource { Bucket = "okf", ServiceUrl = new Uri("http://127.0.0.1:9000"), ForcePathStyle = true, AllowInsecureHttp = true }, "127.0.0.1:9000", "/okf/" },
-        { new S3BundleSource { Bucket = "okf", ServiceUrl = new Uri("http://127.0.0.1:9000"), AllowInsecureHttp = true }, "okf.127.0.0.1:9000", "/" },
+        { new S3BundleSource { Bucket = "okf", ServiceUrl = new Uri("http://store.example:9000"), AllowInsecureHttp = true }, "okf.store.example:9000", "/" }, // a named host: an IP one needs ForcePathStyle (gate G3)
         { new S3BundleSource { Bucket = "demo", Region = RegionEndpoint.EUWest1, ForcePathStyle = true }, "s3.eu-west-1.amazonaws.com:443", "/demo/" },
         { new S3BundleSource { Bucket = "demo", Region = RegionEndpoint.EUWest1 }, "demo.s3.eu-west-1.amazonaws.com:443", "/" },
     };
@@ -1489,6 +1533,9 @@ internal sealed class OperationContext(S3Operation operation)
 
     /// <summary>Where the bounding handler leaves a listing page's raw body.</summary>
     public ListPageCapture? Capture { get; init; }
+
+    /// <summary>Requests this operation has sent, counted by the guard (at most PinningHandler.MaxSendsPerOperation).</summary>
+    public int Sends;
 }
 
 /// <summary>The raw body of the last listing page this operation received.</summary>
@@ -1566,6 +1613,9 @@ namespace OKF4net.Providers.S3.Internal;
 /// </summary>
 internal sealed class PinningHandler(AddressingPlan plan) : DelegatingHandler
 {
+    /// <summary>At most this many sends per operation, retries and redirects included (spec Annexe B, consequence 4: a 307 answered forever made the SDK loop without bound).</summary>
+    public const int MaxSendsPerOperation = 3;
+
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
         var context = OperationContext.Current.Value;
@@ -1575,7 +1625,31 @@ internal sealed class PinningHandler(AddressingPlan plan) : DelegatingHandler
             throw new GuardException(S3FailureKind.RefusedHost);
         }
 
+        if (Interlocked.Increment(ref context.Sends) > MaxSendsPerOperation)
+        {
+            throw new GuardException(S3FailureKind.InvalidResponse);
+        }
+
+        StripAmbientUserAgentTokens(request);
         return base.SendAsync(request, ct);
+    }
+
+    /// <summary>
+    /// Removes the exec-env/… token AWS_EXECUTION_ENV adds and any app/… token (spec Annexe B, G2): no client
+    /// setting removes the first, and neither is signed (the User-Agent is not in SignedHeaders), so the signature
+    /// is unchanged and nothing ambient reaches the store.
+    /// </summary>
+    private static void StripAmbientUserAgentTokens(HttpRequestMessage request)
+    {
+        if (!request.Headers.TryGetValues("User-Agent", out var values))
+        {
+            return;
+        }
+
+        var kept = string.Join(' ', string.Join(' ', values).Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Where(t => !t.StartsWith("exec-env/", StringComparison.Ordinal) && !t.StartsWith("app/", StringComparison.Ordinal)));
+        request.Headers.Remove("User-Agent");
+        request.Headers.TryAddWithoutValidation("User-Agent", kept);
     }
 
     private bool Admits(OperationContext context, Uri uri)
@@ -1871,7 +1945,7 @@ internal static class ClientBuilder
         var plan = AddressingPlan.For(source);
         var chain = new PinningHandler(plan) { InnerHandler = new BoundingHandler { InnerHandler = network } };
         httpClient = new HttpClient(chain, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };
-        return new AmazonS3Client(credentials, Configure(source, new ProviderHttpClientFactory(httpClient)));
+        return new ProviderS3Client(credentials, Configure(source, new ProviderHttpClientFactory(httpClient)));
     }
 
     /// <summary>The same client WITHOUT the guard, for the counter-proof tests only (never reachable from the public API).</summary>
@@ -1921,20 +1995,54 @@ internal static class ClientBuilder
     }
 
     /// <summary>
-    /// The neutralizations gate G1 (region detection, CSM — for this client only) and G2/G4 (the remaining ambient
-    /// settings, the neutral ClientAppId, AuthSchemePreference) recorded in the spec's Annexe B. Write here exactly
-    /// the assignments of those rows, one line each with the row id in a trailing comment; nothing else.
+    /// The configuration rows of gate G2/G4 (spec Annexe B): every other ambient setting is already overridden
+    /// explicitly in <see cref="Configure"/> (measured: identical requests under a hostile environment and profile).
+    /// The per-client neutralization of CSM and region detection (G1) is <see cref="ProviderS3Client"/>; the
+    /// User-Agent token AWS_EXECUTION_ENV adds, which no setting removes, is stripped by <see cref="PinningHandler"/>.
     /// </summary>
     private static void ApplyGateRows(AmazonS3Config config)
     {
-        // Example of the expected form (replace with Annexe B's rows):
-        // config.ClientAppId = "";            // G4
-        // config.AuthSchemePreference = "sigv4"; // G2
+        config.ClientAppId = ""; // G4: an empty string neutralizes AWS_SDK_UA_APP_ID / sdk_ua_app_id (null falls back, " " leaves "app/")
+    }
+}
+
+/// <summary>
+/// The provider's client (spec Annexe B, G1): its own pipeline loses the two CSM handlers (UDP telemetry, decided
+/// by a process-wide singleton) and the S3 retry policy, whose region correction is the ONLY caller of
+/// BucketRegionDetector's out-of-band HEAD transport; the standard policy keeps retrying 5xx and throttling.
+/// Per client: other AmazonS3Client instances of the host are untouched.
+/// </summary>
+internal sealed class ProviderS3Client(AWSCredentials credentials, AmazonS3Config config) : AmazonS3Client(credentials, config)
+{
+    /// <summary>The pipeline's handler types after customization, for the structural test (Task 10).</summary>
+    internal IReadOnlyList<Type> HandlerTypes { get; private set; } = [];
+
+    /// <summary>The retry policy type in effect, for the structural test (Task 10).</summary>
+    internal Type? RetryPolicyType { get; private set; }
+
+    protected override void CustomizeRuntimePipeline(Amazon.Runtime.Internal.RuntimePipeline pipeline)
+    {
+        base.CustomizeRuntimePipeline(pipeline);
+        TryRemove<Amazon.Runtime.Internal.CSMCallAttemptHandler>(pipeline);
+        TryRemove<Amazon.Runtime.Internal.CSMCallEventHandler>(pipeline);
+        var policy = new Amazon.Runtime.Internal.StandardRetryPolicy(Config);
+        pipeline.ReplaceHandler<Amazon.Runtime.Internal.RetryHandler>(new Amazon.Runtime.Internal.RetryHandler(policy));
+        RetryPolicyType = policy.GetType();
+        HandlerTypes = pipeline.EnumerateHandlers().Select(h => h.GetType()).ToArray();
+    }
+
+    private static void TryRemove<T>(Amazon.Runtime.Internal.RuntimePipeline pipeline)
+        where T : Amazon.Runtime.IPipelineHandler
+    {
+        if (pipeline.EnumerateHandlers().Any(h => h is T))
+        {
+            pipeline.RemoveHandler<T>(); // present only when CSM is enabled for the process (AWS_CSM_ENABLED, profile, AWSConfigs)
+        }
     }
 }
 ```
 
-`ApplyGateRows` is the one place gate results enter code; the hostile-environment test (Task 10) and the socket-level egress test (Task 10) are its guards. Leave no commented example in the final code: replace the comments with Annexe B's assignments.
+`ApplyGateRows` and `ProviderS3Client` are where gate results enter code; their guards are the hostile-environment test and the structural pipeline test (Task 10). (`CustomizeRuntimePipeline` runs from the base constructor: the two properties are set before the derived constructor body, which is why they have private setters and initializers; check in Step 8 that `HandlerTypes` is populated — if the base constructor ran it before field initializers, assign the initializers in the property getters instead.)
 
 Minimal `SnapshotCredentials` (completed in Task 6):
 
@@ -3097,7 +3205,7 @@ internal sealed class ListingWalker(AmazonS3Client client, string bucket, Operat
                     Prefix = listPrefix,
                     MaxKeys = maxKeys,
                     ContinuationToken = token,
-                    EncodingType = EncodingType.Url,
+                    Encoding = EncodingType.Url, // the property is Encoding (gate G12)
                 }, scope.Token).ConfigureAwait(false);
                 return ListPageParser.Parse(capture.Body ?? throw new GuardException(S3FailureKind.InvalidResponse));
             }
@@ -3460,11 +3568,12 @@ public class ReadTests
                 ? FakeS3Handler.Redirect(HttpStatusCode.TemporaryRedirect, req.RequestUri!.ToString()) // the same URL: admitted by the guard
                 : new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent("x"u8.ToArray()) }),
         };
-        using var p = S3Test.Provider(fake, creds: host);
+        // A Region source: on an IP ServiceUrl the SDK refuses any redirect with ArgumentException (gate G4).
+        using var p = S3Test.Provider(fake, new S3BundleSource { Bucket = "demo", Prefix = "kb", Region = Amazon.RegionEndpoint.EUWest1, RequestTimeout = TimeSpan.FromSeconds(5) }, host);
         using var o = await p.ReadAsync(BundleKey.Parse("a.md"), null, default);
         Assert.Equal(2, fake.Requests.Count);
         Assert.Equal(1, Volatile.Read(ref calls));
-        Assert.All(fake.Requests, r => Assert.Contains("Credential=A/", r.Headers.Authorization!.Parameter, StringComparison.Ordinal));
+        Assert.All(fake.Requests, r => Assert.Contains("Credential=A/", string.Join(",", r.Headers.GetValues("Authorization")) /* gate: the SDK adds it without validation; Headers.Authorization stays null */, StringComparison.Ordinal));
     }
 
     [Fact]
@@ -3634,7 +3743,7 @@ public class ReadTests
         using var o = await p.ReadAsync(BundleKey.Parse("a.md"), null, default);
         Assert.Equal(3, attempts);
         Assert.Equal(1, Volatile.Read(ref calls));
-        Assert.All(fake.Requests, r => Assert.Contains("Credential=A/", r.Headers.Authorization!.Parameter, StringComparison.Ordinal));
+        Assert.All(fake.Requests, r => Assert.Contains("Credential=A/", string.Join(",", r.Headers.GetValues("Authorization")) /* gate: the SDK adds it without validation; Headers.Authorization stays null */, StringComparison.Ordinal));
     }
 
     [Fact]
@@ -4196,7 +4305,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 **Files:**
 - Create: `tests/S3HostileEnvProbe/S3HostileEnvProbe.csproj`, `tests/S3HostileEnvProbe/Program.cs`
 - Modify: `tests/OKF4net.Tests/OKF4net.Tests.csproj` (`<ProjectReference Include="..\S3HostileEnvProbe\S3HostileEnvProbe.csproj" ReferenceOutputAssembly="false" />`, next to `YamlHostileProbe`)
-- Create (tests): `tests/OKF4net.Tests/TestProcess.cs` (bounded child-process runner, reused by Task 11), `tests/OKF4net.Tests/Providers/S3/HostileEnvironmentTests.cs`, `tests/OKF4net.Tests/Providers/S3/RegionDetectionEgressTests.cs`
+- Create (tests): `tests/OKF4net.Tests/TestProcess.cs` (bounded child-process runner, reused by Task 11), `tests/OKF4net.Tests/Providers/S3/HostileEnvironmentTests.cs`, `tests/OKF4net.Tests/Providers/S3/PipelineTests.cs`
 
 **Interfaces:**
 - The probe uses the **public** `S3BundleProvider` constructor only (D10 grants internals to `OKF4net.Tests` alone), against loopback listeners it starts on ports **the test passes in**, identical for both runs, so every line (the `Host` header included) can be compared.
@@ -4463,110 +4572,63 @@ public class HostileEnvironmentTests
 
 Add to `Hostile(...)` every further variable gate G2 listed. **The witness assertion must hold**: if it does not (the SDK under test ignores all of them), the gate's G2 list is wrong for that version — stop and report.
 
-- [ ] **Step 4: The region-detection egress test, in process, with its positive witness**
+- [ ] **Step 4: The structural test of the per-client neutralization (gate G1)**
 
-Region detection (`BucketRegionDetector`, gate G1) takes a separate transport that ignores the client's `HttpClientFactory` and follows the process's default proxy, and it fires only for an endpoint the SDK recognizes as Amazon S3 — so it cannot be driven against a `ServiceUrl`. This test runs in the test process (internal constructor allowed) in a non-parallel collection, sets `HttpClient.DefaultProxy` (and `WebRequest.DefaultWebProxy`, saved and restored) to a loopback listener that only **counts** connection attempts (a CONNECT is enough: no TLS needed), and drives the scenario gate G1 recorded as triggering detection (expected: a `Region` source whose first request gets `400 AuthorizationHeaderMalformed` **without** `<Region>`, or a `301` without `x-amz-bucket-region`; use exactly G1's), the S3 traffic itself going to `FakeS3Handler` as the network handler.
+The gate found no scenario that makes a plain client take `BucketRegionDetector`'s out-of-band `HEAD` (spec Annexe B, G1), so a dynamic witness is not available; its only caller is the S3 retry policy (static call-graph inventory on both SDK versions). The guard is therefore structural, with its counter-proof on a plain client. `RegionDetectionEgressTests.cs` becomes `PipelineTests.cs`:
 
 ```csharp
 // SPDX-License-Identifier: LGPL-3.0-or-later
-#pragma warning disable SYSLIB0014 // WebRequest.DefaultWebProxy: the detector's transport reads it
-using System.Net;
-using System.Net.Sockets;
 using Amazon;
 using Amazon.Runtime;
+using Amazon.Runtime.Internal;
 using Amazon.S3;
-using Amazon.S3.Model;
+using Amazon.S3.Internal;
 using OKF4net.Providers.S3;
+using OKF4net.Providers.S3.Internal;
 
 namespace OKF4net.Tests.Providers.S3;
 
-[CollectionDefinition(Name, DisableParallelization = true)]
-public sealed class ProcessProxyCollection
+/// <summary>Spec D3, Annexe B G1: the provider's client has neither the S3 retry policy (the only caller of the region detector's own transport) nor any CSM handler.</summary>
+public class PipelineTests
 {
-    public const string Name = "process-wide proxy";
-}
-
-/// <summary>Spec D3, gate G1: region detection never leaves through its own transport.</summary>
-[Collection(ProcessProxyCollection.Name)]
-public class RegionDetectionEgressTests
-{
-    private static async Task<int> CountingProxy(Func<Task> scenario)
+    private sealed class Probe(AWSCredentials c, AmazonS3Config cfg) : AmazonS3Client(c, cfg)
     {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var count = 0;
-        using var stop = new CancellationTokenSource();
-        var accept = Task.Run(async () =>
+        public Type? RetryPolicy;
+        protected override void CustomizeRuntimePipeline(RuntimePipeline pipeline)
         {
-            try { while (true) { using var c = await listener.AcceptTcpClientAsync(stop.Token); Interlocked.Increment(ref count); } }
-            catch (OperationCanceledException) { }
-        });
-        var proxy = new WebProxy($"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}") { BypassProxyOnLocal = false };
-        var (savedHttp, savedWeb) = (HttpClient.DefaultProxy, WebRequest.DefaultWebProxy);
-        HttpClient.DefaultProxy = proxy;
-        WebRequest.DefaultWebProxy = proxy;
-        try
-        {
-            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-            await scenario().WaitAsync(deadline.Token);
-            await Task.Delay(500);
+            base.CustomizeRuntimePipeline(pipeline);
+            var retry = pipeline.EnumerateHandlers().OfType<RetryHandler>().Single();
+            RetryPolicy = retry.RetryPolicy.GetType();
         }
-        finally
-        {
-            (HttpClient.DefaultProxy, WebRequest.DefaultWebProxy) = (savedHttp, savedWeb);
-            await stop.CancelAsync();
-            listener.Stop();
-            await accept;
-        }
-
-        return Volatile.Read(ref count);
-    }
-
-    /// <summary>The response gate G1 recorded as triggering region detection (replace with G1's if it differs).</summary>
-    private static FakeS3Handler Triggering() => new()
-    {
-        Respond = (_, _) => Task.FromResult(FakeS3Handler.Xml(HttpStatusCode.BadRequest, FakeS3Handler.Error("AuthorizationHeaderMalformed"))),
-    };
-
-    [Fact]
-    public async Task Witness_a_plain_client_does_leave_through_the_detector()
-    {
-        var count = await CountingProxy(async () =>
-        {
-            using var plain = new AmazonS3Client(new BasicAWSCredentials("A", "S"), new AmazonS3Config { RegionEndpoint = RegionEndpoint.EUWest1, HttpClientFactory = new FixedFactory(new HttpClient(Triggering())) });
-            try { using var _ = await plain.GetObjectAsync(new GetObjectRequest { BucketName = "demo", Key = "kb/a.md" }); } catch (AmazonServiceException) { }
-        });
-        Assert.True(count >= 1, "the scenario does not trigger region detection: use gate G1's triggering scenario");
     }
 
     [Fact]
-    public async Task The_provider_never_leaves_through_the_detector()
+    public void Counter_proof_a_plain_client_carries_the_S3_retry_policy()
     {
-        Exception? seen = null;
-        var count = await CountingProxy(async () =>
-        {
-            using var p = new S3BundleProvider(new BasicAWSCredentials("A", "S"), new S3BundleSource { Bucket = "demo", Prefix = "kb", Region = RegionEndpoint.EUWest1 }, Triggering());
-            seen = await Record.ExceptionAsync(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
-        });
-        Assert.Equal(0, count);
-        Assert.Equal(S3FailureKind.BucketUnavailable, Assert.IsType<S3RequestException>(seen).Kind); // ReadAsync's own exception (a load would wrap it in BundleLoadException)
+        using var plain = new Probe(new BasicAWSCredentials("A", "S"), new AmazonS3Config { RegionEndpoint = RegionEndpoint.EUWest1 });
+        Assert.Equal(typeof(AmazonS3RetryPolicy), plain.RetryPolicy);
     }
 
-    private sealed class FixedFactory(HttpClient c) : Amazon.Runtime.HttpClientFactory
+    [Fact]
+    public void The_providers_client_carries_the_standard_policy_and_no_CSM_handler()
     {
-        public override HttpClient CreateHttpClient(IClientConfig clientConfig) => c;
-        public override bool UseSDKHttpClientCaching(IClientConfig clientConfig) => false;
-        public override bool DisposeHttpClientsAfterUse(IClientConfig clientConfig) => false;
+        var source = SourceRules.Normalize(new S3BundleSource { Bucket = "demo", Region = RegionEndpoint.EUWest1 });
+        using var client = (ProviderS3Client)ClientBuilder.Build(new SnapshotCredentials(), source, new FakeS3Handler(), out var http);
+        using (http)
+        {
+            Assert.Equal(typeof(StandardRetryPolicy), client.RetryPolicyType);
+            Assert.DoesNotContain(client.HandlerTypes, t => t == typeof(CSMCallAttemptHandler) || t == typeof(CSMCallEventHandler));
+            Assert.DoesNotContain(client.HandlerTypes, t => t.Name.Contains("S3RetryPolicy", StringComparison.Ordinal));
+        }
     }
 }
-#pragma warning restore SYSLIB0014
 ```
 
-The CSM witness is covered by Step 3's witness (`UDP` > 0 for the plain client is one of the accepted signs; if gate G1 shows CSM needs more than the variables to fire, add those to `Hostile`).
+(If `RetryHandler.RetryPolicy` is not public in the resolved SDK, read the policy from the `ProviderS3Client`'s own record for the provider, and for the counter-proof compare `AmazonS3Client`'s handler list against the provider's — the assertion that matters is "the plain client has `AmazonS3RetryPolicy`, the provider's has not"; never drop the counter-proof.) The CSM side keeps its dynamic test: Step 3's hostile run sets `AWS_CSM_ENABLED`, and its witness (the plain client) sends datagrams while the provider sends none.
 
 - [ ] **Step 5: Run them**
 
-Run: `dotnet build OKF4net.sln && dotnet test OKF4net.sln --filter "FullyQualifiedName~HostileEnvironmentTests|FullyQualifiedName~RegionDetectionEgressTests"`
+Run: `dotnet build OKF4net.sln && dotnet test OKF4net.sln --filter "FullyQualifiedName~HostileEnvironmentTests|FullyQualifiedName~PipelineTests"`
 Expected: PASS, both witnesses positive. A provider failure means `ClientBuilder.ApplyGateRows` misses a row of Annexe B: fix it there (Task 5's file), never the test. A witness failure means the scenario is not the one the gate measured: fix the scenario from Annexe B.
 
 - [ ] **Step 6: Full checks and commit**
