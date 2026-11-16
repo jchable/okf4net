@@ -195,6 +195,37 @@ internal sealed class ModelTextBuilder
     }
 
     /// <summary>
+    /// One <c>&lt;okf-context id="…"&gt;</c> element of the context provider's
+    /// injected message (arbitration Q3): the opening tag, <paramref name="content"/>
+    /// on the lines after it, and the closing tag, with no line break after it.
+    /// Every <c>&lt;</c> in the content is escaped (<see cref="EscapeContextText"/>),
+    /// so no text inside can close the element or open another; the id is
+    /// folded, and its <c>&lt;</c> and <c>"</c> are escaped, so it cannot leave
+    /// its attribute either.
+    /// </summary>
+    /// <param name="id">The block's id.</param>
+    /// <param name="content">The block's content, raw or already escaped (escaping is idempotent).</param>
+    public ModelTextBuilder ContextElement(string id, string content)
+    {
+        ArgumentNullException.ThrowIfNull(id);
+        ArgumentNullException.ThrowIfNull(content);
+        var attribute = EscapeContextText(ModelText.Fold(id)).Replace("\"", "&quot;", StringComparison.Ordinal);
+        Buffer.Append("<okf-context id=\"").Append(attribute).Append("\">\n")
+            .Append(EscapeContextText(content)).Append("\n</okf-context>");
+        return this;
+    }
+
+    /// <summary>
+    /// <paramref name="text"/> with every <c>&lt;</c> written <c>&amp;lt;</c>:
+    /// what keeps a literal <c>&lt;/okf-context&gt;</c> in bundle content from
+    /// closing the element it sits in. Idempotent (the result holds no
+    /// <c>&lt;</c>), so content escaped before it is measured can be handed to
+    /// <see cref="ContextElement"/> as is.
+    /// </summary>
+    /// <param name="text">The text to escape.</param>
+    public static string EscapeContextText(string text) => text.Replace("<", "&lt;", StringComparison.Ordinal);
+
+    /// <summary>
     /// A single line built from <paramref name="message"/> (literals as written,
     /// every hole folded), with no terminator: for a tool result that is one
     /// message.

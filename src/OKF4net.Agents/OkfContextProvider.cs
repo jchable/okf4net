@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using OKF4net.Agents.Internal;
 using OKF4net.Catalog;
 using OKF4net.Internal;
 using OKF4net.Yaml;
@@ -272,7 +273,7 @@ public sealed class OkfContextProvider : AIContextProvider
 
             var query = ExtractLastUserMessageText(context);
             var remaining = totalBudget;
-            var sb = new StringBuilder();
+            var text = new ModelTextBuilder();
 
             // (a) The root index/listing always goes first. When a query
             // will also be scored below, it's capped to a quarter of the
@@ -280,7 +281,7 @@ public sealed class OkfContextProvider : AIContextProvider
             // will use the budget) it gets to use all of it.
             var rootBudget = query is null ? remaining : totalBudget / 4;
             var (rootBlock, rootUsed) = RenderBlock(RootBlockId, await _tools!.BrowseAsync(null, cancellationToken).ConfigureAwait(false), rootBudget, alwaysInclude: true);
-            sb.Append(rootBlock);
+            text.Include(rootBlock!);
             remaining -= rootUsed;
 
             // (b) Concepts scored against the last user message and then
@@ -324,7 +325,7 @@ public sealed class OkfContextProvider : AIContextProvider
                         break;
                     }
 
-                    sb.Append('\n').Append(block);
+                    text.Line().Include(block);
                     remaining -= used;
                 }
             }
@@ -332,7 +333,7 @@ public sealed class OkfContextProvider : AIContextProvider
             return new AIContext
             {
                 Instructions = FixedInstructions,
-                Messages = [new ChatMessage(ChatRole.User, sb.ToString())],
+                Messages = [new ChatMessage(ChatRole.User, text.ToString())],
             };
         }
         catch (Exception ex) when (ex is OkfException or IOException or UnauthorizedAccessException or DecoderFallbackException)
@@ -341,7 +342,7 @@ public sealed class OkfContextProvider : AIContextProvider
             return new AIContext
             {
                 Instructions = FixedInstructions,
-                Messages = [new ChatMessage(ChatRole.User, $"bundle unavailable: {FailureCategory(ex)}")],
+                Messages = [new ChatMessage(ChatRole.User, ModelTextBuilder.Message($"bundle unavailable: {FailureCategory(ex)}"))],
             };
         }
     }
@@ -475,16 +476,16 @@ public sealed class OkfContextProvider : AIContextProvider
         // slots within it.
         var rankedKnowledge = ConceptSearch.TopDiversifiedBy(knowledge, FamilyOf, knowledge.Count);
 
-        var sb = new StringBuilder();
-        var (kCount1, kUsed1) = AppendPassages(sb, rankedKnowledge, "knowledge", kFloor);
-        var (mCount1, mUsed1) = AppendPassages(sb, memory, "memory", mFloor);
+        var text = new ModelTextBuilder();
+        var (kCount1, kUsed1) = AppendPassages(text, rankedKnowledge, "knowledge", kFloor);
+        var (mCount1, mUsed1) = AppendPassages(text, memory, "memory", mFloor);
 
         var remaining = totalBudget - kUsed1 - mUsed1;
-        var (_, kUsed2) = AppendPassages(sb, rankedKnowledge.Skip(kCount1), "knowledge", remaining);
+        var (_, kUsed2) = AppendPassages(text, rankedKnowledge.Skip(kCount1), "knowledge", remaining);
         remaining -= kUsed2;
-        AppendPassages(sb, memory.Skip(mCount1), "memory", remaining);
+        AppendPassages(text, memory.Skip(mCount1), "memory", remaining);
 
-        if (sb.Length == 0)
+        if (text.IsEmpty)
         {
             return new AIContext();
         }
@@ -492,7 +493,7 @@ public sealed class OkfContextProvider : AIContextProvider
         return new AIContext
         {
             Instructions = FixedInstructions,
-            Messages = [new ChatMessage(ChatRole.User, sb.ToString())],
+            Messages = [new ChatMessage(ChatRole.User, text.ToString())],
         };
     }
 
@@ -509,7 +510,7 @@ public sealed class OkfContextProvider : AIContextProvider
     }
 
     /// <returns>How many passages were rendered (a contiguous prefix of <paramref name="passages"/>), and the total token estimate they used.</returns>
-    private static (int Rendered, int TokensUsed) AppendPassages(StringBuilder sb, IEnumerable<KnowledgePassage> passages, string surface, int budget)
+    private static (int Rendered, int TokensUsed) AppendPassages(ModelTextBuilder text, IEnumerable<KnowledgePassage> passages, string surface, int budget)
     {
         var used = 0;
         var rendered = 0;
@@ -521,19 +522,28 @@ public sealed class OkfContextProvider : AIContextProvider
                 break;
             }
 
-            var content = (p.Title is null ? string.Empty : p.Title + "\n") + p.Excerpt;
+            // A passage is two lines, each one value: the title and the excerpt are
+            // folded (#122, defects 2 and 3: the title, a frontmatter value, used to be
+            // prepended raw, and an excerpt from any IKnowledgeResolver is folded here
+            // whatever its source did).
+            var content = ModelTextBuilder.Message(p.Excerpt ?? string.Empty);
+            if (p.Title is not null)
+            {
+                content = ModelTextBuilder.Message(p.Title) + "\n" + content;
+            }
+
             var (block, blockUsed) = RenderBlock($"{surface}:{p.SourceId}:{p.ConceptId}", content, remaining, alwaysInclude: false);
             if (block is null)
             {
                 break;
             }
 
-            if (sb.Length > 0)
+            if (!text.IsEmpty)
             {
-                sb.Append('\n');
+                text.Line();
             }
 
-            sb.Append(block);
+            text.Include(block);
             remaining -= blockUsed;
             used += blockUsed;
             rendered++;
@@ -599,8 +609,14 @@ public sealed class OkfContextProvider : AIContextProvider
     /// truncation marker.
     /// </summary>
     /// <returns>The rendered block (or <see langword="null"/>) and the token estimate of the full returned block, including its framing (0 if the block is null).</returns>
-    private static (string? Block, int TokensUsed) RenderBlock(string id, string content, int tokenBudget, bool alwaysInclude)
+    private static (ModelTextBuilder? Block, int TokensUsed) RenderBlock(string id, string content, int tokenBudget, bool alwaysInclude)
     {
+        // Escaped before it is measured, so the budget counts what is injected: every '<'
+        // written "&lt;", so that a literal "</okf-context>" in bundle content cannot close
+        // this block and open another with an id of its choosing (#122, arbitration Q3).
+        // ContextElement escapes again, to no effect.
+        content = ModelTextBuilder.EscapeContextText(content);
+
         // The per-block framing -- the "<okf-context id="...">"/"</okf-context>"
         // tags, the id, and the newlines joining them to the inner content --
         // plus headroom for a trailing TruncatedMarker (reserved up front, in
@@ -638,8 +654,8 @@ public sealed class OkfContextProvider : AIContextProvider
             inner = kept.Length == 0 ? TruncatedMarker : kept + "\n" + TruncatedMarker;
         }
 
-        var block = $"<okf-context id=\"{id}\">\n{inner}\n</okf-context>";
-        return (block, TokenEstimate.Chars(block));
+        var block = new ModelTextBuilder().ContextElement(id, inner);
+        return (block, TokenEstimate.Chars(block.ToString()));
     }
 
     /// <summary>
@@ -662,27 +678,22 @@ public sealed class OkfContextProvider : AIContextProvider
         }
 
         var lines = LfLines.Split(content);
-        var sb = new StringBuilder();
+        var keptText = string.Empty;
         var kept = 0;
 
         foreach (var line in lines)
         {
-            var candidate = kept == 0 ? line : sb.ToString() + "\n" + line;
+            var candidate = kept == 0 ? line : keptText + "\n" + line;
             if (TokenEstimate.Chars(candidate) > tokenBudget)
             {
                 break;
             }
 
-            if (kept > 0)
-            {
-                sb.Append('\n');
-            }
-
-            sb.Append(line);
+            keptText = candidate;
             kept++;
         }
 
-        return (sb.ToString(), true, kept);
+        return (keptText, true, kept);
     }
 
     /// <inheritdoc/>
@@ -914,13 +925,7 @@ public sealed class OkfContextProvider : AIContextProvider
 
         var now = UtcNow();
         var dateStr = now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-        var section = new StringBuilder()
-            .Append("## ").Append(now.ToString("HH:mm:ss", CultureInfo.InvariantCulture)).Append(" UTC").Append('\n').Append('\n')
-            .Append("**User:**").Append('\n')
-            .Append(Neutralize(SanitizeNul(userText) ?? NoContentPlaceholder)).Append('\n').Append('\n')
-            .Append("**Agent:**").Append('\n')
-            .Append(Neutralize(SanitizeNul(agentText) ?? NoContentPlaceholder)).Append('\n')
-            .ToString();
+        var section = CaptureSection(now, userText, agentText);
 
         var frontmatter = MemoryFrontmatter(dateStr, now);
 
@@ -987,13 +992,7 @@ public sealed class OkfContextProvider : AIContextProvider
         var memoryConceptId = $"{_options.MemoryDirectory}/{dateStr}";
 #pragma warning restore CS0618
 
-        var section = new StringBuilder()
-            .Append("## ").Append(now.ToString("HH:mm:ss", CultureInfo.InvariantCulture)).Append(" UTC").Append('\n').Append('\n')
-            .Append("**User:**").Append('\n')
-            .Append(Neutralize(SanitizeNul(userText) ?? NoContentPlaceholder)).Append('\n').Append('\n')
-            .Append("**Agent:**").Append('\n')
-            .Append(Neutralize(SanitizeNul(agentText) ?? NoContentPlaceholder)).Append('\n')
-            .ToString();
+        var section = CaptureSection(now, userText, agentText);
 
         var frontmatterYamlIfCreating = MemoryFrontmatter(dateStr, now);
 
@@ -1019,6 +1018,20 @@ public sealed class OkfContextProvider : AIContextProvider
             LastMemoryError = logResult;
         }
     }
+
+    /// <summary>
+    /// One captured exchange, as the section appended to a day's memory concept:
+    /// a <c>## HH:mm:ss UTC</c> heading, then the user's and the agent's text, each
+    /// quoted line by line (<see cref="Neutralize"/>). This is bundle content being
+    /// WRITTEN, not model-facing text: it reaches a model only when it is read
+    /// back, through the tools' own builder.
+    /// </summary>
+    private static string CaptureSection(DateTime now, string? userText, string? agentText) =>
+        "## " + now.ToString("HH:mm:ss", CultureInfo.InvariantCulture) + " UTC\n\n"
+        + "**User:**\n"
+        + Neutralize(SanitizeNul(userText) ?? NoContentPlaceholder) + "\n\n"
+        + "**Agent:**\n"
+        + Neutralize(SanitizeNul(agentText) ?? NoContentPlaceholder) + "\n";
 
     private static bool IsToolError(string toolResult) =>
         toolResult.StartsWith("Error:", StringComparison.Ordinal);
