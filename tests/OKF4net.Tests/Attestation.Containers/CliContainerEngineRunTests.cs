@@ -271,6 +271,12 @@ public class CliContainerEngineRunTests
     /// -- a kill that already hung once will not answer a second time either, and the
     /// caller is already past its own deadline.
     /// <para>
+    /// The run's timeout fires through a manual clock as soon as <c>start</c> is running
+    /// (<see cref="EndRunOnceStartedAsync"/>), not after 300 ms of wall clock, which a
+    /// loaded machine could spend before <c>create</c> had exited -- no <c>kill</c> is
+    /// issued then, and "exactly one <c>kill</c>" below failed on correct code.
+    /// </para>
+    /// <para>
     /// The clock starts at the hang (#149). This test used to time the whole
     /// <see cref="CliContainerEngine.RunAsync"/> call against a fixed 4 s, so that one
     /// number had to absorb spawning the <c>start</c> process, the 300 ms timeout,
@@ -335,21 +341,21 @@ public class CliContainerEngineRunTests
         EnsureThreadPoolHeadroom();
         using var tmp = new TempDir();
         var marker = System.IO.Path.Combine(tmp.Path, "kill-calls.txt");
+        var timeouts = new ManualTimeProvider();
         var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, killMode: KillMode.Hang))
         {
             TeardownBudget = HungKillBudget,
+            TimeProvider = timeouts,
         };
         var clock = Stopwatch.StartNew();
         using var stopWatching = new CancellationTokenSource();
         var killLineSeen = WhenKillLineAppearsAsync(marker, clock, stopWatching.Token);
 
-        var ex = await Assert.ThrowsAsync<ContainerExecutionException>(
-            async () => await engine.RunAsync(Spec(TimeSpan.FromMilliseconds(300))));
-        var returnedAt = clock.Elapsed;
+        var (outcome, returnedAt) = await EndRunOnceStartedAsync(engine, marker, timeouts, clock);
         await stopWatching.CancelAsync();
         var killStartedAt = await killLineSeen;
 
-        Assert.Contains("exceeded its timeout", ex.Message);
+        Assert.Contains("exceeded its timeout", Assert.IsType<ContainerExecutionException>(outcome).Message);
         Assert.True(
             returnedAt < HungKillEndToEndBound,
             $"the timed-out run took {returnedAt} against an end-to-end bound of {HungKillEndToEndBound}");
@@ -389,6 +395,13 @@ public class CliContainerEngineRunTests
     /// with 0 and <c>inspect</c> with 1 (absent), and records one marker line per call.
     /// Expected: one <c>kill</c> (not retried: once the local client is dead the removal
     /// subsumes it), then at least two rounds of <c>rm -f</c> + <c>inspect</c>.
+    /// <para>
+    /// The run's timeout fires through a manual clock once <c>start</c> is running
+    /// (<see cref="EndRunOnceStartedAsync"/>). It used to be 30 ms of wall clock, which
+    /// could expire before the fake engine had finished <c>create</c>: teardown then
+    /// rightly issued no <c>kill</c> (the container was not started) and the "one
+    /// <c>kill</c>" assertion failed on correct code.
+    /// </para>
     /// <para>
     /// <see cref="CliContainerEngine.TeardownBudget"/> is widened here rather than
     /// shrunk, unlike the sibling <see cref="A_hung_engine_kill_does_not_hang_the_timed_out_run"/>:
@@ -443,21 +456,21 @@ public class CliContainerEngineRunTests
         using var tmp = new TempDir();
         var marker = System.IO.Path.Combine(tmp.Path, "kill-calls.txt");
         var budget = TimeSpan.FromSeconds(5);
+        var timeouts = new ManualTimeProvider();
         var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, killMode: KillMode.SlowFail, rmExitCode: 0, inspectExitCode: 1))
         {
             TeardownBudget = budget,
+            TimeProvider = timeouts,
         };
         var clock = Stopwatch.StartNew();
         using var stopWatching = new CancellationTokenSource();
         var killLineSeen = WhenKillLineAppearsAsync(marker, clock, stopWatching.Token);
 
-        var ex = await Assert.ThrowsAsync<ContainerExecutionException>(
-            async () => await engine.RunAsync(Spec(TimeSpan.FromMilliseconds(30))));
-        var returnedAt = clock.Elapsed;
+        var (outcome, returnedAt) = await EndRunOnceStartedAsync(engine, marker, timeouts, clock);
         await stopWatching.CancelAsync();
         var firstKill = await killLineSeen;
 
-        Assert.Contains("exceeded its timeout", ex.Message);
+        Assert.Contains("exceeded its timeout", Assert.IsType<ContainerExecutionException>(outcome).Message);
         Assert.Equal(1, ReadMarker(marker).Kills);
         Assert.True(Invocations(marker, "rm").Count >= 2);
         Assert.True(Invocations(marker, "inspect").Count >= 2);
@@ -532,12 +545,14 @@ public class CliContainerEngineRunTests
         EnsureThreadPoolHeadroom();
         using var tmp = new TempDir();
         var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
+        var timeouts = new ManualTimeProvider();
         var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 0, inspectExitCode: 1))
         {
             TeardownBudget = TimeSpan.FromSeconds(5),
+            TimeProvider = timeouts,
         };
 
-        await AssertRunEndsAsync(engine, callerCancels);
+        await AssertRunEndsAsync(engine, timeouts, marker, callerCancels);
 
         var kill = Assert.Single(Invocations(marker, "kill"));
         var name = kill.Single();
@@ -589,12 +604,14 @@ public class CliContainerEngineRunTests
         EnsureThreadPoolHeadroom();
         using var tmp = new TempDir();
         var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
+        var timeouts = new ManualTimeProvider();
         var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Succeed, rmExitCode: 1, inspectExitCode: 1))
         {
             TeardownBudget = TimeSpan.FromSeconds(5),
+            TimeProvider = timeouts,
         };
 
-        await AssertRunEndsAsync(engine, callerCancels: false);
+        await AssertRunEndsAsync(engine, timeouts, marker, callerCancels: false);
 
         Assert.Single(Invocations(marker, "kill"));
         Assert.Equal(2, Invocations(marker, "rm").Count);
@@ -616,15 +633,17 @@ public class CliContainerEngineRunTests
         EnsureThreadPoolHeadroom();
         using var tmp = new TempDir();
         var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
+        var timeouts = new ManualTimeProvider();
         var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 0, inspectExitCode: 0))
         {
             // Wide enough that a loaded machine still gets two rounds in: each round is
             // two process spawns plus a 250 ms delay, and a round only starts while at
             // least RetryThreshold of the budget remains.
             TeardownBudget = TimeSpan.FromSeconds(4),
+            TimeProvider = timeouts,
         };
 
-        await AssertRunEndsAsync(engine, callerCancels);
+        await AssertRunEndsAsync(engine, timeouts, marker, callerCancels);
 
         Assert.True(Invocations(marker, "rm").Count >= 2, "teardown stopped after one removal although the container was still there");
         Assert.True(Invocations(marker, "inspect").Count >= 2);
@@ -635,8 +654,8 @@ public class CliContainerEngineRunTests
     /// down or odd -- must neither replace the outcome the run was already going to
     /// report (the caller's <see cref="OperationCanceledException"/>, or the timeout's
     /// <see cref="ContainerExecutionException"/>) nor escape as an exception of its own;
-    /// teardown never throws. A non-zero <c>inspect</c> that says "no such" is read as
-    /// "absent" (the fake engine's default); see the test below for one that does not.
+    /// teardown never throws. A non-zero <c>inspect</c> that says "No such object" is read
+    /// as "absent" (the fake engine's default); see the test below for one that does not.
     /// </summary>
     [Theory]
     [InlineData(false)]
@@ -646,12 +665,14 @@ public class CliContainerEngineRunTests
         EnsureThreadPoolHeadroom();
         using var tmp = new TempDir();
         var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
+        var timeouts = new ManualTimeProvider();
         var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 1, inspectExitCode: 1))
         {
             TeardownBudget = TimeSpan.FromSeconds(5),
+            TimeProvider = timeouts,
         };
 
-        await AssertRunEndsAsync(engine, callerCancels);
+        await AssertRunEndsAsync(engine, timeouts, marker, callerCancels);
 
         Assert.Single(Invocations(marker, "kill"));
         Assert.True(Invocations(marker, "rm").Count >= 2);
@@ -663,24 +684,31 @@ public class CliContainerEngineRunTests
     /// down, say -- is no evidence of absence. Teardown must keep retrying until its budget
     /// runs out: with a 3 s budget, the absence verdict (two rounds, 1.5 s apart) would end
     /// it at about 1.5 s, so a teardown that returns before 2.5 s took the failure for absence.
+    /// The second case is a client that cannot reach the daemon's socket: its "no such file
+    /// or directory" says "no such", which a match on those two words alone took for
+    /// absence; only "no such container" or "no such object" is.
     /// </summary>
-    [Fact]
-    public async Task An_inspect_failure_that_is_not_not_found_is_not_taken_as_absence()
+    [Theory]
+    [InlineData("Cannot connect to the Docker daemon")]
+    [InlineData("dial unix /var/run/docker.sock: connect: no such file or directory")]
+    public async Task An_inspect_failure_that_is_not_not_found_is_not_taken_as_absence(string inspectStderr)
     {
         EnsureThreadPoolHeadroom();
         using var tmp = new TempDir();
         var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
-        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 1, inspectExitCode: 1, inspectStderr: "Cannot connect to the Docker daemon"))
+        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 1, inspectExitCode: 1, inspectStderr: inspectStderr))
         {
             TeardownBudget = TimeSpan.FromSeconds(3),
         };
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await engine.RunAsync(Spec(TimeSpan.FromSeconds(60)), cts.Token));
-        stopwatch.Stop();
+        // Cancelled once `start` runs, never on a wall-clock delay: a cancellation that lands
+        // during `create` spends two thirds of the budget waiting for it, which leaves too
+        // little for the four rounds asserted below (the flake this test had).
+        var stopwatch = Stopwatch.StartNew();
+        var (outcome, returnedAt) = await EndRunOnceStartedAsync(engine, marker, null, stopwatch);
 
-        Assert.True(stopwatch.Elapsed >= TimeSpan.FromSeconds(2.5), $"teardown returned after {stopwatch.Elapsed.TotalSeconds:F1} s with a 3 s budget: an inspect the daemon could not answer was taken as absence");
+        Assert.IsAssignableFrom<OperationCanceledException>(outcome);
+        Assert.True(returnedAt >= TimeSpan.FromSeconds(2.5), $"teardown returned after {returnedAt.TotalSeconds:F1} s with a 3 s budget: an inspect the daemon could not answer was taken as absence");
         Assert.True(Invocations(marker, "inspect").Count >= 4);
     }
 
@@ -740,6 +768,209 @@ public class CliContainerEngineRunTests
         Assert.DoesNotContain("create-done", File.ReadAllLines(marker).Select(static line => line.Trim()));
     }
 
+    /// <summary>How long the descendant <see cref="A_descendant_holding_the_output_pipes_does_not_hold_the_timed_out_run"/>'s <c>create</c> leaves behind keeps running.</summary>
+    private const int PipeHoldingDescendantSeconds = 30;
+
+    /// <summary>
+    /// Once the run has timed out and teardown is done, the timeout's exception carries
+    /// the output of the client whose wait was cancelled, and the first version awaited
+    /// those drains with no bound. A drain only ends when the last writer of its pipe
+    /// closes it, and a client's descendant inherits the pipe: here the <c>create</c>
+    /// leaves a background process behind holding both pipes for
+    /// <see cref="PipeHoldingDescendantSeconds"/>, writes a <c>create-waiting</c> line,
+    /// and waits for a release file. The spec's timeout fires through the manual clock once
+    /// that line is there, so it lands during <c>create</c> by construction; only then is
+    /// the release file written, and the <c>create</c> exits 0 with its descendant still
+    /// alive. Teardown waits for it (it is not killed) and removes the container; what is
+    /// left is the drain. A short wall-clock timeout could not promise this: the first
+    /// version timed out after 300 ms of a one-second <c>create</c>, and a timer late by
+    /// more than the rest of that second would have let <c>start</c> run, then
+    /// <c>kill</c> it, failing on correct code. Unbounded, the run returned when the
+    /// descendant ended, ~30 s; bounded, teardown (the release poll, about a second at
+    /// most, then two removal rounds) plus the drain bound (1 s). The 12 s bound sits
+    /// between the two with a wide margin each side. A caller token of 60 s keeps a broken
+    /// fake engine from hanging the test: it would end the run with the caller's
+    /// cancellation instead, which fails the assertions below.
+    /// </summary>
+    [Fact]
+    public async Task A_descendant_holding_the_output_pipes_does_not_hold_the_timed_out_run()
+    {
+        EnsureThreadPoolHeadroom();
+        using var tmp = new TempDir();
+        var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
+        var release = System.IO.Path.Combine(tmp.Path, "release-create");
+        var timeouts = new ManualTimeProvider();
+        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 0, inspectExitCode: 1, createDescendantSeconds: PipeHoldingDescendantSeconds, createReleaseFile: release))
+        {
+            TeardownBudget = TimeSpan.FromSeconds(5),
+            TimeProvider = timeouts,
+        };
+
+        using var safety = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var stopWatching = new CancellationTokenSource();
+        var timedOut = WhenLineAppearsAsync(
+            marker,
+            "create-waiting",
+            () =>
+            {
+                // The timeout's timer is created right after `create` is started, so it
+                // is armed long before the shell gets here -- but wait for it rather than
+                // fire nothing.
+                SpinWait.SpinUntil(() => timeouts.IsArmed, TimeSpan.FromSeconds(10));
+                timeouts.Fire();
+                File.WriteAllText(release, "");
+            },
+            stopWatching.Token);
+
+        var clock = Stopwatch.StartNew();
+        var outcome = await Record.ExceptionAsync(
+            async () => await engine.RunAsync(Spec(TimeSpan.FromMilliseconds(300)), safety.Token));
+        clock.Stop();
+        await stopWatching.CancelAsync();
+
+        Assert.True(await timedOut, "the fake engine's create never wrote its create-waiting line");
+        var ex = Assert.IsType<ContainerExecutionException>(outcome);
+        Assert.Contains("exceeded its timeout", ex.Message);
+        // The timeout landed during `create`, which was waited for, not killed: the drain
+        // is the only thing still held open when teardown ends.
+        Assert.Contains("create-done", File.ReadAllLines(marker).Select(static line => line.Trim()));
+        Assert.Empty(Invocations(marker, "kill"));
+        var bound = TimeSpan.FromSeconds(12);
+        Assert.True(
+            clock.Elapsed < bound,
+            $"the timed-out run took {clock.Elapsed} against a bound of {bound}: it waited for a descendant holding the output pipes ({PipeHoldingDescendantSeconds} s)");
+    }
+
+    /// <summary>
+    /// A client that has EXITED can still leave its output open: a descendant holding the
+    /// pipes keeps both drains from reaching end of stream. Once <c>create</c> was refused,
+    /// or <c>start</c> exited 0, the run used to read that output with no bound at all, so
+    /// it outlived its own timeout until the descendant died
+    /// (<see cref="PipeHoldingDescendantSeconds"/>). It is now held to the run's deadline:
+    /// past it, the run is the timeout failure.
+    /// <para>
+    /// The timeout must fire after the client has exited, which the test cannot observe
+    /// directly: it fires 2 s after the client's last marker line (written just before it
+    /// exits). Were it to fire before the exit is seen, the run would take the
+    /// cancelled-wait path instead, which tears the container down: the assertion that no
+    /// teardown command ran turns that into a failure, never into a pass that exercised
+    /// the wrong path.
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("create-refused")]
+    [InlineData("start-succeeded")]
+    public async Task An_exited_client_whose_descendant_holds_its_output_does_not_outlive_the_runs_deadline(string exitedClient)
+    {
+        EnsureThreadPoolHeadroom();
+        using var tmp = new TempDir();
+        var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
+        var timeouts = new ManualTimeProvider();
+        var refused = exitedClient == "create-refused";
+        var engine = new CliContainerEngine(refused
+            ? DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 0, inspectExitCode: 1, createDescendantSeconds: PipeHoldingDescendantSeconds, createExitCode: 125)
+            : DispatchingEngine(tmp, marker, runHangSeconds: 0, KillMode.Fail, rmExitCode: 0, inspectExitCode: 1, startDescendantSeconds: PipeHoldingDescendantSeconds))
+        {
+            TeardownBudget = TimeSpan.FromSeconds(5),
+            TimeProvider = timeouts,
+        };
+
+        using var safety = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var stopWatching = new CancellationTokenSource();
+        var timedOut = WhenLineAppearsAsync(
+            marker,
+            refused ? "create-done" : "start-done",
+            () =>
+            {
+                Thread.Sleep(TimeSpan.FromSeconds(2));
+                SpinWait.SpinUntil(() => timeouts.IsArmed, TimeSpan.FromSeconds(10));
+                timeouts.Fire();
+            },
+            stopWatching.Token);
+
+        var clock = Stopwatch.StartNew();
+        var outcome = await Record.ExceptionAsync(
+            async () => await engine.RunAsync(Spec(TimeSpan.FromMilliseconds(300)), safety.Token));
+        clock.Stop();
+        await stopWatching.CancelAsync();
+
+        Assert.True(await timedOut, "the fake engine's client never wrote its last line");
+        var ex = Assert.IsType<ContainerExecutionException>(outcome);
+        Assert.Contains("exceeded its timeout", ex.Message);
+        Assert.Empty(Invocations(marker, "kill"));
+        Assert.Empty(Invocations(marker, "rm"));
+        Assert.Empty(Invocations(marker, "inspect"));
+        if (refused)
+        {
+            Assert.DoesNotContain(ReadMarkerLines(marker), static line => FirstToken(line) == "start");
+        }
+
+        var bound = TimeSpan.FromSeconds(12);
+        Assert.True(
+            clock.Elapsed < bound,
+            $"the run took {clock.Elapsed} against a bound of {bound}: once its {exitedClient.Split('-')[0]} client had exited, it waited for a descendant holding the output pipes ({PipeHoldingDescendantSeconds} s)");
+    }
+
+    /// <summary>
+    /// A drain the run stops waiting for must not keep its pipe for as long as a descendant
+    /// of the client holds the other end. <see cref="Process"/> does not release it: once
+    /// its output is read, disposing it leaves the readers open. Here the client exits at
+    /// once and leaves behind a process that holds both pipes for
+    /// <see cref="PipeHoldingDescendantSeconds"/> without writing -- the case where, on
+    /// Windows, disposing the reader alone is not enough, because the read in flight keeps
+    /// the handle open until it returns. Disposing the
+    /// <see cref="CliContainerEngine.ClientOutput"/> must end both drains (cancelled or
+    /// faulted, never at end of stream: the descendant is still alive) within 5 s, a sixth
+    /// of the descendant's lifetime. <see cref="CliContainerEngine.RunAsync"/> owns one
+    /// such object per client, with <c>using</c>, so every way it leaves releases both.
+    /// </summary>
+    [Fact]
+    public async Task Disposing_a_clients_output_ends_drains_a_descendant_still_holds_open()
+    {
+        using var tmp = new TempDir();
+        string script;
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            // The inner cmd inherits the pipes and waits on a ping writing to nul.
+            script = tmp.Write("client.cmd", $"@echo off\r\nstart \"\" /b cmd /c \"ping -n {PipeHoldingDescendantSeconds + 1} 127.0.0.1 >nul\"\r\nexit /b 0\r\n");
+        }
+        else
+        {
+            script = tmp.Write("client.sh", $"#!/bin/sh\nsleep {PipeHoldingDescendantSeconds} &\nexit 0\n");
+            File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        using var client = new Process
+        {
+            StartInfo = new ProcessStartInfo(script)
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            },
+        };
+        client.Start();
+        var output = new CliContainerEngine.ClientOutput(client, CliContainerEngine.StrictUtf8);
+        await client.WaitForExitAsync();
+
+        // The client is gone, its descendant is not: neither drain can reach end of stream.
+        await Task.Delay(TimeSpan.FromMilliseconds(500));
+        Assert.False(output.Stdout.IsCompleted, "stdout's drain ended on its own: no descendant held the pipe, the scenario is not what this test needs");
+        Assert.False(output.Stderr.IsCompleted, "stderr's drain ended on its own: no descendant held the pipe, the scenario is not what this test needs");
+
+        var released = Stopwatch.StartNew();
+        output.Dispose();
+        var bound = TimeSpan.FromSeconds(5);
+        var both = Task.WhenAll(output.Stdout, output.Stderr);
+        await Task.WhenAny(both, Task.Delay(bound));
+        released.Stop();
+        _ = both.Exception; // observed: a drain ended by the release may fault
+
+        Assert.True(both.IsCompleted, $"the drains were still pending {released.Elapsed} after the output was disposed: the descendant ({PipeHoldingDescendantSeconds} s) still holds the pipes and nothing released them");
+        Assert.False(output.Stdout.IsCompletedSuccessfully, "stdout's drain reached end of stream rather than being ended");
+        Assert.False(output.Stderr.IsCompletedSuccessfully, "stderr's drain reached end of stream rather than being ended");
+    }
+
     /// <summary>
     /// An engine that refuses the <c>create</c> (image not found, a bad flag, a daemon that
     /// is down) leaves no container: the run reports the engine's exit code and message as
@@ -769,23 +1000,292 @@ public class CliContainerEngineRunTests
     }
 
     /// <summary>
-    /// Runs <paramref name="engine"/> (whose "run" hangs) until it is cancelled by the
-    /// caller's token or timed out by the spec's own deadline, and asserts the exception
-    /// that tells which -- the shape the teardown must never disturb.
+    /// A <c>start</c> that exits non-zero may have failed before the container ever ran,
+    /// leaving it in Created state, which <c>--rm</c> never removes -- and nothing here can
+    /// tell that from the container's own non-zero exit. So a non-zero <c>start</c> is
+    /// followed by the same teardown as a cancelled one: one <c>kill</c>, then removal
+    /// rounds until <c>inspect</c> finds the name unknown twice (the create is settled, so
+    /// exactly two). The result is the one <c>start</c> gave -- its exit code, stdout and
+    /// stderr -- untouched by the teardown. A <c>start</c> that exits 0 triggers no
+    /// teardown at all: <c>--rm</c> removes a container that ran.
     /// </summary>
-    private static async Task AssertRunEndsAsync(CliContainerEngine engine, bool callerCancels)
+    [Theory]
+    [InlineData(7)]
+    [InlineData(0)]
+    public async Task A_start_that_exits_non_zero_is_followed_by_teardown_and_its_result_kept(int startExitCode)
     {
+        EnsureThreadPoolHeadroom();
+        using var tmp = new TempDir();
+        var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
+        var engine = new CliContainerEngine(ExitingStartEngine(tmp, marker, startExitCode))
+        {
+            TeardownBudget = TimeSpan.FromSeconds(5),
+        };
+
+        var result = await engine.RunAsync(Spec(TimeSpan.FromSeconds(30)));
+
+        Assert.Equal(startExitCode, result.ExitCode);
+        Assert.Equal("start-out", result.Stdout.Trim());
+        Assert.Equal("start-err", result.Stderr.Trim());
+        if (startExitCode == 0)
+        {
+            Assert.Empty(Invocations(marker, "kill"));
+            Assert.Empty(Invocations(marker, "rm"));
+            Assert.Empty(Invocations(marker, "inspect"));
+            return;
+        }
+
+        var kill = Assert.Single(Invocations(marker, "kill"));
+        var name = kill.Single();
+        Assert.Matches(EngineContainerName, name);
+        Assert.NotEmpty(Invocations(marker, "rm"));
+        Assert.All(Invocations(marker, "rm"), removal => Assert.Equal(["-f", name], removal));
+        Assert.Equal(2, Invocations(marker, "inspect").Count);
+    }
+
+    /// <summary>
+    /// An "engine" whose <c>create</c> exits 0 and whose <c>start</c> prints
+    /// <c>start-out</c> on stdout and <c>start-err</c> on stderr, then exits with
+    /// <paramref name="startExitCode"/>. <c>kill</c> (exit 1), <c>rm</c> (exit 0) and
+    /// <c>inspect</c> (exit 1, "No such object") each record one line in
+    /// <paramref name="markerFile"/>, the way <see cref="DispatchingEngine"/>'s do.
+    /// </summary>
+    private static string ExitingStartEngine(TempDir tmp, string markerFile, int startExitCode)
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            return tmp.Write(
+                "engine.cmd",
+                "@echo off\r\n"
+                + "if \"%1\"==\"create\" exit /b 0\r\n"
+                + "if \"%1\"==\"kill\" goto kill\r\n"
+                + "if \"%1\"==\"rm\" goto rm\r\n"
+                + "if \"%1\"==\"inspect\" goto inspect\r\n"
+                + "echo start-out\r\n"
+                + "echo start-err 1>&2\r\n"
+                + $"exit /b {startExitCode}\r\n"
+                + ":kill\r\n"
+                + $"echo kill %2 >> \"{markerFile}\"\r\n"
+                + "exit /b 1\r\n"
+                + ":rm\r\n"
+                + $"echo %* >> \"{markerFile}\"\r\n"
+                + "exit /b 0\r\n"
+                + ":inspect\r\n"
+                + $"echo %* >> \"{markerFile}\"\r\n"
+                + "echo Error: No such object: %2 1>&2\r\n"
+                + "exit /b 1\r\n");
+        }
+
+        var path = tmp.Write(
+            "engine.sh",
+            "#!/bin/sh\n"
+            + "case \"$1\" in\n"
+            + "  create) exit 0 ;;\n"
+            + $"  kill) echo \"kill $2\" >> '{markerFile}'; exit 1 ;;\n"
+            + $"  rm) echo \"$*\" >> '{markerFile}'; exit 0 ;;\n"
+            + $"  inspect) echo \"$*\" >> '{markerFile}'; echo \"Error: No such object: $2\" >&2; exit 1 ;;\n"
+            + "esac\n"
+            + "echo start-out\n"
+            + "echo start-err >&2\n"
+            + $"exit {startExitCode}\n");
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        return path;
+    }
+
+    /// <summary>
+    /// Runs <paramref name="engine"/> (whose <c>start</c> hangs) until it is cancelled by
+    /// the caller's token or timed out by the spec's own deadline -- either way once
+    /// <c>start</c> is running (<see cref="EndRunOnceStartedAsync"/>) -- and asserts the
+    /// exception that tells which: the shape the teardown must never disturb.
+    /// </summary>
+    private static async Task AssertRunEndsAsync(CliContainerEngine engine, ManualTimeProvider timeouts, string markerFile, bool callerCancels)
+    {
+        var (outcome, _) = await EndRunOnceStartedAsync(engine, markerFile, callerCancels ? null : timeouts, Stopwatch.StartNew());
         if (callerCancels)
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(
-                async () => await engine.RunAsync(Spec(TimeSpan.FromSeconds(60)), cts.Token));
+            Assert.IsAssignableFrom<OperationCanceledException>(outcome);
         }
         else
         {
-            var ex = await Assert.ThrowsAsync<ContainerExecutionException>(
-                async () => await engine.RunAsync(Spec(TimeSpan.FromMilliseconds(300))));
-            Assert.Contains("exceeded its timeout", ex.Message);
+            Assert.Contains("exceeded its timeout", Assert.IsType<ContainerExecutionException>(outcome).Message);
+        }
+    }
+
+    /// <summary>
+    /// Runs <paramref name="engine"/> -- a <see cref="DispatchingEngine"/> whose
+    /// <see cref="CliContainerEngine.TimeProvider"/> is <paramref name="timeouts"/> -- and
+    /// ends the run as soon as the fake engine's <c>start</c> line appears: by firing the
+    /// spec's timeout through <paramref name="timeouts"/>, or, when that is null, by
+    /// cancelling the caller's token. Returns what <see cref="CliContainerEngine.RunAsync"/>
+    /// threw (null if nothing) and the <paramref name="clock"/> reading the moment it
+    /// returned.
+    /// <para>
+    /// Why not a short real timeout: these tests assert what teardown does for a run
+    /// cancelled during <c>start</c> (one <c>kill</c>, for one), and a timeout of 30 or
+    /// 300 ms of wall clock can expire before a loaded machine has even finished
+    /// <c>create</c> -- teardown then rightly issues no <c>kill</c>, and the "exactly one
+    /// kill" assertion failed on correct code. The <c>start</c> line is written once the
+    /// <c>start</c> client's shell is running, so the run is past <c>create</c> by
+    /// construction, whatever the machine's load.
+    /// </para>
+    /// </summary>
+    private static async Task<(Exception? Outcome, TimeSpan ReturnedAt)> EndRunOnceStartedAsync(
+        CliContainerEngine engine, string markerFile, ManualTimeProvider? timeouts, Stopwatch clock)
+    {
+        using var caller = new CancellationTokenSource();
+        using var stopWatching = new CancellationTokenSource();
+        Action end = timeouts is null ? caller.Cancel : timeouts.Fire;
+        var ended = WhenLineAppearsAsync(markerFile, "start", end, stopWatching.Token);
+
+        // The spec's timeout only fires through `timeouts`: 300 ms is never waited for.
+        var spec = Spec(timeouts is null ? TimeSpan.FromSeconds(60) : TimeSpan.FromMilliseconds(300));
+        var outcome = await Record.ExceptionAsync(async () => await engine.RunAsync(spec, caller.Token));
+        var returnedAt = clock.Elapsed;
+        await stopWatching.CancelAsync();
+        Assert.True(await ended, "the fake engine's start never wrote its start line");
+        return (outcome, returnedAt);
+    }
+
+    /// <summary>
+    /// Polls <paramref name="markerFile"/> on a dedicated thread every 5 ms and calls
+    /// <paramref name="end"/> once, as soon as a line whose first token is
+    /// <paramref name="token"/> is there; true if it did, false if <paramref name="stop"/>
+    /// was cancelled first. A dedicated thread, like
+    /// <see cref="WhenKillLineAppearsAsync"/>'s, so thread-pool starvation cannot delay it.
+    /// </summary>
+    private static Task<bool> WhenLineAppearsAsync(string markerFile, string token, Action end, CancellationToken stop) =>
+        Task.Factory.StartNew(
+            () =>
+            {
+                while (!stop.IsCancellationRequested)
+                {
+                    if (ReadMarkerLines(markerFile).Any(line => FirstToken(line) == token))
+                    {
+                        end();
+                        return true;
+                    }
+
+                    Thread.Sleep(5);
+                }
+
+                return false;
+            },
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+
+    /// <summary>
+    /// A <see cref="TimeProvider"/> whose timers never fire on their own, only when
+    /// <see cref="Fire"/> is called: the run's timeout then expires exactly when a test
+    /// says so. Hand-written rather than <c>Microsoft.Extensions.TimeProvider.Testing</c>'s
+    /// <c>FakeTimeProvider</c>, which this project does not reference: only
+    /// <see cref="CreateTimer"/> is needed.
+    /// </summary>
+    private sealed class ManualTimeProvider : TimeProvider
+    {
+        private readonly Lock _gate = new();
+        private readonly List<ManualTimer> _timers = [];
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = new ManualTimer(callback, state, dueTime);
+            lock (_gate)
+            {
+                _timers.Add(timer);
+            }
+
+            return timer;
+        }
+
+        /// <summary>
+        /// Whether a timer created so far is armed and not disposed, i.e. whether
+        /// <see cref="Fire"/> would fire anything now.
+        /// </summary>
+        public bool IsArmed
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _timers.Any(static timer => timer.IsArmed);
+                }
+            }
+        }
+
+        /// <summary>Fires, once, every timer created so far that is armed and not disposed.</summary>
+        public void Fire()
+        {
+            ManualTimer[] timers;
+            lock (_gate)
+            {
+                timers = [.. _timers];
+            }
+
+            foreach (var timer in timers)
+            {
+                timer.Fire();
+            }
+        }
+
+        private sealed class ManualTimer(TimerCallback callback, object? state, TimeSpan dueTime) : ITimer
+        {
+            private readonly Lock _gate = new();
+            private TimeSpan _dueTime = dueTime;
+            private bool _disposed;
+
+            public bool IsArmed
+            {
+                get
+                {
+                    lock (_gate)
+                    {
+                        return !_disposed && _dueTime != global::System.Threading.Timeout.InfiniteTimeSpan;
+                    }
+                }
+            }
+
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                lock (_gate)
+                {
+                    if (_disposed)
+                    {
+                        return false;
+                    }
+
+                    _dueTime = dueTime;
+                    return true;
+                }
+            }
+
+            public void Fire()
+            {
+                lock (_gate)
+                {
+                    if (_disposed || _dueTime == global::System.Threading.Timeout.InfiniteTimeSpan)
+                    {
+                        return;
+                    }
+
+                    _dueTime = global::System.Threading.Timeout.InfiniteTimeSpan;
+                }
+
+                callback(state);
+            }
+
+            public void Dispose()
+            {
+                lock (_gate)
+                {
+                    _disposed = true;
+                }
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+                return ValueTask.CompletedTask;
+            }
         }
     }
 
@@ -794,7 +1294,7 @@ public class CliContainerEngineRunTests
     /// the fake engine recorded, in order.
     /// </summary>
     private static List<string[]> Invocations(string markerFile, string subcommand) =>
-        (File.Exists(markerFile) ? File.ReadAllLines(markerFile) : [])
+        ReadMarkerLines(markerFile)
             .Select(static line => line.Split(' ', StringSplitOptions.RemoveEmptyEntries))
             .Where(parts => parts.Length > 0 && parts[0] == subcommand)
             .Select(static parts => parts[1..])
@@ -806,24 +1306,47 @@ public class CliContainerEngineRunTests
     /// <summary>
     /// Counts the <c>kill</c> and <c>done</c> lines of one snapshot of the marker file.
     /// Each line is trimmed before it is compared: cmd's <c>echo kill &gt;&gt; file</c>
-    /// keeps the space before the redirection as part of the line. A read that collides
-    /// with a child still appending is retried rather than failing the test.
+    /// keeps the space before the redirection as part of the line.
     /// </summary>
     private static (int Kills, int Dones) ReadMarker(string markerFile)
+    {
+        var lines = ReadMarkerLines(markerFile);
+        return (
+            lines.Count(static line => FirstToken(line) == "kill"),
+            lines.Count(static line => FirstToken(line) == "done"));
+    }
+
+    /// <summary>
+    /// One snapshot of the marker file's lines; none while it does not exist. It is
+    /// opened sharing read, write and delete, so a fake-engine child that appends while
+    /// it is read (<c>&gt;&gt;</c> in cmd or sh) can still open it -- with
+    /// <see cref="File.ReadAllLines(string)"/>'s read-only sharing, cmd's append could
+    /// fail and its line be lost. A read that still collides is retried rather than
+    /// failing the test.
+    /// </summary>
+    private static string[] ReadMarkerLines(string markerFile)
     {
         for (var attempt = 0; ; attempt++)
         {
             try
             {
-                if (!File.Exists(markerFile))
+                using var stream = new FileStream(markerFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var reader = new StreamReader(stream);
+                var lines = new List<string>();
+                while (reader.ReadLine() is { } line)
                 {
-                    return (0, 0);
+                    lines.Add(line);
                 }
 
-                var lines = File.ReadAllLines(markerFile);
-                return (
-                    lines.Count(static line => FirstToken(line) == "kill"),
-                    lines.Count(static line => FirstToken(line) == "done"));
+                return [.. lines];
+            }
+            catch (FileNotFoundException)
+            {
+                return [];
+            }
+            catch (DirectoryNotFoundException)
+            {
+                return [];
             }
             catch (IOException) when (attempt < 50)
             {
@@ -886,17 +1409,28 @@ public class CliContainerEngineRunTests
 
     /// <summary>
     /// An "engine" that dispatches on its first argument the way a real one does:
-    /// <c>start</c> (anything not named below) always hangs for
-    /// <paramref name="runHangSeconds"/> (so
+    /// <c>start</c> (anything not named below) appends a <c>start</c> line to
+    /// <paramref name="markerFile"/> (see <see cref="EndRunOnceStartedAsync"/>), then
+    /// always hangs for <paramref name="runHangSeconds"/> (so
     /// <see cref="CliContainerEngine.RunAsync"/> genuinely times out and proceeds to
     /// teardown), while <c>kill</c> appends one <c>kill</c> line to
     /// <paramref name="markerFile"/> -- so a test can count how many kill attempts
     /// actually ran -- and then behaves per <paramref name="killMode"/>. <c>create</c>
     /// takes <paramref name="createSeconds"/> (none by default) and exits 0, writing a
     /// <c>create-begin</c> and a <c>create-done</c> line around the wait so a test can
-    /// order it against the teardown commands.
+    /// order it against the teardown commands. With <paramref name="createDescendantSeconds"/>,
+    /// <c>create</c> first starts a background process that lives that long and inherits
+    /// its stdout and stderr, so both pipes stay open after the <c>create</c> client exits.
+    /// With <paramref name="createReleaseFile"/>, <c>create</c> then writes a
+    /// <c>create-waiting</c> line and waits until that file exists (polling about once a
+    /// second on Windows, every 100 ms elsewhere) before going on, so a test decides when
+    /// it exits. <c>create</c> exits with <paramref name="createExitCode"/> (0 by default; any
+    /// other value is an engine refusing the create). With
+    /// <paramref name="startDescendantSeconds"/>, <c>start</c> likewise leaves behind a
+    /// background process holding its pipes, and writes a <c>start-done</c> line just before
+    /// it exits 0.
     /// </summary>
-    private static string DispatchingEngine(TempDir tmp, string markerFile, int runHangSeconds, KillMode killMode, int rmExitCode = 1, int inspectExitCode = 1, string inspectStderr = "Error: No such object", int createSeconds = 0)
+    private static string DispatchingEngine(TempDir tmp, string markerFile, int runHangSeconds, KillMode killMode, int rmExitCode = 1, int inspectExitCode = 1, string inspectStderr = "Error: No such object", int createSeconds = 0, int createDescendantSeconds = 0, string? createReleaseFile = null, int createExitCode = 0, int startDescendantSeconds = 0)
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
@@ -914,13 +1448,27 @@ public class CliContainerEngineRunTests
                 + "if \"%1\"==\"rm\" goto rm\r\n"
                 + "if \"%1\"==\"inspect\" goto inspect\r\n"
                 + "if \"%1\"==\"create\" goto create\r\n"
+                + $"echo start >> \"{markerFile}\"\r\n"
+                + (startDescendantSeconds > 0 ? $"start \"\" /b ping -n {startDescendantSeconds + 1} 127.0.0.1\r\n" : "")
                 + $"ping -n {runHangSeconds + 1} 127.0.0.1 >nul\r\n"
+                + (startDescendantSeconds > 0 ? $"echo start-done >> \"{markerFile}\"\r\n" : "")
                 + "exit /b 0\r\n"
                 + ":create\r\n"
                 + $"echo create-begin >> \"{markerFile}\"\r\n"
+                // No redirection: the background ping inherits the script's stdout and
+                // stderr, i.e. the create client's pipes.
+                + (createDescendantSeconds > 0 ? $"start \"\" /b ping -n {createDescendantSeconds + 1} 127.0.0.1\r\n" : "")
+                + (createReleaseFile is null
+                    ? ""
+                    : $"echo create-waiting >> \"{markerFile}\"\r\n"
+                        + ":createwait\r\n"
+                        + $"if exist \"{createReleaseFile}\" goto createreleased\r\n"
+                        + "ping -n 2 127.0.0.1 >nul\r\n"
+                        + "goto createwait\r\n"
+                        + ":createreleased\r\n")
                 + (createSeconds > 0 ? $"ping -n {createSeconds + 1} 127.0.0.1 >nul\r\n" : "")
                 + $"echo create-done >> \"{markerFile}\"\r\n"
-                + "exit /b 0\r\n"
+                + $"exit /b {createExitCode}\r\n"
                 + ":rm\r\n"
                 + $"echo %* >> \"{markerFile}\"\r\n"
                 + $"exit /b {rmExitCode}\r\n"
@@ -945,9 +1493,14 @@ public class CliContainerEngineRunTests
             "#!/bin/sh\n"
             + "if [ \"$1\" = \"create\" ]; then\n"
             + $"  echo create-begin >> '{markerFile}'\n"
+            + (createDescendantSeconds > 0 ? $"  sleep {createDescendantSeconds} &\n" : "")
+            + (createReleaseFile is null
+                ? ""
+                : $"  echo create-waiting >> '{markerFile}'\n"
+                    + $"  while [ ! -e '{createReleaseFile}' ]; do sleep 0.1; done\n")
             + (createSeconds > 0 ? $"  sleep {createSeconds}\n" : "")
             + $"  echo create-done >> '{markerFile}'\n"
-            + "  exit 0\n"
+            + $"  exit {createExitCode}\n"
             + "elif [ \"$1\" = \"rm\" ]; then\n"
             + $"  echo \"$*\" >> '{markerFile}'\n"
             + $"  exit {rmExitCode}\n"
@@ -959,7 +1512,10 @@ public class CliContainerEngineRunTests
             + $"  echo \"kill $2\" >> '{markerFile}'\n"
             + $"  {killBodySh}"
             + "else\n"
+            + $"  echo start >> '{markerFile}'\n"
+            + (startDescendantSeconds > 0 ? $"  sleep {startDescendantSeconds} &\n" : "")
             + $"  sleep {runHangSeconds}\n"
+            + (startDescendantSeconds > 0 ? $"  echo start-done >> '{markerFile}'\n" : "")
             + "fi\n");
         File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         return path;
@@ -969,10 +1525,13 @@ public class CliContainerEngineRunTests
         new(Encoding.UTF8.GetBytes(text));
 
     /// <summary>
-    /// An "engine" that ignores its arguments, copies <paramref name="bytes"/> verbatim
-    /// to stdout or stderr, and exits with <paramref name="exitCode"/>. The bytes live
-    /// in a file the script copies (<c>type</c>/<c>cat</c>) rather than in the script
-    /// text, so no shell quoting stands between them and the pipe.
+    /// An "engine" whose <c>start</c> copies <paramref name="bytes"/> verbatim to stdout or
+    /// stderr and exits with <paramref name="exitCode"/>. The bytes live in a file the
+    /// script copies (<c>type</c>/<c>cat</c>) rather than in the script text, so no shell
+    /// quoting stands between them and the pipe. <c>create</c> exits 0, and the teardown a
+    /// non-zero <c>start</c> triggers is answered at once as a container already gone
+    /// would be (<c>kill</c> 1, <c>rm</c> 0, <c>inspect</c> 1 with "No such object"), so
+    /// it costs two rounds rather than the whole budget.
     /// </summary>
     private static string ByteWritingEngine(TempDir tmp, byte[] bytes, bool toStderr, int exitCode)
     {
@@ -982,10 +1541,29 @@ public class CliContainerEngineRunTests
 
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            return tmp.Write("engine.cmd", $"@echo off\r\nif \"%1\"==\"create\" exit /b 0\r\ntype \"{payload}\"{redirect}\r\nexit /b {exitCode}\r\n");
+            return tmp.Write(
+                "engine.cmd",
+                "@echo off\r\n"
+                + "if \"%1\"==\"create\" exit /b 0\r\n"
+                + "if \"%1\"==\"kill\" exit /b 1\r\n"
+                + "if \"%1\"==\"rm\" exit /b 0\r\n"
+                + "if \"%1\"==\"inspect\" goto inspect\r\n"
+                + $"type \"{payload}\"{redirect}\r\n"
+                + $"exit /b {exitCode}\r\n"
+                + ":inspect\r\n"
+                + "echo Error: No such object: %2 1>&2\r\n"
+                + "exit /b 1\r\n");
         }
 
-        var path = tmp.Write("engine.sh", $"#!/bin/sh\n[ \"$1\" = \"create\" ] && exit 0\ncat '{payload}'{redirect}\nexit {exitCode}\n");
+        var path = tmp.Write(
+            "engine.sh",
+            "#!/bin/sh\n"
+            + "[ \"$1\" = \"create\" ] && exit 0\n"
+            + "[ \"$1\" = \"kill\" ] && exit 1\n"
+            + "[ \"$1\" = \"rm\" ] && exit 0\n"
+            + "if [ \"$1\" = \"inspect\" ]; then echo \"Error: No such object: $2\" >&2; exit 1; fi\n"
+            + $"cat '{payload}'{redirect}\n"
+            + $"exit {exitCode}\n");
         File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         return path;
     }

@@ -32,6 +32,20 @@ and this project adheres to
   the new exception can derive from it: a host catching it still catches the
   memory refusal.
 
+- **Review dates in the audit (#156, spec §5.2).** `AuditFinding` gains
+  `LastVerifiedAt` (the latest `verified[].at` that reads as a §5 timestamp),
+  `LastChangedAt` (`generated.at`, falling back to the legacy `timestamp`,
+  §13.1) and `IsReviewOutdated` (both known, and the change strictly later).
+  `AuditQuery` gains `ReviewOutdatedOnly`, exposed as `okf audit
+  --review-outdated` and as the `reviewOutdated` parameter of `okf_audit`
+  (`AuditAsync`). The signal leaves the trust tier and every count alone. Only
+  the frontmatter is read: for a file's git history, pair `lastVerifiedAt` with
+  `git log -1 --format=%cI -- <path>`. **`okf audit --json` changes**: `query`
+  gains `reviewOutdated`, each finding gains `lastVerifiedAt`, `lastChangedAt`
+  and `reviewOutdated`. The text lines are unchanged. Binary-breaking for a
+  compiled caller of `AuditQuery`'s constructor (a new optional parameter);
+  source-compatible.
+
 - **Bundle provider seam (#139, lot A).** `OKF4net.Providers`: `IBundleProvider`
   and its value types, `BundleKey` with three-layer validation
   (`BundleKeyConstraints`, `BundleKeyPolicy`, `BundleKeyValidator`),
@@ -223,7 +237,31 @@ and this project adheres to
   through a given provider deletes keys only, even when the provider is a
   `FileSystemBundleProvider`; removing a scope's emptied directories, whose
   names carry the lowercased ids, stays the directory constructor's alone.
-  The directory constructor is unchanged.
+  The directory constructor is unchanged. The store awaits its provider
+  throughout (probe, read, enumeration, write, deletion), so a provider that
+  completes asynchronously serves it like any other; a scope's listing is
+  consumed under the core's own bounds, so a provider that ignores
+  `MaxEntries` makes the scope unavailable instead of growing a list; any
+  exception a host provider raises that the library did not author (a storage
+  timeout surfacing as a `TaskCanceledException`, an `IOException`, its own
+  `BundleProviderException` subclass) is reported as data by its type only,
+  never by its text, on every operation including the writer's own reads and
+  writes, while a cancellation of the caller's own token still propagates (a
+  `FileSystemBundleProvider` is not wrapped: its I/O texts are #211's); a
+  scope's view has a version token of its own, built from its listing and its
+  objects' versions, so reading one scope never walks the rest of the tier (an
+  unlistable directory of another tenant no longer makes it unavailable); and a
+  name that is a key of the view but too long once the scope's prefix is added
+  is over-long there, as past the bound in any bundle: never read, a parse
+  problem for a concept, its ancestors still checked by the tree validation.
+
+- **Embedded-resource bundle provider (#141).** New package
+  `OKF4net.Providers.EmbeddedResources`: the `OkfBundle` MSBuild item (a
+  pure-MSBuild `.targets` shipped in the package) embeds a bundle directory one
+  manifest resource per file, `okf:<prefix>/<path>`, refusing links and names an
+  assembly cannot hold (`OKFEMB001`–`OKFEMB009`), and
+  `EmbeddedResourceBundleProvider` serves it back read-only, synchronously,
+  versioned by the assembly's MVID — Native AOT and single-file included.
 
 ### Changed (breaking)
 
@@ -274,8 +312,7 @@ and this project adheres to
   `not attempted (cancelled)`.
 - **Not measured here:** the size of the `okf` Native AOT binary after the asynchronous core (design
   R7). The machine this was built on cannot link a native binary, so the figure comes from the CI
-  AOT job. `FileMemoryStore`'s scope probe, writes and deletions still need a provider that
-  completes synchronously (its reads and listings are asynchronous).
+  AOT job.
 - **`MemoryDeleteResult` is `(IReadOnlyList<MemoryTierDeletion> Tiers,
   string? Error)`** (#139, lot D; spec §1, §9, §10): `TiersDeleted` counted
   directories removed by `Directory.Delete`; a scope is now a prefix whose
@@ -317,6 +354,14 @@ and this project adheres to
   `memory-session/`).
 
 ### Changed
+
+- **One fold rule for every value an agent tool or the context provider prints** (#122). Every value `OkfBundleTools` interpolates into a line of a tool result, and every value `OkfContextProvider` injects, now goes through one rule: a line terminator (CR, LF, CRLF, NEL, VT, FF, U+2028, U+2029) becomes a space, any other C0/C1 control becomes U+FFFD, a bidirectional control (U+061C, U+200E, U+200F, U+202A–U+202E, U+2066–U+2069) is removed, and everything else, TAB included, prints unchanged. Observable only for a value carrying one of those characters: titles, frontmatter values, link targets, paths, receipt fields, verdict details and exception texts that only folded line breaks before now also lose bidi controls and show U+FFFD for ESC and the like; `okf_changes_since` removes a bidi control and shows U+FFFD for a control where it used to write `<U+XXXX>`. Values that were not folded at all are now: the `okf_search` excerpt (and `ConceptSearch.Excerpt`, so `OKF4net.Catalog`'s passages too: it split on LF only), the scoped context provider's passage title and excerpt, the error text `okf_write_concept` returns, and `okf_verify`'s detail for a target that could not be read or parsed. Exception texts still name host paths (#211). A value that BEGINS a Markdown block (first on its line, or right after a bullet, an ordered-list marker or a `>`) can no longer start block syntax of its own: its leading spaces and tabs are dropped and a leading `#` (heading), `-`/`+`/`*` (list item or thematic break), `_` (thematic break), a run of `=` or of `-` of any length (setext underline), `>`, three backticks or tildes (fence), `<` (HTML block), `[` (link reference definition), `|`, or the `.`/`)` of a leading `1.`-style marker, gets a backslash, which CommonMark renders as the plain character; a value that starts with a letter, a digit or a path prints unchanged. Every `|` a value brings, wherever it stands in the line, is escaped as well (`\|`, a backslash run before it doubled plus one), so no two lines can form a GFM table: a value containing a pipe now reads `a \| b`. So a frontmatter key `"## Backlinks"` reads `\## Backlinks: …` in `okf_read_concept`, and an excerpt that is a body heading reads `\## …`. Structural changes: `okf_read_concept` fences the concept body (info string `markdown`); every fence (`okf_read_concept`, `okf_get_computation`, `okf_browse`, the injected context) is a backtick run longer than any backtick OR tilde run in its content (three backticks, as before, for content with none), so no line of the content can close it; `okf_browse` returns a directory's `index.md` after the line `index.md of '<path>':` (or `index.md of the bundle root:`) inside a `markdown` fence, instead of the file's bare text; and each `<okf-context>` element of the injected context holds its content in such a fence, between blank lines (so that neither tag, which CommonMark reads as an HTML block running to the next blank line, swallows a fence line), with `&` written `&amp;` and then `<` written `&lt;` (in the content and in the id), so neither a literal `</okf-context>` nor a fence left open (an `index.md` ending in `~~~`, a truncated body) can reach past the element; a truncation that cuts a fenced body closes its fence before the `… (truncated)` marker. `LineSafeText`'s refusal now also refuses a bidirectional control, and the CLI uses it: `okf verify --by` or `--at` carrying one now exits 1 with `must not contain control or bidirectional characters` (the message of every such refusal, CLI, writer and `okf_verify`, used to say "control characters"; everything it refused before it still refuses), and `okf verify` now quotes a stored `at`, id or actor carrying one in its `recorded …` line. No golden covers those cases, so none moved. Numbers in tool results are formatted under the invariant culture (the computation timeout's seconds used the current culture).
+
+- **`Bundle.TryResolveResource(…)` and `Bundle.ReadResourceText(string)`**
+  (both `[Obsolete]`) now throw `NotSupportedException` when the bundle's
+  provider is not a `FileSystemBundleProvider`: its `Root` is then a display
+  string, which on Linux could resolve under the current directory. Use
+  `TryResolveResourceKey` and `ReadResourceText(BundleKey)`.
 
 - **The write lock is an explicit lease, and the `onWriteCommitted` callback runs after it is released** (#152, step 1). `BundleConceptWriter`'s thread-bound `Monitor` pair (lexical gate + resolved bundle lock) became `SemaphoreSlim`s behind an internal `WriteLease`, so the lock can be held across an `await` once the writer is asynchronous. It is no longer re-entrant: code under a lease receives it instead of acquiring again. The two guarantees that mattered are kept: aliases of one directory share the lock (#86), and a contended resolved lock is waited for without the gate. Observable: the callback (`onWriteCommitted`, the `OkfBundleTools` cache invalidation) is now invoked after the lock is released, so it may call back into the same bundle; a host that relied on exclusion while the callback ran loses it. `RecordVerifications` completes its whole batch before notifying (once per committed write), so a notification that throws (a cancellation, say) no longer stops a batch half-way: the exception still propagates, with every stamp on disk.
 
@@ -546,9 +591,8 @@ and this project adheres to
   `could not be resolved (Missing)`). The write tools are offered only when
   the handle's provider can write (`provider.CanWrite && mode != ReadOnly`,
   spec §3): over a read-only provider `GetTools` filters them out whatever the
-  mode, and a direct call throws `BundleReadOnlyException` (`okf_verify`,
-  which runs inside the tool's error channel, returns it as `Error: the
-  provider is read-only; …`). **A reload that fails after a successful load
+  mode, and a direct call throws `BundleReadOnlyException` (`okf_verify`
+  included, see Fixed, #218). **A reload that fails after a successful load
   keeps the previous image served** (spec §5.2): `okf_validate_bundle` and
   the context provider used to answer `bundle unavailable` once the bundle
   root vanished after a load; they now serve the last image, `Handle.IsStale`
@@ -1046,6 +1090,12 @@ and this project adheres to
 
 ### Fixed
 
+- **`okf_verify` over a read-only provider throws `BundleReadOnlyException`
+  like the other write tools (#218).** `OkfBundleTools.Verify` / `VerifyAsync`
+  used to return `Error: the provider is read-only; …` as text; a direct call
+  now throws, before any argument check. Not reachable through `GetTools`
+  (write tools are not offered on a read-only provider), so only a host
+  calling the method itself sees the change.
 - `YamlMapping` looks keys up through a lazily built key-to-position index
   instead of scanning the entries (#198), so building or editing a mapping of
   n keys through `Insert`/`Get`/`Remove`/`ContainsKey` is O(n) rather than
@@ -1063,9 +1113,10 @@ and this project adheres to
   but this is a reduction, not a guarantee. Teardown now issues `kill` once,
   kills and waits for the local engine client, and only then repeats
   `rm -f <name>` followed by `inspect <name>` until `inspect` reports the name
-  unknown (a non-zero exit with "no such" on stderr; any other failure, such
-  as a daemon that is down or a permission error, is no evidence of absence
-  and is retried within the budget) in two consecutive rounds 250 ms apart —
+  unknown (a non-zero exit with "no such container" or "no such object" on
+  stderr; any other failure, such as a daemon that is down, a missing daemon
+  socket's "no such file or directory" or a permission error, is no evidence
+  of absence and is retried within the budget) in two consecutive rounds 250 ms apart —
   and, as long as the engine
   has not once confirmed the container exists, for 1.5 s in all. It does not
   take an exit code of `rm -f` as proof, because Docker (29.4.1) exits 0 for a
@@ -1084,12 +1135,13 @@ and this project adheres to
   check, or after the budget is spent, is not seen. Podman and nerdctl
   have not been run; their `rm -f` exit code for an unknown name is
   unverified, and the design assumes only that `inspect` of an unknown name
-  exits non-zero and says "no such" (case-insensitively) on stderr — Docker
+  exits non-zero and says "no such container" or "no such object"
+  (case-insensitively) on stderr — Docker
   29.4.1 does; Podman's and nerdctl's wording is unverified, and an engine
   that words it otherwise makes teardown run to the end of its budget instead
   of returning early. The engine commands' output reads share that budget
   too, so a descendant holding a pipe open cannot hold teardown past it. The
-  measurements above were taken before the "no such" rule and the live
+  measurements above were taken before that not-found rule and the live
   `docker events` check in the early-cancellation test.
 - `OKF4net.Attestation.Containers`: `CliContainerEngine` now runs a container as
   `create` followed by `start -a -i`, not as one `run` (#110). A client killed
@@ -1110,6 +1162,30 @@ and this project adheres to
   50-run early-cancellation sweeps left no container behind. Podman and nerdctl
   have not been run; that their `create`/`start -a -i` behave alike is assumed.
   The leak figures in the previous entry describe the old single-`run` client.
+- `OKF4net.Attestation.Containers`: a timed-out run no longer waits without
+  bound for the output of the client it cancelled. A descendant of that client
+  (of `create`, say) that still held its stdout or stderr kept the run going
+  past both its timeout and the teardown budget, until the descendant exited.
+  Those reads now get 1 s after teardown; one that has not finished by then is
+  reported as empty output in the timeout's `ContainerExecutionException`. The
+  output of a client that has exited (a refused `create`, a `start` that ended
+  on its own) is read to its end within the run's own deadline: a descendant
+  holding it past the timeout used to keep the run going with no bound at all,
+  and now makes it the timeout failure (or the caller's cancellation). Whichever
+  way a run ends, a read it no longer waits for (that one, or `create`'s once
+  `start` runs) is then cancelled and both pipes of each client closed:
+  disposing a `Process` whose output was read leaves its readers open, so the
+  pipe and its buffer used to stay allocated until the descendant exited. The
+  teardown's own engine commands (`kill`, `rm -f`, `inspect`) release theirs the
+  same way when their bound runs out.
+- `OKF4net.Attestation.Containers`: a `start -a -i` that exits non-zero is now
+  followed by the same teardown as a cancelled run (`kill`, then `rm -f` and
+  `inspect` until the name is unknown, within the 3 s budget). A `start` that
+  failed before the container ran left it in `Created` state, which `--rm`
+  never removes; that cannot be told apart from the container's own non-zero
+  exit, so every non-zero `start` pays the teardown (a few engine calls; with
+  the default budget, at most 3 s). The result returned — exit code, stdout,
+  stderr, and the output-ceiling and invalid-UTF-8 failures — is unchanged.
 
 ## [0.7.0] - 2026-10-14
 

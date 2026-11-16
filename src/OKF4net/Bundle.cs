@@ -260,7 +260,7 @@ public sealed class Bundle
         var declaredLengths = ceiling is null ? null : new Dictionary<string, long>(StringComparer.Ordinal);
         try
         {
-            (treeInput, overLength) = await ListNamesAsync(provider, limits, ct, declaredLengths).ConfigureAwait(false);
+            (treeInput, overLength) = await ListNamesAsync(provider, limits, ct, declaredLengths: declaredLengths).ConfigureAwait(false);
         }
         catch (BundleProviderException e)
         {
@@ -283,7 +283,7 @@ public sealed class Bundle
 
             if (MarkdownPaths.HasMarkdownExtension(raw))
             {
-                parseProblems.Add(new BundleParseError(raw, longKey, $"key is longer than the {limits.MaxKeyBytes}-byte bound"));
+                parseProblems.Add(new BundleParseError(raw, longKey, $"key is longer than the {KeyByteBound(provider, limits)}-byte bound"));
             }
         }
 
@@ -734,13 +734,23 @@ public sealed class Bundle
     /// Provider exceptions and the bounds' <see cref="BundleLimitExceededException"/> propagate.
     /// The one listing of the whole bundle that applies every bound (entries, depth, key length) for a load or a regeneration: <see cref="Load(IBundleProvider, BundleLoadOptions?)"/>
     /// and <see cref="IndexGenerator"/> both list through it.
+    /// <para>With <paramref name="under"/>, it is the listing of that prefix of the provider's key
+    /// space as a bundle of its own (how the catalog's memory store lists one scope of a tier
+    /// provider): only the names strictly under <c>under/</c> are kept (a name a provider listed
+    /// outside it is dropped, never returned), the depth is counted below the prefix, and the
+    /// names are returned in full, as keys of the provider.</para>
+    /// <para>A name is over-long past <see cref="KeyByteBound"/>: the limits' bound, lowered for a
+    /// provider whose keys are stored under a longer name (<see cref="IReservedKeyBytes"/>).</para>
     /// </summary>
-    internal static async ValueTask<(List<string> TreeInput, List<string> OverLength)> ListNamesAsync(IBundleProvider provider, BundleLimits limits, CancellationToken ct, Dictionary<string, long>? declaredLengths = null)
+    internal static async ValueTask<(List<string> TreeInput, List<string> OverLength)> ListNamesAsync(IBundleProvider provider, BundleLimits limits, CancellationToken ct, BundleKey? under = null, Dictionary<string, long>? declaredLengths = null)
     {
         var treeInput = new List<string>();
         var overLength = new List<string>();
         var count = 0;
-        await foreach (var listing in provider.EnumerateAsync(null, limits, ct).WithCancellation(ct).ConfigureAwait(false))
+        var keyByteBound = KeyByteBound(provider, limits);
+        var strip = under is null ? null : under + "/";
+        var prefixDepth = under?.Segments.Count ?? 0;
+        await foreach (var listing in provider.EnumerateAsync(under, limits, ct).WithCancellation(ct).ConfigureAwait(false))
         {
             if (++count > limits.MaxEntries)
             {
@@ -748,12 +758,17 @@ public sealed class Bundle
             }
 
             var raw = listing.RawName;
-            if (raw.Split('/').Length > limits.MaxDepth)
+            if (strip is not null && !(raw.Length > strip.Length && raw.StartsWith(strip, StringComparison.Ordinal)))
+            {
+                continue;
+            }
+
+            if (raw.Split('/').Length - prefixDepth > limits.MaxDepth)
             {
                 throw new BundleLimitExceededException(BundleBound.Depth, limits.MaxDepth);
             }
 
-            if (System.Text.Encoding.UTF8.GetByteCount(raw) > limits.MaxKeyBytes)
+            if (System.Text.Encoding.UTF8.GetByteCount(raw) > keyByteBound)
             {
                 overLength.Add(raw);
                 continue;
@@ -768,6 +783,17 @@ public sealed class Bundle
 
         return (treeInput, overLength);
     }
+
+    /// <summary>
+    /// The longest name, in UTF-8 bytes, that a listing of <paramref name="provider"/> admits as a
+    /// key: <see cref="BundleLimits.MaxKeyBytes"/>, and, for a provider that stores its keys under a
+    /// longer name (<see cref="IReservedKeyBytes"/>), no more than what is left of
+    /// <see cref="BundleKey.MaxUtf8Bytes"/> once that name's extra bytes are counted.
+    /// </summary>
+    internal static int KeyByteBound(IBundleProvider provider, BundleLimits limits) =>
+        provider is IReservedKeyBytes reserved
+            ? Math.Min(limits.MaxKeyBytes, BundleKey.MaxUtf8Bytes - reserved.ReservedKeyBytes)
+            : limits.MaxKeyBytes;
 
     /// <summary>
     /// <see cref="ListNamesAsync"/> through the non-blocking bridge (#152), for the writer and the
@@ -1103,9 +1129,11 @@ public sealed class Bundle
     /// seam, so it applies neither the key policy nor the exact-name rules
     /// <see cref="TryResolveResourceKey"/> applies; no library code calls it.
     /// </summary>
+    /// <exception cref="NotSupportedException">The bundle's provider is not a <see cref="FileSystemBundleProvider"/>.</exception>
     [Obsolete("Bundle.TryResolveResource resolves a §6.2 path on the OS filesystem, outside the provider seam: use Bundle.TryResolveResourceKey, which resolves on keys under the key policy, then Bundle.ReadResourceText(BundleKey). The path-based members are removed with the asynchronous provider contract (#152).")]
     public bool TryResolveResource(Concept concept, string rawPath, out string? absolutePath, out ResourceResolutionStatus status)
     {
+        RequireFileSystemForPathMembers();
         var kind = FrontmatterResourceClassifier.KindOf(rawPath);
         if (kind == FrontmatterResourceKind.Url)
         {
@@ -1207,6 +1235,7 @@ public sealed class Bundle
     /// arbitrary file, which is a breaking change for any caller that used it
     /// that way, outside its documented contract.
     /// </remarks>
+    /// <exception cref="NotSupportedException">The bundle's provider is not a <see cref="FileSystemBundleProvider"/>.</exception>
     /// <exception cref="UnauthorizedAccessException">
     /// <paramref name="absolutePath"/> is outside <see cref="Root"/>, or it or a
     /// directory between it and <see cref="Root"/> is a reparse point or could
@@ -1217,6 +1246,7 @@ public sealed class Bundle
     [Obsolete("Bundle.ReadResourceText(string) reads a host path, outside the provider seam: use Bundle.ReadResourceText(BundleKey) on the key Bundle.TryResolveResourceKey resolved. The path-based members are removed with the asynchronous provider contract (#152).")]
     public string ReadResourceText(string absolutePath)
     {
+        RequireFileSystemForPathMembers();
         var fullRoot = ReparsePoints.CanonicalizeRoot(Root);
         var fullPath = System.IO.Path.GetFullPath(absolutePath);
         if (!ReparsePoints.IsWithin(fullRoot, fullPath, PathComparison)
@@ -1228,6 +1258,16 @@ public sealed class Bundle
         }
 
         return OkfEncodings.Strict.GetString(File.ReadAllBytes(fullPath));
+    }
+
+    /// <summary>D7: the path-based members have no meaning over a provider other than the filesystem (its Root is a display string).</summary>
+    private void RequireFileSystemForPathMembers()
+    {
+        if (Provider is not FileSystemBundleProvider)
+        {
+            throw new NotSupportedException(
+                "This bundle is not served by a FileSystemBundleProvider, so its Root is a display string, not a path: use Bundle.TryResolveResourceKey, then Bundle.ReadResourceText(BundleKey).");
+        }
     }
 
     /// <summary>

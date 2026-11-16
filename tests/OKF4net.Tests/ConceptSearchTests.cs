@@ -208,6 +208,27 @@ public class ConceptSearchTests
         Assert.DoesNotContain('\r', excerpt!);
     }
 
+    /// <summary>
+    /// #122, defect 1: the excerpt is split on LF only, so a lone CR, NEL, VT,
+    /// FF, U+2028 or U+2029 INSIDE a line, and a bidi control or ESC, used to
+    /// reach every consumer that prints it on a line of its own (okf_search,
+    /// the scoped context provider through OKF4net.Catalog). It is folded now.
+    /// Payload characters are numeric constants.
+    /// </summary>
+    [Fact]
+    public void Excerpt_returns_one_folded_line()
+    {
+        char[] interior = [(char)0x0D, (char)0x85, (char)0x0B, (char)0x0C, (char)0x2028, (char)0x2029];
+        foreach (var terminator in interior)
+        {
+            var body = "orders here" + terminator + "## FORGED" + terminator + "- FORGED" + (char)0x202E + (char)0x1B + "x\n";
+
+            var excerpt = ConceptSearch.Excerpt(body, "orders");
+
+            Assert.Equal("orders here ## FORGED - FORGED" + (char)0xFFFD + "x", excerpt);
+        }
+    }
+
     // ---- TopDiversified: scarce slots across top-level id families ---------
 
     /// <summary>

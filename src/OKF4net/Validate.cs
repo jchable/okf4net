@@ -364,6 +364,10 @@ public static class BundleValidator
     /// <param name="ct">Cancels the validation: the call ends with an <see cref="OperationCanceledException"/>.</param>
     public static async ValueTask<ValidationReport> ValidateAsync(Bundle bundle, IOkfClock? clock = null, CancellationToken ct = default)
     {
+        // Checked first, whatever the bundle holds: a bundle with nothing to ask its provider
+        // (no §6.2 resource, index or log) reaches no other check of the token.
+        ct.ThrowIfCancellationRequested();
+
         // One provider scope for the whole validation: the §6.2 path checks below ask the
         // provider about many keys, and a provider that supports it lists each directory once
         // for all of them, keeping nothing past this call.
