@@ -1096,12 +1096,16 @@ and this project adheres to
   past both its timeout and the teardown budget, until the descendant exited.
   Those reads now get 1 s after teardown; one that has not finished by then is
   reported as empty output in the timeout's `ContainerExecutionException`. The
-  output of a refused `create` and of a run that ends on its own is still read
-  to its end, as before. Whichever way a run ends, a read it no longer waits for
-  (that one, or `create`'s once `start` runs) is then cancelled and both pipes
-  of each client closed: disposing a `Process` whose output was read leaves its
-  readers open, so the pipe and its buffer used to stay allocated until the
-  descendant exited.
+  output of a client that has exited (a refused `create`, a `start` that ended
+  on its own) is read to its end within the run's own deadline: a descendant
+  holding it past the timeout used to keep the run going with no bound at all,
+  and now makes it the timeout failure (or the caller's cancellation). Whichever
+  way a run ends, a read it no longer waits for (that one, or `create`'s once
+  `start` runs) is then cancelled and both pipes of each client closed:
+  disposing a `Process` whose output was read leaves its readers open, so the
+  pipe and its buffer used to stay allocated until the descendant exited. The
+  teardown's own engine commands (`kill`, `rm -f`, `inspect`) release theirs the
+  same way when their bound runs out.
 - `OKF4net.Attestation.Containers`: a `start -a -i` that exits non-zero is now
   followed by the same teardown as a cancelled run (`kill`, then `rm -f` and
   `inspect` until the name is unknown, within the 3 s budget). A `start` that

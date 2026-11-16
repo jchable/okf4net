@@ -202,7 +202,14 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
         {
             // The engine refused to create the container (image not found, bad flag,
             // daemon down): there is none to start or to remove, and the exit code and
-            // message are what `run` would have reported for the same failure.
+            // message are what `run` would have reported for the same failure. Its output
+            // ends when the last writer of the pipe closes it, and a descendant of the
+            // client can hold it: the read is held to the run's own deadline.
+            if (!await SettleWithinDeadlineAsync(Task.WhenAll(createStdout, createStderr), linked.Token).ConfigureAwait(false))
+            {
+                throw await CancellationOutcomeAsync(cancellationToken, createStdout, createStderr).ConfigureAwait(false);
+            }
+
             return new ContainerRunResult(
                 create.ExitCode,
                 await SafeAwaitAsync(createStdout).ConfigureAwait(false),
@@ -263,6 +270,15 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             // checked gone either way, exactly as after a cancellation. Teardown never
             // throws, and the result reported below is unchanged.
             await TearDownContainerAsync(containerName, process, clientIsCreate: false).ConfigureAwait(false);
+        }
+
+        // The client has exited, but its output ends only when the last writer of each
+        // pipe closes it, and a descendant of the client can hold one: the reads (and the
+        // stdin write) are held to the run's own deadline, past which the run is the
+        // timeout failure (or the caller's cancellation) like any other run that overran.
+        if (!await SettleWithinDeadlineAsync(Task.WhenAll(stdinTask, stdoutTask, stderrTask), linked.Token).ConfigureAwait(false))
+        {
+            throw await CancellationOutcomeAsync(cancellationToken, stdoutTask, stderrTask).ConfigureAwait(false);
         }
 
         await stdinTask.ConfigureAwait(false);
@@ -397,6 +413,31 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             "container run exceeded its timeout",
             TextIfDrained(stdout),
             TextIfDrained(stderr));
+    }
+
+    /// <summary>
+    /// Waits for <paramref name="work"/> (an exited client's output drains, and its stdin
+    /// write) within <paramref name="deadline"/>, the run's own timeout and the caller's
+    /// token together. False only when the deadline ran out first; a fault of
+    /// <paramref name="work"/> itself is left to the awaits that follow, which rethrow it
+    /// as before. Without a deadline (no timeout, a caller token that cannot be cancelled)
+    /// it waits as long as the work does.
+    /// </summary>
+    private static async Task<bool> SettleWithinDeadlineAsync(Task work, CancellationToken deadline)
+    {
+        try
+        {
+            await work.WaitAsync(deadline).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested && !work.IsCompleted)
+        {
+            return false;
+        }
+        catch (Exception)
+        {
+            return true;
+        }
     }
 
     /// <summary>The text of a drain that has completed successfully, otherwise <c>""</c>.</summary>
@@ -811,9 +852,21 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             // container, say) would deadlock the teardown it is part of. Reading
             // to end also means the `catch` below sees a real failure rather than
             // a hang.
-            var drainOut = command.StandardOutput.ReadToEndAsync();
-            var drainErr = command.StandardError.ReadToEndAsync();
+            //
+            // The readers are this method's to release (Process does not dispose them
+            // in synchronous read mode, see ClientOutput), and the reads take the
+            // bound's token: a descendant the kill below cannot reach (the command
+            // already exited, so its tree is gone) can hold a pipe open without
+            // writing, and on Windows only a cancelled read lets the reader's handle
+            // close. A read abandoned that way ends cancelled or faulted; its fault is
+            // observed.
             using var cts = new CancellationTokenSource(bound);
+            using var stdoutReader = command.StandardOutput;
+            using var stderrReader = command.StandardError;
+            var drainOut = stdoutReader.ReadToEndAsync(cts.Token);
+            var drainErr = stderrReader.ReadToEndAsync(cts.Token);
+            ObserveFault(drainOut);
+            ObserveFault(drainErr);
             try
             {
                 await command.WaitForExitAsync(cts.Token).ConfigureAwait(false);

@@ -842,6 +842,76 @@ public class CliContainerEngineRunTests
     }
 
     /// <summary>
+    /// A client that has EXITED can still leave its output open: a descendant holding the
+    /// pipes keeps both drains from reaching end of stream. Once <c>create</c> was refused,
+    /// or <c>start</c> exited 0, the run used to read that output with no bound at all, so
+    /// it outlived its own timeout until the descendant died
+    /// (<see cref="PipeHoldingDescendantSeconds"/>). It is now held to the run's deadline:
+    /// past it, the run is the timeout failure.
+    /// <para>
+    /// The timeout must fire after the client has exited, which the test cannot observe
+    /// directly: it fires 2 s after the client's last marker line (written just before it
+    /// exits). Were it to fire before the exit is seen, the run would take the
+    /// cancelled-wait path instead, which tears the container down: the assertion that no
+    /// teardown command ran turns that into a failure, never into a pass that exercised
+    /// the wrong path.
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("create-refused")]
+    [InlineData("start-succeeded")]
+    public async Task An_exited_client_whose_descendant_holds_its_output_does_not_outlive_the_runs_deadline(string exitedClient)
+    {
+        EnsureThreadPoolHeadroom();
+        using var tmp = new TempDir();
+        var marker = System.IO.Path.Combine(tmp.Path, "calls.txt");
+        var timeouts = new ManualTimeProvider();
+        var refused = exitedClient == "create-refused";
+        var engine = new CliContainerEngine(refused
+            ? DispatchingEngine(tmp, marker, runHangSeconds: 20, KillMode.Fail, rmExitCode: 0, inspectExitCode: 1, createDescendantSeconds: PipeHoldingDescendantSeconds, createExitCode: 125)
+            : DispatchingEngine(tmp, marker, runHangSeconds: 0, KillMode.Fail, rmExitCode: 0, inspectExitCode: 1, startDescendantSeconds: PipeHoldingDescendantSeconds))
+        {
+            TeardownBudget = TimeSpan.FromSeconds(5),
+            TimeProvider = timeouts,
+        };
+
+        using var safety = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var stopWatching = new CancellationTokenSource();
+        var timedOut = WhenLineAppearsAsync(
+            marker,
+            refused ? "create-done" : "start-done",
+            () =>
+            {
+                Thread.Sleep(TimeSpan.FromSeconds(2));
+                SpinWait.SpinUntil(() => timeouts.IsArmed, TimeSpan.FromSeconds(10));
+                timeouts.Fire();
+            },
+            stopWatching.Token);
+
+        var clock = Stopwatch.StartNew();
+        var outcome = await Record.ExceptionAsync(
+            async () => await engine.RunAsync(Spec(TimeSpan.FromMilliseconds(300)), safety.Token));
+        clock.Stop();
+        await stopWatching.CancelAsync();
+
+        Assert.True(await timedOut, "the fake engine's client never wrote its last line");
+        var ex = Assert.IsType<ContainerExecutionException>(outcome);
+        Assert.Contains("exceeded its timeout", ex.Message);
+        Assert.Empty(Invocations(marker, "kill"));
+        Assert.Empty(Invocations(marker, "rm"));
+        Assert.Empty(Invocations(marker, "inspect"));
+        if (refused)
+        {
+            Assert.DoesNotContain(ReadMarkerLines(marker), static line => FirstToken(line) == "start");
+        }
+
+        var bound = TimeSpan.FromSeconds(12);
+        Assert.True(
+            clock.Elapsed < bound,
+            $"the run took {clock.Elapsed} against a bound of {bound}: once its {exitedClient.Split('-')[0]} client had exited, it waited for a descendant holding the output pipes ({PipeHoldingDescendantSeconds} s)");
+    }
+
+    /// <summary>
     /// A drain the run stops waiting for must not keep its pipe for as long as a descendant
     /// of the client holds the other end. <see cref="Process"/> does not release it: once
     /// its output is read, disposing it leaves the readers open. Here the client exits at
@@ -1354,9 +1424,13 @@ public class CliContainerEngineRunTests
     /// With <paramref name="createReleaseFile"/>, <c>create</c> then writes a
     /// <c>create-waiting</c> line and waits until that file exists (polling about once a
     /// second on Windows, every 100 ms elsewhere) before going on, so a test decides when
-    /// it exits.
+    /// it exits. <c>create</c> exits with <paramref name="createExitCode"/> (0 by default; any
+    /// other value is an engine refusing the create). With
+    /// <paramref name="startDescendantSeconds"/>, <c>start</c> likewise leaves behind a
+    /// background process holding its pipes, and writes a <c>start-done</c> line just before
+    /// it exits 0.
     /// </summary>
-    private static string DispatchingEngine(TempDir tmp, string markerFile, int runHangSeconds, KillMode killMode, int rmExitCode = 1, int inspectExitCode = 1, string inspectStderr = "Error: No such object", int createSeconds = 0, int createDescendantSeconds = 0, string? createReleaseFile = null)
+    private static string DispatchingEngine(TempDir tmp, string markerFile, int runHangSeconds, KillMode killMode, int rmExitCode = 1, int inspectExitCode = 1, string inspectStderr = "Error: No such object", int createSeconds = 0, int createDescendantSeconds = 0, string? createReleaseFile = null, int createExitCode = 0, int startDescendantSeconds = 0)
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
@@ -1375,7 +1449,9 @@ public class CliContainerEngineRunTests
                 + "if \"%1\"==\"inspect\" goto inspect\r\n"
                 + "if \"%1\"==\"create\" goto create\r\n"
                 + $"echo start >> \"{markerFile}\"\r\n"
+                + (startDescendantSeconds > 0 ? $"start \"\" /b ping -n {startDescendantSeconds + 1} 127.0.0.1\r\n" : "")
                 + $"ping -n {runHangSeconds + 1} 127.0.0.1 >nul\r\n"
+                + (startDescendantSeconds > 0 ? $"echo start-done >> \"{markerFile}\"\r\n" : "")
                 + "exit /b 0\r\n"
                 + ":create\r\n"
                 + $"echo create-begin >> \"{markerFile}\"\r\n"
@@ -1392,7 +1468,7 @@ public class CliContainerEngineRunTests
                         + ":createreleased\r\n")
                 + (createSeconds > 0 ? $"ping -n {createSeconds + 1} 127.0.0.1 >nul\r\n" : "")
                 + $"echo create-done >> \"{markerFile}\"\r\n"
-                + "exit /b 0\r\n"
+                + $"exit /b {createExitCode}\r\n"
                 + ":rm\r\n"
                 + $"echo %* >> \"{markerFile}\"\r\n"
                 + $"exit /b {rmExitCode}\r\n"
@@ -1424,7 +1500,7 @@ public class CliContainerEngineRunTests
                     + $"  while [ ! -e '{createReleaseFile}' ]; do sleep 0.1; done\n")
             + (createSeconds > 0 ? $"  sleep {createSeconds}\n" : "")
             + $"  echo create-done >> '{markerFile}'\n"
-            + "  exit 0\n"
+            + $"  exit {createExitCode}\n"
             + "elif [ \"$1\" = \"rm\" ]; then\n"
             + $"  echo \"$*\" >> '{markerFile}'\n"
             + $"  exit {rmExitCode}\n"
@@ -1437,7 +1513,9 @@ public class CliContainerEngineRunTests
             + $"  {killBodySh}"
             + "else\n"
             + $"  echo start >> '{markerFile}'\n"
+            + (startDescendantSeconds > 0 ? $"  sleep {startDescendantSeconds} &\n" : "")
             + $"  sleep {runHangSeconds}\n"
+            + (startDescendantSeconds > 0 ? $"  echo start-done >> '{markerFile}'\n" : "")
             + "fi\n");
         File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         return path;
