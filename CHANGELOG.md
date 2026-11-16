@@ -555,9 +555,8 @@ and this project adheres to
   `could not be resolved (Missing)`). The write tools are offered only when
   the handle's provider can write (`provider.CanWrite && mode != ReadOnly`,
   spec §3): over a read-only provider `GetTools` filters them out whatever the
-  mode, and a direct call throws `BundleReadOnlyException` (`okf_verify`,
-  which runs inside the tool's error channel, returns it as `Error: the
-  provider is read-only; …`). **A reload that fails after a successful load
+  mode, and a direct call throws `BundleReadOnlyException` (`okf_verify`
+  included, see Fixed, #218). **A reload that fails after a successful load
   keeps the previous image served** (spec §5.2): `okf_validate_bundle` and
   the context provider used to answer `bundle unavailable` once the bundle
   root vanished after a load; they now serve the last image, `Handle.IsStale`
@@ -1055,6 +1054,12 @@ and this project adheres to
 
 ### Fixed
 
+- **`okf_verify` over a read-only provider throws `BundleReadOnlyException`
+  like the other write tools (#218).** `OkfBundleTools.Verify` / `VerifyAsync`
+  used to return `Error: the provider is read-only; …` as text; a direct call
+  now throws, before any argument check. Not reachable through `GetTools`
+  (write tools are not offered on a read-only provider), so only a host
+  calling the method itself sees the change.
 - `YamlMapping` looks keys up through a lazily built key-to-position index
   instead of scanning the entries (#198), so building or editing a mapping of
   n keys through `Insert`/`Get`/`Remove`/`ContainsKey` is O(n) rather than

@@ -1071,6 +1071,14 @@ public sealed class OkfBundleTools
         [Description("UTC timestamp in the exact form yyyy-MM-ddTHH:mm:ssZ, e.g. 2026-08-28T09:14:00Z — no fractional seconds, no offset, no bare date. Omit for now.")] string? at = null,
         CancellationToken ct = default)
     {
+        // The capability guard of every write entry point (spec §3, #218), ahead of any
+        // argument check and outside RunTool like the other write tools: a read-only
+        // provider is a host mistake, not a content error to hand the model as text.
+        if (!_handle.Provider.Capabilities.CanWrite)
+        {
+            throw new BundleReadOnlyException(_handle.Provider.Id);
+        }
+
         var ids = (conceptIds ?? string.Empty)
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToList();
