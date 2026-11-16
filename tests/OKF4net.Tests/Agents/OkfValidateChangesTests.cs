@@ -323,13 +323,13 @@ public class OkfValidateChangesTests
     /// through to the model and to whatever renders the tool result.
     ///
     /// There is nothing to refuse on a read (the file exists, and the entries
-    /// are a human's words), so the rendering ESCAPES instead: each offending
-    /// character is replaced by its own <c>&lt;U+XXXX&gt;</c> name. That keeps
-    /// the line honest -- every word a human wrote survives, nothing is
-    /// silently dropped -- while nothing left in it can reorder the display or
-    /// drive a terminal. It is also the form a reader can act on: seeing
-    /// <c>&lt;U+202E&gt;</c> in an audit trail tells them exactly what is in
-    /// the file and that someone put it there.
+    /// are a human's words), so the rendering FOLDS instead, by the one
+    /// model-facing rule (#122, <c>ModelText.Fold</c>): a control becomes
+    /// U+FFFD, a bidi control is removed, VT becomes a space. Every word a
+    /// human wrote survives, and nothing left can reorder the display or drive
+    /// a terminal. (This used to name each character as <c>&lt;U+XXXX&gt;</c>,
+    /// a second rule the shared fold replaced; the expectation below changed
+    /// with it.)
     ///
     /// Numeric constants, not literals, for every payload.
     ///
@@ -363,15 +363,16 @@ public class OkfValidateChangesTests
         Assert.DoesNotContain(rlo.ToString(), result, StringComparison.Ordinal);
         Assert.DoesNotContain(isolate.ToString(), result, StringComparison.Ordinal);
         Assert.DoesNotContain(vtab.ToString(), result, StringComparison.Ordinal);
-        // Each one is NAMED rather than dropped: the whole entry, both fields,
-        // reads back with every human-written word intact.
+        // The whole entry, both fields, reads back with every human-written
+        // word intact: ESC as U+FFFD, the bidi controls removed, VT a space.
+        var replacement = (char)0xFFFD;
         Assert.Contains(
-            "- **Upd<U+001B>[2Kate**: real<U+202E>text<U+2067> and<U+000B>more.",
+            "- **Upd" + replacement + "[2Kate**: realtext and more.",
             result,
             StringComparison.Ordinal);
         // The kind-less branch (no "**Kind**:") gets the same treatment.
         Assert.Contains(
-            "- plain<U+001B>entry<U+202E>text.",
+            "- plain" + replacement + "entrytext.",
             result,
             StringComparison.Ordinal);
     }
@@ -431,7 +432,10 @@ public class OkfValidateChangesTests
         var result = tools.ChangesSince("2020-01-01");
 
         Assert.DoesNotContain(rlo.ToString(), result, StringComparison.Ordinal);
-        Assert.Contains("## sub<U+202E>dir/log.md", result, StringComparison.Ordinal);
+
+        // #122: the bidi control is removed by the shared fold (it used to be
+        // named as <U+202E>).
+        Assert.Contains("## subdir/log.md", result, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -453,6 +457,8 @@ public class OkfValidateChangesTests
         var result = tools.ChangesSince("2020-01-01");
 
         Assert.DoesNotContain(rlo.ToString(), result, StringComparison.Ordinal);
-        Assert.Contains("Skipped sub<U+202E>dir/log.md", result, StringComparison.Ordinal);
+
+        // #122: removed by the shared fold (it used to be named as <U+202E>).
+        Assert.Contains("Skipped subdir/log.md", result, StringComparison.Ordinal);
     }
 }

@@ -26,6 +26,43 @@ and this project adheres to
   - A malformed entry is refused at construction (`ArgumentException`).
   - `okf_run_computation` shows the refusal without the digest.
 
+- **Snapshot memory estimate and per-source ceiling (#151).** `Bundle.EstimatedMemoryBytes`
+  reports what an image takes in memory, as an estimate. It is a linear model over
+  the size of the concept objects read and the links they hold, calibrated against
+  retained bytes on four bundle shapes (`SnapshotMemoryCalibrationTests`, within a
+  factor of 1.25; skipped on macOS, where the CI heap reading is unreliable).
+  It is approximate, not a heap measurement.
+  `BundleLoadOptions.MemoryCeilingBytes` (`null`, no ceiling, by default: loading
+  is unchanged) refuses a load that would exceed it with the new
+  `BundleMemoryCeilingExceededException` (`CeilingBytes`, `EstimatedBytes`),
+  inside the `BundleLoadException` (`the bundle exceeds the memory bound (N)`).
+  The refusal comes before any read when the sizes the listing declares already
+  exceed the ceiling, otherwise as soon as the running estimate crosses it. A
+  parallel load stops starting reads once its finished reads are over, and
+  refuses at the same object. The ceiling bounds one image: during a refresh the
+  previous one is still held, so the peak can reach twice the ceiling. A
+  `BundleHandle` whose reload is refused keeps serving its previous image,
+  flagged stale. Catalog: `KnowledgeCatalogOptions.MemoryCeilingFor` sets a
+  source's ceiling from the host, never from `catalog.json`. A source over it is
+  `SourceUnavailable` on a first load and `SourceStale` on a refresh. New
+  `BundleBound.Memory`. `BundleLimitExceededException` is no longer `sealed`, so
+  the new exception can derive from it: a host catching it still catches the
+  memory refusal.
+
+- **Review dates in the audit (#156, spec §5.2).** `AuditFinding` gains
+  `LastVerifiedAt` (the latest `verified[].at` that reads as a §5 timestamp),
+  `LastChangedAt` (`generated.at`, falling back to the legacy `timestamp`,
+  §13.1) and `IsReviewOutdated` (both known, and the change strictly later).
+  `AuditQuery` gains `ReviewOutdatedOnly`, exposed as `okf audit
+  --review-outdated` and as the `reviewOutdated` parameter of `okf_audit`
+  (`AuditAsync`). The signal leaves the trust tier and every count alone. Only
+  the frontmatter is read: for a file's git history, pair `lastVerifiedAt` with
+  `git log -1 --format=%cI -- <path>`. **`okf audit --json` changes**: `query`
+  gains `reviewOutdated`, each finding gains `lastVerifiedAt`, `lastChangedAt`
+  and `reviewOutdated`. The text lines are unchanged. Binary-breaking for a
+  compiled caller of `AuditQuery`'s constructor (a new optional parameter);
+  source-compatible.
+
 - **Bundle provider seam (#139, lot A).** `OKF4net.Providers`: `IBundleProvider`
   and its value types, `BundleKey` with three-layer validation
   (`BundleKeyConstraints`, `BundleKeyPolicy`, `BundleKeyValidator`),
@@ -235,6 +272,14 @@ and this project adheres to
   is over-long there, as past the bound in any bundle: never read, a parse
   problem for a concept, its ancestors still checked by the tree validation.
 
+- **Embedded-resource bundle provider (#141).** New package
+  `OKF4net.Providers.EmbeddedResources`: the `OkfBundle` MSBuild item (a
+  pure-MSBuild `.targets` shipped in the package) embeds a bundle directory one
+  manifest resource per file, `okf:<prefix>/<path>`, refusing links and names an
+  assembly cannot hold (`OKFEMB001`–`OKFEMB009`), and
+  `EmbeddedResourceBundleProvider` serves it back read-only, synchronously,
+  versioned by the assembly's MVID — Native AOT and single-file included.
+
 ### Changed (breaking)
 
 - **The provider contract is asynchronous, before its first publication** (#152). The
@@ -326,6 +371,14 @@ and this project adheres to
   `memory-session/`).
 
 ### Changed
+
+- **One fold rule for every value an agent tool or the context provider prints** (#122). Every value `OkfBundleTools` interpolates into a line of a tool result, and every value `OkfContextProvider` injects, now goes through one rule: a line terminator (CR, LF, CRLF, NEL, VT, FF, U+2028, U+2029) becomes a space, any other C0/C1 control becomes U+FFFD, a bidirectional control (U+061C, U+200E, U+200F, U+202A–U+202E, U+2066–U+2069) is removed, and everything else, TAB included, prints unchanged. Observable only for a value carrying one of those characters: titles, frontmatter values, link targets, paths, receipt fields, verdict details and exception texts that only folded line breaks before now also lose bidi controls and show U+FFFD for ESC and the like; `okf_changes_since` removes a bidi control and shows U+FFFD for a control where it used to write `<U+XXXX>`. Values that were not folded at all are now: the `okf_search` excerpt (and `ConceptSearch.Excerpt`, so `OKF4net.Catalog`'s passages too: it split on LF only), the scoped context provider's passage title and excerpt, the error text `okf_write_concept` returns, and `okf_verify`'s detail for a target that could not be read or parsed. Exception texts still name host paths (#211). A value that BEGINS a Markdown block (first on its line, or right after a bullet, an ordered-list marker or a `>`) can no longer start block syntax of its own: its leading spaces and tabs are dropped and a leading `#` (heading), `-`/`+`/`*` (list item or thematic break), `_` (thematic break), a run of `=` or of `-` of any length (setext underline), `>`, three backticks or tildes (fence), `<` (HTML block), `[` (link reference definition), `|`, or the `.`/`)` of a leading `1.`-style marker, gets a backslash, which CommonMark renders as the plain character; a value that starts with a letter, a digit or a path prints unchanged. Every `|` a value brings, wherever it stands in the line, is escaped as well (`\|`, a backslash run before it doubled plus one), so no two lines can form a GFM table: a value containing a pipe now reads `a \| b`. So a frontmatter key `"## Backlinks"` reads `\## Backlinks: …` in `okf_read_concept`, and an excerpt that is a body heading reads `\## …`. Structural changes: `okf_read_concept` fences the concept body (info string `markdown`); every fence (`okf_read_concept`, `okf_get_computation`, `okf_browse`, the injected context) is a backtick run longer than any backtick OR tilde run in its content (three backticks, as before, for content with none), so no line of the content can close it; `okf_browse` returns a directory's `index.md` after the line `index.md of '<path>':` (or `index.md of the bundle root:`) inside a `markdown` fence, instead of the file's bare text; and each `<okf-context>` element of the injected context holds its content in such a fence, between blank lines (so that neither tag, which CommonMark reads as an HTML block running to the next blank line, swallows a fence line), with `&` written `&amp;` and then `<` written `&lt;` (in the content and in the id), so neither a literal `</okf-context>` nor a fence left open (an `index.md` ending in `~~~`, a truncated body) can reach past the element; a truncation that cuts a fenced body closes its fence before the `… (truncated)` marker. `LineSafeText`'s refusal now also refuses a bidirectional control, and the CLI uses it: `okf verify --by` or `--at` carrying one now exits 1 with `must not contain control or bidirectional characters` (the message of every such refusal, CLI, writer and `okf_verify`, used to say "control characters"; everything it refused before it still refuses), and `okf verify` now quotes a stored `at`, id or actor carrying one in its `recorded …` line. No golden covers those cases, so none moved. Numbers in tool results are formatted under the invariant culture (the computation timeout's seconds used the current culture).
+
+- **`Bundle.TryResolveResource(…)` and `Bundle.ReadResourceText(string)`**
+  (both `[Obsolete]`) now throw `NotSupportedException` when the bundle's
+  provider is not a `FileSystemBundleProvider`: its `Root` is then a display
+  string, which on Linux could resolve under the current directory. Use
+  `TryResolveResourceKey` and `ReadResourceText(BundleKey)`.
 
 - **The write lock is an explicit lease, and the `onWriteCommitted` callback runs after it is released** (#152, step 1). `BundleConceptWriter`'s thread-bound `Monitor` pair (lexical gate + resolved bundle lock) became `SemaphoreSlim`s behind an internal `WriteLease`, so the lock can be held across an `await` once the writer is asynchronous. It is no longer re-entrant: code under a lease receives it instead of acquiring again. The two guarantees that mattered are kept: aliases of one directory share the lock (#86), and a contended resolved lock is waited for without the gate. Observable: the callback (`onWriteCommitted`, the `OkfBundleTools` cache invalidation) is now invoked after the lock is released, so it may call back into the same bundle; a host that relied on exclusion while the callback ran loses it. `RecordVerifications` completes its whole batch before notifying (once per committed write), so a notification that throws (a cancellation, say) no longer stops a batch half-way: the exception still propagates, with every stamp on disk.
 
@@ -555,9 +608,8 @@ and this project adheres to
   `could not be resolved (Missing)`). The write tools are offered only when
   the handle's provider can write (`provider.CanWrite && mode != ReadOnly`,
   spec §3): over a read-only provider `GetTools` filters them out whatever the
-  mode, and a direct call throws `BundleReadOnlyException` (`okf_verify`,
-  which runs inside the tool's error channel, returns it as `Error: the
-  provider is read-only; …`). **A reload that fails after a successful load
+  mode, and a direct call throws `BundleReadOnlyException` (`okf_verify`
+  included, see Fixed, #218). **A reload that fails after a successful load
   keeps the previous image served** (spec §5.2): `okf_validate_bundle` and
   the context provider used to answer `bundle unavailable` once the bundle
   root vanished after a load; they now serve the last image, `Handle.IsStale`
@@ -1055,6 +1107,12 @@ and this project adheres to
 
 ### Fixed
 
+- **`okf_verify` over a read-only provider throws `BundleReadOnlyException`
+  like the other write tools (#218).** `OkfBundleTools.Verify` / `VerifyAsync`
+  used to return `Error: the provider is read-only; …` as text; a direct call
+  now throws, before any argument check. Not reachable through `GetTools`
+  (write tools are not offered on a read-only provider), so only a host
+  calling the method itself sees the change.
 - `YamlMapping` looks keys up through a lazily built key-to-position index
   instead of scanning the entries (#198), so building or editing a mapping of
   n keys through `Insert`/`Get`/`Remove`/`ContainsKey` is O(n) rather than

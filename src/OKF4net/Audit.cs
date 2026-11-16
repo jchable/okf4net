@@ -22,11 +22,16 @@ namespace OKF4net;
 /// Null — or blank, which §11 forbids as a concept's type and which callers
 /// emit for "unset" — keeps every type.
 /// </param>
+/// <param name="ReviewOutdatedOnly">
+/// Keep only concepts whose content changed after their latest review
+/// (<see cref="AuditFinding.IsReviewOutdated"/>, §5.2, #156).
+/// </param>
 public readonly record struct AuditQuery(
     bool StaleOnly = false,
     IReadOnlySet<TrustTier>? Trust = null,
     ConceptStatus? Status = null,
-    string? Type = null)
+    string? Type = null,
+    bool ReviewOutdatedOnly = false)
 {
     /// <summary>The query that keeps every concept.</summary>
     public static AuditQuery All => default;
@@ -38,7 +43,7 @@ public readonly record struct AuditQuery(
     /// <c>new AuditQuery(StaleOnly: true)</c> itself, with no flag typed, and
     /// this is still <see langword="true"/> for it.
     /// </summary>
-    public bool IsFiltered => StaleOnly || Trust is not null || Status is not null || Type is not null;
+    public bool IsFiltered => StaleOnly || Trust is not null || Status is not null || Type is not null || ReviewOutdatedOnly;
 }
 
 /// <summary>One concept selected by an audit, with its signals already derived.</summary>
@@ -66,6 +71,31 @@ public readonly record struct AuditFinding(
 {
     /// <summary>The concept's key in its provider (spec §9); <see langword="null"/> for a finding built by hand over a concept without one.</summary>
     public Providers.BundleKey? Key { get; init; }
+
+    /// <summary>
+    /// When the concept was last reviewed (§5.2: "how recently" is the latest <c>at</c>): the latest
+    /// <c>verified[].at</c> that reads as a §5 timestamp, whoever the actor; <see langword="null"/> when
+    /// the concept has no stamp, or none whose <c>at</c> reads. A stamp is a dated declaration, not a proof.
+    /// </summary>
+    public DateTimeOffset? LastVerifiedAt { get; init; }
+
+    /// <summary>
+    /// When the content last changed meaningfully (§5.2 <c>generated.at</c>, falling back to the legacy
+    /// <c>timestamp</c>, §13.1 — <see cref="Frontmatter.LastChangedAt"/>); <see langword="null"/> when absent
+    /// or unreadable as a §5 timestamp.
+    /// </summary>
+    public DateTimeOffset? LastChangedAt { get; init; }
+
+    /// <summary>
+    /// Whether the content changed after its latest review (#156): both <see cref="LastVerifiedAt"/> and
+    /// <see cref="LastChangedAt"/> are known and the change is strictly later. §5.2 keeps the two
+    /// independent ("content can change without re-confirmation"), so this is a signal for a reviewer, not
+    /// a change of trust tier: <see cref="Trust"/> is unaffected. False when either instant is unknown —
+    /// nothing is then claimed either way. Only the frontmatter is read; a file edited without updating
+    /// <c>generated.at</c> is not detected (compare <see cref="LastVerifiedAt"/> with the history of the
+    /// file, e.g. <c>git log -1 --format=%cI -- &lt;path&gt;</c>, for that).
+    /// </summary>
+    public bool IsReviewOutdated => LastVerifiedAt is { } verified && LastChangedAt is { } changed && changed > verified;
 }
 
 /// <summary>
@@ -316,7 +346,7 @@ public static class ConceptAudit
                 continue;
             }
 
-            findings.Add(new AuditFinding(
+            var finding = new AuditFinding(
                 concept.Id,
                 concept.Path,
                 frontmatter.Type,
@@ -326,11 +356,35 @@ public static class ConceptAudit
                 isStale)
             {
                 Key = concept.Key,
-            });
+                LastVerifiedAt = LatestInstant(frontmatter.Verified.Select(stamp => stamp.At)),
+                LastChangedAt = LatestInstant([frontmatter.LastChangedAt]),
+            };
+
+            if (query.ReviewOutdatedOnly && !finding.IsReviewOutdated)
+            {
+                continue;
+            }
+
+            findings.Add(finding);
         }
 
         findings.Sort(static (a, b) => a.Id.CompareTo(b.Id));
 
         return new AuditReport(now, asOf, bundle.Count, trustCounts, statusCounts, staleCount, findings);
+    }
+
+    /// <summary>The latest of the values that read as §5 timestamps (the shared seam, legacy forms included); null when none does.</summary>
+    private static DateTimeOffset? LatestInstant(IEnumerable<string?> raws)
+    {
+        DateTimeOffset? latest = null;
+        foreach (var raw in raws)
+        {
+            if (raw is not null && Internal.OkfTimestamp.TryParse(raw, out var instant, out _) && (latest is null || instant > latest))
+            {
+                latest = instant;
+            }
+        }
+
+        return latest;
     }
 }

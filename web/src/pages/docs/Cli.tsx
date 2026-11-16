@@ -327,7 +327,8 @@ export default function Cli() {
           <pre className="block" dangerouslySetInnerHTML={{ __html: auditHtml }} />
           <p>
             With no filter flag it selects exactly what <code>--stale</code> selects and prints the summary above.
-            With any of <code>--stale</code>, <code>--trust</code>, <code>--status</code> or <code>--type</code> it
+            With any of <code>--stale</code>, <code>--trust</code>, <code>--status</code>, <code>--type</code> or{' '}
+            <code>--review-outdated</code> it
             prints one line per matching concept and nothing else, so the output pipes. <code>--as-of</code> pins the
             observation date to midnight UTC on that day (it never changes the mode), and <code>--json</code> always
             emits the full document.
@@ -337,6 +338,15 @@ export default function Cli() {
             The question this exists for — <em>which concepts are past their <code>stale_after</code> instant and have
             never been verified by a human?</em> — is <code>--stale --trust unverified,machine-confirmed</code>: both
             tiers, because &ldquo;machine-confirmed&rdquo; also means no human ever looked.
+          </p>
+          <p>
+            A <code>verified</code> stamp attests a moment, not a version. <code>--review-outdated</code> selects the
+            concepts whose content changed after their latest review: <code>generated.at</code> (or the legacy{' '}
+            <code>timestamp</code>) strictly later than the latest <code>verified[].at</code>. It is a signal for a
+            reviewer and leaves the trust tier alone. Each <code>--json</code> finding carries the two instants
+            compared (<code>lastVerifiedAt</code>, <code>lastChangedAt</code>) and the verdict
+            (<code>reviewOutdated</code>). Only the frontmatter is read: to compare with the file&rsquo;s git history
+            instead, pair <code>lastVerifiedAt</code> with <code>git log -1 --format=%cI -- &lt;path&gt;</code>.
           </p>
         </Chapter>
 

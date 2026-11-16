@@ -138,10 +138,13 @@ public enum BundleBound
 
     /// <summary><see cref="BundleLimits.MaxKeyBytes"/>.</summary>
     KeyBytes,
+
+    /// <summary><see cref="BundleLoadOptions.MemoryCeilingBytes"/> (#151): the estimated size of the image in memory.</summary>
+    Memory,
 }
 
 /// <summary>A walk or a load exceeded one of its <see cref="BundleLimits"/> (spec §6). The message names the bound by its category only.</summary>
-public sealed class BundleLimitExceededException(BundleBound bound, long limit)
+public class BundleLimitExceededException(BundleBound bound, long limit)
     : BundleProviderException($"the bundle exceeds the {Describe(bound)} bound ({limit})")
 {
     /// <summary>Which bound was exceeded.</summary>
@@ -156,6 +159,26 @@ public sealed class BundleLimitExceededException(BundleBound bound, long limit)
         BundleBound.Entries => "entries",
         BundleBound.Depth => "depth",
         BundleBound.KeyBytes => "key-length",
+        BundleBound.Memory => "memory",
         _ => "unknown",
     };
+}
+
+/// <summary>
+/// A load refused because the image would exceed the host's memory ceiling (#151,
+/// <see cref="BundleLoadOptions.MemoryCeilingBytes"/>): either before any concept was read, from the sizes
+/// the provider's listing declared, or during the reads, as soon as the running estimate crossed the
+/// ceiling — never after loading everything. The load ends; a <see cref="BundleHandle"/> keeps serving
+/// its previous image, flagged stale.
+/// </summary>
+/// <param name="ceiling">The ceiling, in bytes.</param>
+/// <param name="estimated">The estimate when the load stopped — a lower bound of what the full image would need, since the load stopped as soon as it crossed the ceiling.</param>
+public sealed class BundleMemoryCeilingExceededException(long ceiling, long estimated)
+    : BundleLimitExceededException(BundleBound.Memory, ceiling)
+{
+    /// <summary>The ceiling, in bytes (the same as <see cref="BundleLimitExceededException.Limit"/>).</summary>
+    public long CeilingBytes => Limit;
+
+    /// <summary>The estimate, in bytes, when the load stopped: at least that much would have been needed.</summary>
+    public long EstimatedBytes { get; } = estimated;
 }

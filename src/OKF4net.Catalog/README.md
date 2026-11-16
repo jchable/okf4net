@@ -261,7 +261,10 @@ through them: an unchanged source is loaded once across requests, and a
 change in its storage is seen at the next request under the default
 `OnAccess` policy (`KnowledgeCatalogOptions.RefreshPolicy`, overridable per
 source with `RefreshPolicyFor`; `LoadOptions` sets the bounds and key policy
-of every load). For a directory the version token is weak (names, lengths and
+of every load, and `MemoryCeilingFor` gives a source its own memory ceiling,
+`BundleLoadOptions.MemoryCeilingBytes`, set by the host and never read from
+`catalog.json`. A source refused for its ceiling is `SourceUnavailable` on a
+first load and `SourceStale` on a refresh, like any failed load). For a directory the version token is weak (names, lengths and
 modification times): two edits of the same size within one modification-time
 tick can be missed until the next change, and `Handle.Refresh()` or
 `Handle.Invalidate()` forces a re-read. A reload keeps a source's handle while
