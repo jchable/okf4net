@@ -1056,9 +1056,10 @@ and this project adheres to
   but this is a reduction, not a guarantee. Teardown now issues `kill` once,
   kills and waits for the local engine client, and only then repeats
   `rm -f <name>` followed by `inspect <name>` until `inspect` reports the name
-  unknown (a non-zero exit with "no such" on stderr; any other failure, such
-  as a daemon that is down or a permission error, is no evidence of absence
-  and is retried within the budget) in two consecutive rounds 250 ms apart —
+  unknown (a non-zero exit with "no such container" or "no such object" on
+  stderr; any other failure, such as a daemon that is down, a missing daemon
+  socket's "no such file or directory" or a permission error, is no evidence
+  of absence and is retried within the budget) in two consecutive rounds 250 ms apart —
   and, as long as the engine
   has not once confirmed the container exists, for 1.5 s in all. It does not
   take an exit code of `rm -f` as proof, because Docker (29.4.1) exits 0 for a
@@ -1077,12 +1078,13 @@ and this project adheres to
   check, or after the budget is spent, is not seen. Podman and nerdctl
   have not been run; their `rm -f` exit code for an unknown name is
   unverified, and the design assumes only that `inspect` of an unknown name
-  exits non-zero and says "no such" (case-insensitively) on stderr — Docker
+  exits non-zero and says "no such container" or "no such object"
+  (case-insensitively) on stderr — Docker
   29.4.1 does; Podman's and nerdctl's wording is unverified, and an engine
   that words it otherwise makes teardown run to the end of its budget instead
   of returning early. The engine commands' output reads share that budget
   too, so a descendant holding a pipe open cannot hold teardown past it. The
-  measurements above were taken before the "no such" rule and the live
+  measurements above were taken before that not-found rule and the live
   `docker events` check in the early-cancellation test.
 - `OKF4net.Attestation.Containers`: `CliContainerEngine` now runs a container as
   `create` followed by `start -a -i`, not as one `run` (#110). A client killed
@@ -1103,6 +1105,30 @@ and this project adheres to
   50-run early-cancellation sweeps left no container behind. Podman and nerdctl
   have not been run; that their `create`/`start -a -i` behave alike is assumed.
   The leak figures in the previous entry describe the old single-`run` client.
+- `OKF4net.Attestation.Containers`: a timed-out run no longer waits without
+  bound for the output of the client it cancelled. A descendant of that client
+  (of `create`, say) that still held its stdout or stderr kept the run going
+  past both its timeout and the teardown budget, until the descendant exited.
+  Those reads now get 1 s after teardown; one that has not finished by then is
+  reported as empty output in the timeout's `ContainerExecutionException`. The
+  output of a client that has exited (a refused `create`, a `start` that ended
+  on its own) is read to its end within the run's own deadline: a descendant
+  holding it past the timeout used to keep the run going with no bound at all,
+  and now makes it the timeout failure (or the caller's cancellation). Whichever
+  way a run ends, a read it no longer waits for (that one, or `create`'s once
+  `start` runs) is then cancelled and both pipes of each client closed:
+  disposing a `Process` whose output was read leaves its readers open, so the
+  pipe and its buffer used to stay allocated until the descendant exited. The
+  teardown's own engine commands (`kill`, `rm -f`, `inspect`) release theirs the
+  same way when their bound runs out.
+- `OKF4net.Attestation.Containers`: a `start -a -i` that exits non-zero is now
+  followed by the same teardown as a cancelled run (`kill`, then `rm -f` and
+  `inspect` until the name is unknown, within the 3 s budget). A `start` that
+  failed before the container ran left it in `Created` state, which `--rm`
+  never removes; that cannot be told apart from the container's own non-zero
+  exit, so every non-zero `start` pays the teardown (a few engine calls; with
+  the default budget, at most 3 s). The result returned — exit code, stdout,
+  stderr, and the output-ceiling and invalid-UTF-8 failures — is unchanged.
 
 ## [0.7.0] - 2026-10-14
 
