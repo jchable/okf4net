@@ -209,6 +209,89 @@ public class FileMemoryStoreAsyncProviderTests
         Assert.NotEqual(before, await view.GetVersionAsync(BundleLimits.Default, CancellationToken.None));
     }
 
+    [Fact]
+    public async Task A_host_provider_failure_inside_the_write_or_the_deletion_reaches_the_result_by_its_type_only()
+    {
+        var storage = new InMemoryBundleProvider(canWrite: true);
+        Assert.True((await new FileMemoryStore(EveryTier(storage)).WriteAsync(Alice, Entry("2026-07-27", "x"), MemoryTier.User)).Written);
+
+        // The reads before the write succeed: the failure happens in the write the writer makes,
+        // which the writer reports by message for an IOException, and in each key's deletion,
+        // which the store reports by message for a BundleProviderException.
+        var failing = new YieldingProvider(storage)
+        {
+            FailWrite = () => new IOException("secret host detail"),
+            FailDelete = () => new HostDefinedProviderException("secret host detail"),
+        };
+        var store = new FileMemoryStore(new Dictionary<MemoryTier, IBundleProvider> { [MemoryTier.User] = failing });
+
+        var write = await store.WriteAsync(Alice, Entry("2026-07-27", "more"), MemoryTier.User);
+        Assert.False(write.Written);
+        Assert.Contains(nameof(IOException), write.Error, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret", write.Error, StringComparison.Ordinal);
+
+        var deletion = await store.DeleteScopeAsync(Alice, MemoryTier.User);
+        Assert.Contains(nameof(HostDefinedProviderException), deletion.Error, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret", deletion.Error, StringComparison.Ordinal);
+        Assert.All(Assert.Single(deletion.Tiers).Report.Failed, f => Assert.DoesNotContain("secret", f.Reason, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task The_view_token_cannot_be_spelled_by_a_version_that_holds_its_separators()
+    {
+        // Under plain NUL and newline separators, one entry whose opaque version spells a second
+        // entry hashed exactly like the two entries themselves.
+        var nul = (char)0;
+        var one = new PrefixedBundleProvider(new FixedListingProvider(("s/a.md", 4, $"aa\nb.md{nul}4{nul}bb")), BundleKey.Parse("s"));
+        var two = new PrefixedBundleProvider(new FixedListingProvider(("s/a.md", 4, "aa"), ("s/b.md", 4, "bb")), BundleKey.Parse("s"));
+
+        Assert.NotEqual(
+            await one.GetVersionAsync(BundleLimits.Default, CancellationToken.None),
+            await two.GetVersionAsync(BundleLimits.Default, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task The_view_counts_every_raw_entry_of_its_inner_listing_against_the_bound()
+    {
+        // The inner provider ignores both the bound and the prefix: everything it lists lies
+        // outside the view, so nothing reaches a consumer that could count it.
+        var inner = new RunawayListingProvider("elsewhere", 100_000);
+        var view = new PrefixedBundleProvider(inner, BundleKey.Parse("scope"));
+        var limits = new BundleLimits { MaxEntries = 10 };
+
+        await Assert.ThrowsAsync<BundleLimitExceededException>(async () =>
+        {
+            await foreach (var _ in view.EnumerateAsync(null, limits, CancellationToken.None))
+            {
+            }
+        });
+        Assert.True(inner.Produced <= limits.MaxEntries + 1, $"the view consumed {inner.Produced} raw entries past a bound of {limits.MaxEntries}");
+    }
+
+    [Fact]
+    public async Task A_name_too_long_once_prefixed_is_over_long_in_the_view_and_still_condemns_its_case_insensitive_siblings()
+    {
+        // The core's invariant (BundleKeyValidatorTests.A_sibling_implied_only_by_a_name_over_the_key_bound_still_collides),
+        // through the view: Docs/<long>.md is a valid key of the view but not of the inner
+        // provider once prefixed, so the load must count it as over-long, never read it, and
+        // still see its Docs/ ancestor, which collides with docs/ on this storage.
+        const string scope = "memory-user/s";
+        var doc = $"---\n{Frontmatter}---\n\nbody\n";
+        var relative = "Docs/" + new string('x', BundleKey.MaxUtf8Bytes - 20) + ".md";
+        Assert.True(BundleKey.TryParse(relative, out _, out _));
+        Assert.True(Encoding.UTF8.GetByteCount($"{scope}/{relative}") > BundleKey.MaxUtf8Bytes);
+        var inner = new InMemoryBundleProvider(BundleKeyConstraints.CaseInsensitiveCollisions)
+            .Add($"{scope}/docs/a.md", doc)
+            .Add($"{scope}/{relative}", doc)
+            .Add($"{scope}/ok.md", doc);
+
+        var bundle = await Bundle.LoadAsync(new PrefixedBundleProvider(inner, BundleKey.Parse(scope)));
+
+        Assert.Equal(["ok"], bundle.Concepts.Select(c => c.Id.ToString()).ToList());
+        Assert.Contains(bundle.ParseProblems, p => p.RawName == relative && p.Error.Contains("longer", StringComparison.Ordinal));
+        Assert.DoesNotContain(inner.Calls, call => call.StartsWith($"read {scope}/Docs", StringComparison.Ordinal));
+    }
+
     /// <summary>
     /// The inner provider, with every operation completing after a <see cref="Task.Yield"/> (so
     /// nothing completes synchronously), and optional failures: <see cref="Fail"/> thrown by every
@@ -300,14 +383,61 @@ public class FileMemoryStoreAsyncProviderTests
         public async ValueTask<BundleObjectVersion> WriteAsync(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition, CancellationToken ct)
         {
             await StepAsync(ct);
+            if (FailWrite is { } fail)
+            {
+                throw fail();
+            }
+
             return await inner.WriteAsync(key, content, condition, ct);
         }
 
         public async ValueTask DeleteAsync(BundleKey key, BundleWriteCondition condition, CancellationToken ct)
         {
             await StepAsync(ct);
+            if (FailDelete is { } fail)
+            {
+                throw fail();
+            }
+
             await inner.DeleteAsync(key, condition, ct);
         }
+
+        /// <summary>Thrown by every write, after its yield (the reads before it succeed).</summary>
+        public Func<Exception>? FailWrite { get; init; }
+
+        /// <summary>Thrown by every deletion, after its yield (the listing before it succeeds).</summary>
+        public Func<Exception>? FailDelete { get; init; }
+    }
+
+    /// <summary>A provider exception a host defines itself, whose message the library did not write.</summary>
+    private sealed class HostDefinedProviderException(string message) : BundleProviderException(message);
+
+    /// <summary>A provider that lists fixed entries, each with the version its listing gives for free.</summary>
+    private sealed class FixedListingProvider(params (string Name, long Length, string Version)[] entries) : IBundleProvider
+    {
+        public string Id => "fixed";
+
+        public string Location => "memory://fixed";
+
+        public BundleProviderCapabilities Capabilities => new(CanWrite: false, CompletesSynchronously: true);
+
+        public BundleKeyConstraints NativeConstraints => BundleKeyConstraints.None;
+
+        public ValueTask<BundleVersion> GetVersionAsync(BundleLimits limits, CancellationToken ct) => ValueTask.FromResult(new BundleVersion("whole"));
+
+        public IAsyncEnumerable<BundleListing> EnumerateAsync(BundleKey? prefix, BundleLimits limits, CancellationToken ct) =>
+            entries.Select(e => new BundleListing(e.Name, e.Length, new BundleObjectVersion(e.Version))).ToAsyncEnumerable();
+
+        public ValueTask<BundleObject> ReadAsync(BundleKey key, BundleObjectVersion? expected, CancellationToken ct) =>
+            ValueTask.FromException<BundleObject>(new BundleObjectNotFoundException(key));
+
+        public ValueTask<bool> ExistsAsync(BundleKey key, CancellationToken ct) => ValueTask.FromResult(false);
+
+        public ValueTask<BundleObjectVersion> WriteAsync(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition, CancellationToken ct) =>
+            ValueTask.FromException<BundleObjectVersion>(new BundleReadOnlyException(Id));
+
+        public ValueTask DeleteAsync(BundleKey key, BundleWriteCondition condition, CancellationToken ct) =>
+            ValueTask.FromException(new BundleReadOnlyException(Id));
     }
 
     /// <summary>A provider whose listing under <c>prefix</c> yields <c>count</c> names, whatever bound it is given.</summary>

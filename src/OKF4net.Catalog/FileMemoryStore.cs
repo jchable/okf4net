@@ -98,8 +98,17 @@ public sealed class FileMemoryStore : IMemoryStore
         ArgumentNullException.ThrowIfNull(tierProviders);
         _tierProviders = tierProviders.ToDictionary(
             pair => pair.Key,
-            pair => new TierStorage(pair.Value ?? throw new ArgumentException($"The provider of memory tier '{pair.Key}' is null.", nameof(tierProviders)), null));
+            pair => new TierStorage(HostProvider(pair.Value ?? throw new ArgumentException($"The provider of memory tier '{pair.Key}' is null.", nameof(tierProviders))), null));
     }
+
+    /// <summary>
+    /// A host-given tier provider as the store uses it: a <see cref="FileSystemBundleProvider"/>
+    /// as is (the library's own; the writer derives its lock key from its root), any other behind
+    /// <see cref="TypeOnlyFailuresProvider"/>, so a failure of the host's provider reaches a result
+    /// by its type only, never by its text (spec §7).
+    /// </summary>
+    private static IBundleProvider HostProvider(IBundleProvider provider) =>
+        provider is FileSystemBundleProvider ? provider : new TypeOnlyFailuresProvider(provider);
 
     /// <summary>A tier's provider, and the same provider as a <see cref="FileSystemBundleProvider"/> when the store built it from a tier root (the directory constructor), which alone gives a scope its own filesystem provider and the removal of its emptied directories.</summary>
     private sealed record TierStorage(IBundleProvider Provider, FileSystemBundleProvider? FileSystem);
@@ -121,6 +130,9 @@ public sealed class FileMemoryStore : IMemoryStore
 
     /// <summary>What <see cref="ProbeAsync"/> found: the state, the failure's type name when it is <see cref="ScopeState.Unavailable"/>, and the full raw names listed under the scope's prefix.</summary>
     private readonly record struct ScopeProbe(ScopeState State, string? Failure, IReadOnlyList<string> Names);
+
+    /// <summary>The type a failure is reported by: the original's for a host provider's failure (<see cref="HostProviderFailureException"/>), the exception's own otherwise.</summary>
+    private static string FailureName(Exception e) => e is HostProviderFailureException host ? host.FailureType : e.GetType().Name;
 
     /// <summary>
     /// Whether <paramref name="e"/>, caught from a tier's provider, is reported as data (named by
@@ -187,7 +199,7 @@ public sealed class FileMemoryStore : IMemoryStore
             catch (Exception e) when (IsReportable(e, ct))
             {
                 // A host provider's raw failure: its type only, never its text (spec §7).
-                diagnostics.Add(new KnowledgeDiagnostic(KnowledgeDiagnosticCode.SourceUnavailable, $"memory:{tier}", $"Memory tier '{tier}' could not be loaded: {e.GetType().Name}"));
+                diagnostics.Add(new KnowledgeDiagnostic(KnowledgeDiagnosticCode.SourceUnavailable, $"memory:{tier}", $"Memory tier '{tier}' could not be loaded: {FailureName(e)}"));
                 continue;
             }
 
@@ -245,7 +257,7 @@ public sealed class FileMemoryStore : IMemoryStore
         catch (Exception e) when (IsReportable(e, ct))
         {
             // A host provider's raw failure: its type only, never its text (spec §7).
-            return new MemoryWriteResult(false, $"Error: Memory tier '{tier}' could not be written ({e.GetType().Name})");
+            return new MemoryWriteResult(false, $"Error: Memory tier '{tier}' could not be written ({FailureName(e)})");
         }
 
         return result.StartsWith("Error:", StringComparison.Ordinal)
@@ -331,7 +343,7 @@ public sealed class FileMemoryStore : IMemoryStore
                 {
                     // The type only, with the key: the runtime's message can name a host path (#211),
                     // and a host provider's own exception can carry anything (spec §7).
-                    failed.Add(new BundleWriteFailure(key, $"'{key}' could not be deleted ({e.GetType().Name})"));
+                    failed.Add(new BundleWriteFailure(key, $"'{key}' could not be deleted ({FailureName(e)})"));
                 }
             }
 
@@ -447,7 +459,7 @@ public sealed class FileMemoryStore : IMemoryStore
         }
         catch (Exception e) when (IsReportable(e, ct))
         {
-            return new ScopeProbe(ScopeState.Unavailable, e.GetType().Name, []);
+            return new ScopeProbe(ScopeState.Unavailable, FailureName(e), []);
         }
     }
 
@@ -522,7 +534,7 @@ public sealed class FileMemoryStore : IMemoryStore
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            return $"a directory under the scope could not be listed ({e.GetType().Name}) - its directories were left in place";
+            return $"a directory under the scope could not be listed ({FailureName(e)}) - its directories were left in place";
         }
 
         if (failure is not null)
@@ -546,7 +558,7 @@ public sealed class FileMemoryStore : IMemoryStore
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            return $"a directory under the scope is not empty or could not be removed ({e.GetType().Name}) - its directories were left in place";
+            return $"a directory under the scope is not empty or could not be removed ({FailureName(e)}) - its directories were left in place";
         }
 
         return null;

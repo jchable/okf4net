@@ -19,10 +19,13 @@ namespace OKF4net.Catalog;
 /// <para><see cref="GetVersionAsync"/> is a token for the view alone, built from its own listing
 /// and objects, never a walk of the inner provider's whole key space. A key whose full form is
 /// no valid key of the inner provider (over <see cref="BundleKey.MaxUtf8Bytes"/>) holds nothing
-/// there: it is not listed, it is read as absent, and a write to it is refused as
-/// <see cref="BundleWriteConflictReason.NameUnavailable"/>.</para>
+/// there: it is read as absent, and a write to it is refused as
+/// <see cref="BundleWriteConflictReason.NameUnavailable"/>. Such a name is still listed: the view
+/// declares the bytes its prefix takes (<see cref="IReservedKeyBytes"/>), so a load counts it as
+/// over-long, exactly as a name past the bound in an ordinary bundle (never read, a parse
+/// problem for a concept, its ancestors still seen by the tree validation).</para>
 /// </remarks>
-internal sealed class PrefixedBundleProvider : IBundleProvider, IProviderScope
+internal sealed class PrefixedBundleProvider : IBundleProvider, IProviderScope, IReservedKeyBytes
 {
     private readonly IBundleProvider _inner;
     private readonly BundleKey _prefix;
@@ -51,6 +54,9 @@ internal sealed class PrefixedBundleProvider : IBundleProvider, IProviderScope
     /// <summary>The inner provider's scope, when it has one.</summary>
     IDisposable IProviderScope.BeginScope() => ProviderScopes.Begin(_inner) ?? ProviderScopes.None;
 
+    /// <summary>The prefix and its separator: what a key of the view takes of <see cref="BundleKey.MaxUtf8Bytes"/> in the inner provider.</summary>
+    int IReservedKeyBytes.ReservedKeyBytes => Encoding.UTF8.GetByteCount(_strip);
+
     /// <summary>
     /// A token for the view alone, so that loading one scope never walks the rest of the inner
     /// provider: a directory of another scope that cannot be listed, or that breaks a bound, does
@@ -75,8 +81,10 @@ internal sealed class PrefixedBundleProvider : IBundleProvider, IProviderScope
                 throw new BundleLimitExceededException(BundleBound.Entries, limits.MaxEntries);
             }
 
+            // Every field is length-prefixed: a version token is an opaque string and can hold
+            // any separator, so plain delimiters would let one entry spell two (or two spell one).
             var version = await VersionOfAsync(listing, ct).ConfigureAwait(false);
-            entries.Add($"{listing.RawName}\0{listing.Length}\0{version}");
+            entries.Add($"{Field(listing.RawName)}{Field(listing.Length?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-")}{Field(version)}");
         }
 
         entries.Sort(StringComparer.Ordinal);
@@ -127,7 +135,7 @@ internal sealed class PrefixedBundleProvider : IBundleProvider, IProviderScope
             return SyncAsyncEnumerable.Create<BundleListing>(static () => [], ct);
         }
 
-        return Strip(_inner.EnumerateAsync(start, limits, ct), ct);
+        return Strip(_inner.EnumerateAsync(start, limits, ct), limits, ct);
     }
 
     /// <inheritdoc/>
@@ -167,27 +175,34 @@ internal sealed class PrefixedBundleProvider : IBundleProvider, IProviderScope
         return BundleKey.TryParse(_strip + key, out var full, out _) ? full : null;
     }
 
-    private async IAsyncEnumerable<BundleListing> Strip(IAsyncEnumerable<BundleListing> listings, [EnumeratorCancellation] CancellationToken ct)
+    /// <summary>
+    /// The inner listing seen through the view. Every raw entry the inner provider produces counts
+    /// against <see cref="BundleLimits.MaxEntries"/>, including those the view then drops: a
+    /// provider that ignores the bound and lists names outside the prefix cannot keep a listing
+    /// running past it, since a consumer counts only what reaches it.
+    /// </summary>
+    private async IAsyncEnumerable<BundleListing> Strip(IAsyncEnumerable<BundleListing> listings, BundleLimits limits, [EnumeratorCancellation] CancellationToken ct)
     {
+        var count = 0;
         await foreach (var listing in listings.WithCancellation(ct).ConfigureAwait(false))
         {
+            if (++count > limits.MaxEntries)
+            {
+                throw new BundleLimitExceededException(BundleBound.Entries, limits.MaxEntries);
+            }
+
             // An object under the prefix key itself, or a name a buggy provider listed outside it, is not in the view.
             if (!(listing.RawName.Length > _strip.Length && listing.RawName.StartsWith(_strip, StringComparison.Ordinal)))
             {
                 continue;
             }
 
-            // Nor is a name too long to be a key of the inner provider: stripped of the prefix it
-            // can pass for a valid key of the view, which the load would then try to read and find
-            // nothing under (Full refuses it), failing the whole scope. The view holds nothing
-            // there, as for a read or a write (see the remarks). The memory store's deletion lists
-            // the inner provider itself, so it still reports such a name.
-            if (Encoding.UTF8.GetByteCount(listing.RawName) > BundleKey.MaxUtf8Bytes)
-            {
-                continue;
-            }
-
+            // A name too long to be a key of the inner provider is still listed: the view's
+            // IReservedKeyBytes makes a load count it as over-long, never read it.
             yield return listing with { RawName = listing.RawName[_strip.Length..] };
         }
     }
+
+    /// <summary>One field of a token entry, length-prefixed so no content can be read as a separator.</summary>
+    private static string Field(string value) => $"{value.Length}:{value}";
 }
