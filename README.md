@@ -849,9 +849,11 @@ A few known v1 caveats:
   hard cap: the estimate itself is approximate, so the result can land a
   little under or over.
 - **The `<okf-context id="…">` elements keep their structure, but they are
-  not a security boundary:** every `<` inside an element (and in its id) is
-  written `&lt;`, so a concept body containing a literal `</okf-context>` can
-  no longer close its element or open another (#122); still, the whole
+  not a security boundary:** inside an element (and in its id) every `&` is
+  written `&amp;` and every `<` `&lt;`, and the content sits in a code fence
+  longer than any fence run it holds, so a concept body containing a literal
+  `</okf-context>`, or an `index.md` that leaves a fence open, can no longer
+  close its element or reach into the next one (#122); still, the whole
   injected message is untrusted user-role reference data, and nothing in it
   is ever treated as instructions in the first place (see the security note
   above).

@@ -144,6 +144,14 @@ here. Removing host paths from them stays #211.
   carried a terminator, a control or a bidi character. The CLI's goldens do
   not move, since `AuditText` is untouched. Is a CHANGELOG entry under Changed
   enough, or does it need a breaking note?
+  *Correction (implementation, 2026-11-16):* the last two claims did not hold.
+  Aligning `LineSafeText` with the fold (§2.1) makes the shared predicate
+  refuse bidi controls too, and the CLI uses it. `okf verify --by` (or `--at`)
+  carrying a bidi control now exits 1 with "must not contain control or
+  bidirectional characters" where it was accepted, and `AuditText` (refactored
+  into `AuditLine`, same bytes for every golden) now quotes a stored `at`, id or
+  actor that carries one. No golden captures either case, so none moved; the
+  CHANGELOG entry states both.
 - **Q3, block delimiting.** One option is a fenced block whose fence is longer
   than any backtick run in the content (CommonMark's rule). The other is the
   `<okf-context>` style for every block, with `<` escaped inside it. The
