@@ -20,8 +20,12 @@ internal static class S3Test
     /// <summary>The ETag the fake serves for <paramref name="bytes"/>: the quoted MD5 hex, as S3 does for a simple upload.</summary>
     public static string ETag(byte[] bytes) => "\"" + Convert.ToHexStringLower(System.Security.Cryptography.MD5.HashData(bytes)) + "\"";
 
-    /// <summary>A fake serving <paramref name="objects"/> (S3 key → bytes) as a real store would: listings (pages of <paramref name="pageSize"/>), GETs.</summary>
-    public static FakeS3Handler Serving(IReadOnlyDictionary<string, byte[]> objects, int pageSize = 1000)
+    /// <summary>
+    /// A fake serving <paramref name="objects"/> (S3 key → bytes) as a real store would: listings (pages of <paramref name="pageSize"/>), GETs.
+    /// With <paramref name="awsStyle"/>, listed keys are encoded as Amazon S3 and MinIO do (a space as a raw <c>+</c>, a <c>+</c> as <c>%2B</c>);
+    /// otherwise as RustFS does (a space as <c>%20</c>).
+    /// </summary>
+    public static FakeS3Handler Serving(IReadOnlyDictionary<string, byte[]> objects, int pageSize = 1000, bool awsStyle = false)
     {
         var sorted = objects.Keys.Order(Comparer<string>.Create(OKF4net.Providers.S3.Internal.S3KeyCodec.CompareByCodePoint)).ToArray();
         return new FakeS3Handler
@@ -40,7 +44,7 @@ internal static class S3Test
                     var page = matching.Skip(start).Take(max).ToArray();
                     var more = start + page.Length < matching.Length;
                     return Task.FromResult(FakeS3Handler.Xml(HttpStatusCode.OK, ListPageParserTests.Page(
-                        page.Select(k => (Encode(k), ETag(objects[k]), (long)objects[k].Length)),
+                        page.Select(k => (Encode(k, awsStyle), ETag(objects[k]), (long)objects[k].Length)),
                         more, more ? (start + page.Length).ToString(System.Globalization.CultureInfo.InvariantCulture) : null)));
                 }
 
@@ -53,13 +57,17 @@ internal static class S3Test
         };
     }
 
-    public static string Encode(string key)
+    public static string Encode(string key, bool awsStyle = false)
     {
         var sb = new StringBuilder();
         foreach (var b in Encoding.UTF8.GetBytes(key))
         {
             var c = (char)b;
-            if (char.IsAsciiLetterOrDigit(c) || c is '-' or '.' or '_' or '~' or '/')
+            if (awsStyle && c == ' ')
+            {
+                sb.Append('+');
+            }
+            else if (char.IsAsciiLetterOrDigit(c) || c is '-' or '.' or '_' or '~' or '/')
             {
                 sb.Append(c);
             }

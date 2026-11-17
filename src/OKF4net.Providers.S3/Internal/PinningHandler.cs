@@ -17,7 +17,8 @@ namespace OKF4net.Providers.S3.Internal;
 /// <see cref="ListParameters"/> with each parameter at most once, <c>list-type=2</c> and <c>encoding-type=url</c>
 /// present, and a <c>prefix</c> (absent counting as empty) equal to the expected one once strictly decoded.</item>
 /// </list>
-/// A canonicalized path ('..' removed), another encoding, an encoded parameter name or an undecodable value fails closed.
+/// A canonicalized path ('..' removed), another encoding, an encoded parameter name, an undecodable value or a raw <c>+</c> in a
+/// query value (a store reads it as a space, the guard as a <c>+</c>) fails closed.
 /// </summary>
 internal sealed class PinningHandler(AddressingPlan plan) : DelegatingHandler
 {
@@ -140,7 +141,9 @@ internal sealed class PinningHandler(AddressingPlan plan) : DelegatingHandler
             var eq = pair.IndexOf('=', StringComparison.Ordinal);
             var name = eq < 0 ? pair : pair[..eq];
             var raw = eq < 0 ? "" : pair[(eq + 1)..];
-            if (!ListParameters.Contains(name) || !seen.TryAdd(name, raw) || !S3KeyCodec.TryDecode(raw, out _))
+            // A raw '+' is refused in every value: a store reads it as a space, a strict decoding as a '+' — the guard and
+            // the store would disagree on what is asked. The SDK sends a '+' as %2B and a space as %20.
+            if (!ListParameters.Contains(name) || !seen.TryAdd(name, raw) || raw.Contains('+', StringComparison.Ordinal) || !S3KeyCodec.TryDecode(raw, out _))
             {
                 return false;
             }

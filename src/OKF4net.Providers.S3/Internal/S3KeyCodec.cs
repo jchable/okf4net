@@ -4,12 +4,28 @@ using System.Text;
 
 namespace OKF4net.Providers.S3.Internal;
 
-/// <summary>Strict percent-decoding to bytes, then UTF-8 without replacement (spec §4.3). Never Uri.UnescapeDataString.</summary>
+/// <summary>
+/// Strict percent-decoding to bytes, then UTF-8 without replacement (spec §4.3). Never Uri.UnescapeDataString. Two
+/// spellings differ only on a raw <c>+</c>: literal in what the provider sends, a space in what a listing returns.
+/// </summary>
 internal static class S3KeyCodec
 {
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
-    public static bool TryDecode(string encoded, [NotNullWhen(true)] out string? decoded)
+    /// <summary>
+    /// Decodes a value the provider SENDS or checks on a request (a query value, a path): a raw <c>+</c> is a
+    /// <c>+</c>. The guard refuses a raw <c>+</c> in a query value anyway, since a store reads it as a space.
+    /// </summary>
+    public static bool TryDecode(string encoded, [NotNullWhen(true)] out string? decoded) => TryDecode(encoded, plusIsSpace: false, out decoded);
+
+    /// <summary>
+    /// Decodes a value a LISTING returns url-encoded (a <c>Key</c>): form decoding, as Amazon S3 and MinIO encode it —
+    /// a raw <c>+</c> is a space (byte 0x20), <c>%2B</c> a <c>+</c>; a store that sends a space as <c>%20</c> (RustFS)
+    /// decodes alike. Otherwise exactly as strict as <see cref="TryDecode(string, out string?)"/>.
+    /// </summary>
+    public static bool TryDecodeListed(string encoded, [NotNullWhen(true)] out string? decoded) => TryDecode(encoded, plusIsSpace: true, out decoded);
+
+    private static bool TryDecode(string encoded, bool plusIsSpace, [NotNullWhen(true)] out string? decoded)
     {
         decoded = null;
         var bytes = new List<byte>(encoded.Length);
@@ -17,6 +33,12 @@ internal static class S3KeyCodec
         for (var i = 0; i < encoded.Length; i++)
         {
             var c = encoded[i];
+            if (c == '+' && plusIsSpace)
+            {
+                bytes.Add((byte)' ');
+                continue;
+            }
+
             if (c == '%')
             {
                 if (i + 2 >= encoded.Length || !IsHex(encoded[i + 1]) || !IsHex(encoded[i + 2]))

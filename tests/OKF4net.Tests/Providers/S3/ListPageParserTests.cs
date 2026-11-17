@@ -209,6 +209,13 @@ public class ListPageParserTests
     }
 
     [Fact]
+    public void A_listed_key_is_form_decoded_a_plus_is_a_space_and_2B_a_plus()
+    {
+        var p = Parse(Page([("kb/a+b.md", "\"e\"", 1), ("kb/a%2Bb.md", "\"e\"", 1), ("kb/c%20d.md", "\"e\"", 1)], false, null));
+        Assert.Equal(["kb/a b.md", "kb/a+b.md", "kb/c d.md"], p.Entries.Select(e => e.S3Key));
+    }
+
+    [Fact]
     public void A_page_without_entries_that_is_complete_is_valid()
     {
         var p = Parse(Page([], false, null));

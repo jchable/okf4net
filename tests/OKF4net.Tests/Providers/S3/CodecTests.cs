@@ -40,6 +40,43 @@ public class CodecTests
         Assert.Equal("bad" + U(1) + ".md", control);
     }
 
+    [Theory]
+    [InlineData("a+b.md", "a b.md")]       // a listed value is form-encoded: Amazon S3 and MinIO send a space as '+'
+    [InlineData("a%2Bb.md", "a+b.md")]     // ... and a literal '+' as %2B
+    [InlineData("a%20b.md", "a b.md")]     // RustFS sends a space as %20
+    [InlineData("++", "  ")]
+    [InlineData("%2B%2B", "++")]
+    [InlineData("%2B+%20", "+  ")]
+    [InlineData("%25FF", "%FF")]
+    [InlineData("%2525", "%25")]
+    [InlineData("%F0%90%80%80", "\U00010000")]
+    public void A_listed_value_decodes_a_raw_plus_as_a_space(string encoded, string expected)
+    {
+        Assert.True(S3KeyCodec.TryDecodeListed(encoded, out var decoded));
+        Assert.Equal(expected, decoded);
+    }
+
+    [Theory]
+    [InlineData("%FF")]
+    [InlineData("%C0%AF")]
+    [InlineData("%ED%A0%80")]
+    [InlineData("%")]
+    [InlineData("%4")]
+    [InlineData("%G1")]
+    [InlineData("a+%FF")]
+    [InlineData("+%")]
+    public void A_listed_value_is_as_strict_as_any_other(string encoded) => Assert.False(S3KeyCodec.TryDecodeListed(encoded, out _));
+
+    [Fact]
+    public void Only_listed_values_read_a_plus_as_a_space()
+    {
+        // The guard and the request paths compare literally: what the SDK sends never carries a raw '+' (it sends %2B).
+        Assert.True(S3KeyCodec.TryDecode("a+b.md", out var literal));
+        Assert.Equal("a+b.md", literal);
+        Assert.True(S3KeyCodec.TryDecodeListed("a+b.md", out var listed));
+        Assert.Equal("a b.md", listed);
+    }
+
     [Fact]
     public void Lax_decoding_aliases_are_impossible()
     {

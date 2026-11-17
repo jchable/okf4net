@@ -280,6 +280,35 @@ public class ListingWalkerTests
         Assert.Equal("kb/d/", Query(Assert.Single(fake.Requests))["prefix"]);
     }
 
+    [Theory]
+    [InlineData(true)]  // Amazon S3, MinIO: a space listed as a raw '+', a '+' as %2B
+    [InlineData(false)] // RustFS: a space listed as %20
+    public async Task A_space_and_a_plus_come_back_under_their_own_names_whatever_the_store_encoding(bool awsStyle)
+    {
+        var objects = S3Test.Objects(("kb/a b.md", "space"), ("kb/a+b.md", "plus"), ("kb/a  b.md", "two spaces"), ("kb/c.md", "c"));
+        var fake = S3Test.Serving(objects, awsStyle: awsStyle);
+        using var p = S3Test.Provider(fake);
+        Assert.Equal(["a  b.md", "a b.md", "a+b.md", "c.md"], await Names(p));
+        Assert.Equal(awsStyle ? "kb/a+b.md" : "kb/a%20b.md", S3Test.Encode("kb/a b.md", awsStyle)); // what the fake really lists
+        Assert.Equal("kb/a%2Bb.md", S3Test.Encode("kb/a+b.md", awsStyle));
+
+        var expected = BundleTokenHasher.Hash(new[] { "kb/a  b.md", "kb/a b.md", "kb/a+b.md", "kb/c.md" }.Select(k => (k[3..], S3Test.ETag(objects[k]), (long)objects[k].Length)));
+        Assert.Equal(expected, (await p.GetVersionAsync(BundleLimits.Default, default)).Token);
+        Assert.True(await p.ExistsAsync(BundleKey.Parse("a b.md"), default));
+        Assert.True(await p.ExistsAsync(BundleKey.Parse("a+b.md"), default));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_bundle_prefix_with_a_space_lists_under_it(bool awsStyle)
+    {
+        var fake = S3Test.Serving(S3Test.Objects(("my kb/x.md", "x"), ("my kb/y z.md", "y"), ("my kbx/no.md", "n"), ("my+kb/no.md", "n")), awsStyle: awsStyle);
+        using var p = S3Test.Provider(fake, S3Test.Local(prefix: "my kb"));
+        Assert.Equal(["x.md", "y z.md"], await Names(p));
+        Assert.Equal("my kb/", Query(Assert.Single(fake.Requests))["prefix"]); // sent as %20 by the SDK: a raw '+' is refused by the guard
+    }
+
     [Fact]
     public async Task An_empty_bundle_prefix_lists_the_whole_bucket()
     {
@@ -436,6 +465,98 @@ public class ListingWalkerTests
         Assert.Equal(S3FailureKind.Disposed, (await Assert.ThrowsAsync<S3RequestException>(async () => await p.GetVersionAsync(BundleLimits.Default, default))).Kind);
         Assert.Equal(S3FailureKind.Disposed, (await Assert.ThrowsAsync<S3RequestException>(async () => await p.ExistsAsync(BundleKey.Parse("a.md"), default))).Kind);
         Assert.Empty(fake.Requests);
+    }
+
+    private static readonly TimeSpan Cap = TimeSpan.FromMilliseconds(int.MaxValue);
+
+    public static TheoryData<TimeSpan, TimeSpan?, TimeSpan> Timeouts => new()
+    {
+        { TimeSpan.FromSeconds(5), Timeout.InfiniteTimeSpan, TimeSpan.FromSeconds(5) },     // an infinite limit never wins
+        { TimeSpan.FromSeconds(5), TimeSpan.Zero, TimeSpan.FromSeconds(5) },                // nor a zero one
+        { TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(-2), TimeSpan.FromSeconds(5) },     // nor a negative one
+        { TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1) },      // the shorter positive one wins
+        { TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(9), TimeSpan.FromSeconds(5) },
+        { TimeSpan.FromSeconds(5), TimeSpan.MaxValue, TimeSpan.FromSeconds(5) },
+        { TimeSpan.FromSeconds(5), null, TimeSpan.FromSeconds(5) },                         // ExistsAsync: the source's alone
+        { TimeSpan.FromDays(100), Timeout.InfiniteTimeSpan, Cap },                         // capped where a deadline can be set
+        { TimeSpan.FromDays(100), TimeSpan.MaxValue, Cap },
+        { TimeSpan.FromDays(100), null, Cap },
+        { TimeSpan.FromDays(100), TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30) },
+        { Cap, null, Cap },
+    };
+
+    [Theory]
+    [MemberData(nameof(Timeouts))]
+    public void The_operation_deadline_is_the_shorter_positive_timeout_capped(TimeSpan source, TimeSpan? limit, TimeSpan expected) =>
+        Assert.Equal(expected, S3BundleProvider.OperationTimeout(source, limit));
+
+    /// <summary>A store that answers nothing until the request is cancelled; <c>Arrived</c> completes at the first request.</summary>
+    private static (FakeS3Handler Fake, TaskCompletionSource Arrived) Stalling()
+    {
+        var arrived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var fake = new FakeS3Handler
+        {
+            Respond = async (_, ct) =>
+            {
+                arrived.TrySetResult();
+                await Task.Delay(Timeout.Infinite, ct);
+                throw new InvalidOperationException("unreachable");
+            },
+        };
+        return (fake, arrived);
+    }
+
+    public static TheoryData<string, TimeSpan, TimeSpan, TimeSpan> Deadlines => new()
+    {
+        { "list", TimeSpan.FromSeconds(5), Timeout.InfiniteTimeSpan, TimeSpan.FromSeconds(5) },
+        { "list", TimeSpan.FromSeconds(5), TimeSpan.Zero, TimeSpan.FromSeconds(5) },
+        { "list", TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(-2), TimeSpan.FromSeconds(5) },
+        { "version", TimeSpan.FromDays(100), TimeSpan.MaxValue, Cap },
+        { "version", TimeSpan.FromSeconds(5), Timeout.InfiniteTimeSpan, TimeSpan.FromSeconds(5) },
+        { "exists", TimeSpan.FromDays(100), BundleLimits.Default.RequestTimeout, Cap },
+    };
+
+    [Theory]
+    [MemberData(nameof(Deadlines))]
+    public async Task The_deadline_observed_is_the_effective_timeout(string member, TimeSpan sourceTimeout, TimeSpan limitTimeout, TimeSpan effective)
+    {
+        var clock = new ManualClock();
+        var (fake, arrived) = Stalling();
+        using var p = new S3BundleProvider(S3Test.Creds, S3Test.Local() with { RequestTimeout = sourceTimeout }, fake, clock);
+        var limits = BundleLimits.Default with { RequestTimeout = limitTimeout };
+        Task call = member switch
+        {
+            "list" => Names(p, limits: limits),
+            "version" => p.GetVersionAsync(limits, default).AsTask(),
+            _ => p.ExistsAsync(BundleKey.Parse("a.md"), default).AsTask(),
+        };
+        await Task.WhenAny(arrived.Task, call).WaitAsync(TimeSpan.FromSeconds(10)); // the request went out: no deadline already past, no invalid one
+        Assert.True(arrived.Task.IsCompleted, call.Exception?.InnerException?.GetType().Name ?? "the call ended before sending");
+        clock.Advance(effective);
+        var e = await Assert.ThrowsAsync<S3RequestException>(() => call.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.Equal(S3FailureKind.Timeout, e.Kind);
+    }
+
+    [Fact]
+    public async Task A_parse_that_fails_unexpectedly_is_the_closed_InvalidResponse()
+    {
+        // Seam: a parser that throws a type nothing expects. Its text never reaches the message, and nothing escapes Fail.
+        var fake = S3Test.Serving(S3Test.Objects(("kb/a.md", "x")));
+        var source = SourceRules.Normalize(S3Test.Local());
+        using var client = ClientBuilder.Build(new SnapshotCredentials(), source, fake, out var http);
+        using (http)
+        {
+            var walker = new ListingWalker(client, source.Bucket, new OperationGate(4, TimeProvider.System), new CredentialResolver(S3Test.Creds), (_, _) => throw new InvalidCastException("PARSER-CANARY"));
+            var e = await Assert.ThrowsAsync<S3RequestException>(async () =>
+            {
+                await foreach (var _ in walker.WalkAsync("kb/", 1000, 10, TimeSpan.FromSeconds(5), S3Operation.List, null, default))
+                {
+                }
+            });
+            Assert.Equal(S3FailureKind.InvalidResponse, e.Kind);
+            Assert.DoesNotContain("PARSER-CANARY", e.Message, StringComparison.Ordinal);
+            Assert.Single(fake.Requests);
+        }
     }
 
     [Fact]

@@ -271,7 +271,14 @@ public sealed class GuardTests : IDisposable
         Assert.False(await Admitted(list, root + "?list-type=2&prefix=kb%2F&encoding-type=URL"));      // encoding-type is exactly url
         Assert.False(await Admitted(list, root + "?list-type=2&encoding-type=url"));                    // the expected prefix is missing
         Assert.False(await Admitted(list, root + "?list-type=2&prefix=kb%2F&encoding-type=url&continuation-token=%C3%28")); // not UTF-8 once decoded (a lone "%ZZ" would be re-escaped by Uri to %25ZZ)
-        Assert.True(await Admitted(whole, root + "?list-type=2&encoding-type=url"));                    // the whole bucket: no prefix or an empty one
+        // A raw '+' in a query value: S3 reads it as a space while a strict decoding reads a '+', so the guard and the
+        // store would disagree on what is asked. Refused in every value; the SDK sends a '+' as %2B and a space as %20.
+        var plus = new OperationContext(S3Operation.List) { ExpectedListPrefix = "k+b/", Credentials = Creds };
+        Assert.False(await Admitted(plus, root + "?list-type=2&prefix=k+b%2F&encoding-type=url"));
+        Assert.True(await Admitted(plus, root + "?list-type=2&prefix=k%2Bb%2F&encoding-type=url"));
+        Assert.False(await Admitted(list, root + "?list-type=2&prefix=kb%2F&encoding-type=url&continuation-token=a+b"));
+        Assert.True(await Admitted(list, root + "?list-type=2&prefix=kb%2F&encoding-type=url&continuation-token=a%2Bb"));
+        Assert.False(await Admitted(list, root + "?list-type=2&prefix=kb%2F&encoding-type=url&max-keys=+1000")); Assert.True(await Admitted(whole, root + "?list-type=2&encoding-type=url"));                    // the whole bucket: no prefix or an empty one
         Assert.True(await Admitted(whole, root + "?list-type=2&prefix=&encoding-type=url"));
         Assert.False(await Admitted(whole, root + "?list-type=2&prefix=x&encoding-type=url"));
     }

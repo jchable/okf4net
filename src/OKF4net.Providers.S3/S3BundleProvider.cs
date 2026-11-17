@@ -122,7 +122,7 @@ public sealed class S3BundleProvider : IBundleProvider, IDisposable
     {
         ThrowIfDisposed(S3Operation.Exists);
         var s3Key = _plan.S3Key(key);
-        await foreach (var entry in _walker.WalkAsync(s3Key, 1, 1, _source.RequestTimeout, S3Operation.Exists, key, ct).ConfigureAwait(false))
+        await foreach (var entry in _walker.WalkAsync(s3Key, 1, 1, OperationTimeout(_source.RequestTimeout, null), S3Operation.Exists, key, ct).ConfigureAwait(false))
         {
             return string.Equals(entry.S3Key, s3Key, StringComparison.Ordinal);
         }
@@ -152,7 +152,21 @@ public sealed class S3BundleProvider : IBundleProvider, IDisposable
         }
     }
 
-    private TimeSpan ListTimeout(BundleLimits limits) => limits.RequestTimeout < _source.RequestTimeout ? limits.RequestTimeout : _source.RequestTimeout;
+    private TimeSpan ListTimeout(BundleLimits limits) => OperationTimeout(_source.RequestTimeout, limits.RequestTimeout);
+
+    /// <summary>The longest deadline an operation is given: <see cref="int.MaxValue"/> milliseconds (about 24.8 days), within what a <see cref="CancellationTokenSource"/> accepts.</summary>
+    internal static readonly TimeSpan MaxOperationTimeout = TimeSpan.FromMilliseconds(int.MaxValue);
+
+    /// <summary>
+    /// One operation's deadline (spec §4.5): <paramref name="source"/>'s timeout, or <paramref name="limit"/> when it is
+    /// positive and shorter — an infinite, zero or negative <see cref="BundleLimits.RequestTimeout"/> never wins — capped
+    /// at <see cref="MaxOperationTimeout"/>, so no configuration makes the deadline itself throw.
+    /// </summary>
+    internal static TimeSpan OperationTimeout(TimeSpan source, TimeSpan? limit)
+    {
+        var timeout = limit is { } l && l > TimeSpan.Zero && l < source ? l : source;
+        return timeout > MaxOperationTimeout ? MaxOperationTimeout : timeout;
+    }
 
     private void ThrowIfDisposed(S3Operation operation)
     {
