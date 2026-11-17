@@ -296,10 +296,10 @@ chemin de redirection. Le client S3 ne reçoit donc **pas** l'`AWSCredentials` d
 l'hôte, mais un `AWSCredentials` interne au provider, dont
 `GetCredentials`/`GetCredentialsAsync` rendent sans attendre l'instantané
 (`ImmutableCredentials`) courant et ne touchent jamais le fournisseur de
-l'hôte. Avant chaque opération, le provider renouvelle cet instantané s'il est
-absent ou proche de son expiration, en appelant le fournisseur de l'hôte
-**isolé** (`Task.Run`) sous une attente bornée par le délai de l'opération ; un
-seul renouvellement à la fois (les opérations concurrentes l'attendent). À
+l'hôte. `ImmutableCredentials` ne portant pas d'expiration, le provider résout
+un instantané **par opération**, en appelant le fournisseur de l'hôte
+**isolé** (`Task.Run`) sous une attente bornée par le délai de l'opération (un
+fournisseur rafraîchissant de l'hôte met lui-même en cache). À
 l'expiration : `S3RequestException` (`Kind = Credentials`), le résultat tardif
 est ignoré, et la tâche abandonnée occupe un permis de concurrence jusqu'à sa
 fin réelle : au plus `MaxConcurrentRequests` fils bloqués par un fournisseur
