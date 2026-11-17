@@ -105,6 +105,31 @@ internal static class S3KeyCodec
         return found;
     }
 
+    /// <summary>
+    /// Compares by Unicode code point, which is S3's UTF-8 byte order (spec §4.5), not UTF-16 ordinal order: the
+    /// two differ between U+E000–U+FFFF and the supplementary planes. Both strings are well-formed (decoded strictly).
+    /// </summary>
+    public static int CompareByCodePoint(string a, string b)
+    {
+        var ea = a.EnumerateRunes();
+        var eb = b.EnumerateRunes();
+        while (true)
+        {
+            var ha = ea.MoveNext();
+            var hb = eb.MoveNext();
+            if (!ha || !hb)
+            {
+                return ha == hb ? 0 : ha ? 1 : -1;
+            }
+
+            var c = ea.Current.Value.CompareTo(eb.Current.Value);
+            if (c != 0)
+            {
+                return c;
+            }
+        }
+    }
+
     private static bool IsHex(char c) => c is (>= '0' and <= '9') or (>= 'a' and <= 'f') or (>= 'A' and <= 'F');
 
     private static int Hex(char c) => c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10;
