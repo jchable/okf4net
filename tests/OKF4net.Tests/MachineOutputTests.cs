@@ -346,6 +346,24 @@ public class MachineOutputTests
     }
 
     [Fact]
+    public void Audit_json_review_dates_keep_fractional_seconds_so_the_comparison_is_reproducible()
+    {
+        // #156: a review at 10:00:00.1Z and a change at 10:00:00.9Z are different instants and
+        // `reviewOutdated` is true; the two dates must not both print as 10:00:00Z. A whole-second
+        // stamp keeps its historical spelling, and a trailing zero of a fraction is dropped.
+        using var tmp = new TempDir();
+        tmp.Write("frac.md", "---\ntype: Note\ntitle: F\ngenerated: { by: okf4net/0.8.0, at: 2026-07-05T10:00:00.9Z }\nverified:\n  - { by: human:ada, at: 2026-07-05T10:00:00.1Z }\n---\n\nbody\n");
+        tmp.Write("whole.md", "---\ntype: Note\ntitle: W\ngenerated: { by: okf4net/0.8.0, at: 2026-07-05T10:00:00.50Z }\nverified:\n  - { by: human:ada, at: 2026-07-05T10:00:00Z }\n---\n\nbody\n");
+
+        var r = Run("audit", tmp.Path, "--as-of", AsOf, "--review-outdated", "--json");
+        Assert.Equal(0, r.Code);
+
+        var json = NormalizeJsonPaths(r.Out);
+        Assert.Contains("\"lastVerifiedAt\":\"2026-07-05T10:00:00.1Z\",\"lastChangedAt\":\"2026-07-05T10:00:00.9Z\",\"reviewOutdated\":true", json);
+        Assert.Contains("\"lastVerifiedAt\":\"2026-07-05T10:00:00Z\",\"lastChangedAt\":\"2026-07-05T10:00:00.5Z\",\"reviewOutdated\":true", json);
+    }
+
+    [Fact]
     public void Audit_json_projects_a_review_outdated_query_completely()
     {
         // #156, hand-derived. `changed` was regenerated after its latest stamp (the human one at

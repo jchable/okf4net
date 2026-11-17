@@ -251,6 +251,22 @@ public class AuditTests
         Assert.True(new AuditQuery(ReviewOutdatedOnly: true).IsFiltered);
     }
 
+    /// <summary>#156: the four-value deconstruction of the pre-#156 type still compiles and reads the same members.</summary>
+    [Fact]
+    public void Deconstruct_keeps_the_four_value_form_beside_the_five_value_one()
+    {
+        var query = new AuditQuery(StaleOnly: true, Status: ConceptStatus.Stable, Type: "Note", ReviewOutdatedOnly: true);
+
+        var (stale, trust, status, type) = query;
+        Assert.True(stale);
+        Assert.Null(trust);
+        Assert.Equal(ConceptStatus.Stable, status);
+        Assert.Equal("Note", type);
+
+        var (_, _, _, _, reviewOutdated) = query;
+        Assert.True(reviewOutdated);
+    }
+
     /// <summary>
     /// #156: a review is outdated when the content's last change (§5.2 <c>generated.at</c>,
     /// §13.1 <c>timestamp</c> as fallback) is strictly later than the latest readable

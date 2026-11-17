@@ -59,9 +59,12 @@ and this project adheres to
   the frontmatter is read: for a file's git history, pair `lastVerifiedAt` with
   `git log -1 --format=%cI -- <path>`. **`okf audit --json` changes**: `query`
   gains `reviewOutdated`, each finding gains `lastVerifiedAt`, `lastChangedAt`
-  and `reviewOutdated`. The text lines are unchanged. Binary-breaking for a
-  compiled caller of `AuditQuery`'s constructor (a new optional parameter);
-  source-compatible.
+  and `reviewOutdated`. The two review dates keep their fractional seconds
+  (`2026-07-05T10:00:00.9Z`; a whole second is spelled as before), so a
+  consumer can reproduce the comparison. The text lines are unchanged.
+  Binary-breaking for a compiled caller of `AuditQuery`'s constructor (a new
+  optional parameter); source-compatible, including the four-value
+  `Deconstruct`, which stays beside the generated five-value one.
 
 - **Bundle provider seam (#139, lot A).** `OKF4net.Providers`: `IBundleProvider`
   and its value types, `BundleKey` with three-layer validation

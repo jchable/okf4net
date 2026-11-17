@@ -37,6 +37,19 @@ public readonly record struct AuditQuery(
     public static AuditQuery All => default;
 
     /// <summary>
+    /// The four-value deconstruction this type had before <see cref="ReviewOutdatedOnly"/> (#156), kept
+    /// so <c>var (stale, trust, status, type) = query;</c> still compiles; the generated five-value
+    /// one carries the new predicate.
+    /// </summary>
+    public void Deconstruct(out bool staleOnly, out IReadOnlySet<TrustTier>? trust, out ConceptStatus? status, out string? type)
+    {
+        staleOnly = StaleOnly;
+        trust = Trust;
+        status = Status;
+        type = Type;
+    }
+
+    /// <summary>
     /// Whether this query constrains the selection below "every concept" --
     /// true whenever any predicate is non-default. This is not "did the
     /// caller type a filter flag": the CLI's report mode builds
