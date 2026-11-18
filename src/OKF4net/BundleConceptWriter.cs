@@ -1485,7 +1485,16 @@ public sealed class BundleConceptWriter
     /// existing file, if any, is read as strict UTF-8, then re-rendered through
     /// <see cref="ChangeLog.ToMarkdown"/> — the strict §9 model — so any
     /// non-conforming prose or comments in a hand-authored <c>log.md</c> are not
-    /// preserved. Never throws for expected errors (a <paramref name="kind"/> or
+    /// preserved. A frontmatter block the file opens with is the exception (#258):
+    /// a <c>---</c> fence at column 0 on the first line, closed by the next one,
+    /// around what <see cref="OkfDocument.Parse"/> reads as a non-empty YAML
+    /// mapping. It is not part of the §9 log, is parsed only to recognise it, and
+    /// is written back byte for byte, its fences and line ends included, followed
+    /// by a blank line in its closing fence's line end and the re-rendered log, in
+    /// LF (so a CRLF block is followed by LF lines). A <c>---</c> thematic break
+    /// around anything else — invalid YAML, comments only, nothing — is no block:
+    /// what it holds is read and rewritten as the log, as before. A log without a
+    /// block, or created by this call, is written with none. Never throws for expected errors (a <paramref name="kind"/> or
     /// <paramref name="text"/> that <see cref="GuardLogField"/> refuses — empty,
     /// or carrying a line break, a control character or a bidirectional control
     /// character — a <c>log.md</c> that fails strict UTF-8 decoding, a path the
@@ -1555,7 +1564,12 @@ public sealed class BundleConceptWriter
 
                     // ChangeLog.Parse is permissive (never throws); used here
                     // only to locate the day (if any) among the existing entries.
-                    var changeLog = ChangeLog.Parse(current?.Text ?? string.Empty);
+                    // It skips a leading frontmatter block, which is carried
+                    // over below as the bytes it was (#258).
+                    var currentText = current?.Text ?? string.Empty;
+                    var blockLength = ChangeLog.FrontmatterBlockLength(currentText, out var blockLineEnd);
+                    var frontmatter = currentText[..blockLength];
+                    var changeLog = ChangeLog.ParseFrom(currentText, blockLength);
                     var days = changeLog.Days.ToList();
                     var dayIndex = days.FindIndex(d => string.Equals(d.Date, day, StringComparison.Ordinal));
                     if (dayIndex >= 0)
@@ -1579,7 +1593,16 @@ public sealed class BundleConceptWriter
                     // conditioned Write of its own. Its commit is reported to
                     // WriteThenNotify, as AppendToConceptAtomic's is, so the
                     // notification runs once, after the retries (decision B48).
-                    await _provider.WriteAsync(key, OkfEncodings.NoBom.GetBytes(new ChangeLog(changeLog.Title, days).ToMarkdown()), ConditionFor(current), run.Ct).ConfigureAwait(false);
+                    var rendered = new ChangeLog(changeLog.Title, days).ToMarkdown();
+                    if (frontmatter.Length > 0)
+                    {
+                        // The block verbatim, then one blank line before the log, in
+                        // the closing fence's line end (a fence that ended the file
+                        // gets its line end first, the opening fence's).
+                        rendered = frontmatter + (frontmatter.EndsWith('\n') ? blockLineEnd : blockLineEnd + blockLineEnd) + rendered;
+                    }
+
+                    await _provider.WriteAsync(key, OkfEncodings.NoBom.GetBytes(rendered), ConditionFor(current), run.Ct).ConfigureAwait(false);
                     committed();
 
                     // The FOLDED kind, not the raw argument: this message is
