@@ -46,6 +46,7 @@ Supported assemblies: those loaded at run time from a file, a single-file bundle
 | `OKFEMB007` | The bundle directory is, or holds, the project directory: it would embed `obj/`, `bin/` and the project's own files. Point `OkfBundle` at a subdirectory. A directory that directly holds a file named like the project file is refused whatever the spelling of its path (8.3 alias, link, `subst` drive); a bundle directory that holds the project in a subdirectory is recognised by its path text only. |
 | `OKFEMB008` | A FIFO, device or socket under the bundle directory (outside Windows). |
 | `OKFEMB009` | Outside Windows, `find` could not inspect the bundle directory (missing from the `PATH`, unreadable subdirectory, any failure): the check fails closed instead of reading nothing as "no special file". |
+| `OKFEMB010` | Next to a bundle directory that tells case apart (Linux, a case-sensitive macOS volume, a Windows directory marked case-sensitive), two `Compile`, `Content`, `EmbeddedResource`, `Page`, `ApplicationDefinition` or `Resource` items whose paths differ only by case, such as `Knowledge/x.cs` and `knowledge/x.cs`: MSBuild compares item paths ignoring case, so it cannot detach or check one without the other. Rename one of them. |
 
 ## In a knowledge catalog
 
