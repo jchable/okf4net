@@ -34,6 +34,17 @@ are the concrete entry points.
   Backed by the new `BundleConceptWriter.RecordVerifications` — the single
   governed writer of `verified` — and exposed to agents as `okf_verify`. See
   [its design spec](docs/superpowers/specs/2026-08-28-okf-verify-design.md).
+- **End-to-end tutorials shipped** (on `dev`,
+  [#174](https://github.com/jchable/okf4net/issues/174), formerly the "Now" item
+  "tutorials for both audiences"): [library users](docs/tutorials/library-users.md)
+  write, index, load and validate a bundle through the asynchronous provider
+  API and check it with `okf`; [agent builders](docs/tutorials/agent-builders.md)
+  expose a bundle through `OKF4net.Agents` (a shared `BundleHandle`,
+  `OkfToolMode`, `OkfContextProvider`, an approved write) and through
+  `okf-mcp`. Every snippet and command was run to produce the outputs they
+  show; the agent steps use a scripted `IChatClient`, and the two steps that
+  need a model (a real `IChatClient`, an MCP client configuration) say so.
+  They link to `samples/` rather than duplicate them.
 - More `OKF4net.Agents` samples ([#159](https://github.com/jchable/okf4net/issues/159),
   open: further agent patterns are welcome). Shipped so far:
   [`samples/acme-retail-agent`](samples/acme-retail-agent/README.md) (0.4.0),

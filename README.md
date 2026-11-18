@@ -33,6 +33,12 @@ a guided project overview, getting-started walkthroughs, and developer docs:
 This README is the technical reference; the site is the friendlier entry point
 for newcomers.
 
+**Tutorials** (in this repository, every step run against the current code):
+[library users](docs/tutorials/library-users.md) — write, index, load and
+validate a bundle through the provider API ·
+[agent builders](docs/tutorials/agent-builders.md) — expose a bundle through
+`OKF4net.Agents` and `okf-mcp`.
+
 <!-- -->
 
 > **Want to contribute?** OKF4net is a young, welcoming project with a clear
@@ -151,8 +157,10 @@ extensive test suite, including snapshot comparisons of the CLI's output.
 ### As a library
 
 A concern-by-concern API walkthrough lives in the
-[library docs on the site](https://jchable.github.io/okf4net/docs/library/);
-below is the short version.
+[library docs on the site](https://jchable.github.io/okf4net/docs/library/),
+and [the library users' tutorial](docs/tutorials/library-users.md) builds a
+bundle end to end with the asynchronous provider API; below is the short
+version.
 
 ```csharp
 using OKF4net;
@@ -759,6 +767,9 @@ tool list — through a scripted `IChatClient` against `bundles/ga4`
 (`dotnet run --project samples/agents-quickstart/src/AgentsQuickstart`).
 [`samples/acme-retail-agent/`](samples/acme-retail-agent/README.md) is the
 same kind of agent over a real OpenAI-compatible endpoint.
+[The agent builders' tutorial](docs/tutorials/agent-builders.md) walks through
+a shared `BundleHandle`, the tool modes, `OkfContextProvider`, an approved
+write and `okf-mcp`.
 [`samples/agents-handoff/`](samples/agents-handoff/README.md), also with no
 model or key, hands knowledge from one agent to another over a copy of
 `bundles/ga4`: a curator with the read-write tools writes a note, and a reader
