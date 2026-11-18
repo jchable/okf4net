@@ -238,14 +238,19 @@ public sealed class BundleConceptWriter
 
     /// <summary>
     /// The §7 actor spelling this library uses when it stamps
-    /// <c>generated.by</c> itself: <c>"okf4net/" + OkfSpec.Version</c>. The
-    /// single source of that spelling — <see cref="ProducerActor"/> defaults
-    /// to it, and <c>OKF4net.Agents</c>' <c>OkfContextProvider.MemoryFrontmatter</c>
-    /// reads it directly rather than re-spelling <c>"okf4net/" + OkfSpec.Version</c>
-    /// a second time on a path that never goes through <see cref="ProducerActor"/>
-    /// itself (see that method's remarks).
+    /// <c>generated.by</c> itself: <c>okf4net/&lt;library version&gt;</c>, e.g.
+    /// <c>okf4net/0.8.0</c>. §7 spells a tool's actor
+    /// <c>&lt;producer&gt;/&lt;version&gt;</c> — the producer's own version, which
+    /// tells a reader which build wrote the content — so it is this assembly's
+    /// version (<see cref="ProductVersion.Library"/>, build metadata dropped),
+    /// not <see cref="OkfSpec.Version"/>, which it was until #257
+    /// (<c>okf4net/0.2</c>). The single source of that spelling —
+    /// <see cref="ProducerActor"/> defaults to it, and <c>OKF4net.Agents</c>'
+    /// <c>OkfContextProvider.MemoryFrontmatter</c> reads it directly rather than
+    /// re-spelling it a second time on a path that never goes through
+    /// <see cref="ProducerActor"/> itself (see that method's remarks).
     /// </summary>
-    internal static string DefaultProducerActor => "okf4net/" + OkfSpec.Version;
+    internal static string DefaultProducerActor { get; } = "okf4net/" + ProductVersion.Library;
 
     /// <summary>The §7 actor recorded as <c>generated.by</c> when auto-stamping.</summary>
     internal string ProducerActor { get; set; } = DefaultProducerActor;
@@ -531,7 +536,7 @@ public sealed class BundleConceptWriter
     /// validation) — those are reported as a plain-text message instead.
     /// </summary>
     /// <param name="conceptId">The concept id (path without <c>.md</c>), e.g. <c>tables/refunds</c>.</param>
-    /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines (the same YAML subset used inside a document's frontmatter block, without the <c>---</c> delimiters).</param>
+    /// <param name="frontmatterYaml">Frontmatter as YAML (the same subset used inside a document's frontmatter block, without the <c>---</c> delimiters; nested maps and lists keep their structure).</param>
     /// <param name="body">The markdown body.</param>
     /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
     public string WriteConcept(string conceptId, string frontmatterYaml, string body) =>
@@ -547,7 +552,7 @@ public sealed class BundleConceptWriter
     /// to read the concept (again). Never retried: a retry would overwrite what the caller has not seen.
     /// </summary>
     /// <param name="conceptId">The concept id (path without <c>.md</c>), e.g. <c>tables/refunds</c>.</param>
-    /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines (the same YAML subset used inside a document's frontmatter block, without the <c>---</c> delimiters).</param>
+    /// <param name="frontmatterYaml">Frontmatter as YAML (the same subset used inside a document's frontmatter block, without the <c>---</c> delimiters; nested maps and lists keep their structure).</param>
     /// <param name="body">The markdown body.</param>
     /// <param name="condition">The condition on the concept's current version.</param>
     /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
@@ -556,7 +561,7 @@ public sealed class BundleConceptWriter
 
     /// <summary>The asynchronous <see cref="WriteConcept(string, string, string)"/> (#152): the same writing, the provider asked asynchronously; cancellable until the provider commits.</summary>
     /// <param name="conceptId">The concept id (path without <c>.md</c>).</param>
-    /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines.</param>
+    /// <param name="frontmatterYaml">Frontmatter as YAML (subset), without the <c>---</c> delimiters.</param>
     /// <param name="body">The markdown body.</param>
     /// <param name="ct">Cancels the write before its commit: nothing is written, and the call ends with an <see cref="OperationCanceledException"/>. After the commit the result is returned and the write notification runs.</param>
     /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
@@ -565,7 +570,7 @@ public sealed class BundleConceptWriter
 
     /// <summary>The asynchronous <see cref="WriteConcept(string, string, string, BundleWriteCondition)"/> (#152).</summary>
     /// <param name="conceptId">The concept id (path without <c>.md</c>).</param>
-    /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines.</param>
+    /// <param name="frontmatterYaml">Frontmatter as YAML (subset), without the <c>---</c> delimiters.</param>
     /// <param name="body">The markdown body.</param>
     /// <param name="condition">The condition on the concept's current version.</param>
     /// <param name="ct">Cancels the write before its commit.</param>
@@ -1480,7 +1485,16 @@ public sealed class BundleConceptWriter
     /// existing file, if any, is read as strict UTF-8, then re-rendered through
     /// <see cref="ChangeLog.ToMarkdown"/> — the strict §9 model — so any
     /// non-conforming prose or comments in a hand-authored <c>log.md</c> are not
-    /// preserved. Never throws for expected errors (a <paramref name="kind"/> or
+    /// preserved. A frontmatter block the file opens with is the exception (#258):
+    /// a <c>---</c> fence at column 0 on the first line, closed by the next one,
+    /// around what <see cref="OkfDocument.Parse"/> reads as a non-empty YAML
+    /// mapping. It is not part of the §9 log, is parsed only to recognise it, and
+    /// is written back byte for byte, its fences and line ends included, followed
+    /// by a blank line in its closing fence's line end and the re-rendered log, in
+    /// LF (so a CRLF block is followed by LF lines). A <c>---</c> thematic break
+    /// around anything else — invalid YAML, comments only, nothing — is no block:
+    /// what it holds is read and rewritten as the log, as before. A log without a
+    /// block, or created by this call, is written with none. Never throws for expected errors (a <paramref name="kind"/> or
     /// <paramref name="text"/> that <see cref="GuardLogField"/> refuses — empty,
     /// or carrying a line break, a control character or a bidirectional control
     /// character — a <c>log.md</c> that fails strict UTF-8 decoding, a path the
@@ -1550,7 +1564,12 @@ public sealed class BundleConceptWriter
 
                     // ChangeLog.Parse is permissive (never throws); used here
                     // only to locate the day (if any) among the existing entries.
-                    var changeLog = ChangeLog.Parse(current?.Text ?? string.Empty);
+                    // It skips a leading frontmatter block, which is carried
+                    // over below as the bytes it was (#258).
+                    var currentText = current?.Text ?? string.Empty;
+                    var blockLength = ChangeLog.FrontmatterBlockLength(currentText, out var blockLineEnd);
+                    var frontmatter = currentText[..blockLength];
+                    var changeLog = ChangeLog.ParseFrom(currentText, blockLength);
                     var days = changeLog.Days.ToList();
                     var dayIndex = days.FindIndex(d => string.Equals(d.Date, day, StringComparison.Ordinal));
                     if (dayIndex >= 0)
@@ -1574,7 +1593,16 @@ public sealed class BundleConceptWriter
                     // conditioned Write of its own. Its commit is reported to
                     // WriteThenNotify, as AppendToConceptAtomic's is, so the
                     // notification runs once, after the retries (decision B48).
-                    await _provider.WriteAsync(key, OkfEncodings.NoBom.GetBytes(new ChangeLog(changeLog.Title, days).ToMarkdown()), ConditionFor(current), run.Ct).ConfigureAwait(false);
+                    var rendered = new ChangeLog(changeLog.Title, days).ToMarkdown();
+                    if (frontmatter.Length > 0)
+                    {
+                        // The block verbatim, then one blank line before the log, in
+                        // the closing fence's line end (a fence that ended the file
+                        // gets its line end first, the opening fence's).
+                        rendered = frontmatter + (frontmatter.EndsWith('\n') ? blockLineEnd : blockLineEnd + blockLineEnd) + rendered;
+                    }
+
+                    await _provider.WriteAsync(key, OkfEncodings.NoBom.GetBytes(rendered), ConditionFor(current), run.Ct).ConfigureAwait(false);
                     committed();
 
                     // The FOLDED kind, not the raw argument: this message is
@@ -2240,7 +2268,7 @@ public sealed class BundleConceptWriter
 
         if (fm is null)
         {
-            return (null, "Error: frontmatter must be a YAML mapping of 'key: value' lines, not a list or scalar.");
+            return (null, "Error: frontmatter must be a YAML mapping (top-level 'key: value' entries; nested maps and lists allowed), not a list or scalar.");
         }
 
         var doc = new OkfDocument(fm, body);

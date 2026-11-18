@@ -128,11 +128,11 @@ public sealed class OkfBundleTools
     /// <summary>The session's observation registry; a test seam.</summary>
     internal ObservationRegistry Observations => _observations;
 
-    private const string ReadConceptDescription = "Read one concept from the OKF bundle: its frontmatter, body, outgoing links and backlinks.";
+    private const string ReadConceptDescription = "Read one concept from the OKF bundle: its frontmatter (a yaml block that okf_write_concept accepts as is), body, outgoing links and backlinks.";
     private const string ConceptIdDescription = "The concept id, e.g. 'tables/orders'.";
     private const string WriteConceptDescription = "Create or update a concept document. The frontmatter must contain non-empty type, title and description (producer-grade validation is enforced before writing).";
     private const string WriteConceptIdDescription = "The concept id (path without .md), e.g. 'tables/refunds'.";
-    private const string FrontmatterYamlDescription = "Frontmatter as 'key: value' lines (YAML subset).";
+    private const string FrontmatterYamlDescription = "Frontmatter as YAML (subset), without the '---' delimiters; nested maps and lists keep their structure (e.g. the frontmatter block okf_read_concept shows, as is).";
     private const string BodyDescription = "The markdown body.";
     private const string GetComputationDescription = "Read an Attested Computation's §10 contract (runtime, parameters, executor, attester) and its sanctioned computation source (inline code, or the text of a referenced file).";
     private const string ComputationIdDescription = "The concept id, e.g. 'computations/monthly-revenue'.";
@@ -257,7 +257,7 @@ public sealed class OkfBundleTools
     private DateTimeOffset Now => new(DateTime.SpecifyKind(UtcNow(), DateTimeKind.Utc), TimeSpan.Zero);
 
     /// <summary>
-    /// Returns the handle's image (<see cref="BundleHandle.Current"/>): loaded on first
+    /// Returns the handle's image (<see cref="BundleHandle.GetCurrentAsync"/>, taken synchronously here): loaded on first
     /// access, reloaded under the handle's refresh policy and after <see cref="InvalidateBundle"/>.
     /// Taken under the write lock, as before the handle, so that a read never interleaves
     /// with this tool set's own writes.
@@ -969,7 +969,7 @@ public sealed class OkfBundleTools
     /// thin delegate onto <see cref="BundleConceptWriter.WriteConcept(string, string, string)"/>.
     /// </summary>
     /// <param name="conceptId">The concept id (path without <c>.md</c>), e.g. <c>tables/refunds</c>.</param>
-    /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines (the same YAML subset used inside a document's frontmatter block, without the <c>---</c> delimiters).</param>
+    /// <param name="frontmatterYaml">Frontmatter as YAML (the same subset used inside a document's frontmatter block, without the <c>---</c> delimiters; nested maps and lists keep their structure, as in the block <c>okf_read_concept</c> shows).</param>
     /// <param name="body">The markdown body.</param>
     [Obsolete("Use WriteConceptAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
     public string WriteConcept(string conceptId, string frontmatterYaml, string body) =>
@@ -980,7 +980,7 @@ public sealed class OkfBundleTools
     /// asynchronously. A host method: it requires and records no observation.
     /// </summary>
     /// <param name="conceptId">The concept id (path without <c>.md</c>).</param>
-    /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines.</param>
+    /// <param name="frontmatterYaml">Frontmatter as YAML (subset), without the <c>---</c> delimiters.</param>
     /// <param name="body">The markdown body.</param>
     /// <param name="ct">Cancels the write before its commit.</param>
     [Description(WriteConceptDescription)]
@@ -1296,7 +1296,8 @@ public sealed class OkfBundleTools
     /// if any, is read with the same strict-UTF-8 decoding <see cref="ChangesSince"/>
     /// uses, then re-rendered through <see cref="ChangeLog.ToMarkdown"/> — the
     /// strict §9 model — so any non-conforming prose or comments in a
-    /// hand-authored <c>log.md</c> are not preserved. Never throws for
+    /// hand-authored <c>log.md</c> are not preserved, except a frontmatter block
+    /// the file opens with, written back byte for byte (#258). Never throws for
     /// expected errors (a <paramref name="kind"/> or <paramref name="text"/>
     /// that <see cref="BundleConceptWriter.GuardLogField"/> refuses — empty, or carrying a line
     /// break, a control character or a bidirectional control character — or a
@@ -1313,7 +1314,7 @@ public sealed class OkfBundleTools
     /// <param name="kind">Entry kind, e.g. 'Update' or 'Creation'.</param>
     /// <param name="text">The entry text.</param>
     /// <param name="ct">Cancels the append before its commit.</param>
-    [Description("Append an entry to the bundle root log.md under today's date (ISO). Note: log.md is re-rendered through the strict §9 model, so non-conforming prose or comments in a hand-authored log.md are not preserved.")]
+    [Description("Append an entry to the bundle root log.md under today's date (ISO). Note: log.md is re-rendered through the strict §9 model, so non-conforming prose or comments in a hand-authored log.md are not preserved; a leading frontmatter block is kept as it was.")]
     public async Task<string> AppendLogAsync(
         [Description("Entry kind, e.g. 'Update' or 'Creation'.")] string kind,
         [Description("The entry text.")] string text,
@@ -2410,16 +2411,27 @@ public sealed class OkfBundleTools
     }
 
     /// <summary>
-    /// Appends the concept's frontmatter as one <c>key: value</c> line per
-    /// entry. Both sides are holes, so folded: a <c>|</c> block scalar is
-    /// perfectly legal YAML, and a line break in one of these values printed
-    /// what looked like another frontmatter ENTRY -- a bundle could show a
-    /// <c>type:</c> or <c>verified:</c> line it does not actually carry.
-    /// Folding a genuinely multi-line value (typically a <c>description</c>)
-    /// onto one line is the accepted cost, and is what a <c>&gt;</c> folded
-    /// scalar would have rendered anyway.
+    /// Appends the concept's frontmatter as one fenced <c>yaml</c> block
+    /// (<see cref="BlockKind.Frontmatter"/>) written by <see cref="YamlEmitter"/>,
+    /// so that parsing what is shown gives back the stored mapping -- nested
+    /// maps and lists of maps included (#256). A read-modify-write through
+    /// <c>okf_write_concept</c>, the flow the observation gate requires, then
+    /// keeps the §5.2 <c>generated</c> and <c>verified</c> structures instead of
+    /// storing their flattened text as strings. The block is fenced like the
+    /// body (<see cref="ModelTextBuilder.Fence"/>), so a line break inside a
+    /// value -- the emitter writes it as a <c>\n</c> escape in a quoted scalar
+    /// anyway -- cannot pass for another entry or for the tool's own text.
+    /// It is written by <see cref="YamlEmitter.EmitEscapingInvisible"/>, the
+    /// same emitter with one reader-facing option: a key or value holding an
+    /// invisible, bidi, line-separator or control character is quoted with
+    /// that character as a <c>\uXXXX</c> escape, so none is shown raw (astral
+    /// tag characters excepted: the subset cannot escape them). The round trip
+    /// stays exact. What is written to disk is unchanged.
+    /// A mapping the emitter refuses (past its nesting or size bounds, which a
+    /// mapping the parser read cannot reach; only one built in code can) is
+    /// reported on one line instead. Internal as a test seam for that line.
     /// </summary>
-    private static void AppendFrontmatterBlock(ModelTextBuilder text, Frontmatter frontmatter)
+    internal static void AppendFrontmatterBlock(ModelTextBuilder text, Frontmatter frontmatter)
     {
         var map = frontmatter.AsMapping();
         if (map.IsEmpty)
@@ -2427,12 +2439,18 @@ public sealed class OkfBundleTools
             return;
         }
 
-        foreach (var key in map.Keys)
+        string yaml;
+        try
         {
-            text.Line($"{key}: {FormatFrontmatterValue(map.Get(key))}");
+            yaml = YamlEmitter.EmitEscapingInvisible(map);
+        }
+        catch (YamlEmitException ex)
+        {
+            text.Line($"(frontmatter not shown: {ex.Message})").Line();
+            return;
         }
 
-        text.Line();
+        text.Block(BlockKind.Frontmatter, yaml).Line();
     }
 
     /// <summary>
@@ -2705,30 +2723,4 @@ public sealed class OkfBundleTools
         return null;
     }
 
-    /// <summary>
-    /// Renders a frontmatter value as a single display line: scalars via
-    /// <see cref="YamlValue.AsDisplayString"/>, sequences as a
-    /// comma-separated flow list (e.g. <c>[sales, orders]</c>), and any
-    /// other structure via its YAML text with newlines collapsed.
-    /// </summary>
-    private static string FormatFrontmatterValue(YamlValue? value)
-    {
-        if (value is null)
-        {
-            return string.Empty;
-        }
-
-        var display = value.AsDisplayString();
-        if (display is not null)
-        {
-            return display;
-        }
-
-        if (value is YamlSequence seq)
-        {
-            return "[" + string.Join(", ", seq.Items.Select(FormatFrontmatterValue)) + "]";
-        }
-
-        return value.ToYamlString().Trim();
-    }
 }

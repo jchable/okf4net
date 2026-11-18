@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Globalization;
-using System.Reflection;
 using System.Text;
 using OKF4net.Internal;
 
@@ -36,10 +35,10 @@ public static class OkfCli
     /// AOT-safe: this reads an attribute on a statically-known assembly, not a
     /// dynamically-discovered one, so nothing here is trimmed away — CI's Native
     /// AOT job runs the published binary's <c>--version</c> to keep that honest.
+    /// Read through <see cref="ProductVersion"/>, the one reader the library's
+    /// own §7 producer actor uses too.
     /// </summary>
-    private static readonly string CliVersion =
-        typeof(OkfCli).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
-        ?? "0.0.0-unknown";
+    private static readonly string CliVersion = ProductVersion.Of(typeof(OkfCli).Assembly);
 
     /// <summary>The <c>--help</c> / usage text.</summary>
     private const string Usage =

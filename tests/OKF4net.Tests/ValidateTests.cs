@@ -381,6 +381,33 @@ public class ValidateTests
         Assert.DoesNotContain(report.Diagnostics, d => d.Message.Contains("index.md"));
     }
 
+    /// <summary>
+    /// #258: a log that opens with a <c>---</c> thematic break (not frontmatter: the region
+    /// up to the next <c>---</c> is no YAML mapping) still has every date heading checked —
+    /// a heading inside that region included.
+    /// </summary>
+    [Fact]
+    public void A_log_opening_with_a_thematic_break_still_has_its_date_headings_checked()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("log.md", "---\n## 2026-13-45\n* a\n---\n## 2026-07-21\n* b\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        var diag = Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.LogDateInvalid);
+        Assert.Equal("log date heading is not ISO-8601 `YYYY-MM-DD`: \"2026-13-45\"", diag.Message);
+    }
+
+    /// <summary>#258: a real frontmatter block in a log is not log content: a block-scalar line in it that looks like a day heading is not checked as one.</summary>
+    [Fact]
+    public void A_log_frontmatter_line_is_not_checked_as_a_date_heading()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("log.md", "---\ntype: Log\nnotes: |\n  ## not-a-date\n---\n\n## 2026-07-21\n* b\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.LogDateInvalid);
+    }
+
     [Fact]
     public void Invalid_log_date_heading_is_an_error()
     {

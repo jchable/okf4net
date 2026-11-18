@@ -45,6 +45,17 @@ are the concrete entry points.
   show; the agent steps use a scripted `IChatClient`, and the two steps that
   need a model (a real `IChatClient`, an MCP client configuration) say so.
   They link to `samples/` rather than duplicate them.
+- More `OKF4net.Agents` samples ([#159](https://github.com/jchable/okf4net/issues/159),
+  open: further agent patterns are welcome). Shipped so far:
+  [`samples/acme-retail-agent`](samples/acme-retail-agent/README.md) (0.4.0),
+  [`samples/agents-quickstart`](samples/agents-quickstart/README.md) and
+  **[`samples/agents-handoff`](samples/agents-handoff/README.md)** (on `dev`) —
+  a curator agent (`OkfToolMode.ReadWrite`) writes a note that a reader agent
+  (`OkfToolMode.ReadOnly` plus `OkfContextProvider`) finds in its injected
+  context, because both tool sets share one `BundleHandle` (§5.2); it also
+  shows `okf_write_concept`'s read-before-write gate (§5.4) and how a consumer
+  with its own `Manual` or `OnAccess` handle sees the change. The last two need
+  no model or API key.
 - Performance baselines for large bundle loads: **a `Bundle.Load` baseline
   exists** (`BundleLoadPerformanceTests`, a 2,001-concept synthetic bundle,
   [#6](https://github.com/jchable/okf4net/issues/6)) — it prints its timings
@@ -87,9 +98,13 @@ are the concrete entry points.
   [#139](https://github.com/jchable/okf4net/issues/139)), its asynchronous contract
   ([#152](https://github.com/jchable/okf4net/issues/152)) and the filesystem
   reference implementation ([#140](https://github.com/jchable/okf4net/issues/140))
-  are on `dev`; what follows is tracked as issues: an embedded-resource provider
-  ([#141](https://github.com/jchable/okf4net/issues/141)), an S3 provider in its
-  own project, read-only first ([#142](https://github.com/jchable/okf4net/issues/142)),
+  are on `dev`, and so is the embedded-resource provider
+  (`OKF4net.Providers.EmbeddedResources`,
+  [#141](https://github.com/jchable/okf4net/issues/141)); what follows is tracked
+  as issues: a built-in catalog factory for it (`"provider": "embedded"` in
+  `catalog.json`, [#236](https://github.com/jchable/okf4net/issues/236)), an S3
+  provider in its own project, read-only first
+  ([#142](https://github.com/jchable/okf4net/issues/142)),
   and a per-user OS lock closing the cross-process window of the filesystem
   provider's conditional writes, deferred
   ([#178](https://github.com/jchable/okf4net/issues/178)).

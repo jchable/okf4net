@@ -307,6 +307,12 @@ exception type only). Credentials never travel through the manifest: the host
 gives them to the factory. A `role:"memory"` source must stay on the
 filesystem (`IllegalMemoryProvider`).
 
+A bundle embedded in an assembly
+([OKF4net.Providers.EmbeddedResources](https://www.nuget.org/packages/OKF4net.Providers.EmbeddedResources))
+has no built-in factory yet ([#236](https://github.com/jchable/okf4net/issues/236)):
+that package's README shows the few lines of one a host registers, the
+assembly passed by the host, never named by the manifest.
+
 ### Deleting a memory scope
 
 `IMemoryStore.DeleteScopeAsync` returns a `MemoryDeleteResult(Tiers, Error)`:
@@ -353,8 +359,9 @@ under `memory-user/` and `memory-session/`. No other identifier changes.
 ## V1 limits
 
 - Bundles under the catalog root unless the host registers a provider
-  factory (see above); no provider but the filesystem ships with this
-  package, and memory sources are always on the filesystem.
+  factory (see above); no provider factory but the filesystem ships with
+  this package (an embedded-resource one is #236), and memory sources named
+  in `catalog.json` are always on the filesystem.
 - One shared catalog per `FileKnowledgeCatalog` instance.
 - No semantic/fuzzy deduplication — two concepts with similar content in
   genuinely different bundles are both returned. Only under the two merged
