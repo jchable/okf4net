@@ -87,7 +87,36 @@ public class BundleConceptWriterLogTests
 
         writer.AppendLog("Update", "Second.");
 
-        Assert.Equal(Block + "\n## 2026-07-22\n* **Update**: Second.\n\n## 2026-07-21\n* First.\n", Text(storage, "log.md"));
+        // The blank line after the block takes the closing fence's own line end.
+        Assert.Equal(Block + "\r\n## 2026-07-22\n* **Update**: Second.\n\n## 2026-07-21\n* First.\n", Text(storage, "log.md"));
+    }
+
+    /// <summary>
+    /// #258, review: a log opening with a <c>---</c> thematic break is not taken for one with a
+    /// frontmatter — the region is no YAML mapping — so today's day inside it is found and
+    /// extended, never added a second time.
+    /// </summary>
+    [Fact]
+    public void A_thematic_break_hides_no_day_from_the_append()
+    {
+        var storage = new InMemoryBundleProvider(canWrite: true).Add("log.md", "---\n## 2026-07-22\n* First.\n---\n## 2026-07-21\n* Before.\n");
+        WriterOver(storage).Writer.AppendLog("Update", "Second.");
+        Assert.Equal("## 2026-07-22\n* First.\n* **Update**: Second.\n\n## 2026-07-21\n* Before.\n", Text(storage, "log.md"));
+    }
+
+    /// <summary>An entry appended meanwhile to a log with a frontmatter is kept, and so is the frontmatter, on the retried write.</summary>
+    [Fact]
+    public void A_log_frontmatter_survives_a_retried_append()
+    {
+        const string Block = "---\ntype: Log\n---\n";
+        var storage = new InMemoryBundleProvider(canWrite: true).Add("log.md", Block + "\n## 2026-07-22\n* First.\n");
+        var (writer, delays) = WriterOver(storage);
+        storage.BeforeNextWrite(p => p.Add("log.md", Block + "\n## 2026-07-22\n* First.\n* From elsewhere.\n"));
+
+        Assert.Equal("Appended a 'Update' entry under 2026-07-22 in log.md.", writer.AppendLog("Update", "Mine."));
+
+        Assert.Equal(Block + "\n## 2026-07-22\n* First.\n* From elsewhere.\n* **Update**: Mine.\n", Text(storage, "log.md"));
+        Assert.Single(delays);
     }
 
     /// <summary>A log made of its frontmatter alone, the closing fence ending the file without a line end, gains its first day after it.</summary>

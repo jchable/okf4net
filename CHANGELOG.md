@@ -1136,13 +1136,15 @@ and this project adheres to
   (#258).** `BundleConceptWriter.AppendLog` / `AppendLogAsync` (and so
   `okf_append_log`) re-render the log through the §9 model and used to drop a
   leading frontmatter block, such as upstream `acme_retail`'s `type: Log`. The
-  block (a `---` fence at column 0 closed by the next one, as
-  `OkfDocument.Parse` reads it) is now written back byte for byte, fences and
-  line ends included, then a blank line and the log. A log without one, and a
-  log created by the append, are written exactly as before.
-  `ChangeLog.Parse` now skips that block, so a YAML comment in it is no longer
-  read as the log's title nor a `## ` line in it as a day (which the validator
-  reported as `LogDateInvalid`).
+  block (a `---` fence at column 0 closed by the next one, around what
+  `OkfDocument.Parse` reads as a non-empty YAML mapping) is now written back
+  byte for byte, fences and line ends included, then a blank line and the log.
+  A log without one, and a log created by the append, are written exactly as
+  before. `ChangeLog.Parse` now skips that block, so a YAML comment in it is no
+  longer read as the log's title nor a `## ` line in it as a day (which the
+  validator reported as `LogDateInvalid`). A `---` thematic break around
+  anything else (invalid YAML, comments only, nothing) is not a block: the days
+  inside it are still read, validated and appended to.
 - **`okf_verify` over a read-only provider throws `BundleReadOnlyException`
   like the other write tools (#218).** `OkfBundleTools.Verify` / `VerifyAsync`
   used to return `Error: the provider is read-only; …` as text; a direct call

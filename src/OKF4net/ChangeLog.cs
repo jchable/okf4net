@@ -55,21 +55,25 @@ public sealed class ChangeLog
 
     /// <summary>
     /// Parses `log.md` text. Never fails — malformed or partial input
-    /// degrades gracefully. A leading frontmatter block (a <c>---</c> fence
-    /// at column 0 on the first line, closed by the next such fence, as
-    /// <see cref="OkfDocument.Parse"/> reads one) is not part of the §9 log
-    /// and is skipped unread (#258): none of its lines is taken for the
-    /// title, a day or an entry. <see cref="ToMarkdown"/> renders the log
-    /// only, never that block.
+    /// degrades gracefully. A leading frontmatter block is not part of the §9
+    /// log and is skipped (#258): none of its lines is taken for the title, a
+    /// day or an entry. It is one only when the loader would read it as one —
+    /// a <c>---</c> fence at column 0 on the first line, closed by the next
+    /// such fence, around a non-empty YAML mapping; a <c>---</c> thematic
+    /// break around log content is read as the log it is. <see cref="ToMarkdown"/>
+    /// renders the log only, never that block.
     /// </summary>
-    public static ChangeLog Parse(string text)
+    public static ChangeLog Parse(string text) => ParseFrom(text, FrontmatterBlockLength(text, out _));
+
+    /// <summary><see cref="Parse(string)"/> over <paramref name="text"/> past its first <paramref name="start"/> characters — the frontmatter block <see cref="FrontmatterBlockLength"/> measured.</summary>
+    internal static ChangeLog ParseFrom(string text, int start)
     {
         string? title = null;
         var days = new List<LogDay>();
         string? currentDate = null;
         List<LogEntry>? currentEntries = null;
 
-        foreach (var line in LfLines.Split(text[FrontmatterBlockLength(text)..]))
+        foreach (var line in LfLines.Split(text[start..]))
         {
             var t = line.TrimEnd().TrimStart();
             if (t.StartsWith("## ", StringComparison.Ordinal))
@@ -110,29 +114,76 @@ public sealed class ChangeLog
     /// <summary>
     /// The length of the frontmatter block <paramref name="text"/> opens with — its
     /// opening fence through its closing fence and that fence's own line end, if it has
-    /// one — or 0 when it opens with none. The fences are found by the predicate
-    /// <see cref="OkfDocument.Parse"/> uses (<see cref="OkfDocument.IsFenceLine"/>), so
-    /// the two agree on where a block ends; an opening fence never closed is no block.
-    /// The block's content is not parsed: it is kept, or skipped, as the bytes it is.
+    /// one — or 0 when it opens with none.
+    ///
+    /// <para>The fences are found by the predicate <see cref="OkfDocument.Parse"/> uses
+    /// (<see cref="OkfDocument.IsFenceLine"/>), and the region between them counts as a
+    /// frontmatter only when <see cref="OkfDocument.Parse"/> reads it as a non-empty
+    /// YAML mapping — what the loader reads as a concept's frontmatter. Anything else is
+    /// log content and gives 0: an opening fence never closed, and a region that is not
+    /// valid YAML in the supported subset, is not a mapping, or holds no key (empty, or
+    /// comments only). That is what keeps a log opening with a <c>---</c> thematic break
+    /// (§9's own spec uses them) from having the days inside it hidden from the
+    /// validator, <c>okf_changes_since</c> and the writer. A region that does parse as a
+    /// mapping is a frontmatter even if a markdown reader would have seen a break
+    /// there: the loader reads it the same way.</para>
+    ///
+    /// <para>The block is kept, or skipped, as the exact characters it is: it is parsed
+    /// only to decide whether it is one, never re-emitted.</para>
     /// </summary>
     /// <param name="text">The whole <c>log.md</c> text.</param>
-    internal static int FrontmatterBlockLength(string text)
+    /// <param name="lineEnd">The closing fence's line end (<c>"\n"</c> or <c>"\r\n"</c>), or the opening fence's when the closing one ends the text; <c>"\n"</c> when there is no block.</param>
+    internal static int FrontmatterBlockLength(string text, out string lineEnd)
     {
-        var spans = LfLines.SplitSpans(text);
-        if (spans.Count == 0 || !OkfDocument.IsFenceLine(text[spans[0].Start..spans[0].ContentEnd]))
+        lineEnd = "\n";
+
+        // The first line alone decides most logs: no fence, no block, nothing split.
+        var next = NextLine(text, 0, out var content, out var openingEnd);
+        if (!OkfDocument.IsFenceLine(content))
         {
             return 0;
         }
 
-        for (var i = 1; i < spans.Count; i++)
+        while (next < text.Length)
         {
-            if (OkfDocument.IsFenceLine(text[spans[i].Start..spans[i].ContentEnd]))
+            var start = next;
+            next = NextLine(text, start, out content, out var end);
+            if (!OkfDocument.IsFenceLine(content))
             {
-                return spans[i].TerminatorEnd;
+                continue;
             }
+
+            if (!OkfDocument.TryParse(text[..next], out var doc, out _) || !doc.HasFrontmatterBlock || doc.Frontmatter.IsEmpty)
+            {
+                return 0;
+            }
+
+            lineEnd = end.Length > 0 ? end : openingEnd;
+            return next;
         }
 
         return 0;
+    }
+
+    /// <summary>
+    /// The line of <paramref name="text"/> starting at <paramref name="start"/>, split the
+    /// way <see cref="LfLines"/> splits (on <c>\n</c>, a preceding <c>\r</c> stripped):
+    /// its content, its line end, and the offset just past that line end.
+    /// </summary>
+    private static int NextLine(string text, int start, out string content, out string lineEnd)
+    {
+        var lf = text.IndexOf('\n', start);
+        if (lf < 0)
+        {
+            content = text[start..];
+            lineEnd = string.Empty;
+            return text.Length;
+        }
+
+        var contentEnd = lf > start && text[lf - 1] == '\r' ? lf - 1 : lf;
+        content = text[start..contentEnd];
+        lineEnd = text[contentEnd..(lf + 1)];
+        return lf + 1;
     }
 
     /// <summary>Renders the log back to markdown (the §9 log only: a frontmatter block <see cref="Parse"/> skipped is not part of it).</summary>

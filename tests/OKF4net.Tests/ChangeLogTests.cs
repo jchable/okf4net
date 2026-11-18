@@ -49,6 +49,21 @@ public class ChangeLogTests
         Assert.Equal(["2026-07-21"], unclosed.Days.Select(d => d.Date));
     }
 
+    /// <summary>
+    /// #258, review: a region between two <c>---</c> lines counts as frontmatter only when the
+    /// loader would read it as one — a non-empty YAML mapping. A thematic break around log
+    /// content (invalid YAML, comments only, or nothing) hides nothing.
+    /// </summary>
+    [Theory]
+    [InlineData("---\n## 2026-13-45\n* a\n---\n## 2026-07-21\n* b\n", new[] { "2026-13-45", "2026-07-21" })]
+    [InlineData("---\n## 2026-07-22\n---\n## 2026-07-21\n* b\n", new[] { "2026-07-22", "2026-07-21" })]
+    [InlineData("---\nnote: x\n## 2026-07-22\n* a\n---\n## 2026-07-21\n* b\n", new[] { "2026-07-22", "2026-07-21" })]
+    [InlineData("---\n---\n## 2026-07-21\n* b\n", new[] { "2026-07-21" })]
+    public void Parse_reads_a_region_that_is_not_frontmatter_as_log(string text, string[] days)
+    {
+        Assert.Equal(days, ChangeLog.Parse(text).Days.Select(d => d.Date));
+    }
+
     [Fact]
     public void Invalid_dates_are_reported_not_fatal()
     {
