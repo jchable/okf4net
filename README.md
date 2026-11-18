@@ -1096,6 +1096,13 @@ Then point Claude Desktop at a bundle in `claude_desktop_config.json`:
 to register the four write tools as well. See
 [`src/OKF4net.Mcp/README.md`](src/OKF4net.Mcp/README.md) for the full tool list, or the
 [MCP setup guide on the site](https://jchable.github.io/okf4net/docs/mcp/).
+[`samples/second-brain/`](samples/second-brain/README.md) is a read-write
+example: a starter personal-notes bundle served writable in Claude Desktop
+(the `claude_desktop_config.json` for Windows and macOS, from the installed
+tool or from this repository), example prompts, and a smoke test that drives
+`okf-mcp` over stdio without Claude Desktop. It also says what a write does
+not do: `okf_write_concept` leaves `index.md` and `log.md` alone, and they
+change only when `okf_regenerate_indexes` and `okf_append_log` are called.
 
 ## Mapping to the spec
 

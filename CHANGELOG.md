@@ -10,6 +10,15 @@ and this project adheres to
 
 ### Added
 
+- **`samples/second-brain`, a read-write `okf-mcp` sample (#160).** A starter
+  personal-notes bundle served writable in Claude Desktop, with the
+  `claude_desktop_config.json` for Windows and macOS (installed tool or from
+  the repository), example prompts, and `smoke.cs`, a .NET 10 file-based app
+  that drives `okf-mcp` over stdio on a copy of the bundle and checks the
+  disk. It documents that `okf_write_concept` updates neither `index.md` nor
+  `log.md`, which change only through `okf_regenerate_indexes` and
+  `okf_append_log`.
+
 - **`samples/agents-handoff`**, an `OKF4net.Agents` sample of two agents
   sharing one bundle, with no LLM endpoint, API key or network access (#159).
   Over a temporary copy of `bundles/ga4`, a curator agent with the read-write
