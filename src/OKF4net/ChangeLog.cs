@@ -55,7 +55,12 @@ public sealed class ChangeLog
 
     /// <summary>
     /// Parses `log.md` text. Never fails — malformed or partial input
-    /// degrades gracefully.
+    /// degrades gracefully. A leading frontmatter block (a <c>---</c> fence
+    /// at column 0 on the first line, closed by the next such fence, as
+    /// <see cref="OkfDocument.Parse"/> reads one) is not part of the §9 log
+    /// and is skipped unread (#258): none of its lines is taken for the
+    /// title, a day or an entry. <see cref="ToMarkdown"/> renders the log
+    /// only, never that block.
     /// </summary>
     public static ChangeLog Parse(string text)
     {
@@ -64,7 +69,7 @@ public sealed class ChangeLog
         string? currentDate = null;
         List<LogEntry>? currentEntries = null;
 
-        foreach (var line in LfLines.Split(text))
+        foreach (var line in LfLines.Split(text[FrontmatterBlockLength(text)..]))
         {
             var t = line.TrimEnd().TrimStart();
             if (t.StartsWith("## ", StringComparison.Ordinal))
@@ -102,7 +107,35 @@ public sealed class ChangeLog
         return new ChangeLog(title, days);
     }
 
-    /// <summary>Renders the log back to markdown.</summary>
+    /// <summary>
+    /// The length of the frontmatter block <paramref name="text"/> opens with — its
+    /// opening fence through its closing fence and that fence's own line end, if it has
+    /// one — or 0 when it opens with none. The fences are found by the predicate
+    /// <see cref="OkfDocument.Parse"/> uses (<see cref="OkfDocument.IsFenceLine"/>), so
+    /// the two agree on where a block ends; an opening fence never closed is no block.
+    /// The block's content is not parsed: it is kept, or skipped, as the bytes it is.
+    /// </summary>
+    /// <param name="text">The whole <c>log.md</c> text.</param>
+    internal static int FrontmatterBlockLength(string text)
+    {
+        var spans = LfLines.SplitSpans(text);
+        if (spans.Count == 0 || !OkfDocument.IsFenceLine(text[spans[0].Start..spans[0].ContentEnd]))
+        {
+            return 0;
+        }
+
+        for (var i = 1; i < spans.Count; i++)
+        {
+            if (OkfDocument.IsFenceLine(text[spans[i].Start..spans[i].ContentEnd]))
+            {
+                return spans[i].TerminatorEnd;
+            }
+        }
+
+        return 0;
+    }
+
+    /// <summary>Renders the log back to markdown (the §9 log only: a frontmatter block <see cref="Parse"/> skipped is not part of it).</summary>
     public string ToMarkdown()
     {
         var sb = new StringBuilder();

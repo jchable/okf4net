@@ -31,6 +31,24 @@ public class ChangeLogTests
         Assert.Equal(src, log.ToMarkdown());
     }
 
+    /// <summary>
+    /// #258: a leading frontmatter block is not part of the §9 log — a YAML comment is not its
+    /// title, a block-scalar line is not one of its days — so the validator, the writer and the
+    /// change tools read the same days. An unclosed opening fence is no block (spec §4).
+    /// </summary>
+    [Fact]
+    public void Parse_skips_a_leading_frontmatter_block()
+    {
+        var log = ChangeLog.Parse("---\r\n# comment\r\nnotes: |\r\n  ## not-a-day\r\n---\r\n\r\n# Log\n\n## 2026-07-21\n* First.\n");
+        Assert.Equal("Log", log.Title);
+        Assert.Equal(["2026-07-21"], log.Days.Select(d => d.Date));
+        Assert.Empty(log.InvalidDates());
+
+        var unclosed = ChangeLog.Parse("---\n# Log\n\n## 2026-07-21\n* First.\n");
+        Assert.Equal("Log", unclosed.Title);
+        Assert.Equal(["2026-07-21"], unclosed.Days.Select(d => d.Date));
+    }
+
     [Fact]
     public void Invalid_dates_are_reported_not_fatal()
     {
