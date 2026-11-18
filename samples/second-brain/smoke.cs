@@ -60,6 +60,7 @@ var psi = useTool
     : new ProcessStartInfo("dotnet") { ArgumentList = { "run", "--no-build", "--project", mcpProject, "--" } };
 psi.ArgumentList.Add(work);
 psi.Environment["OKF_MCP_WRITABLE"] = "1";
+psi.Environment.Remove("OKF_MCP_READONLY"); // inherited, it would win over OKF_MCP_WRITABLE
 psi.RedirectStandardInput = true;
 psi.RedirectStandardOutput = true;
 psi.RedirectStandardError = true;
@@ -74,6 +75,29 @@ server.ErrorDataReceived += (_, e) => { if (e.Data is not null) { lock (stderr) 
 server.BeginErrorReadLine();
 
 var nonJsonLines = new List<string>();
+
+// Parses one stdout line; anything that is not a JSON-RPC 2.0 message
+// (request, notification or response) is recorded and yields null.
+JsonObject? ReadMessage(string line)
+{
+    JsonNode? node = null;
+    try
+    {
+        node = JsonNode.Parse(line);
+    }
+    catch (JsonException)
+    {
+    }
+
+    if (IsJsonRpcMessage(node))
+    {
+        return (JsonObject)node!;
+    }
+
+    nonJsonLines.Add(line);
+    return null;
+}
+
 var display = new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 var nextId = 0;
 
@@ -95,18 +119,8 @@ async Task<JsonNode> Request(string method, JsonObject? @params = null)
     {
         var line = await server.StandardOutput.ReadLineAsync(timeout.Token)
             ?? throw new InvalidOperationException($"okf-mcp closed stdout. stderr:\n{stderr}");
-        JsonNode? node;
-        try
-        {
-            node = JsonNode.Parse(line);
-        }
-        catch (JsonException)
-        {
-            nonJsonLines.Add(line);
-            continue;
-        }
-
-        if (node?["id"]?.GetValue<int>() == id)
+        if (ReadMessage(line) is { } node && !node.ContainsKey("method")
+            && node["id"] is JsonValue got && got.TryGetValue<int>(out var gotId) && gotId == id)
         {
             return node["error"] is { } error
                 ? throw new InvalidOperationException($"{method}: JSON-RPC error {error.ToJsonString()}")
@@ -194,13 +208,32 @@ Check(File.ReadAllText(Path.Combine(work, "notes", "index.md")).Contains("standi
 Check(Hash(Path.Combine(work, "log.md")) != before["log.md"], "log.md has the new entry");
 await Call("okf_changes_since", new JsonObject { ["sinceDate"] = DateTime.UtcNow.ToString("yyyy-MM-dd") });
 
+// Closing stdin asks okf-mcp to shut down; read stdout to EOF so whatever it
+// writes while shutting down is checked too.
 server.StandardInput.Close();
+var drained = true;
+using (var drainTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
+{
+    try
+    {
+        while (await server.StandardOutput.ReadLineAsync(drainTimeout.Token) is { } line)
+        {
+            ReadMessage(line);
+        }
+    }
+    catch (OperationCanceledException)
+    {
+        drained = false;
+    }
+}
+
 if (!server.WaitForExit(TimeSpan.FromSeconds(30)))
 {
     server.Kill(entireProcessTree: true);
 }
 
 Console.WriteLine("\n== stdio");
+Check(drained, "okf-mcp closed stdout within 30 s of stdin closing");
 foreach (var line in nonJsonLines)
 {
     Console.WriteLine($"  not JSON-RPC: {line}");
@@ -243,6 +276,25 @@ static void CopyDirectory(string from, string to)
     {
         File.Copy(file, Path.Combine(to, Path.GetRelativePath(from, file)));
     }
+}
+
+// A JSON-RPC 2.0 envelope: `"jsonrpc": "2.0"`, then either a string `method`
+// (request or notification) or an `id` with exactly one of `result` / `error`.
+static bool IsJsonRpcMessage(JsonNode? node)
+{
+    if (node is not JsonObject o
+        || o["jsonrpc"] is not JsonValue version || !version.TryGetValue<string>(out var v) || v != "2.0")
+    {
+        return false;
+    }
+
+    if (o.ContainsKey("method"))
+    {
+        return o["method"] is JsonValue method && method.TryGetValue<string>(out _)
+            && !o.ContainsKey("result") && !o.ContainsKey("error");
+    }
+
+    return o.ContainsKey("id") && (o.ContainsKey("result") ^ o.ContainsKey("error"));
 }
 
 static string Hash(string path) => File.Exists(path) ? Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))) : "(absent)";

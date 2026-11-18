@@ -57,12 +57,18 @@ Three more things to know:
 - **`okf_append_log` rewrites `log.md`.** Anything the §9 model does not hold
   is dropped: frontmatter, prose between entries, comments. The starter
   `log.md` is already in that form, so an append adds only the new entry.
-- **`okf_read_concept` flattens nested frontmatter.** It shows
-  `generated: { by: human:me, at: … }` as `generated: by: human:me at: …`.
-  If Claude copies that line back into a write, it is stored as a plain
-  string and the note loses its provenance. `okf validate` does not warn
-  about it. The guide note tells Claude to leave `generated` out, and the
-  server then stamps a new one.
+- **`okf_read_concept` flattens nested frontmatter**
+  ([#256](https://github.com/jchable/okf4net/issues/256)). It shows
+  `generated: { by: human:me, at: … }` as `generated: by: human:me at: …`,
+  and the `verified` list `okf_verify` adds as `verified: [by: human:me at: …]`.
+  If Claude copies such a line back into a write, it is stored as a plain
+  string and the note loses its provenance or its review stamps. `okf validate`
+  does not warn about it. The guide note tells Claude to leave `generated` out
+  (the server then stamps a new one), to write every other structured field
+  back as valid YAML, e.g. `verified: [{ by: human:me, at: … }]`, and to
+  refuse the rewrite when it cannot rebuild such a field from what it read.
+  This is an instruction to the model, not a guarantee: after a rewrite of a
+  verified note, check its `verified` list.
 
 Claude Desktop asks for permission before running a tool, unless you have
 allowed it. `okf-mcp` itself never asks.
@@ -227,12 +233,14 @@ Then, for example:
 
 `smoke.cs` checks all of the above without Claude Desktop. It copies
 `bundle/` to a temporary directory, starts `okf-mcp` on the copy with
-`OKF_MCP_WRITABLE=1`, and sends it raw JSON-RPC: `initialize`, `tools/list`,
+`OKF_MCP_WRITABLE=1` (and without an inherited `OKF_MCP_READONLY`, which
+would win), and sends it raw JSON-RPC: `initialize`, `tools/list`,
 a write before any read (refused), a read of a new id followed by its
 creation, and an append to the reading list (read, then write the whole
 document). It then checks `index.md` and `log.md` on disk, calls
-`okf_regenerate_indexes` and `okf_append_log`, checks that every line `okf-mcp`
-wrote on stdout was JSON-RPC, and finally runs `okf validate` on the copy.
+`okf_regenerate_indexes` and `okf_append_log`, closes stdin and reads stdout
+to EOF, checks that every line `okf-mcp` wrote there, shutdown included, was a
+JSON-RPC 2.0 message, and finally runs `okf validate` on the copy.
 From the repository root:
 
 ```sh
@@ -251,7 +259,7 @@ passed the same checks:
 <summary>Output</summary>
 
 ```text
-bundle copy: <temp>/okf-second-brain-e1b81f54
+bundle copy: <temp>/okf-second-brain-1694d371
 server: dotnet run --no-build --project <repo>\src\OKF4net.Mcp -- <copy>
 
 == initialize
@@ -354,6 +362,7 @@ server: dotnet run --no-build --project <repo>\src\OKF4net.Mcp -- <copy>
 
 
 == stdio
+  [ok] okf-mcp closed stdout within 30 s of stdin closing
   [ok] every line okf-mcp wrote on stdout was JSON-RPC
 
 == log.md on disk
