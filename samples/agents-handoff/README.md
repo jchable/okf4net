@@ -45,7 +45,9 @@ path, to look at the note and the regenerated indexes afterwards. Running the
 sample leaves `git status` clean.
 
 Optional: `OKF_BUNDLE_ROOT` points it at another bundle to copy (a relative
-value resolves against the current directory). The note's links and the
+value resolves against the current directory). The copy takes ordinary files
+and directories only and skips links (symlinks, junctions), so nothing outside
+that bundle reaches the agents. The note's links and the
 scripted answers are written for `ga4`: on another bundle the note is still
 written and picked up, but its two links point at concepts that may not exist.
 

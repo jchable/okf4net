@@ -211,18 +211,28 @@ static string? ResolveBundleRoot(string? overridePath)
     return dir is null ? null : Path.Combine(dir.FullName, "bundles", "ga4");
 }
 
-// A plain recursive copy: the sample bundles hold ordinary files and directories only.
+// A plain recursive copy of ordinary files and directories. Links (symlinks,
+// junctions, any reparse point) are skipped: copying them would turn content
+// outside the bundle into ordinary files the agents can read, and a directory
+// link back to an ancestor would recurse until the copy fails.
 static void CopyDirectory(string source, string destination)
 {
     Directory.CreateDirectory(destination);
-    foreach (var file in Directory.EnumerateFiles(source))
+    var dir = new DirectoryInfo(source);
+    foreach (var file in dir.EnumerateFiles())
     {
-        File.Copy(file, Path.Combine(destination, Path.GetFileName(file)));
+        if (!file.Attributes.HasFlag(FileAttributes.ReparsePoint))
+        {
+            file.CopyTo(Path.Combine(destination, file.Name));
+        }
     }
 
-    foreach (var directory in Directory.EnumerateDirectories(source))
+    foreach (var sub in dir.EnumerateDirectories())
     {
-        CopyDirectory(directory, Path.Combine(destination, Path.GetFileName(directory)));
+        if (!sub.Attributes.HasFlag(FileAttributes.ReparsePoint))
+        {
+            CopyDirectory(sub.FullName, Path.Combine(destination, sub.Name));
+        }
     }
 }
 
