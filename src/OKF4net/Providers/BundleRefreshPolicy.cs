@@ -4,7 +4,7 @@ namespace OKF4net.Providers;
 /// <summary>How a <see cref="BundleHandle"/> decides to reload its image (spec §5.3).</summary>
 public enum BundleRefreshMode
 {
-    /// <summary>The host calls <see cref="BundleHandle.Refresh"/>; nothing else reloads (the general default).</summary>
+    /// <summary>The host calls <see cref="BundleHandle.RefreshAsync"/>; nothing else reloads (the general default).</summary>
     Manual,
 
     /// <summary>The provider's version token is compared with the image's before every use; a different token reloads.</summary>
@@ -20,7 +20,7 @@ public enum BundleRefreshMode
 /// <summary>
 /// The refresh policy of a <see cref="BundleHandle"/> (spec §5.3). Every policy is lazy: the
 /// core runs no timer and no background thread, and a reload only ever happens inside an
-/// access to <see cref="BundleHandle.Current"/> or a call to <see cref="BundleHandle.Refresh"/>.
+/// access through <see cref="BundleHandle.GetCurrentAsync"/> or a call to <see cref="BundleHandle.RefreshAsync"/>.
 /// Two events reload whatever the policy (spec §5.1, §5.2): the handle's own writes (a
 /// <see cref="BundleConceptWriter"/> built over it), a host calling <see cref="BundleHandle.Invalidate"/> for another reason (for instance on a write conflict or a refused pin of
 /// sanctioned code) — each through <see cref="BundleHandle.Invalidate"/>.
@@ -33,7 +33,7 @@ public sealed record BundleRefreshPolicy
         Interval = interval;
     }
 
-    /// <summary>The host reloads by calling <see cref="BundleHandle.Refresh"/>; the general default.</summary>
+    /// <summary>The host reloads by calling <see cref="BundleHandle.RefreshAsync"/>; the general default.</summary>
     public static BundleRefreshPolicy Manual { get; } = new(BundleRefreshMode.Manual, TimeSpan.Zero);
 
     /// <summary>The version token is compared before every use of the image.</summary>

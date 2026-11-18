@@ -257,7 +257,7 @@ public sealed class OkfBundleTools
     private DateTimeOffset Now => new(DateTime.SpecifyKind(UtcNow(), DateTimeKind.Utc), TimeSpan.Zero);
 
     /// <summary>
-    /// Returns the handle's image (<see cref="BundleHandle.Current"/>): loaded on first
+    /// Returns the handle's image (<see cref="BundleHandle.GetCurrentAsync"/>, taken synchronously here): loaded on first
     /// access, reloaded under the handle's refresh policy and after <see cref="InvalidateBundle"/>.
     /// Taken under the write lock, as before the handle, so that a read never interleaves
     /// with this tool set's own writes.
@@ -1296,7 +1296,8 @@ public sealed class OkfBundleTools
     /// if any, is read with the same strict-UTF-8 decoding <see cref="ChangesSince"/>
     /// uses, then re-rendered through <see cref="ChangeLog.ToMarkdown"/> — the
     /// strict §9 model — so any non-conforming prose or comments in a
-    /// hand-authored <c>log.md</c> are not preserved. Never throws for
+    /// hand-authored <c>log.md</c> are not preserved, except a frontmatter block
+    /// the file opens with, written back byte for byte (#258). Never throws for
     /// expected errors (a <paramref name="kind"/> or <paramref name="text"/>
     /// that <see cref="BundleConceptWriter.GuardLogField"/> refuses — empty, or carrying a line
     /// break, a control character or a bidirectional control character — or a
@@ -1313,7 +1314,7 @@ public sealed class OkfBundleTools
     /// <param name="kind">Entry kind, e.g. 'Update' or 'Creation'.</param>
     /// <param name="text">The entry text.</param>
     /// <param name="ct">Cancels the append before its commit.</param>
-    [Description("Append an entry to the bundle root log.md under today's date (ISO). Note: log.md is re-rendered through the strict §9 model, so non-conforming prose or comments in a hand-authored log.md are not preserved.")]
+    [Description("Append an entry to the bundle root log.md under today's date (ISO). Note: log.md is re-rendered through the strict §9 model, so non-conforming prose or comments in a hand-authored log.md are not preserved; a leading frontmatter block is kept as it was.")]
     public async Task<string> AppendLogAsync(
         [Description("Entry kind, e.g. 'Update' or 'Creation'.")] string kind,
         [Description("The entry text.")] string text,

@@ -82,6 +82,60 @@ public sealed class OkfMcpServerTests
         }
     }
 
+    /// <summary>
+    /// #255: every tool result used to reach the client as a JSON string literal
+    /// (surrounding quotes, <c>\n</c> escapes) because the adapter serialised the
+    /// <see cref="System.Text.Json.JsonElement"/> the <c>AIFunction</c> returns.
+    /// The substring assertions of the other tests cannot see that, so this one
+    /// compares the exact text, over the real MCP pipeline, with what
+    /// <c>OkfBundleTools</c> returns when called directly — for a result with
+    /// newlines and quotes, a search result, and a concept that is not found.
+    /// </summary>
+    [Fact]
+    public async Task Tool_results_reach_the_client_as_the_exact_text_the_tool_returned()
+    {
+        var bundle = NewBundleDir();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(bundle, "metrics"));
+            await File.WriteAllTextAsync(
+                Path.Combine(bundle, "metrics", "dau.md"),
+                "---\ntype: Metric\ntitle: Daily \"active\" users\ndescription: Users per day.\n---\n"
+                + "# Daily active users\n\nCounted per \"purchaser\".\n");
+
+            var direct = new OKF4net.Agents.OkfBundleTools(bundle);
+            var expectedRead = await direct.ReadConceptAsync("metrics/dau");
+            var expectedSearch = await direct.SearchAsync("purchaser");
+            var expectedMissing = await direct.ReadConceptAsync("metrics/absent");
+            Assert.Contains('\n', expectedRead);
+            Assert.Contains('"', expectedRead);
+
+            var tools = OkfMcpToolset.Build(bundle, readOnly: true);
+            var (server, client) = await ConnectAsync(tools);
+            await using var _ = server;
+            await using var __ = client;
+
+            var read = await client.CallToolAsync(
+                "okf_read_concept",
+                new Dictionary<string, object?> { ["conceptId"] = "metrics/dau" });
+            Assert.Equal(expectedRead, Assert.IsType<TextContentBlock>(Assert.Single(read.Content)).Text);
+
+            var search = await client.CallToolAsync(
+                "okf_search",
+                new Dictionary<string, object?> { ["query"] = "purchaser" });
+            Assert.Equal(expectedSearch, Assert.IsType<TextContentBlock>(Assert.Single(search.Content)).Text);
+
+            var missing = await client.CallToolAsync(
+                "okf_read_concept",
+                new Dictionary<string, object?> { ["conceptId"] = "metrics/absent" });
+            Assert.Equal(expectedMissing, Assert.IsType<TextContentBlock>(Assert.Single(missing.Content)).Text);
+        }
+        finally
+        {
+            Directory.Delete(bundle, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task Build_exposes_all_twelve_tools()
     {
