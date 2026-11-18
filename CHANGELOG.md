@@ -1143,6 +1143,15 @@ and this project adheres to
   `okf` and `okf-render` `--version` read their version through the same
   internal reader (output unchanged).
 
+- **`okf-mcp` returns tool results as plain text (#255).** Every
+  `tools/call` result used to arrive as a JSON string literal — surrounding
+  quotes, `\n` and `\"` escapes — because `AIFunctionFactory` marshals a
+  `string` return value to a `JsonElement`, which the MCP SDK serialises as
+  JSON instead of emitting as text. `OkfMcpToolset` now hands the SDK the
+  string itself, so `content[0].text` is exactly what the tool returned
+  (an `Error: …` result included, still as text). The tools bound are
+  unchanged: the observation-checking wrappers of `GetTools(mode)` still run.
+
 - **`okf_verify` over a read-only provider throws `BundleReadOnlyException`
   like the other write tools (#218).** `OkfBundleTools.Verify` / `VerifyAsync`
   used to return `Error: the provider is read-only; …` as text; a direct call

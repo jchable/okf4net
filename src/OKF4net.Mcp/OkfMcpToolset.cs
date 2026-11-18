@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Text.Json;
 using Microsoft.Extensions.AI;
 using ModelContextProtocol.Server;
 using OKF4net.Agents;
@@ -35,9 +36,30 @@ public static class OkfMcpToolset
         var result = new List<McpServerTool>();
         foreach (var tool in okf.GetTools(mode))
         {
-            result.Add(McpServerTool.Create((AIFunction)tool));
+            result.Add(McpServerTool.Create(new TextResultFunction((AIFunction)tool)));
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Hands the MCP adapter the tool's <see cref="string"/> result as a string
+    /// (#255). <see cref="AIFunctionFactory"/> marshals a method's return value
+    /// to a <see cref="JsonElement"/>, so a <c>string</c> arrives as a JSON
+    /// string element; the SDK turns a <c>string</c> into a text content block
+    /// verbatim but serialises any other type to JSON, which delivered every
+    /// result as a quoted literal with <c>\n</c> escapes. Delegates everything
+    /// else — name, description, schema, and the invocation itself, so the
+    /// observation-checking wrappers <see cref="OkfBundleTools.GetTools(OkfToolMode)"/>
+    /// binds still run.
+    /// </summary>
+    private sealed class TextResultFunction(AIFunction inner) : DelegatingAIFunction(inner)
+    {
+        protected override async ValueTask<object?> InvokeCoreAsync(
+            AIFunctionArguments arguments, CancellationToken cancellationToken)
+        {
+            var value = await base.InvokeCoreAsync(arguments, cancellationToken).ConfigureAwait(false);
+            return value is JsonElement { ValueKind: JsonValueKind.String } text ? text.GetString() : value;
+        }
     }
 }

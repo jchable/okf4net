@@ -2,8 +2,8 @@
 namespace OKF4net.Agents;
 
 /// <summary>
-/// How <see cref="OkfBundleTools.GetTools(OkfToolMode)"/> exposes the three
-/// write-capable tools (<see cref="OkfBundleTools.WriteToolNames"/>).
+/// How <see cref="OkfBundleTools.GetTools(OkfToolMode)"/> exposes the
+/// write-capable tools, those named by <see cref="OkfBundleTools.WriteToolNames"/>.
 ///
 /// <para>
 /// The distinction matters because bundle content is untrusted: concept bodies,
