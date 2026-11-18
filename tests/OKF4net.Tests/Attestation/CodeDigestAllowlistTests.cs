@@ -64,7 +64,7 @@ public class CodeDigestAllowlistTests
     }
 
     private static AttestationOrchestrator Orchestrator(AttestationRuntimeRegistry registry, params string[] allowed) =>
-        new(registry, new AttestationOrchestratorOptions { AllowedCodeDigests = allowed.ToHashSet() });
+        AttestationOrchestrator.Create(registry, new AttestationOrchestratorOptions { AllowedCodeDigests = allowed.ToHashSet() });
 
     [Fact]
     public void The_digest_is_SHA256_of_the_exact_UTF8_text_with_no_normalisation()
@@ -185,7 +185,7 @@ public class CodeDigestAllowlistTests
         WriteInline(tmp);
         var (registry, stages) = Recording();
         var allowed = new HashSet<string> { AttestationCodeDigest.Of(InlineCode).ToUpperInvariant(), AttestationCodeDigest.Of(Attester) };
-        var orchestrator = new AttestationOrchestrator(registry, new AttestationOrchestratorOptions { AllowedCodeDigests = allowed });
+        var orchestrator = AttestationOrchestrator.Create(registry, new AttestationOrchestratorOptions { AllowedCodeDigests = allowed });
         allowed.Clear();
 
         Assert.True((await orchestrator.RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"), Year)).Displayable);
@@ -200,7 +200,7 @@ public class CodeDigestAllowlistTests
     public void A_malformed_allowlist_entry_is_refused_at_construction(string entry)
     {
         var (registry, _) = Recording();
-        Assert.Throws<ArgumentException>(() => new AttestationOrchestrator(registry, new AttestationOrchestratorOptions { AllowedCodeDigests = new HashSet<string> { entry } }));
+        Assert.Throws<ArgumentException>(() => AttestationOrchestrator.Create(registry, new AttestationOrchestratorOptions { AllowedCodeDigests = new HashSet<string> { entry } }));
     }
 
     [Fact]

@@ -41,8 +41,16 @@ public sealed class AttestationOrchestrator
     /// <summary>Creates an orchestrator over <paramref name="runtimes"/> with <paramref name="options"/>, an allowlist of sanctioned code included (#154).</summary>
     /// <param name="runtimes">Resolves an <see cref="IAttestationRuntime"/> by the concept's <c>runtime</c> field.</param>
     /// <param name="options">The clock, the default policy and the allowlist.</param>
+    /// <returns>The configured orchestrator.</returns>
     /// <exception cref="ArgumentException">An allowlist entry that is not a digest of the form <see cref="AttestationCodeDigest.Of"/> produces: a configuration mistake is refused at construction, never read as an entry that matches nothing.</exception>
-    public AttestationOrchestrator(IAttestationRuntimeRegistry runtimes, AttestationOrchestratorOptions options)
+    /// <remarks>
+    /// A named factory, not a constructor overload: a public <c>(runtimes, options)</c> constructor would make
+    /// the long-standing <c>new AttestationOrchestrator(runtimes, null)</c> ambiguous.
+    /// </remarks>
+    public static AttestationOrchestrator Create(IAttestationRuntimeRegistry runtimes, AttestationOrchestratorOptions options) =>
+        new(runtimes, options);
+
+    private AttestationOrchestrator(IAttestationRuntimeRegistry runtimes, AttestationOrchestratorOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
         _runtimes = runtimes;

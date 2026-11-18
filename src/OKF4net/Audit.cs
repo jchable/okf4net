@@ -41,12 +41,18 @@ public readonly record struct AuditQuery(
     /// so <c>var (stale, trust, status, type) = query;</c> still compiles; the generated five-value
     /// one carries the new predicate.
     /// </summary>
-    public void Deconstruct(out bool staleOnly, out IReadOnlySet<TrustTier>? trust, out ConceptStatus? status, out string? type)
+    /// <param name="StaleOnly">Receives <see cref="StaleOnly"/>.</param>
+    /// <param name="Trust">Receives <see cref="Trust"/>.</param>
+    /// <param name="Status">Receives <see cref="Status"/>.</param>
+    /// <param name="Type">Receives <see cref="Type"/>.</param>
+    // The parameter names are the ones the record generated (PascalCase), so a caller passing named
+    // arguments (`query.Deconstruct(StaleOnly: out var s, ...)`) still compiles: renaming them is a source break.
+    public void Deconstruct(out bool StaleOnly, out IReadOnlySet<TrustTier>? Trust, out ConceptStatus? Status, out string? Type)
     {
-        staleOnly = StaleOnly;
-        trust = Trust;
-        status = Status;
-        type = Type;
+        StaleOnly = this.StaleOnly;
+        Trust = this.Trust;
+        Status = this.Status;
+        Type = this.Type;
     }
 
     /// <summary>

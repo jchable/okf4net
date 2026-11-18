@@ -45,8 +45,10 @@ and this project adheres to
 
 - **Allowlist of sanctioned-code digests for attested computations (#154).**
   `AttestationOrchestratorOptions` (`Clock`, `DefaultPolicy`,
-  `AllowedCodeDigests`) and a new `AttestationOrchestrator(runtimes, options)`
-  constructor; the existing constructor is unchanged.
+  `AllowedCodeDigests`) and a new `AttestationOrchestrator.Create(runtimes,
+  options)` factory; the existing constructor is unchanged, and
+  `new AttestationOrchestrator(runtimes, null)` still compiles (a constructor
+  overload taking the options would have made it ambiguous).
   - `AllowedCodeDigests` is `null` by default, which means no allowlist and no
     change. When set, a run whose computation (inline or file) or attester source
     is not in it is refused before any runtime stage.
@@ -100,7 +102,9 @@ and this project adheres to
   consumer can reproduce the comparison. The text lines are unchanged.
   Binary-breaking for a compiled caller of `AuditQuery`'s constructor (a new
   optional parameter); source-compatible, including the four-value
-  `Deconstruct`, which stays beside the generated five-value one.
+  `Deconstruct`, which stays beside the generated five-value one with the
+  generated parameter names (`StaleOnly`, `Trust`, `Status`, `Type`), so a
+  call with named arguments still compiles.
 
 - **Bundle provider seam (#139, lot A).** `OKF4net.Providers`: `IBundleProvider`
   and its value types, `BundleKey` with three-layer validation
