@@ -525,6 +525,57 @@ public class ValidateTests
         Assert.True(r.IsConformant);
     }
 
+    [Theory]
+    [InlineData("generated: \"by: human:me at: 2026-07-27\"\n")] // the #271 case: a quoted scalar
+    [InlineData("generated: human:me\n")]
+    [InlineData("generated: [human:me]\n")]
+    [InlineData("generated:\n  - by: human:me\n")]
+    [InlineData("generated: ''\n")]
+    public void Generated_not_a_mapping_warns_but_stays_conformant(string generated)
+    {
+        // #271: Trust.ParseGenerated reads only a mapping, so before this code a
+        // non-mapping `generated` (§5.2: "a { by, at } mapping") was dropped silently.
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\n" + generated);
+        var d = Assert.Single(r.Diagnostics, d => d.Code == DiagnosticCode.GeneratedMalformed);
+        Assert.Equal(Severity.Warning, d.Severity);
+        Assert.Equal("generated must be a `{by, at}` mapping", d.Message);
+        Assert.Equal("generated", d.Field);
+        Assert.DoesNotContain(r.Diagnostics, x => x.Code is DiagnosticCode.GeneratedMissingBy or DiagnosticCode.GeneratedInvalidActor);
+        Assert.True(r.IsConformant);
+    }
+
+    [Theory]
+    [InlineData("")]               // absent
+    [InlineData("generated:\n")]   // explicit null, like `verified:`
+    [InlineData("generated: {by: 'human:me', at: '2026-07-27T00:00:00Z'}\n")]
+    [InlineData("generated: {at: '2026-07-27T00:00:00Z'}\n")] // GeneratedMissingBy's case, not this one
+    public void Generated_absent_null_or_mapping_is_not_malformed(string generated)
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\n" + generated);
+        Assert.DoesNotContain(r.Diagnostics, d => d.Code == DiagnosticCode.GeneratedMalformed);
+    }
+
+    [Theory]
+    [InlineData("generated: {by: , at: '2026-07-27T00:00:00Z'}\n", DiagnosticCode.GeneratedMissingBy)]
+    [InlineData("generated: {by: [human:me], at: '2026-07-27T00:00:00Z'}\n", DiagnosticCode.GeneratedMissingBy)]
+    [InlineData("generated: {by: '', at: '2026-07-27T00:00:00Z'}\n", DiagnosticCode.GeneratedInvalidActor)]
+    public void Generated_mapping_without_a_usable_by_is_already_reported(string generated, DiagnosticCode expected)
+    {
+        // #271 (b): a mapping with no non-empty `by` was already covered by the existing
+        // codes; GeneratedMalformed is for the shape of `generated` itself only.
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\n" + generated);
+        Assert.Contains(r.Of(Severity.Warning), d => d.Code == expected && d.Field == "generated.by");
+        Assert.DoesNotContain(r.Diagnostics, d => d.Code == DiagnosticCode.GeneratedMalformed);
+    }
+
+    [Fact]
+    public void GeneratedMalformed_is_appended_after_every_existing_code()
+    {
+        // New members are appended, never inserted: a consumer compares codes by value.
+        Assert.Equal(DiagnosticCode.GeneratedMalformed, Enum.GetValues<DiagnosticCode>().Max());
+        Assert.Equal((int)DiagnosticCode.KeyNotPortable + 1, (int)DiagnosticCode.GeneratedMalformed);
+    }
+
     [Fact]
     public void Malformed_actor_warns_strictly()
     {

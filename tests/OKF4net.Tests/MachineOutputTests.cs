@@ -160,6 +160,45 @@ public class MachineOutputTests
     }
 
     [Fact]
+    public void Validate_json_projects_a_malformed_generated_completely()
+    {
+        // #271: a `generated` that is not a mapping (§5.2) is reported as
+        // Diagnostic(Severity.Warning, concept.Path, concept.Id, "generated must
+        // be a `{by, at}` mapping", DiagnosticCode.GeneratedMalformed, "generated"),
+        // the counterpart of VerifiedMalformed. The concept carries every
+        // recommended field, so it is the only diagnostic; a warning keeps the
+        // bundle conformant and the exit code 0.
+        using var tmp = new TempDir();
+        tmp.Write(
+            "a.md",
+            "---\ntype: Note\ntitle: A\ndescription: d\nresource: https://example.com/a\ntags: [x]\ngenerated: \"by: human:me at: 2026-07-27\"\n---\n\nBody.\n");
+
+        var r = Run("validate", tmp.Path, "--as-of", AsOf, "--json");
+        Assert.Equal(0, r.Code);
+        Assert.EndsWith("\n", r.Out, StringComparison.Ordinal);
+        AssertRawBundle(tmp.Path, r.Out);
+
+        var b = Fwd(tmp.Path);
+        var expected = $$"""
+        {
+          "bundle": "{{b}}",
+          "asOf": "2026-09-25",
+          "evaluatedAt": "2026-09-25T00:00:00Z",
+          "conformant": true,
+          "conceptCount": 1,
+          "errorCount": 0,
+          "warningCount": 1,
+          "infoCount": 0,
+          "diagnostics": [
+            { "severity": "warning", "code": "GeneratedMalformed", "path": "{{b}}/a.md", "conceptId": "a", "field": "generated", "message": "generated must be a `{by, at}` mapping" }
+          ]
+        }
+        """;
+
+        JsonShape.AssertEquivalent(expected, NormalizeJsonPaths(r.Out));
+    }
+
+    [Fact]
     public void Info_json_projects_appendix_a_completely()
     {
         var r = Run("info", AppendixA, "--json");
