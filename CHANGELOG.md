@@ -1132,6 +1132,17 @@ and this project adheres to
 
 ### Fixed
 
+- **Auto-stamped `generated.by` names the library version, not the spec version
+  (#257, §7).** The actor this library writes when it stamps `generated` itself
+  (`okf_write_concept`'s opt-in auto-stamp, `OkfContextProvider`'s memory
+  concepts) was `okf4net/0.2`, the OKF spec version. §7 spells a tool's actor
+  `<producer>/<version>`, the producer's own version, so it is now
+  `okf4net/<library version>` (e.g. `okf4net/0.8.0`): the `OKF4net` assembly's
+  informational version without its `+<commit>` build metadata. Content written
+  before keeps its `okf4net/0.2` stamp; both are well-formed §7 actors. The
+  `okf` and `okf-render` `--version` read their version through the same
+  internal reader (output unchanged).
+
 - **`okf-mcp` returns tool results as plain text (#255).** Every
   `tools/call` result used to arrive as a JSON string literal — surrounding
   quotes, `\n` and `\"` escapes — because `AIFunctionFactory` marshals a
@@ -1140,6 +1151,7 @@ and this project adheres to
   string itself, so `content[0].text` is exactly what the tool returned
   (an `Error: …` result included, still as text). The tools bound are
   unchanged: the observation-checking wrappers of `GetTools(mode)` still run.
+
 - **`okf_verify` over a read-only provider throws `BundleReadOnlyException`
   like the other write tools (#218).** `OkfBundleTools.Verify` / `VerifyAsync`
   used to return `Error: the provider is read-only; …` as text; a direct call
