@@ -257,6 +257,32 @@ fichier de même nom que le projet. Reste hors de portée : un répertoire de
 bundle qui contient le projet dans un sous-répertoire, atteint par une écriture
 que MSBuild ne normalise pas.
 
+Revue Copilot de #237 (2026-11-18), trois ajustements. (1) La comparaison des
+chemins ignorait la casse partout sauf sous Linux, choix fait par OS : un
+volume macOS sensible à la casse ou un répertoire Windows marqué ainsi
+(`fsutil file setCaseSensitiveInfo`) tient `Knowledge/` à côté de `knowledge/`,
+et un bundle `Knowledge/` retirait `knowledge/Lost.cs` de la compilation. Le
+choix se fait désormais par bundle, en demandant au système de fichiers : le
+répertoire « replie » la casse s'il est atteint écrit tout en majuscules et tout
+en minuscules (métadonnée `OkfFold` de `_OkfRoot`). (2) MSBuild compare les
+chemins d'items sans la casse sur tous les OS — dans un `Remove`, et dans le
+découpage en lots sur `%(FullPath)`, qui décide `Knowledge/x.cs` et
+`knowledge/x.cs` ensemble d'après le premier venu : selon l'ordre, les deux
+étaient retirés, ou les deux gardés (le fichier du bundle compilé sans
+`OKFEMB006`). `MatchOnMetadata` n'y change rien (essayé) et une transformation
+n'évalue pas une fonction de propriété par item (essayé) : aucune opération
+d'item ne les sépare. Un tel couple près d'un répertoire de bundle qui les
+distingue est donc **refusé** (`OKFEMB010`), au retrait comme dans chaque
+contrôle ultérieur ; sans lui, chaque lot ne tient qu'un chemin et le test exact
+est exact. Avec les items par défaut du SDK, `NETSDK1022` (qui ignore aussi la
+casse) refuse le couple avant. (3) Les contrôles autour de `CoreCompile`
+exemptaient les ressources du paquet par `Remove="@(_OkfFile)"`, une
+correspondance d'identité : un `Compile` ajouté tard avec un chemin absolu
+partage cette identité et sortait des violations, compilé dans l'hôte. Les
+ressources du paquet portent maintenant `OkfOwned="true"` et seules les
+`EmbeddedResource` ainsi marquées sont exemptées ; tout `Compile` reste une
+violation.
+
 Décision du 2026-11-15 (option B de la revue des deux points ouverts). `OKFEMB008` : un FIFO,
 un périphérique ou une socket se lit comme un fichier ordinaire (attributs « Normal ») et
 bloque le build ; hors Windows, un `Exec` de `find -type p/c/b/s` (stat seul, sans ouvrir) le
@@ -341,6 +367,7 @@ commentaire.
 | `OKFEMB007` | Le répertoire du bundle est, ou contient, le répertoire du projet (il embarquerait `obj/`, `bin/` et les fichiers du projet). |
 | `OKFEMB008` | Un FIFO, un périphérique ou une socket sous le répertoire du bundle (hors Windows) : MSBuild le lit comme un fichier ordinaire et le build se bloquerait. |
 | `OKFEMB009` | Hors Windows, `find` n'a pas pu inspecter le répertoire du bundle (absent du `PATH`, sous-répertoire illisible, tout échec) : le contrôle échoue fermé. |
+| `OKFEMB010` | Près d'un répertoire de bundle sensible à la casse, deux items `Compile`, `Content`, `EmbeddedResource`, `Page`, `ApplicationDefinition` ou `Resource` dont les chemins ne diffèrent que par la casse : MSBuild ne sait pas retirer ou contrôler l'un sans l'autre. |
 
 ### 5.6 Emballage
 
