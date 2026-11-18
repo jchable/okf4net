@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using Amazon.Runtime;
 using Amazon.S3;
+using Amazon.S3.Model;
 using OKF4net.Providers.S3.Internal;
 
 namespace OKF4net.Providers.S3;
@@ -25,6 +27,11 @@ public sealed class S3BundleProvider : IBundleProvider, IDisposable
     private readonly AmazonS3Client _client;
     private readonly HttpClient _http;
     private readonly ListingWalker _walker;
+    private readonly OperationGate _gate;
+    private readonly CredentialResolver _credentials;
+
+    /// <summary>Cancelled by <see cref="Dispose"/>, linked into every operation (never disposed itself: it holds no timer nor wait handle).</summary>
+    private readonly CancellationTokenSource _disposal = new();
     private int _disposed;
 
     /// <summary>Serves the bundle <paramref name="source"/> names, reading with <paramref name="credentials"/>. No I/O.</summary>
@@ -44,8 +51,9 @@ public sealed class S3BundleProvider : IBundleProvider, IDisposable
         _source = SourceRules.Normalize(source);
         _plan = AddressingPlan.For(_source);
         _client = ClientBuilder.Build(new SnapshotCredentials(), _source, network, out _http);
-        var gate = new OperationGate(_source.MaxConcurrentRequests, time ?? TimeProvider.System);
-        _walker = new ListingWalker(_client, _source.Bucket, gate, new CredentialResolver(credentials));
+        _gate = new OperationGate(_source.MaxConcurrentRequests, time ?? TimeProvider.System, _disposal.Token);
+        _credentials = new CredentialResolver(credentials);
+        _walker = new ListingWalker(_client, _source.Bucket, _gate, _credentials);
         Id = _source.Id;
         Location = _source.Location;
     }
@@ -130,9 +138,146 @@ public sealed class S3BundleProvider : IBundleProvider, IDisposable
         return false;
     }
 
-    /// <inheritdoc/>
-    public ValueTask<BundleObject> ReadAsync(BundleKey key, BundleObjectVersion? expected, CancellationToken ct) =>
-        ValueTask.FromException<BundleObject>(new NotImplementedException("Task 8"));
+    /// <summary>
+    /// One GetObject without condition (spec §4.3, D8), as one operation: a permit, the deadline of
+    /// <see cref="S3BundleSource.RequestTimeout"/> from the call to the end of the body and of its release, a
+    /// credentials snapshot. A declared Content-Length past <see cref="S3BundleSource.MaxObjectBytes"/> is refused
+    /// before the body is read; otherwise the body is read whole into one buffer (sized by Content-Length, grown
+    /// against the same bound without it), never more than the bound + 1 bytes, then hashed: the version is the
+    /// lowercase hex SHA-256 of the bytes, the filesystem provider's format. <paramref name="expected"/> is compared
+    /// with that hash, never with an ETag, and no conditional header is sent. The object's stream is a read-only
+    /// <see cref="MemoryStream"/> over that buffer, without a copy, and its <see cref="BundleObject.Length"/> is exact.
+    /// </summary>
+    /// <exception cref="BundleObjectNotFoundException">404 NoSuchKey.</exception>
+    /// <exception cref="BundleAccessRefusedException">403 AccessDenied.</exception>
+    /// <exception cref="BundleVersionMismatchException">The bytes read are not <paramref name="expected"/>.</exception>
+    /// <exception cref="BundleObjectTooLargeException">The object is larger than <see cref="S3BundleSource.MaxObjectBytes"/>.</exception>
+    /// <exception cref="S3RequestException">Any other failure (spec §4.6), the provider disposed included.</exception>
+    /// <exception cref="OperationCanceledException">The caller cancelled; it carries <paramref name="ct"/>.</exception>
+    public async ValueTask<BundleObject> ReadAsync(BundleKey key, BundleObjectVersion? expected, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        ThrowIfDisposed(S3Operation.Read);
+        var s3Key = _plan.S3Key(key);
+        ArraySegment<byte> bytes = default;
+        var scope = await _gate.EnterAsync(S3Operation.Read, OperationTimeout(_source.RequestTimeout, null), ct, key).ConfigureAwait(false);
+        await using (scope.ConfigureAwait(false))
+        {
+            GetObjectResponse? response = null;
+            Exception? failure = null;
+            try
+            {
+                // Resolved BEFORE the operation context exists: the host's call runs isolated on the pool, and Task.Run
+                // flows the ExecutionContext — a context set first would reach the host's code.
+                var snapshot = await _credentials.ResolveAsync(scope).ConfigureAwait(false);
+                OperationContext.Current.Value = new OperationContext(S3Operation.Read) { ExpectedObjectS3Key = s3Key, Credentials = snapshot };
+                response = await _client.GetObjectAsync(new GetObjectRequest { BucketName = _source.Bucket, Key = s3Key }, scope.Token).ConfigureAwait(false);
+                var declared = response.ContentLength;
+                if (declared > _source.MaxObjectBytes)
+                {
+                    throw new BundleObjectTooLargeException(key, declared, _source.MaxObjectBytes);
+                }
+
+                // A body that ignores the token: cancelling may not unblock the SDK's stream (gate G7), disposing the
+                // response does. The callback never throws; the read it interrupts is classified by scope.Fail (the
+                // deadline's Timeout, the caller's cancellation, the provider's Disposed).
+                using var abort = scope.Token.Register(static r => DisposeQuietly((IDisposable)r!), response);
+                bytes = await ReadAllAsync(response.ResponseStream, declared, key, scope.Token).ConfigureAwait(false);
+                if (declared > 0 && bytes.Count < declared)
+                {
+                    // Shorter than its framing (HttpClient reports this itself on the wire): a transport failure.
+                    throw new IOException("the body ended before its declared length");
+                }
+            }
+            catch (Exception e) when (e is not OutOfMemoryException)
+            {
+                failure = scope.Fail(e); // first, before any cleanup: the caller's cancellation is sampled now
+            }
+            finally
+            {
+                if (response is not null)
+                {
+                    try
+                    {
+                        response.Dispose(); // the SDK may verify a checksum here
+                    }
+                    catch (Exception e) when (e is not OutOfMemoryException)
+                    {
+                        failure = scope.Fail(e); // the first failure when there was one; this one, classified, otherwise
+                    }
+                }
+
+                OperationContext.Current.Value = null;
+            }
+
+            if (failure is not null)
+            {
+                throw failure;
+            }
+        }
+
+        var version = new BundleObjectVersion(Convert.ToHexStringLower(SHA256.HashData(bytes.AsSpan())));
+        if (expected is { } wanted && wanted != version)
+        {
+            throw new BundleVersionMismatchException(key);
+        }
+
+        return new BundleObject(new MemoryStream(bytes.Array!, bytes.Offset, bytes.Count, writable: false), version, bytes.Count);
+    }
+
+    /// <summary>
+    /// Reads the whole body into one buffer, never holding more than MaxObjectBytes nor allocating past it: the buffer
+    /// starts at Content-Length when known (at most max), else at min(80 KiB, max), and doubles up to max; reads go into
+    /// its free space only, and when it is full ONE probe byte, read into a separate array, tells the end from an excess
+    /// (spec §4.3) — so at most max + 1 bytes are ever read, and max may be Array.MaxLength itself.
+    /// </summary>
+    private async Task<ArraySegment<byte>> ReadAllAsync(Stream body, long declared, BundleKey key, CancellationToken ct)
+    {
+        var max = (int)_source.MaxObjectBytes; // at most Array.MaxLength (SourceRules)
+        var buffer = new byte[declared > 0 ? (int)declared : Math.Min(81920, max)];
+        var probe = new byte[1];
+        var total = 0;
+        while (true)
+        {
+            if (total == buffer.Length)
+            {
+                var p = await body.ReadAsync(probe, ct).ConfigureAwait(false);
+                if (p == 0)
+                {
+                    return new ArraySegment<byte>(buffer, 0, total);
+                }
+
+                if (total == max)
+                {
+                    throw new BundleObjectTooLargeException(key, (long)total + 1, max);
+                }
+
+                Array.Resize(ref buffer, (int)Math.Min((long)buffer.Length * 2, max));
+                buffer[total++] = probe[0];
+                continue;
+            }
+
+            var n = await body.ReadAsync(buffer.AsMemory(total), ct).ConfigureAwait(false);
+            if (n == 0)
+            {
+                return new ArraySegment<byte>(buffer, 0, total);
+            }
+
+            total += n;
+        }
+    }
+
+    private static void DisposeQuietly(IDisposable d)
+    {
+        try
+        {
+            d.Dispose();
+        }
+        catch (Exception e) when (e is not OutOfMemoryException)
+        {
+            // A cancellation callback never throws; the interrupted read reports the outcome.
+        }
+    }
 
     /// <inheritdoc/>
     public ValueTask<BundleObjectVersion> WriteAsync(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition, CancellationToken ct) =>
@@ -142,11 +287,25 @@ public sealed class S3BundleProvider : IBundleProvider, IDisposable
     public ValueTask DeleteAsync(BundleKey key, BundleWriteCondition condition, CancellationToken ct) =>
         ValueTask.FromException(new BundleReadOnlyException(Id));
 
-    /// <summary>Releases, once, the S3 client and the HttpClient this provider built.</summary>
+    /// <summary>
+    /// Releases, once, the S3 client and the HttpClient this provider built. An operation in flight is interrupted
+    /// first (its permit wait, its credentials wait, its request, its body) and fails as
+    /// <see cref="S3FailureKind.Disposed"/>, like every later call.
+    /// </summary>
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) == 0)
         {
+            try
+            {
+                _disposal.Cancel();
+            }
+            catch (AggregateException)
+            {
+                // A callback registered on an operation's token threw: the operations are interrupted all the same, and
+                // the release below must still happen.
+            }
+
             _client.Dispose();
             _http.Dispose();
         }

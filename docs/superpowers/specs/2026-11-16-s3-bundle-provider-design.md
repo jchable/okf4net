@@ -346,7 +346,8 @@ UTF-16).
 
 ### 4.6 Traduction des erreurs (D7) et bornes de transport
 
-**Classement, par une table fermée** (statut HTTP et code S3 reconnu ; tout
+**Classement, par une table fermée** (statut HTTP et code S3 reconnu, **par
+couples** : un code ne compte qu'avec le statut sous lequel S3 l'envoie ; tout
 autre couple tombe dans la ligne de son statut) :
 
 | Origine | Devient |
@@ -355,8 +356,8 @@ autre couple tombe dans la ligne de son statut) :
 | 403 `AccessDenied` sur `GetObject` | `BundleAccessRefusedException(key, "access denied")` |
 | octets lus différents d'`expected` | `BundleVersionMismatchException(key)` |
 | `Content-Length` ou octets lus au-delà de `MaxObjectBytes` | `BundleObjectTooLargeException` |
-| 403 `InvalidAccessKeyId`, `SignatureDoesNotMatch`, `ExpiredToken`, `InvalidToken`, `TokenRefreshRequired` ; échec du fournisseur d'identifiants | `S3RequestException` (`Credentials`) |
-| 404 `NoSuchBucket`, 301/400 de région, `PermanentRedirect` | `S3RequestException` (`BucketUnavailable`) |
+| 403 `InvalidAccessKeyId`, `SignatureDoesNotMatch` ; 403 **ou 400** `ExpiredToken`, `InvalidToken`, `TokenRefreshRequired` (S3 a envoyé les deux statuts ; précision de la tâche 8 du plan) ; échec du fournisseur d'identifiants | `S3RequestException` (`Credentials`) |
+| 404 `NoSuchBucket` ; 301 `PermanentRedirect`, ou 301 sans corps (le SDK nomme alors l'erreur d'après le statut, `MovedPermanently`, mesuré sur 4.1.0) ; 400 `AuthorizationHeaderMalformed`, `IllegalLocationConstraintException` | `S3RequestException` (`BucketUnavailable`) |
 | 503 `SlowDown`, 429 | `S3RequestException` (`Throttled`) |
 | autre 5xx | `S3RequestException` (`ServerError`) |
 | autre 4xx (403 et 404 aux codes non reconnus compris) | `S3RequestException` (`ClientError`) |
@@ -365,7 +366,7 @@ autre couple tombe dans la ligne de son statut) :
 | délai dépassé | `S3RequestException` (`Timeout`) |
 | refus du garde | `S3RequestException` (`RefusedHost`) |
 | incohérence de §4.3, XML indécodable, réponse au-delà d'une borne de transport | `S3RequestException` (`InvalidResponse`) |
-| checksum de réponse faux | `S3RequestException` (`Integrity`) |
+| checksum de réponse faux ; ETag MD5 simple (sans `-<parts>`) qui ne correspond pas aux octets — le SDK le vérifie lui-même à la lecture (mesuré sur 4.1.0, tâche 8) | `S3RequestException` (`Integrity`) |
 | `HttpRequestException`, `IOException`, `AmazonClientException` d'une autre nature, `InvalidOperationException`, `ArgumentException` du gestionnaire de redirection — **avant les en-têtes, pendant le corps ou à la libération** | `S3RequestException` (`Transport`) |
 | provider libéré | `S3RequestException` (`Disposed`) |
 | annulation par le jeton de l'appelant ; `OutOfMemoryException` | propagées telles quelles |
@@ -490,7 +491,7 @@ unique (§4.2).
 | Bornes de transport | lecture bornée : une page de 8 Mio passe, 8 Mio + 1 échoue, et le handler n'a jamais lu plus de `B + 1` octets du corps d'origine, avec et sans `Content-Length` ; désérialisation non commencée : le corps d'origine est un flux témoin qui enregistre ses lecteurs, et le SDK n'en reçoit jamais la référence (une réponse rejetée ne parvient pas au SDK : aucun appel de son démarshalleur, observé par un compteur dans le handler de test placé sous le SDK) ; une erreur `GetObject` de 64 Kio + 1 et un jeton de 1 025 octets échouent de même |
 | Pagination et borne | plus de 1 000 objets sur plusieurs pages ; **beaucoup de petites pages valides** (pages de 1 à 100 clés, `MaxEntries = 1000`) sont acceptées tant que la borne d'entrées ne l'est pas ; une borne d'entrées atteinte arrête le listing et le libère |
 | `ExistsAsync` | correspondance exacte (`a.md` contre `a.md.bak`), `false` sur absence, `S3RequestException` sur refus |
-| Lecture | version = SHA-256 hex minuscule des octets (égale à celle du filesystem pour les mêmes octets) ; `expected` différent → `VersionMismatch` ; d'autres octets sous le même ETag → `VersionMismatch` ; `Content-Length` trop grand refusé sans lire le corps ; corps plus long que son `Content-Length` refusé à la borne ; flux rendu en lecture seule, sans copie |
+| Lecture | version = SHA-256 hex minuscule des octets (égale à celle du filesystem pour les mêmes octets) ; `expected` différent → `VersionMismatch` ; d'autres octets sous le même ETag → `VersionMismatch` (ETag multipart ; un ETag MD5 simple est refusé avant par le SDK, `Integrity`, §4.6) ; `Content-Length` trop grand refusé sans lire le corps ; corps plus long que son `Content-Length` refusé à la borne ; flux rendu en lecture seule, sans copie |
 | Classement des erreurs | une ligne de la table de §4.6 par test, **par le vrai pipeline du SDK**, injectée avant les en-têtes, pendant le corps et à la libération, dont 302, 308, 307 sans `Location` et un statut 4xx/5xx inconnu (règle terminale) ; une panne d'identifiants pendant le relevé des ressources exécutables fait échouer le chargement (jamais `Unsafe`) |
 | Priorité des échecs | matrice de doubles échecs (borne puis annulation, annulation puis échec de libération, checksum faux puis délai, `OperationCanceledException` venue des identifiants sans annulation de l'appelant) : type, `Kind` et cause retenus selon §4.5 ; un checksum faux constaté **seul** à la fermeture : `Integrity` |
 | Messages | des valeurs sentinelles (bucket, endpoint, id de requête, URL, `\n`, U+2028) placées dans **chaque champ distant** (`<Code>`, `<Message>`, `<RequestId>`, `<HostId>`, `<Endpoint>`, `<Region>`, en-têtes) n'apparaissent dans aucun `Message` d'exception, ni dans les `Path` des diagnostics de validation, ni dans les diagnostics du catalogue |

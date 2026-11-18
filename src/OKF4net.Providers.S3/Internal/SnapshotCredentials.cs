@@ -21,9 +21,10 @@ internal sealed class CredentialResolver(AWSCredentials host)
 {
     /// <summary>
     /// Resolves, or throws an exception that is ALREADY final: an S3RequestException with Kind Credentials (a
-    /// failure, a null result, or the deadline reached while waiting), or the caller's OperationCanceledException.
-    /// It never calls <see cref="OperationScope.Fail"/>: the caller's catch passes that final exception to Fail
-    /// first, which keeps it as is (spec §4.5), so a credentials timeout reads Credentials through every member.
+    /// failure, a null result, or the deadline reached while waiting) or Disposed (the provider disposed while
+    /// waiting), or the caller's OperationCanceledException carrying the caller's own token. It never calls
+    /// <see cref="OperationScope.Fail"/>: the caller's catch passes that final exception to Fail first, which keeps
+    /// it as is (spec §4.5), so a credentials timeout reads Credentials through every member.
     /// </summary>
     public async Task<ImmutableCredentials> ResolveAsync(OperationScope scope)
     {
@@ -37,13 +38,16 @@ internal sealed class CredentialResolver(AWSCredentials host)
         }
         catch (OperationCanceledException e)
         {
+            // The caller's cancellation is sampled first, then the permit is tied to the abandoned call.
+            var callerCancelled = scope.CallerCancelled;
+            var disposed = scope.ProviderDisposed;
             scope.HoldPermitUntil(call);
-            if (scope.CallerCancelled)
+            if (callerCancelled)
             {
-                throw;
+                throw OperationScope.CallerCancellation(e, scope.CallerToken);
             }
 
-            throw new S3RequestException(scope.Operation, S3FailureKind.Credentials, null, scope.Key, e);
+            throw new S3RequestException(scope.Operation, disposed ? S3FailureKind.Disposed : S3FailureKind.Credentials, null, scope.Key, e);
         }
         catch (Exception e) when (e is not S3RequestException and not OutOfMemoryException)
         {

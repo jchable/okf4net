@@ -403,7 +403,7 @@ public class ListingWalkerTests
         Assert.Equal(["a//b.md", "bad" + U(1) + ".md", "ok.md"], await Names(p));
     }
 
-    [Fact(Skip = "Task 8: ReadAsync")]
+    [Fact]
     public async Task A_badly_named_but_well_transported_key_is_a_local_problem()
     {
         using var p = S3Test.Provider(S3Test.Serving(S3Test.Objects(("kb/bad" + U(1) + ".md", Note), ("kb/a//b.md", Note), ("kb/ok.md", Note))));
