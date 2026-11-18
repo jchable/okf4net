@@ -2420,10 +2420,11 @@ public sealed class OkfBundleTools
     /// body (<see cref="ModelTextBuilder.Fence"/>), so a line break inside a
     /// value -- the emitter writes it as a <c>\n</c> escape in a quoted scalar
     /// anyway -- cannot pass for another entry or for the tool's own text.
-    /// A mapping the emitter refuses (only possible past its size bounds, far
-    /// beyond any object the load admits) is reported on one line instead.
+    /// A mapping the emitter refuses (past its nesting or size bounds, which a
+    /// mapping the parser read cannot reach; only one built in code can) is
+    /// reported on one line instead. Internal as a test seam for that line.
     /// </summary>
-    private static void AppendFrontmatterBlock(ModelTextBuilder text, Frontmatter frontmatter)
+    internal static void AppendFrontmatterBlock(ModelTextBuilder text, Frontmatter frontmatter)
     {
         var map = frontmatter.AsMapping();
         if (map.IsEmpty)

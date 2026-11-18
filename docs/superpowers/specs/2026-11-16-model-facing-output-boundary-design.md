@@ -78,8 +78,21 @@ text.Block(BlockKind.ConceptBody, body);  // multi-line by design: explicit and 
 
 - Folding a hole needs no decision at the call site. Writing a raw value
   takes `Block`, which is visible in review and limited to a closed set of
-  multi-line kinds: a concept body, a computation source, a log day. Each kind
-  has its own delimiting rule.
+  multi-line kinds: a concept body, a computation source, a log day, and a
+  concept's frontmatter. Each kind has its own delimiting rule.
+
+  *Amendment (#256, 2026-11-18):* `BlockKind.Frontmatter` joins the set.
+  `okf_read_concept` used to print the frontmatter as folded `key: value`
+  lines, which flattened nested values, so copying them back into
+  `okf_write_concept` lost the §5.2 `generated`/`verified` structure. It now
+  shows the frontmatter as one fenced `yaml` block written by `YamlEmitter`,
+  which parses back to the stored mapping. Frontmatter values are therefore
+  **raw by design inside that fence**, like the body: invisible and bidi
+  controls and U+2028/U+2029 are no longer folded there (the emitter escapes
+  only C0 controls inside a quoted scalar). A line break in a value cannot
+  forge an entry, since the emitter writes it as a `\n` escape in a quoted
+  scalar, and the fence cannot be closed from inside. Whether to escape those
+  characters further is left to a separate decision.
 - A `Block` is delimited so that its content cannot close it. This covers the
   concept body in `okf_read_concept`, which has no delimiter today. It also
   covers the context provider's `<okf-context>` element, where a literal
@@ -107,7 +120,11 @@ orchestrator double:
 - every string argument receives the same forged payloads;
 - it asserts that no output line outside a declared `Block` starts with a
   forged marker, and that no bidi control or stray C0/C1 control appears
-  outside blocks;
+  outside blocks. Since #256 a concept's frontmatter, titles, descriptions and
+  tags included, is shown in `okf_read_concept` inside its `yaml` block, so
+  there it is checked as block content (one block that its content cannot
+  close). Outside that read (the H1 title, search and browse lines, the
+  context provider's titles) those values are still holes, checked as above;
 - the tool list is a **closed inventory**, like `ObsoleteMembersTests`. A
   tool that `GetTools()` adds without a hostile-argument entry fails the test
   by name. The context provider has the same test over its injected blocks.

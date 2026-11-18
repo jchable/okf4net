@@ -1141,7 +1141,12 @@ and this project adheres to
   one fenced `yaml` block written by `YamlEmitter`, which parses back to the
   stored mapping and can be passed to `okf_write_concept` as is. The
   `OkfContextProvider` injection, which embeds the same rendering, changes
-  with it. Model-facing text only: no CLI output (golden) moves.
+  with it, but its element content is HTML-escaped (`&amp;`, `&lt;`), so YAML
+  copied from injected context is not a round-trippable source: re-read the
+  concept with `okf_read_concept` before writing it. Frontmatter values are
+  shown raw inside the fence, like the body (invisible and bidi controls and
+  U+2028/U+2029 are no longer folded there). Model-facing text only: no CLI
+  output (golden) moves.
 - **`okf_verify` over a read-only provider throws `BundleReadOnlyException`
   like the other write tools (#218).** `OkfBundleTools.Verify` / `VerifyAsync`
   used to return `Error: the provider is read-only; …` as text; a direct call

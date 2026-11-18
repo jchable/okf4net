@@ -5,10 +5,12 @@ using System.Text.RegularExpressions;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using OKF4net.Agents;
+using OKF4net.Agents.Internal;
 using OKF4net.Attestation;
 using OKF4net.Catalog;
 using OKF4net.Providers;
 using OKF4net.Tests.Attestation;
+using OKF4net.Yaml;
 
 namespace OKF4net.Tests.Agents;
 
@@ -373,6 +375,70 @@ public class ModelFacingBoundaryTests
 
         Assert.True(failures.Count == 0, $"{failures.Count} finding(s):\n" + string.Join("\n", failures) + "\n--- message ---\n" + message);
         Assert.Contains("&lt;/okf-context>", message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #256 over the hostile fixture: for every concept whose frontmatter is
+    /// built to forge (every terminator, block markers, bidi controls and fence
+    /// runs, in keys and values), the read shows exactly one <c>yaml</c> block,
+    /// and that block parses back to the stored frontmatter with the same
+    /// number of top-level entries: no value forged an entry, and none was
+    /// lost or reshaped.
+    /// </summary>
+    [Theory]
+    [InlineData("h/hostile")]
+    [InlineData("h/keys")]
+    [InlineData("h/verified")]
+    [InlineData("t/table")]
+    [InlineData("t/ref")]
+    [InlineData("c/inline")]
+    [InlineData("c/missing")]
+    public async Task A_hostile_frontmatter_round_trips_through_the_read(string conceptId)
+    {
+        using var tmp = new TempDir();
+        var fixture = HostileFixture.Create(tmp);
+
+        var output = await fixture.Tools.ReadConceptTool(conceptId);
+        var stored = (await fixture.Tools.Handle.GetCurrentAsync(CancellationToken.None))
+            .Get(ConceptId.Parse(conceptId))!.Document.Frontmatter.AsMapping();
+
+        var lines = output.Split('\n');
+        var openings = lines.Select((l, i) => (l, i)).Where(p => p.l.StartsWith("```", StringComparison.Ordinal) && p.l.TrimStart('`') == "yaml").ToList();
+        var (fence, start) = Assert.Single(openings);
+        fence = fence[..^"yaml".Length];
+        var end = Array.FindIndex(lines, start + 1, l => l == fence);
+        Assert.True(end > start, "the yaml block is never closed:\n" + output);
+        var shown = string.Join("\n", lines[(start + 1)..end]) + "\n";
+
+        var parsed = Assert.IsType<YamlMapping>(YamlParser.Parse(shown));
+        Assert.Equal(stored.Count, parsed.Count);
+        Assert.True(stored.Equals(parsed), "the shown frontmatter does not parse back to the stored one:\n" + shown);
+    }
+
+    /// <summary>
+    /// A mapping the emitter refuses (here, nested past the parser's rule,
+    /// which only a value built in code can be) is reported on one folded line,
+    /// with no block opened.
+    /// </summary>
+    [Fact]
+    public void A_frontmatter_the_emitter_refuses_is_reported_on_one_line()
+    {
+        var root = new YamlMapping();
+        var current = root;
+        for (var i = 0; i < 1100; i++)
+        {
+            var next = new YamlMapping();
+            current.Insert("k", next);
+            current = next;
+        }
+
+        var text = new ModelTextBuilder();
+        OkfBundleTools.AppendFrontmatterBlock(text, Frontmatter.FromMapping(root));
+        var output = text.ToString();
+
+        Assert.StartsWith("(frontmatter not shown: ", output, StringComparison.Ordinal);
+        Assert.Equal(2, output.Count(c => c == '\n')); // the line, then a blank line
+        Assert.DoesNotContain("```", output, StringComparison.Ordinal);
     }
 
     /// <summary>
