@@ -23,6 +23,16 @@ and this project adheres to
   `initialize`, `tools/list` and `tools/call` over stdio. Every snippet and
   command was run to produce the output shown; the steps that need a model
   say so. Linked from the README.
+
+- **`samples/second-brain`, a read-write `okf-mcp` sample (#160).** A starter
+  personal-notes bundle served writable in Claude Desktop, with the
+  `claude_desktop_config.json` for Windows and macOS (installed tool or from
+  the repository), example prompts, and `smoke.cs`, a .NET 10 file-based app
+  that drives `okf-mcp` over stdio on a copy of the bundle and checks the
+  disk. It documents that `okf_write_concept` updates neither `index.md` nor
+  `log.md`, which change only through `okf_regenerate_indexes` and
+  `okf_append_log`.
+
 - **`samples/agents-handoff`**, an `OKF4net.Agents` sample of two agents
   sharing one bundle, with no LLM endpoint, API key or network access (#159).
   Over a temporary copy of `bundles/ga4`, a curator agent with the read-write
@@ -1154,6 +1164,16 @@ and this project adheres to
   content the file no longer holds.
 
 ### Fixed
+
+- **A `generated` that is not a mapping is now reported (#271).** §5.2 makes
+  `generated` a `{ by, at }` mapping; a scalar (e.g. `generated: "by: human:me
+  at: …"`) or a list was read as no provenance at all and `okf validate` said
+  nothing. It is now the Warning `generated must be a \`{by, at}\` mapping`,
+  with the new `DiagnosticCode.GeneratedMalformed` (appended to the enum, field
+  `generated`), the counterpart of `VerifiedMalformed`; the bundle stays
+  conformant. An explicit null (`generated:`) is not reported, like `verified:`.
+  A mapping without a usable `by` was already reported (`GeneratedMissingBy`,
+  or `GeneratedInvalidActor` for an empty one) and is unchanged.
 
 - **`okf_read_concept` shows frontmatter as YAML that round-trips (#256).**
   It used to print one folded `key: value` line per entry, flattening nested
