@@ -425,8 +425,10 @@ mais illisible ne retombe pas sur `timestamp`, et `reviewOutdated` vaut alors
 (`unverified`) qui le signale.
 
 **Troncature.** Un « élément tronqué » fait **au plus 200 points de code,
-ellipse comprise** : au-delà, on garde les 199 premiers et on ajoute `…`. C'est
-la règle des descriptions du site index du viewer. Elle s'applique à chaque
+ellipse comprise** : au-delà, on garde les 199 premiers, on retire les espaces
+finaux et on ajoute `…`. C'est la coupe des descriptions du site index du
+viewer, **extraite dans le cœur et partagée** (le viewer y ajoute, avant, son
+propre repli des espaces, que l'export n'applique pas). Elle s'applique à chaque
 élément de `headings`, et à la **copie** du titre (ou de l'id) dans l'en-tête
 de `embedText`. Le champ JSON `title` reste **intégral**, comme les autres
 métadonnées du concept (§4.3, §8). `text` n'est jamais tronqué.
