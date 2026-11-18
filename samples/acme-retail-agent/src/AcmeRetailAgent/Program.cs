@@ -44,11 +44,11 @@ var agentOptions = new ChatClientAgentOptions
     ChatOptions = new ChatOptions
     {
         Instructions = SystemInstructions,
-        // Read-only by construction, not just by documentation: the same
-        // OkfBundleTools.WriteToolNames set OkfMcpToolset filters on for its
-        // --readonly flag is filtered here too, so the agent can never
-        // mutate the byte-exact, license-attributed upstream copy.
-        Tools = [.. tools.GetTools().Where(t => !OkfBundleTools.WriteToolNames.Contains(t.Name))],
+        // Read-only by construction, not just by documentation:
+        // OkfToolMode.ReadOnly omits every write tool (OkfBundleTools.WriteToolNames),
+        // so the agent can never mutate the byte-exact, license-attributed
+        // upstream copy.
+        Tools = [.. tools.GetTools(OkfToolMode.ReadOnly)],
     },
     AIContextProviders = [contextProvider],
 };

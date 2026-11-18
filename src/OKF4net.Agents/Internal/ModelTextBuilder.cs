@@ -31,6 +31,14 @@ internal enum BlockKind
     /// the file can neither pass for the tool's own text nor leave a fence open.
     /// </summary>
     IndexText,
+
+    /// <summary>
+    /// A concept's frontmatter (<c>okf_read_concept</c>), written by
+    /// <c>YamlEmitter</c> so that it parses back to the stored mapping and can
+    /// be passed as is to <c>okf_write_concept</c> (#256): info string
+    /// <c>yaml</c>.
+    /// </summary>
+    Frontmatter,
 }
 
 /// <summary>
@@ -67,6 +75,7 @@ internal enum BlockKind
 internal sealed class ModelTextBuilder
 {
     private const string MarkdownInfo = "markdown";
+    private const string YamlInfo = "yaml";
     private const char Backslash = (char)92;
 
     /// <summary>
@@ -157,6 +166,7 @@ internal sealed class ModelTextBuilder
         {
             BlockKind.ConceptBody or BlockKind.IndexText => MarkdownInfo,
             BlockKind.ComputationSource => string.Empty,
+            BlockKind.Frontmatter => YamlInfo,
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "not a block kind"),
         };
 

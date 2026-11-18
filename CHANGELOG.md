@@ -10,10 +10,45 @@ and this project adheres to
 
 ### Added
 
+- **Two end-to-end tutorials under `docs/tutorials/`** (#174).
+  [`library-users.md`](docs/tutorials/library-users.md) writes, indexes, loads
+  and validates a bundle through the asynchronous provider API
+  (`FileSystemBundleProvider`, `BundleConceptWriter`, `IndexGenerator`,
+  `Bundle.LoadAsync`, `BundleValidator`, `ChangeLog`) and checks it with
+  `okf validate`/`info`/`graph`/`verify`/`audit`;
+  [`agent-builders.md`](docs/tutorials/agent-builders.md) exposes a bundle
+  through `OKF4net.Agents` (a shared `BundleHandle`, `OkfToolMode`,
+  `OkfContextProvider`, a write behind host approval) with a scripted
+  `IChatClient`, and through `okf-mcp`, with a Node script that checks
+  `initialize`, `tools/list` and `tools/call` over stdio. Every snippet and
+  command was run to produce the output shown; the steps that need a model
+  say so. Linked from the README.
+
+- **`samples/second-brain`, a read-write `okf-mcp` sample (#160).** A starter
+  personal-notes bundle served writable in Claude Desktop, with the
+  `claude_desktop_config.json` for Windows and macOS (installed tool or from
+  the repository), example prompts, and `smoke.cs`, a .NET 10 file-based app
+  that drives `okf-mcp` over stdio on a copy of the bundle and checks the
+  disk. It documents that `okf_write_concept` updates neither `index.md` nor
+  `log.md`, which change only through `okf_regenerate_indexes` and
+  `okf_append_log`.
+
+- **`samples/agents-handoff`**, an `OKF4net.Agents` sample of two agents
+  sharing one bundle, with no LLM endpoint, API key or network access (#159).
+  Over a temporary copy of `bundles/ga4`, a curator agent with the read-write
+  tools writes a note (meeting `okf_write_concept`'s read-before-write gate on
+  the way) and a reader agent with the read-only tools and an
+  `OkfContextProvider` finds it in its injected context, because both tool sets
+  share one `BundleHandle`; a consumer with its own `OnAccess` handle sees the
+  change by itself, one with its own `Manual` handle only after
+  `RefreshAsync`. Standalone solution, not part of `OKF4net.sln` or CI.
+
 - **Allowlist of sanctioned-code digests for attested computations (#154).**
   `AttestationOrchestratorOptions` (`Clock`, `DefaultPolicy`,
-  `AllowedCodeDigests`) and a new `AttestationOrchestrator(runtimes, options)`
-  constructor; the existing constructor is unchanged.
+  `AllowedCodeDigests`) and a new `AttestationOrchestrator.Create(runtimes,
+  options)` factory; the existing constructor is unchanged, and
+  `new AttestationOrchestrator(runtimes, null)` still compiles (a constructor
+  overload taking the options would have made it ambiguous).
   - `AllowedCodeDigests` is `null` by default, which means no allowlist and no
     change. When set, a run whose computation (inline or file) or attester source
     is not in it is refused before any runtime stage.
@@ -67,7 +102,9 @@ and this project adheres to
   consumer can reproduce the comparison. The text lines are unchanged.
   Binary-breaking for a compiled caller of `AuditQuery`'s constructor (a new
   optional parameter); source-compatible, including the four-value
-  `Deconstruct`, which stays beside the generated five-value one.
+  `Deconstruct`, which stays beside the generated five-value one with the
+  generated parameter names (`StaleOnly`, `Trust`, `Status`, `Type`), so a
+  call with named arguments still compiles.
 
 - **Bundle provider seam (#139, lot A).** `OKF4net.Providers`: `IBundleProvider`
   and its value types, `BundleKey` with three-layer validation
@@ -282,7 +319,7 @@ and this project adheres to
   `OKF4net.Providers.EmbeddedResources`: the `OkfBundle` MSBuild item (a
   pure-MSBuild `.targets` shipped in the package) embeds a bundle directory one
   manifest resource per file, `okf:<prefix>/<path>`, refusing links and names an
-  assembly cannot hold (`OKFEMB001`–`OKFEMB009`), and
+  assembly cannot hold (`OKFEMB001`–`OKFEMB010`), and
   `EmbeddedResourceBundleProvider` serves it back read-only, synchronously,
   versioned by the assembly's MVID — Native AOT and single-file included.
 
@@ -1150,6 +1187,69 @@ and this project adheres to
     fence: a passage whose excerpt was 1,000 backticks could not fit a
     200-token budget even with its title alone. The fence is now sized from
     the part kept.
+
+- **A `generated` that is not a mapping is now reported (#271).** §5.2 makes
+  `generated` a `{ by, at }` mapping; a scalar (e.g. `generated: "by: human:me
+  at: …"`) or a list was read as no provenance at all and `okf validate` said
+  nothing. It is now the Warning `generated must be a \`{by, at}\` mapping`,
+  with the new `DiagnosticCode.GeneratedMalformed` (appended to the enum, field
+  `generated`), the counterpart of `VerifiedMalformed`; the bundle stays
+  conformant. An explicit null (`generated:`) is not reported, like `verified:`.
+  A mapping without a usable `by` was already reported (`GeneratedMissingBy`,
+  or `GeneratedInvalidActor` for an empty one) and is unchanged.
+
+- **`okf_read_concept` shows frontmatter as YAML that round-trips (#256).**
+  It used to print one folded `key: value` line per entry, flattening nested
+  values (`generated: { by: human:me, at: … }` came out as
+  `generated: by: human:me at: …`), so a model copying it back into
+  `okf_write_concept` stored `generated`, `verified`, `sources`, `attester`…
+  as plain strings and silently lost §5.2 provenance. The frontmatter is now
+  one fenced `yaml` block written by `YamlEmitter`, which parses back to the
+  stored mapping and can be passed to `okf_write_concept` as is. The
+  `OkfContextProvider` injection, which embeds the same rendering, changes
+  with it, but its element content is HTML-escaped (`&amp;`, `&lt;`), so YAML
+  copied from injected context is not a round-trippable source: re-read the
+  concept with `okf_read_concept` before writing it. Frontmatter values are
+  shown with invisible, bidi, separator and control characters escaped as
+  `\uXXXX` inside quoted scalars (C0 and C1 controls, NEL, soft hyphen, bidi
+  controls, zero-width characters, U+FEFF, U+2028/U+2029), which round-trips
+  exactly; astral tag characters (U+E0000 block) are the exception and stay
+  raw, since the YAML subset cannot escape them. Model-facing text only: what
+  is written to disk and every CLI output (golden) are unchanged.
+
+- **Appending to `log.md` keeps the frontmatter block the file opens with
+  (#258).** `BundleConceptWriter.AppendLog` / `AppendLogAsync` (and so
+  `okf_append_log`) re-render the log through the §9 model and used to drop a
+  leading frontmatter block, such as upstream `acme_retail`'s `type: Log`. The
+  block (a `---` fence at column 0 closed by the next one, around what
+  `OkfDocument.Parse` reads as a non-empty YAML mapping) is now written back
+  byte for byte, fences and line ends included, then a blank line and the log.
+  A log without one, and a log created by the append, are written exactly as
+  before. `ChangeLog.Parse` now skips that block, so a YAML comment in it is no
+  longer read as the log's title nor a `## ` line in it as a day (which the
+  validator reported as `LogDateInvalid`). A `---` thematic break around
+  anything else (invalid YAML, comments only, nothing) is not a block: the days
+  inside it are still read, validated and appended to.
+
+- **Auto-stamped `generated.by` names the library version, not the spec version
+  (#257, §7).** The actor this library writes when it stamps `generated` itself
+  (`okf_write_concept`'s opt-in auto-stamp, `OkfContextProvider`'s memory
+  concepts) was `okf4net/0.2`, the OKF spec version. §7 spells a tool's actor
+  `<producer>/<version>`, the producer's own version, so it is now
+  `okf4net/<library version>` (e.g. `okf4net/0.8.0`): the `OKF4net` assembly's
+  informational version without its `+<commit>` build metadata. Content written
+  before keeps its `okf4net/0.2` stamp; both are well-formed §7 actors. The
+  `okf` and `okf-render` `--version` read their version through the same
+  internal reader (output unchanged).
+
+- **`okf-mcp` returns tool results as plain text (#255).** Every
+  `tools/call` result used to arrive as a JSON string literal — surrounding
+  quotes, `\n` and `\"` escapes — because `AIFunctionFactory` marshals a
+  `string` return value to a `JsonElement`, which the MCP SDK serialises as
+  JSON instead of emitting as text. `OkfMcpToolset` now hands the SDK the
+  string itself, so `content[0].text` is exactly what the tool returned
+  (an `Error: …` result included, still as text). The tools bound are
+  unchanged: the observation-checking wrappers of `GetTools(mode)` still run.
 
 - **`okf_verify` over a read-only provider throws `BundleReadOnlyException`
   like the other write tools (#218).** `OkfBundleTools.Verify` / `VerifyAsync`

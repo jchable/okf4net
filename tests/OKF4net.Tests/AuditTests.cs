@@ -267,6 +267,20 @@ public class AuditTests
         Assert.True(reviewOutdated);
     }
 
+    /// <summary>The four-value deconstruction keeps the record-generated parameter names, so named arguments still compile.</summary>
+    [Fact]
+    public void Deconstruct_four_value_form_accepts_the_generated_parameter_names()
+    {
+        var query = new AuditQuery(StaleOnly: true, Status: ConceptStatus.Stable, Type: "Note");
+
+        query.Deconstruct(StaleOnly: out var stale, Trust: out var trust, Status: out var status, Type: out var type);
+
+        Assert.True(stale);
+        Assert.Null(trust);
+        Assert.Equal(ConceptStatus.Stable, status);
+        Assert.Equal("Note", type);
+    }
+
     /// <summary>
     /// #156: a review is outdated when the content's last change (§5.2 <c>generated.at</c>,
     /// §13.1 <c>timestamp</c> as fallback) is strictly later than the latest readable

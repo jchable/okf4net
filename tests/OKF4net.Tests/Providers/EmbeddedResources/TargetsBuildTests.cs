@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.ComponentModel;
+using System.Diagnostics;
+
 namespace OKF4net.Tests.Providers.EmbeddedResources;
 
 /// <summary>
@@ -296,6 +299,10 @@ public class TargetsBuildTests
     [Theory]
     [InlineData("""<Target Name="OkfTestLate" AfterTargets="PrepareResourceNames" BeforeTargets="CoreCompile"><ItemGroup><Compile Include="knowledge/x.cs" /></ItemGroup></Target>""")]
     [InlineData("""<Target Name="OkfTestLate" BeforeTargets="CoreCompile"><ItemGroup><Compile Include="knowledge/x.cs" /></ItemGroup></Target>""")]
+    // Copilot review of #237: an absolute Include has the identity of the package's own resource (_OkfFile), so
+    // exempting those by identity also dropped the Compile item from the violations and compiled it into the host.
+    [InlineData("""<Target Name="OkfTestLate" AfterTargets="PrepareResourceNames" BeforeTargets="CoreCompile"><ItemGroup><Compile Include="$([System.IO.Path]::Combine('$(MSBuildProjectDirectory)', 'knowledge', 'x.cs'))" /></ItemGroup></Target>""")]
+    [InlineData("""<Target Name="OkfTestLate" BeforeTargets="CoreCompile"><ItemGroup><Compile Include="$([System.IO.Path]::Combine('$(MSBuildProjectDirectory)', 'knowledge', 'x.cs'))" /></ItemGroup></Target>""")]
     public void Refuses_a_Compile_item_that_a_late_target_adds_back_before_compilation(string targetXml)
     {
         // External review, 2026-11-13: a target running after PrepareResourceNames, past the one check of the
@@ -330,16 +337,109 @@ public class TargetsBuildTests
     public void Detaches_by_exact_case_on_a_case_sensitive_file_system()
     {
         // Final review, 2026-11-13: the path comparison folded case on every OS, so on Linux a source in
-        // knowledge/ was dropped from the build because the bundle is Knowledge/.
-        Skip.IfNot(OperatingSystem.IsLinux(), "Only a case-sensitive file system tells the two directories apart.");
+        // knowledge/ was dropped from the build because the bundle is Knowledge/. Copilot review of #237: the same
+        // on any case-sensitive directory outside Linux (a macOS volume formatted so, a Windows directory marked
+        // so), while the comparison was chosen by OS rather than by the bundle directory's own behaviour.
         using var tmp = new TempDir();
-        tmp.Write("Knowledge/a.md", "a\n");
-        tmp.Write("knowledge/Lost.cs", "class LostType { }\n");
+        Skip.IfNot(TryCaseSensitiveDir(tmp, "src"), "This host cannot make a case-sensitive directory.");
+        tmp.Write("src/Knowledge/a.md", "a\n");
+        tmp.Write("src/knowledge/Lost.cs", "class LostType { }\n");
 
-        var result = EmbeddedBuild.Build(tmp.Path, """    <OkfBundle Include="Knowledge/" Prefix="kb" />""");
+        var result = EmbeddedBuild.Build(tmp.Path, """    <OkfBundle Include="src/Knowledge/" Prefix="kb" />""");
 
         Assert.True(result.ExitCode == 0, result.Output);
+        Assert.Equal(["okf:kb/a.md"], EmbeddedBuild.ReadOkfResources(result.AssemblyPath).Keys);
         Assert.Contains("LostType", EmbeddedBuild.ReadTypeNames(result.AssemblyPath));
+    }
+
+    [SkippableFact]
+    public void Refuses_a_source_that_differs_from_a_bundle_file_only_by_case()
+    {
+        // Copilot review of #237: MSBuild compares item paths ignoring case on every OS, in a Remove and in the
+        // batching of the selection, so Knowledge/x.cs and knowledge/x.cs were detached together, or kept together
+        // (bundle file compiled, no OKFEMB006) when knowledge/x.cs came first. No item operation tells them apart:
+        // the pair is refused. With the SDK's default items NETSDK1022 refuses it first (its duplicate check ignores
+        // case too); a glob of the project's own reaches the .targets.
+        using var tmp = new TempDir();
+        Skip.IfNot(TryCaseSensitiveDir(tmp, "src"), "This host cannot make a case-sensitive directory.");
+        tmp.Write("src/Knowledge/x.cs", "this is not C#\n");
+        tmp.Write("src/knowledge/x.cs", "class KeptType { }\n");
+
+        var result = EmbeddedBuild.Build(
+            tmp.Path,
+            """
+                <OkfBundle Include="src/Knowledge/" Prefix="kb" />
+                <Compile Include="src/**/*.cs" />
+            """,
+            extraPropertiesXml: "<EnableDefaultCompileItems>false</EnableDefaultCompileItems>");
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("OKFEMB010", result.Output, StringComparison.Ordinal);
+    }
+
+    [SkippableTheory]
+    [InlineData("""AfterTargets="PrepareResourceNames" BeforeTargets="CoreCompile" """)]
+    [InlineData("""BeforeTargets="CoreCompile" """)]
+    public void Refuses_a_late_bundle_file_that_differs_from_a_source_only_by_case(string hook)
+    {
+        // The same pair, the bundle's file added by a late target after src/knowledge/x.cs: batching decided both by
+        // the first, outside the bundle, and the bundle's code was compiled without OKFEMB006.
+        using var tmp = new TempDir();
+        Skip.IfNot(TryCaseSensitiveDir(tmp, "src"), "This host cannot make a case-sensitive directory.");
+        tmp.Write("src/Knowledge/x.cs", "class Late { }\n");
+        tmp.Write("src/knowledge/x.cs", "class KeptType { }\n");
+
+        var result = EmbeddedBuild.Build(
+            tmp.Path,
+            """
+                <OkfBundle Include="src/Knowledge/" Prefix="kb" />
+                <Compile Include="src/knowledge/x.cs" />
+            """,
+            directoryBuildTargetsXml: $"""<Project><Target Name="OkfTestLate" {hook}><ItemGroup><Compile Include="src/Knowledge/x.cs" /></ItemGroup></Target></Project>""",
+            extraPropertiesXml: "<EnableDefaultCompileItems>false</EnableDefaultCompileItems>");
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("OKFEMB010", result.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Creates <paramref name="relative"/> and tells whether it holds two names that differ only by case: always on
+    /// Linux, on a case-sensitive macOS volume, and on Windows once fsutil marked it (no elevation needed, but not
+    /// on every volume). Only that directory: the project beside it builds on the volume's own behaviour.
+    /// </summary>
+    private static bool TryCaseSensitiveDir(TempDir tmp, string relative)
+    {
+        var dir = Directory.CreateDirectory(Path.Combine(tmp.Path, relative)).FullName;
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                using var fsutil = Process.Start(new ProcessStartInfo("fsutil.exe", ["file", "setCaseSensitiveInfo", dir, "enable"])
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                })!;
+                fsutil.StandardOutput.ReadToEnd();
+                fsutil.StandardError.ReadToEnd();
+                fsutil.WaitForExit();
+            }
+            catch (Win32Exception)
+            {
+                return false;
+            }
+        }
+
+        Directory.CreateDirectory(Path.Combine(dir, "probe"));
+        Directory.CreateDirectory(Path.Combine(dir, "PROBE"));
+        var probes = Directory.GetDirectories(dir);
+        foreach (var probe in probes)
+        {
+            Directory.Delete(probe);
+        }
+
+        return probes.Length == 2;
     }
 
     [SkippableFact]

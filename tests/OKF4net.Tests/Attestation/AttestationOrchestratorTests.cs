@@ -52,6 +52,20 @@ public class AttestationOrchestratorTests
     }
 
     /// <summary>
+    /// Source compatibility (#246 review): the options are exposed through
+    /// <see cref="AttestationOrchestrator.Create"/>, not a constructor overload, so a positional
+    /// <c>null</c> or <c>default</c> second argument still binds to the clock and compiles.
+    /// </summary>
+    [Fact]
+    public void A_positional_null_or_default_second_argument_still_compiles()
+    {
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>());
+
+        Assert.NotNull(new AttestationOrchestrator(reg, null));
+        Assert.NotNull(new AttestationOrchestrator(reg, default));
+    }
+
+    /// <summary>
     /// The orchestrator handed its token to each host stage and then trusted
     /// them to observe it. A stage that ignores its token is not a hypothetical
     /// — it is any binder or executor whose underlying client predates

@@ -27,7 +27,7 @@ var provider = new EmbeddedResourceBundleProvider(typeof(App).Assembly, "kb");
 var bundle = await Bundle.LoadAsync(provider);
 ```
 
-The provider is read-only (every write throws `BundleReadOnlyException`), completes every operation synchronously (the library's synchronous entry points work), and versions everything by the assembly's MVID. `EmbeddedResourceBundleProvider.GetBundlePrefixes(assembly)` lists the bundles an assembly carries.
+The provider is read-only (`Capabilities.CanWrite` is `false`: every write or delete fails with `BundleReadOnlyException`, so `BundleConceptWriter` throws over it and `OkfBundleTools` in `OKF4net.Agents` offers no write tool), completes every operation synchronously (`Capabilities.CompletesSynchronously`: the library's synchronous members over a provider, `Bundle.ReadResourceText(BundleKey)` or `Bundle.TryResolveResourceKey` say, accept it), and versions the bundle and every object by one token, the manifest module's MVID (the content cannot change while the process runs, so a `BundleHandle` over it never reloads anything new). It declares only `BundleKeyConstraints.WellFormedUnicode` and applies no bound itself: the core applies `BundleLimits` and the key policy to what it lists, as for any provider. The constructor throws `ArgumentException` when the assembly holds no resource under that prefix. `EmbeddedResourceBundleProvider.GetBundlePrefixes(assembly)` lists the bundles an assembly carries.
 
 `provider.Location` (`embedded:<assembly>/<prefix>`) and every display path derived from it (`Concept.Path`, `Diagnostic.Path`) are for display only: read through keys (`Bundle.TryResolveResourceKey`, `Bundle.ReadResourceText(BundleKey)`). The obsolete path-based members throw `NotSupportedException` on such a bundle.
 
@@ -46,6 +46,7 @@ Supported assemblies: those loaded at run time from a file, a single-file bundle
 | `OKFEMB007` | The bundle directory is, or holds, the project directory: it would embed `obj/`, `bin/` and the project's own files. Point `OkfBundle` at a subdirectory. A directory that directly holds a file named like the project file is refused whatever the spelling of its path (8.3 alias, link, `subst` drive); a bundle directory that holds the project in a subdirectory is recognised by its path text only. |
 | `OKFEMB008` | A FIFO, device or socket under the bundle directory (outside Windows). |
 | `OKFEMB009` | Outside Windows, `find` could not inspect the bundle directory (missing from the `PATH`, unreadable subdirectory, any failure): the check fails closed instead of reading nothing as "no special file". |
+| `OKFEMB010` | Next to a bundle directory that tells case apart (Linux, a case-sensitive macOS volume, a Windows directory marked case-sensitive), two `Compile`, `Content`, `EmbeddedResource`, `Page`, `ApplicationDefinition` or `Resource` items whose paths differ only by case, such as `Knowledge/x.cs` and `knowledge/x.cs`: MSBuild compares item paths ignoring case, so it cannot detach or check one without the other. Rename one of them. |
 
 ## In a knowledge catalog
 
@@ -62,6 +63,46 @@ sealed class EmbeddedFactory(Assembly assembly) : IBundleProviderFactory
 ```
 
 Pass the assembly explicitly: never let a manifest choose what code is loaded.
+
+## Tests
+
+From a clone of [the repository](https://github.com/jchable/okf4net), at its root (.NET SDK 10.0+). The provider's tests include `TargetsBuildTests`, which runs real child `dotnet build`s that import the `.targets` at NuGet's own import point: allow several minutes. Some cases depend on the platform and are skipped elsewhere: FIFOs, `find` and backslash names run outside Windows only, case twins on a case-sensitive volume only, exact-case detaching on Linux only (a case-sensitive macOS volume still skips it), 8.3 aliases and WPF on Windows only, links only where the process may create one. CI runs them on Linux, macOS and Windows:
+
+```sh
+dotnet test tests/OKF4net.Tests --filter "FullyQualifiedName~OKF4net.Tests.Providers.EmbeddedResources"
+dotnet test tests/OKF4net.Tests --filter "FullyQualifiedName~TargetsBuildTests"   # the .targets alone
+```
+
+The Native AOT check consumes the **packages**, as a user would: it packs the core and this provider at a version no feed holds, publishes `tests/EmbeddedBundleAotProbe` (outside `OKF4net.sln`, it embeds `bundles/acme_retail/`) Native AOT from them, and compares the binary's summary of its embedded bundle with its summary of the same directory on disk. CI runs it on Linux, macOS and Windows (`embedded bundle AOT smoke test` in `.github/workflows/ci.yml`). Locally, in PowerShell 7 from the repository root, replacing `win-x64` with your RID:
+
+```powershell
+$v = "0.0.0-local.$(Get-Date -Format yyyyMMddHHmmss)"
+$work = Join-Path ([IO.Path]::GetTempPath()) "okf-probe-$v"
+$savedPackages = $env:NUGET_PACKAGES
+try {
+  $env:NUGET_PACKAGES = "$work/packages"   # an isolated cache: the local version never reaches yours
+  foreach ($p in 'src/OKF4net/OKF4net.csproj', 'src/OKF4net.Providers.EmbeddedResources/OKF4net.Providers.EmbeddedResources.csproj') {
+    dotnet pack $p -c Release -o "$work/feed" "-p:Version=$v"
+    if ($LASTEXITCODE -ne 0) { throw "pack failed: $p" }
+  }
+  dotnet publish tests/EmbeddedBundleAotProbe/EmbeddedBundleAotProbe.csproj -c Release -r win-x64 "-p:OkfProbeVersion=$v" "-p:RestoreAdditionalProjectSources=$work/feed" -o "$work/out"
+  if ($LASTEXITCODE -ne 0) { throw "publish failed" }
+  $embedded = @(& "$work/out/EmbeddedBundleAotProbe")
+  if ($LASTEXITCODE -ne 0) { throw "embedded run exited $LASTEXITCODE" }
+  $filesystem = @(& "$work/out/EmbeddedBundleAotProbe" --filesystem bundles/acme_retail)
+  if ($LASTEXITCODE -ne 0) { throw "filesystem run exited $LASTEXITCODE" }
+  if (-not ($embedded[0] -match '^concepts=[1-9]')) { throw "no concept loaded: $($embedded[0])" }
+  if (Compare-Object $embedded $filesystem -SyncWindow 0) { throw "the two summaries differ" }
+  "OK: $($embedded.Count) identical summary lines"
+}
+finally {
+  if ($null -eq $savedPackages) { Remove-Item Env:NUGET_PACKAGES -ErrorAction SilentlyContinue }
+  else { $env:NUGET_PACKAGES = $savedPackages }
+  Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+}
+```
+
+Native AOT links with the platform's native toolchain ([prerequisites](https://aka.ms/nativeaot-prerequisites); on Windows, the Desktop development with C++ workload). Without it the publish fails with `Platform linker not found`; adding `-p:PublishAot=false` to the publish still checks the packages, the `.targets` at NuGet's import point and the embedded-versus-disk comparison, but not the AOT image itself.
 
 ## License
 

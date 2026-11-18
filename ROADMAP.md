@@ -34,10 +34,42 @@ are the concrete entry points.
   Backed by the new `BundleConceptWriter.RecordVerifications` — the single
   governed writer of `verified` — and exposed to agents as `okf_verify`. See
   [its design spec](docs/superpowers/specs/2026-08-28-okf-verify-design.md).
+- **End-to-end tutorials shipped** (on `dev`,
+  [#174](https://github.com/jchable/okf4net/issues/174), formerly the "Now" item
+  "tutorials for both audiences"): [library users](docs/tutorials/library-users.md)
+  write, index, load and validate a bundle through the asynchronous provider
+  API and check it with `okf`; [agent builders](docs/tutorials/agent-builders.md)
+  expose a bundle through `OKF4net.Agents` (a shared `BundleHandle`,
+  `OkfToolMode`, `OkfContextProvider`, an approved write) and through
+  `okf-mcp`. Every snippet and command was run to produce the outputs they
+  show; the agent steps use a scripted `IChatClient`, and the two steps that
+  need a model (a real `IChatClient`, an MCP client configuration) say so.
+  They link to `samples/` rather than duplicate them.
+- More `OKF4net.Agents` samples ([#159](https://github.com/jchable/okf4net/issues/159),
+  open: further agent patterns are welcome). Shipped so far:
+  [`samples/acme-retail-agent`](samples/acme-retail-agent/README.md) (0.4.0),
+  [`samples/agents-quickstart`](samples/agents-quickstart/README.md) and
+  **[`samples/agents-handoff`](samples/agents-handoff/README.md)** (on `dev`) —
+  a curator agent (`OkfToolMode.ReadWrite`) writes a note that a reader agent
+  (`OkfToolMode.ReadOnly` plus `OkfContextProvider`) finds in its injected
+  context, because both tool sets share one `BundleHandle` (§5.2); it also
+  shows `okf_write_concept`'s read-before-write gate (§5.4) and how a consumer
+  with its own `Manual` or `OnAccess` handle sees the change. The last two need
+  no model or API key.
 - Performance baselines for large bundle loads: **a `Bundle.Load` baseline
   exists** (`BundleLoadPerformanceTests`, a 2,001-concept synthetic bundle,
   [#6](https://github.com/jchable/okf4net/issues/6)) — it prints its timings
   and gates only on a pathology ceiling, not on a target.
+- **Read-write MCP sample shipped** ([#160](https://github.com/jchable/okf4net/issues/160)):
+  [`samples/second-brain/`](samples/second-brain/README.md) is a starter
+  personal-notes bundle served writable by `okf-mcp` in Claude Desktop. It
+  includes the Desktop configuration for Windows and macOS, example prompts,
+  and `smoke.cs`, which drives `okf-mcp` over stdio on a copy of the bundle
+  and checks the disk. The sample states plainly what the MCP write path does
+  not do. `okf_write_concept` changes the concept file only, so the §8
+  indexes and the §9 log are updated only when the model calls
+  `okf_regenerate_indexes` and `okf_append_log`. Nothing makes those calls
+  automatically, and the bundle's own guide note asks the model to make them.
 - Bundle viewer: **interactive viewer shipped** (on `dev`, in the next
   `okf-render` release) as the standalone `okf-render` binary
   (`OKF4net.Render`, over `OKF4net.Viewer`) — split out of `okf` itself so
@@ -76,9 +108,13 @@ are the concrete entry points.
   [#139](https://github.com/jchable/okf4net/issues/139)), its asynchronous contract
   ([#152](https://github.com/jchable/okf4net/issues/152)) and the filesystem
   reference implementation ([#140](https://github.com/jchable/okf4net/issues/140))
-  are on `dev`; what follows is tracked as issues: an embedded-resource provider
-  ([#141](https://github.com/jchable/okf4net/issues/141)), an S3 provider in its
-  own project, read-only first ([#142](https://github.com/jchable/okf4net/issues/142)),
+  are on `dev`, and so is the embedded-resource provider
+  (`OKF4net.Providers.EmbeddedResources`,
+  [#141](https://github.com/jchable/okf4net/issues/141)); what follows is tracked
+  as issues: a built-in catalog factory for it (`"provider": "embedded"` in
+  `catalog.json`, [#236](https://github.com/jchable/okf4net/issues/236)), an S3
+  provider in its own project, read-only first
+  ([#142](https://github.com/jchable/okf4net/issues/142)),
   and a per-user OS lock closing the cross-process window of the filesystem
   provider's conditional writes, deferred
   ([#178](https://github.com/jchable/okf4net/issues/178)).

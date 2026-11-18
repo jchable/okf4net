@@ -49,6 +49,112 @@ public class BundleConceptWriterLogTests
         Assert.Equal(["Bootstrapped.", "Second."], log.Days[1].Entries.Select(e => e.Text));
     }
 
+    /// <summary>
+    /// #258: a <c>log.md</c> carrying a frontmatter block (upstream's own <c>acme_retail</c> does)
+    /// keeps that block byte for byte, its fences included, after one append and after two; the
+    /// log after it is re-rendered through the §9 model as before.
+    /// </summary>
+    [Fact]
+    public void A_log_frontmatter_survives_one_append_and_then_another()
+    {
+        const string Block = "---\ntype: Log\ntitle: Bundle history # kept\n---\n";
+        var storage = new InMemoryBundleProvider(canWrite: true).Add("log.md", Block + "\n# Bundle history\n\n## 2026-07-21\n\n- **Creation**: First.\n");
+        var (writer, _) = WriterOver(storage);
+
+        Assert.Equal("Appended a 'Update' entry under 2026-07-22 in log.md.", writer.AppendLog("Update", "Second."));
+        Assert.Equal(
+            Block + "\n# Bundle history\n\n## 2026-07-22\n* **Update**: Second.\n\n## 2026-07-21\n* **Creation**: First.\n",
+            Text(storage, "log.md"));
+
+        Assert.Equal("Appended a 'Update' entry under 2026-07-22 in log.md.", writer.AppendLog("Update", "Third."));
+        Assert.Equal(
+            Block + "\n# Bundle history\n\n## 2026-07-22\n* **Update**: Second.\n* **Update**: Third.\n\n## 2026-07-21\n* **Creation**: First.\n",
+            Text(storage, "log.md"));
+    }
+
+    /// <summary>
+    /// The block is kept as the bytes it was, not re-emitted: CRLF line ends, trailing blanks on
+    /// a fence, a YAML comment that looks like a <c>#</c> title and a block-scalar line that looks
+    /// like a <c>##</c> day all stay where they were, and none of them is read as the log's title
+    /// or one of its days.
+    /// </summary>
+    [Fact]
+    public void A_log_frontmatter_is_kept_verbatim_and_its_lines_are_not_read_as_the_log()
+    {
+        const string Block = "--- \r\n# a YAML comment\r\ntype: Log\r\nnotes: |\r\n  ## not-a-day\r\n---\t\r\n";
+        var storage = new InMemoryBundleProvider(canWrite: true).Add("log.md", Block + "## 2026-07-21\n* First.\n");
+        var (writer, _) = WriterOver(storage);
+
+        writer.AppendLog("Update", "Second.");
+
+        // The blank line after the block takes the closing fence's own line end.
+        Assert.Equal(Block + "\r\n## 2026-07-22\n* **Update**: Second.\n\n## 2026-07-21\n* First.\n", Text(storage, "log.md"));
+    }
+
+    /// <summary>
+    /// #258, review: a log opening with a <c>---</c> thematic break is not taken for one with a
+    /// frontmatter — the region is no YAML mapping — so today's day inside it is found and
+    /// extended, never added a second time.
+    /// </summary>
+    [Fact]
+    public void A_thematic_break_hides_no_day_from_the_append()
+    {
+        var storage = new InMemoryBundleProvider(canWrite: true).Add("log.md", "---\n## 2026-07-22\n* First.\n---\n## 2026-07-21\n* Before.\n");
+        WriterOver(storage).Writer.AppendLog("Update", "Second.");
+        Assert.Equal("## 2026-07-22\n* First.\n* **Update**: Second.\n\n## 2026-07-21\n* Before.\n", Text(storage, "log.md"));
+    }
+
+    /// <summary>An entry appended meanwhile to a log with a frontmatter is kept, and so is the frontmatter, on the retried write.</summary>
+    [Fact]
+    public void A_log_frontmatter_survives_a_retried_append()
+    {
+        const string Block = "---\ntype: Log\n---\n";
+        var storage = new InMemoryBundleProvider(canWrite: true).Add("log.md", Block + "\n## 2026-07-22\n* First.\n");
+        var (writer, delays) = WriterOver(storage);
+        storage.BeforeNextWrite(p => p.Add("log.md", Block + "\n## 2026-07-22\n* First.\n* From elsewhere.\n"));
+
+        Assert.Equal("Appended a 'Update' entry under 2026-07-22 in log.md.", writer.AppendLog("Update", "Mine."));
+
+        Assert.Equal(Block + "\n## 2026-07-22\n* First.\n* From elsewhere.\n* **Update**: Mine.\n", Text(storage, "log.md"));
+        Assert.Single(delays);
+    }
+
+    /// <summary>A log made of its frontmatter alone, the closing fence ending the file without a line end, gains its first day after it.</summary>
+    [Fact]
+    public void A_log_that_is_only_a_frontmatter_gains_its_first_day_after_it()
+    {
+        var storage = new InMemoryBundleProvider(canWrite: true).Add("log.md", "---\ntype: Log\n---");
+        WriterOver(storage).Writer.AppendLog("Creation", "First.");
+        Assert.Equal("---\ntype: Log\n---\n\n## 2026-07-22\n* **Creation**: First.\n", Text(storage, "log.md"));
+    }
+
+    /// <summary>Without a frontmatter block the output is what it was before #258.</summary>
+    [Fact]
+    public void A_log_without_frontmatter_is_rewritten_as_before()
+    {
+        var storage = new InMemoryBundleProvider(canWrite: true).Add("log.md", "# Log\n\n## 2026-07-21\n\n- **Creation**: First.\n");
+        WriterOver(storage).Writer.AppendLog("Update", "Second.");
+        Assert.Equal("# Log\n\n## 2026-07-22\n* **Update**: Second.\n\n## 2026-07-21\n* **Creation**: First.\n", Text(storage, "log.md"));
+    }
+
+    /// <summary>An opening fence that is never closed is no frontmatter block (spec §4, <see cref="OkfDocument.Parse"/>): the text is the log, as before.</summary>
+    [Fact]
+    public void An_unclosed_fence_is_no_frontmatter_and_the_log_is_rewritten_as_before()
+    {
+        var storage = new InMemoryBundleProvider(canWrite: true).Add("log.md", "---\n# Log\n\n## 2026-07-21\n* First.\n");
+        WriterOver(storage).Writer.AppendLog("Update", "Second.");
+        Assert.Equal("# Log\n\n## 2026-07-22\n* **Update**: Second.\n\n## 2026-07-21\n* First.\n", Text(storage, "log.md"));
+    }
+
+    /// <summary>A log created from nothing is what it was before #258: no frontmatter, no title.</summary>
+    [Fact]
+    public void A_new_log_is_created_as_before()
+    {
+        var storage = new InMemoryBundleProvider(canWrite: true);
+        WriterOver(storage).Writer.AppendLog("Creation", "First.");
+        Assert.Equal("## 2026-07-22\n* **Creation**: First.\n", Text(storage, "log.md"));
+    }
+
     [Theory]
     [InlineData("", "text", "Error: invalid kind — it must not be empty.")]
     [InlineData("Update", "a\nb", "Error: invalid text — it must not contain a line break (this would let it forge fake '## date' or '* entry' lines in log.md).")]

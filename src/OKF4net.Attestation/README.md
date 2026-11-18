@@ -54,7 +54,7 @@ so in effect everyone who can write to the bundle's source. A host can pin
 *what* may run instead, with an allowlist of digests:
 
 ```csharp
-var orchestrator = new AttestationOrchestrator(runtimes, new AttestationOrchestratorOptions
+var orchestrator = AttestationOrchestrator.Create(runtimes, new AttestationOrchestratorOptions
 {
     AllowedCodeDigests = new HashSet<string> { approvedComputationDigest, approvedAttesterDigest },
 });
