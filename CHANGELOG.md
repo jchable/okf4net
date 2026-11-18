@@ -10,6 +10,16 @@ and this project adheres to
 
 ### Added
 
+- **`samples/agents-handoff`**, an `OKF4net.Agents` sample of two agents
+  sharing one bundle, with no LLM endpoint, API key or network access (#159).
+  Over a temporary copy of `bundles/ga4`, a curator agent with the read-write
+  tools writes a note (meeting `okf_write_concept`'s read-before-write gate on
+  the way) and a reader agent with the read-only tools and an
+  `OkfContextProvider` finds it in its injected context, because both tool sets
+  share one `BundleHandle`; a consumer with its own `OnAccess` handle sees the
+  change by itself, one with its own `Manual` handle only after
+  `RefreshAsync`. Standalone solution, not part of `OKF4net.sln` or CI.
+
 - **Allowlist of sanctioned-code digests for attested computations (#154).**
   `AttestationOrchestratorOptions` (`Clock`, `DefaultPolicy`,
   `AllowedCodeDigests`) and a new `AttestationOrchestrator(runtimes, options)`
@@ -1141,6 +1151,20 @@ and this project adheres to
   conformant. An explicit null (`generated:`) is not reported, like `verified:`.
   A mapping without a usable `by` was already reported (`GeneratedMissingBy`,
   or `GeneratedInvalidActor` for an empty one) and is unchanged.
+
+- **Appending to `log.md` keeps the frontmatter block the file opens with
+  (#258).** `BundleConceptWriter.AppendLog` / `AppendLogAsync` (and so
+  `okf_append_log`) re-render the log through the §9 model and used to drop a
+  leading frontmatter block, such as upstream `acme_retail`'s `type: Log`. The
+  block (a `---` fence at column 0 closed by the next one, around what
+  `OkfDocument.Parse` reads as a non-empty YAML mapping) is now written back
+  byte for byte, fences and line ends included, then a blank line and the log.
+  A log without one, and a log created by the append, are written exactly as
+  before. `ChangeLog.Parse` now skips that block, so a YAML comment in it is no
+  longer read as the log's title nor a `## ` line in it as a day (which the
+  validator reported as `LogDateInvalid`). A `---` thematic break around
+  anything else (invalid YAML, comments only, nothing) is not a block: the days
+  inside it are still read, validated and appended to.
 
 - **Auto-stamped `generated.by` names the library version, not the spec version
   (#257, §7).** The actor this library writes when it stamps `generated` itself

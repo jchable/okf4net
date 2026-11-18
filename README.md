@@ -274,9 +274,10 @@ on a thread of 512 KB or less should lower `MaxDepth`.
 Every rejected `.md` name is a `Bundle.ParseProblems` entry
 (`bundle.DisplayPath(problem)` gives the path to print; the obsolete
 `ParseErrors` projects the same list); other rejected names are skipped silently. The
-filesystem provider is writable (see "Writing through a provider" below); no
-other provider ships yet; the first ones beyond it are tracked in #141 (embedded
-resources) and #142 (S3).
+filesystem provider is writable (see "Writing through a provider" below).
+Beyond it, `OKF4net.Providers.EmbeddedResources` serves, read-only, a bundle
+embedded in an assembly at build time (see "A bundle inside your assembly"
+below, #141); an S3 provider is tracked in #142.
 
 The historical members `Bundle.TryResolveResource` and
 `Bundle.ReadResourceText(string)` still resolve through the OS filesystem, so
@@ -758,6 +759,12 @@ tool list — through a scripted `IChatClient` against `bundles/ga4`
 (`dotnet run --project samples/agents-quickstart/src/AgentsQuickstart`).
 [`samples/acme-retail-agent/`](samples/acme-retail-agent/README.md) is the
 same kind of agent over a real OpenAI-compatible endpoint.
+[`samples/agents-handoff/`](samples/agents-handoff/README.md), also with no
+model or key, hands knowledge from one agent to another over a copy of
+`bundles/ga4`: a curator with the read-write tools writes a note, and a reader
+with the read-only tools finds it in its `OkfContextProvider` context, because
+both tool sets share one `BundleHandle` (see
+[Sharing a `BundleHandle`](src/OKF4net.Agents/README.md#sharing-a-bundlehandle-and-what-can-write)).
 
 The twelve unconditional tools, plus the thirteenth conditional on an attestation
 orchestrator being wired (read → browse → graph → search → audit → write →
@@ -772,7 +779,7 @@ verify → append → regenerate → validate → changes-since → get-computat
 | `okf_audit`              | Audit the bundle's trust, freshness and lifecycle signals (§5.3–§5.5): counts by trust tier and status, plus the concepts needing attention. Read-only.                                                       |
 | `okf_write_concept`      | Create or update a concept document. The frontmatter must contain non-empty type, title and description (producer-grade validation is enforced before writing).                                               |
 | `okf_verify`             | Record a review (§5.2): adds or replaces the caller's `{by, at}` entry in each concept's `verified` list — a dated declaration, not a proof; never infer one from a PR approval.                            |
-| `okf_append_log`         | Append an entry to the bundle root log.md under today's date (ISO). Note: log.md is re-rendered through the strict §9 model, so non-conforming prose or comments in a hand-authored log.md are not preserved. |
+| `okf_append_log`         | Append an entry to the bundle root log.md under today's date (ISO). Note: log.md is re-rendered through the strict §9 model, so non-conforming prose or comments in a hand-authored log.md are not preserved; a leading frontmatter block is kept as it was. |
 | `okf_regenerate_indexes` | Regenerate every index.md in the bundle (progressive-disclosure listings). Run after adding or changing concepts.                                                                                             |
 | `okf_validate_bundle`    | Validate the bundle against OKF v0.2 conformance (§11). Returns the diagnostics report.                                                                                                                        |
 | `okf_changes_since`      | Summarize bundle changes since a given ISO date, aggregated from every log.md in the bundle.                                                                                                                  |
