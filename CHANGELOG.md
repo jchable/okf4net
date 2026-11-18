@@ -10,6 +10,16 @@ and this project adheres to
 
 ### Added
 
+- **`samples/agents-handoff`**, an `OKF4net.Agents` sample of two agents
+  sharing one bundle, with no LLM endpoint, API key or network access (#159).
+  Over a temporary copy of `bundles/ga4`, a curator agent with the read-write
+  tools writes a note (meeting `okf_write_concept`'s read-before-write gate on
+  the way) and a reader agent with the read-only tools and an
+  `OkfContextProvider` finds it in its injected context, because both tool sets
+  share one `BundleHandle`; a consumer with its own `OnAccess` handle sees the
+  change by itself, one with its own `Manual` handle only after
+  `RefreshAsync`. Standalone solution, not part of `OKF4net.sln` or CI.
+
 - **Allowlist of sanctioned-code digests for attested computations (#154).**
   `AttestationOrchestratorOptions` (`Clock`, `DefaultPolicy`,
   `AllowedCodeDigests`) and a new `AttestationOrchestrator(runtimes, options)`

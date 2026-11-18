@@ -34,6 +34,17 @@ are the concrete entry points.
   Backed by the new `BundleConceptWriter.RecordVerifications` — the single
   governed writer of `verified` — and exposed to agents as `okf_verify`. See
   [its design spec](docs/superpowers/specs/2026-08-28-okf-verify-design.md).
+- More `OKF4net.Agents` samples ([#159](https://github.com/jchable/okf4net/issues/159),
+  open: further agent patterns are welcome). Shipped so far:
+  [`samples/acme-retail-agent`](samples/acme-retail-agent/README.md) (0.4.0),
+  [`samples/agents-quickstart`](samples/agents-quickstart/README.md) and
+  **[`samples/agents-handoff`](samples/agents-handoff/README.md)** (on `dev`) —
+  a curator agent (`OkfToolMode.ReadWrite`) writes a note that a reader agent
+  (`OkfToolMode.ReadOnly` plus `OkfContextProvider`) finds in its injected
+  context, because both tool sets share one `BundleHandle` (§5.2); it also
+  shows `okf_write_concept`'s read-before-write gate (§5.4) and how a consumer
+  with its own `Manual` or `OnAccess` handle sees the change. The last two need
+  no model or API key.
 - Performance baselines for large bundle loads: **a `Bundle.Load` baseline
   exists** (`BundleLoadPerformanceTests`, a 2,001-concept synthetic bundle,
   [#6](https://github.com/jchable/okf4net/issues/6)) — it prints its timings
