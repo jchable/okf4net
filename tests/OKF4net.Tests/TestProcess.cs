@@ -14,6 +14,18 @@ internal static class TestProcess
         Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") is { Length: > 0 } h ? h : "dotnet";
 
     /// <summary>
+    /// tests/S3HostileEnvProbe's assembly, built next to this test project in the same configuration and target framework
+    /// (the test project's <c>ProjectReference</c> to it, with <c>ReferenceOutputAssembly="false"</c>, guarantees the build).
+    /// </summary>
+    public static string S3HostileEnvProbePath()
+    {
+        var testBin = new DirectoryInfo(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        var probe = Path.Combine(TestPaths.RepoRoot(), "tests", "S3HostileEnvProbe", "bin", testBin.Parent!.Name, testBin.Name, "S3HostileEnvProbe.dll");
+        Assert.True(File.Exists(probe), $"probe not built at {probe}");
+        return probe;
+    }
+
+    /// <summary>
     /// Runs <paramref name="file"/> with <paramref name="args"/>; <paramref name="env"/> sets (a value) or removes
     /// (<see langword="null"/>) variables of the inherited environment. The deadline covers the exit AND the end of
     /// both streams (a grandchild holding the pipes open cannot keep the caller waiting): on expiry the whole process

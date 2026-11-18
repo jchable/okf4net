@@ -89,8 +89,19 @@ foreach (var (name, port) in new[] { ("s3", s3Port), ("evil", evilPort), ("proxy
 {
     var listener = new TcpListener(new IPEndPoint(IPAddress.Loopback, port));
 
-    // Every run rebinds the same ports right after the previous run closed its connections (TIME_WAIT on Linux).
-    listener.Server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+    // Every run rebinds the same ports right after the previous run closed its connections. On Linux and macOS,
+    // SO_REUSEADDR only lets the bind pass sockets left in TIME_WAIT. On Windows it would let this socket bind a port
+    // that another process (a stale probe) still listens on, so the requests could reach either one. Windows needs no
+    // option for TIME_WAIT, and there the port is taken exclusively: a stale listener makes Start fail loudly.
+    if (OperatingSystem.IsWindows())
+    {
+        listener.ExclusiveAddressUse = true;
+    }
+    else
+    {
+        listener.Server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+    }
+
     listener.Start();
     listeners.Add(listener);
     _ = Task.Run(async () =>

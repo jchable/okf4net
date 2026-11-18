@@ -21,8 +21,8 @@ namespace OKF4net.Tests.Providers.S3;
 /// it is sent.
 /// What this test does NOT pin by itself (mutation runs, 2026-11-18): removing IgnoreConfiguredEndpointUrls leaves it
 /// green, because the provider here is configured with an explicit ServiceUrl, which wins over every ambient endpoint
-/// setting (the plain witness measured the same); a Region source would pin it, but its clean run would leave the
-/// machine. ClientAppId = "" and the guard's removal of app/ tokens are two layers: removing either alone leaves this
+/// setting (the plain witness measured the same). A Region source here would send its clean run off the machine, so
+/// that row is pinned in-process instead, over the scripted fake, by <see cref="AmbientEndpointTests"/>. ClientAppId = "" and the guard's removal of app/ tokens are two layers: removing either alone leaves this
 /// test green (GuardTests pins the guard's), removing both turns it red.
 /// </remarks>
 public sealed class HostileEnvironmentTests(HostileEnvironmentTests.Baseline baseline) : IClassFixture<HostileEnvironmentTests.Baseline>
@@ -99,7 +99,7 @@ public sealed class HostileEnvironmentTests(HostileEnvironmentTests.Baseline bas
 
         public async Task<string[]> RunAsync(Dictionary<string, string?> env, string mode)
         {
-            var args = new[] { TestProcessTests.S3HostileEnvProbePath(), Text(S3), Text(Evil), Text(Proxy), Text(Udp), mode };
+            var args = new[] { TestProcess.S3HostileEnvProbePath(), Text(S3), Text(Evil), Text(Proxy), Text(Udp), mode };
             var (code, output, error) = await TestProcess.RunAsync(TestProcess.DotnetHost(), args, env, TimeSpan.FromSeconds(90));
             Assert.True(code == 0, $"probe exited {code}: {error}");
             return output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -117,37 +117,59 @@ public sealed class HostileEnvironmentTests(HostileEnvironmentTests.Baseline bas
     {
         var env = Hostile(hostileCase);
         var plain = await baseline.RunAsync(env, "plain");
-        AssertWitnesses(hostileCase, plain);
+        WithOutput("plain witness", plain, () => AssertWitnesses(hostileCase, plain));
 
         var provider = await baseline.RunAsync(env, "provider");
-        // Request lines, every header but date and invocation id, signed headers, scope, UDP count; joined, so a
-        // difference is reported in full rather than in truncated collection items.
-        Assert.Equal(string.Join("\n", baseline.CleanProvider), string.Join("\n", provider));
-        Assert.Contains("concepts=1", provider);
-        Assert.Contains("UDP 0", provider);
-        Assert.Equal(3, provider.Count(l => l.StartsWith("s3 | GET /okf/", StringComparison.Ordinal))); // two listings (load, survey) and one read
-        Assert.DoesNotContain(provider, l => l.StartsWith("evil |", StringComparison.Ordinal));
-        Assert.DoesNotContain(provider, l => l.StartsWith("proxy |", StringComparison.Ordinal));
-        Assert.DoesNotContain(provider, l => l.Contains("MARK", StringComparison.Ordinal));
+        WithOutput("provider", provider, () =>
+        {
+            // Request lines, every header but date and invocation id, signed headers, scope, UDP count; joined, so a
+            // difference is reported in full rather than in truncated collection items.
+            Assert.Equal(string.Join("\n", baseline.CleanProvider), string.Join("\n", provider));
+            Assert.Contains("concepts=1", provider);
+            Assert.Contains("UDP 0", provider);
+            Assert.Equal(3, provider.Count(l => l.StartsWith("s3 | GET /okf/", StringComparison.Ordinal))); // two listings (load, survey) and one read
+            Assert.DoesNotContain(provider, l => l.StartsWith("evil |", StringComparison.Ordinal));
+            Assert.DoesNotContain(provider, l => l.StartsWith("proxy |", StringComparison.Ordinal));
+            Assert.DoesNotContain(provider, l => l.Contains("MARK", StringComparison.Ordinal));
+        });
     }
 
     [Fact]
     public void The_clean_runs_are_what_the_witnesses_compare_against()
     {
-        Assert.Contains("concepts=1", baseline.CleanProvider);
-        Assert.Contains("UDP 0", baseline.CleanProvider);
-        Assert.Contains("UDP 0", baseline.CleanPlain);
-        Assert.Contains("plain ua=ok", baseline.CleanPlain);
-        Assert.Contains("plain endpoint refused-hop=s3.us-east-1.amazonaws.com", baseline.CleanPlain);
-        Assert.Contains("plain proxy refused-hop=okf-witness.invalid", baseline.CleanPlain);
-        var ua = Single(baseline.CleanPlain, "ua");
-        Assert.StartsWith("s3 | GET /okf/kb/ua.md HTTP/1.1 |", ua, StringComparison.Ordinal);
-        Assert.Contains("amz-sdk-request=attempt=1; max=3", ua, StringComparison.Ordinal);
-        Assert.Contains("x-amz-checksum-mode=ENABLED", ua, StringComparison.Ordinal);
-        Assert.DoesNotContain(" app/", ua, StringComparison.Ordinal);
-        Assert.DoesNotContain(" exec-env/", ua, StringComparison.Ordinal);
-        Assert.Contains("E", Metrics(ua)); // the standard retry mode's business metric
-        Assert.DoesNotContain("F", Metrics(ua)); // the adaptive one's
+        WithOutput("clean provider", baseline.CleanProvider, () =>
+        {
+            Assert.Contains("concepts=1", baseline.CleanProvider);
+            Assert.Contains("UDP 0", baseline.CleanProvider);
+        });
+        WithOutput("clean plain witness", baseline.CleanPlain, () =>
+        {
+            Assert.Contains("UDP 0", baseline.CleanPlain);
+            Assert.Contains("plain ua=ok", baseline.CleanPlain);
+            Assert.Contains("plain endpoint refused-hop=s3.us-east-1.amazonaws.com", baseline.CleanPlain);
+            Assert.Contains("plain proxy refused-hop=okf-witness.invalid", baseline.CleanPlain);
+            var ua = Single(baseline.CleanPlain, "ua");
+            Assert.StartsWith("s3 | GET /okf/kb/ua.md HTTP/1.1 |", ua, StringComparison.Ordinal);
+            Assert.Contains("amz-sdk-request=attempt=1; max=3", ua, StringComparison.Ordinal);
+            Assert.Contains("x-amz-checksum-mode=ENABLED", ua, StringComparison.Ordinal);
+            Assert.DoesNotContain(" app/", ua, StringComparison.Ordinal);
+            Assert.DoesNotContain(" exec-env/", ua, StringComparison.Ordinal);
+            Assert.Contains("E", Metrics(ua)); // the standard retry mode's business metric
+            Assert.DoesNotContain("F", Metrics(ua)); // the adaptive one's
+        });
+    }
+
+    /// <summary>Runs <paramref name="check"/>; a failure is reported with the probe's raw output, so it shows what was sent.</summary>
+    private static void WithOutput(string run, string[] output, Action check)
+    {
+        try
+        {
+            check();
+        }
+        catch (Xunit.Sdk.XunitException e)
+        {
+            throw new Xunit.Sdk.XunitException($"{e.Message}\n--- {run} probe output ---\n{string.Join("\n", output)}");
+        }
     }
 
     private Dictionary<string, string?> Hostile(string hostileCase)

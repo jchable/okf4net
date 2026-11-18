@@ -68,6 +68,21 @@ public class PipelineTests
     }
 
     /// <summary>
+    /// Layer 1 of the app id's neutralization (gate G4: "" removes AWS_SDK_UA_APP_ID / sdk_ua_app_id, null falls back to
+    /// them); layer 2, the guard's removal of any app/ token, is pinned by GuardTests.
+    /// </summary>
+    [Fact]
+    public void The_providers_client_sets_an_empty_app_id()
+    {
+        var source = SourceRules.Normalize(new S3BundleSource { Bucket = "demo", Region = RegionEndpoint.EUWest1 });
+        using var client = (ProviderS3Client)ClientBuilder.Build(new SnapshotCredentials(), source, new FakeS3Handler(), out var http);
+        using (http)
+        {
+            Assert.Equal("", ((AmazonS3Config)client.Config).ClientAppId);
+        }
+    }
+
+    /// <summary>
     /// SMOKE CHECK, NOT PROOF: the SDK adds the two CSM handlers only when CSM is enabled for the PROCESS (AWS_CSM_ENABLED,
     /// a profile, AWSConfigs), and it is not in the test host — enabling it here would reach every other test's clients
     /// — so a plain client of this process lacks them too and this assertion cannot fail by itself. The executed proof
