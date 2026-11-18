@@ -627,12 +627,23 @@ public sealed class OkfContextProvider : AIContextProvider
         // a crude chars/4 estimate, and whole-line truncation granularity means
         // the result can land a little under or, rarely, a little over
         // tokenBudget: a soft budget, not a hard cap.
-        var fence = ModelTextBuilder.Fence(ModelTextBuilder.EscapeContextText(content));
-        var framingOverhead = TokenEstimate.Chars($"<okf-context id=\"{ModelTextBuilder.EscapeContextAttribute(id)}\">\n\n{fence}\n\n{fence}\n\n</okf-context>")
-            + TokenEstimate.Chars("\n" + fence + "\n" + TruncatedMarker);
-        var innerBudget = Math.Max(0, tokenBudget - framingOverhead);
+        //
+        // The element's fence is sized from the text it will actually hold, the
+        // kept prefix, so the reservation is computed per candidate prefix, not
+        // once from the whole content (#248 review: a dropped tail of 1,000
+        // backticks priced out a title that fits). The marker holds no fence
+        // character, and a closing fence CloseOpenFence adds is a run the prefix
+        // already holds, so the prefix's fence is the element's.
+        var attribute = ModelTextBuilder.EscapeContextAttribute(id);
+        int InnerBudget(string kept)
+        {
+            var fence = ModelTextBuilder.Fence(ModelTextBuilder.EscapeContextText(kept));
+            var framingOverhead = TokenEstimate.Chars($"<okf-context id=\"{attribute}\">\n\n{fence}\n\n{fence}\n\n</okf-context>")
+                + TokenEstimate.Chars("\n" + fence + "\n" + TruncatedMarker);
+            return Math.Max(0, tokenBudget - framingOverhead);
+        }
 
-        var (kept, truncated, linesKept) = TruncateWholeLines(content, innerBudget);
+        var (kept, truncated, linesKept) = TruncateWholeLines(content, InnerBudget);
 
         if (!alwaysInclude && linesKept == 0)
         {
@@ -658,19 +669,20 @@ public sealed class OkfContextProvider : AIContextProvider
     /// Keeps whole lines of <paramref name="content"/> from the start,
     /// stopping just before the estimated token count (<see cref="TokenEstimate.Chars"/>)
     /// of the lines kept so far, as they will be injected (escaped), would
-    /// exceed <paramref name="tokenBudget"/>.
+    /// exceed <paramref name="tokenBudget"/> of those lines (what is left once
+    /// the framing they need is reserved).
     /// </summary>
     /// <returns>The kept text (unescaped), whether anything was cut off, and how many lines were kept.</returns>
-    private static (string Kept, bool Truncated, int LinesKept) TruncateWholeLines(string content, int tokenBudget)
+    private static (string Kept, bool Truncated, int LinesKept) TruncateWholeLines(string content, Func<string, int> tokenBudget)
     {
         static int Measure(string text) => TokenEstimate.Chars(ModelTextBuilder.EscapeContextText(text));
 
-        if (tokenBudget <= 0)
+        if (tokenBudget(string.Empty) <= 0)
         {
             return (string.Empty, content.Length > 0, 0);
         }
 
-        if (Measure(content) <= tokenBudget)
+        if (Measure(content) <= tokenBudget(content))
         {
             var lineCount = content.Length == 0 ? 0 : content.Count(c => c == '\n') + 1;
             return (content, false, lineCount);
@@ -683,7 +695,7 @@ public sealed class OkfContextProvider : AIContextProvider
         foreach (var line in lines)
         {
             var candidate = kept == 0 ? line : keptText + "\n" + line;
-            if (Measure(candidate) > tokenBudget)
+            if (Measure(candidate) > tokenBudget(candidate))
             {
                 break;
             }
