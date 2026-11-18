@@ -222,6 +222,44 @@ public class BundleConceptWriterTests
         Assert.NotNull(written.Frontmatter.Generated);
     }
 
+    /// <summary>
+    /// §7: a tool's actor is <c>&lt;producer&gt;/&lt;version&gt;</c>, the
+    /// producer's own version — not the version of the spec it implements
+    /// (#257: the default used to be <c>okf4net/0.2</c>). The expected value
+    /// is read from Directory.Build.props, the single source of the version,
+    /// so a stamp falling back to the spec version, or keeping the
+    /// <c>+&lt;commit&gt;</c> build metadata of the informational version,
+    /// fails here.
+    /// </summary>
+    [Fact]
+    public void DefaultProducerActor_is_okf4net_slash_the_library_version()
+    {
+        var props = File.ReadAllText(Path.Combine(TestPaths.RepoRoot(), "Directory.Build.props"));
+        var declared = System.Text.RegularExpressions.Regex.Match(props, @"<Version>\s*([^<\s]+)\s*</Version>");
+        Assert.True(declared.Success, "no <Version> element in Directory.Build.props");
+
+        Assert.Equal("okf4net/" + declared.Groups[1].Value, BundleConceptWriter.DefaultProducerActor);
+        Assert.DoesNotContain("+", BundleConceptWriter.DefaultProducerActor, StringComparison.Ordinal);
+        Assert.True(Actor.Parse(BundleConceptWriter.DefaultProducerActor).IsWellFormed);
+    }
+
+    [Fact]
+    public void WriteConcept_auto_stamp_records_the_library_version_as_the_actor()
+    {
+        using var tmp = new TempDir();
+        var writer = new BundleConceptWriter(tmp.Path)
+        {
+            AutoStampGenerated = true,
+            UtcNow = () => new DateTime(2026, 7, 31, 0, 0, 0, DateTimeKind.Utc),
+        };
+
+        writer.WriteConcept("tables/refunds", "type: BigQuery Table\ntitle: Refunds\ndescription: One row per refund.", "# Refunds\n");
+
+        var written = OkfDocument.Parse(File.ReadAllText(Path.Combine(tmp.Path, "tables", "refunds.md")));
+        Assert.Equal(BundleConceptWriter.DefaultProducerActor, written.Frontmatter.Generated?.By?.Raw);
+        Assert.NotEqual("okf4net/" + OkfSpec.Version, written.Frontmatter.Generated?.By?.Raw);
+    }
+
     [Fact]
     public void WriteConcept_accepts_a_document_built_by_OkfDocumentBuilder()
     {
