@@ -459,8 +459,10 @@ pas l'id des autres.
 
 ### 4.3 Identité
 
-**Slug** (règle GitHub, appliquée au contenu ATX brut du heading, §3.1) : minuscules en
-culture invariante. On garde lettres, chiffres, `-` et `_` (lettres Unicode
+**Slug** (règle GitHub, appliquée au contenu ATX brut du heading, §3.1) : minuscules par
+`UnicodeCaseFold.ToLowercase`, la casse complète Unicode déjà partagée avec le
+tri des titres (`Rune.ToLowerInvariant` seul laisse `İ` inchangé : `Ωmega İstanbul`
+donne `ωmega-istanbul`). On garde lettres, chiffres, `-` et `_` (lettres Unicode
 comprises), on remplace espaces et tabulations par `-`, et on retire le reste.
 Le résultat est **coupé à 64 points de code**. Un slug vide devient `section`.
 L'alphabet d'un slug ne contient donc **jamais** `.`, `~`, `/` ni `#`. Il n'y a

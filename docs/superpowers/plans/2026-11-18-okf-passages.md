@@ -139,6 +139,7 @@ Spec §2.2, §2.3 B.
 - fence : de la ligne d'ouverture à la ligne de fermeture **incluse** ; non fermée, jusqu'à la dernière ligne ; fermée par la sortie de son conteneur, jusqu'à la ligne **précédant** celle qui ferme le conteneur ;
 - HTML de type 1 à 5 (fin par marqueur) : jusqu'à la ligne du marqueur **incluse**, éventuellement la ligne d'ouverture elle-même ;
 - HTML de type 6 et 7 (fin par ligne blanche) : jusqu'à la ligne **précédant** la ligne blanche, qui n'appartient pas au bloc ;
+- HTML de tout type fermé par la sortie de son conteneur : jusqu'à la ligne **précédant** celle qui ferme le conteneur (même règle que la fence, `Links.cs:843-845`) ;
 - code indenté : de la première à la dernière ligne indentée ; les lignes blanches **entre** deux lignes indentées du même conteneur en font partie, les lignes blanches finales non ; un changement de conteneur ferme le bloc.
 
 - [ ] **Step 1: Tests qui échouent**, un `[Fact]` par ligne, chacun sur `LinkScanner.ScanBlockStructure(body)` :
@@ -158,6 +159,7 @@ Spec §2.2, §2.3 B.
 | `Html_pre_block_ends_at_marker` | `"<pre>\n# H\n\nx\n</pre>\n"` | `Headings` vide ; `[(0, 4, Html)]` |
 | `Html_div_block_ends_before_blank` | `"<div>\na\n\n# H\n"` | `[(0, 1, Html)]` ; `Headings == [(3, 1, 0)]` |
 | `Html_comment_closed_on_its_line` | `"<!-- x -->\n# H\n"` | `[(0, 0, Html)]` ; `Headings == [(1, 1, 0)]` |
+| `Html_closed_by_container_exit` | `"> <pre>\n> a\nx\n"` | `[(0, 1, Html)]` (la ligne `x` ne continue pas la citation : un bloc HTML n'admet pas de continuation paresseuse) |
 
 Plus un `[Theory]` `Atx_content_shared_helper` sur `AtxHeadingContent(line)` avec les six lignes du tableau de spec §3.1 et leurs contenus (`foo ### b`, `foo \###`, `foo#`, `foo`, chaîne vide, `A  B`). La ligne `# foo<TAB>###<TAB>` s'écrit `"# foo\t###\t"`.
 
@@ -272,7 +274,7 @@ Spec §3 (mesure par défaut), §3.2 (`N`), §4.1 (en-tête, troncature, hash), 
   - `const int ElementLimit = 200`, `const int SlugLimit = 64`, `const string HeaderSeparator = " > "`, `const string PrefixTerminator = "\n\n"`
   - `string Normalize(string body)` : `N` = `\r\n` → `\n`, surrogate isolé → U+FFFD ; `\r` isolé conservé
   - `int CountCodePoints(string text)` : la mesure par défaut
-  - `string Slug(string rawHeadingContent)` : règle de spec §4.3 ; le parcours **s'arrête dès que 64 points de code ont été gardés** ; vide → `section`
+  - `string Slug(string rawHeadingContent)` : règle de spec §4.3, minuscules par **`UnicodeCaseFold.ToLowercase`** (la casse complète Unicode déjà partagée avec le tri des titres, `Internal/UnicodeCaseFold.cs` ; jamais `Rune.ToLowerInvariant` seul, qui laisse `İ` inchangé) ; le parcours **s'arrête dès que 64 points de code ont été gardés** ; vide → `section`
   - `string TruncateElement(string element)` → `DisplayText.TruncateCodePoints(element, ElementLimit)`
   - `string Header(string titleOrId, IReadOnlyList<string> rawHeadings)` : chaque élément passé par `TruncateElement`, joints par ` > `
   - `string Prefix(string header)` → `header + PrefixTerminator`
@@ -283,12 +285,13 @@ Spec §3 (mesure par défaut), §3.2 (`N`), §4.1 (en-tête, troncature, hash), 
   - `Normalize("a\r\nb\rc")` == `"a\nb\rc"` ; `Normalize("a\uD800b")` == `"a\uFFFDb"` ;
   - `CountCodePoints("\U0001F600a")` == 2 ;
   - `Slug("**A** &amp; B")` == `"a-amp-b"` ; `Slug("[A](x)")` == `"ax"` ; `Slug("!!!")` == `"section"` ; `Slug("Été 2026")` == `"été-2026"` ; `Slug("Ωmega")` == `"ωmega"` ;
+  - `Slug("Ωmega İstanbul")` == `"ωmega-istanbul"` : `UnicodeCaseFold.ToLowercase` donne `i` + U+0307 pour `İ`, et la marque U+0307 n'est ni lettre ni chiffre, donc retirée. Le même littéral est vérifié contre le binaire AOT en tâche 9 ;
   - `Slug(new string('a', 100))` == `new string('a', 64)` ; `Slug(new string('!', 199) + "abc")` == `"abc"` (le slug part du brut) ;
   - propriété : sur 1 000 chaînes aléatoires (graine fixe), `Slug` ne contient jamais `.`, `~`, `/` ni `#` ;
   - `Header("Orders", ["Schema", "Partitioning"])` == `"Orders > Schema > Partitioning"` ; `Header("T", [])` == `"T"` ; `Header("T", [new string('h', 300)])` == `"T > " + new string('h', 199) + "…"` ;
   - `EmbedText("T", "x")` == `"T\n\nx"` ; `EmbedHash("T\n\nx")` égal au hash calculé dans le test par `"sha256:" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes("T\n\nx")))`.
 
-- [ ] **Step 2: Lancer** → échec. **Step 3: Implémenter** (BCL : `Rune`, `Rune.ToLowerInvariant`, `SHA256.HashData`, `Convert.ToHexStringLower`). **Step 4: Lancer** → vert.
+- [ ] **Step 2: Lancer** → échec. **Step 3: Implémenter** (BCL : `Rune`, `UnicodeCaseFold.ToLowercase`, `SHA256.HashData`, `Convert.ToHexStringLower`). **Step 4: Lancer** → vert.
 
 - [ ] **Step 5: Commit** `feat(passages): PassageText normalisation, slug, header and embed hash`
 
@@ -310,7 +313,9 @@ Spec §3 (tout).
   - `public static IReadOnlyList<PassageSection> PassageSplitter.Split(string body, string contextTitle, PassageBudget? budget = null)`
 - Produces (interne, pour les tests de coût) :
   - `internal sealed class PassageWork { public long MeasuredCodePoints; public long VisitedLines; }`
-  - `internal static IReadOnlyList<PassageSection> PassageSplitter.Split(string body, string contextTitle, PassageBudget? budget, PassageWork work)`, où `MeasuredCodePoints` additionne les points de code de chaque chaîne passée à la mesure, et `VisitedLines` compte chaque ligne lue par le découpeur.
+  - `internal static IReadOnlyList<PassageSection> PassageSplitter.Split(string body, string contextTitle, PassageBudget? budget, PassageWork work)`, où `MeasuredCodePoints` additionne les points de code de chaque chaîne passée à la mesure.
+  - **Points de comptage de `VisitedLines`**, et aucun autre : +1 par ligne dans la passe de coupure (affectation de chaque ligne de `N(body)` à sa section) ; +1 par ligne d'une section qui dépasse le budget, dans la formation de ses blocs. Les parcours internes de `LfLines` et de `LinkScanner.ScanBlockStructure` ne comptent pas. D'où `VisitedLines ≤ 2 × L`, avec L = nombre de lignes de `N(body)`.
+  - **Structure de données imposée** : les blocs d'une section sont calculés **une fois** (plages d'indices de lignes, et offsets dans `N(body)`). Les regroupements, la dichotomie et les morceaux manipulent des plages de blocs et produisent `Text` comme tranche de `N(body)` par offsets, sans jamais reparcourir les lignes.
 - **Sections d'origine et morceaux** : une section d'origine produit soit un élément `Part = 0`, soit des éléments `Part = 1..n` consécutifs. Un élément `Part ≥ 2` continue la section d'origine de l'élément précédent.
 - **Coût hors mesure** : le découpeur avance avec des curseurs monotones sur les lignes, les headings et les blocs atomiques. Il ne parcourt jamais toutes les lignes ni tous les blocs pour chaque section.
 
@@ -325,7 +330,7 @@ Spec §3 (tout).
 - [ ] **Step 2: Tests du budget** :
   - section qui tient avec un budget : `Part == 0` ;
   - séparateur : `Split("a\n\nb", "T", new PassageBudget(5))` → deux éléments, `(Part 1, Text "a\n\n", Oversize true)` puis `(Part 2, Text "b", Oversize false)`. Calcul : préfixe `"T\n\n"` = 3 ; `"T\n\na\n\n"` = 6 > 5, singleton, donc trop gros ; `"T\n\nb"` = 4 ;
-  - points de code contre UTF-16 : un body de 10 emoji avec `MaxSize = 13` (préfixe 3 + 10) n'est pas redécoupé, alors que `string.Length` dépasserait ; de même avec 10 caractères CJK ;
+  - points de code contre UTF-16 : un body de 10 emoji `"\U0001F600"` avec `MaxSize = 13` (préfixe 3 + 10) n'est pas redécoupé, alors que `string.Length` dépasserait ; de même avec 10 idéogrammes **hors plan de base** `"\U00020000"` (les idéogrammes courants U+4E00–U+9FFF ont `string.Length` 1 et ne prouveraient rien) ;
   - code indenté `"    a\n\n    b\n"` jamais coupé ; fence et HTML atomiques ;
   - rattachements : blancs en tête de section, blancs après la ligne de heading, ligne de heading attachée au premier bloc à contenu ;
   - section réduite à sa ligne de heading, section faite de blancs, `Split("", "T", new PassageBudget(1))` → un élément, `Part == 0`, `Oversize == true` ;
@@ -335,9 +340,9 @@ Spec §3 (tout).
 
 - [ ] **Step 3: Tests hostiles** (`PassageSplitterHostileTests`) : les entrées de spec §6.2 (100 000 headings, 10 000 frères homonymes, ligne de 10 Mo, heading d'1 Mo + 10 000 sous-sections, cas glouton `N` blocs `x` / budget `3N/2 + 3`, cas dichotomique, fences non fermées ou alternées, titres C0/C1/bidi/surrogates isolés). Pour chacun, avec `PassageWork` :
   - la partition tient ;
-  - `VisitedLines <= 4 * nombre de lignes de N(body)` ;
+  - `VisitedLines <= 2 * L`, L = nombre de lignes de `N(body)` ;
   - mesure par défaut : `MeasuredCodePoints <= 2 * |N(body)| + 3 * |sortie|`, où |sortie| = somme des `CountCodePoints(EmbedText(...))` de **tous** les éléments retournés ;
-  - mesure non additive : `MeasuredCodePoints <= 4 * (|N(body)| + |sortie|) * (1 + log2(k))`, avec `k` = nombre total de blocs du body (majorant sûr du plus grand regroupement) ;
+  - mesure non additive : `MeasuredCodePoints <= 4 * (|N(body)| + |sortie|) * (1 + log2(k))`, avec `k = max(1, L)` (majorant sûr du nombre de blocs d'un regroupement, calculable par le test, et jamais nul : `Split("", "T", budget)` mesure 3 points de code pour zéro bloc) ;
   - aucune mesure de temps.
 
 - [ ] **Step 4: Lancer** → échec. **Step 5: Implémenter** selon spec §3.1–§3.3 : `N(body)`, `SplitSpans`, `ScanBlockStructure`, coupures sur les headings `ContainerDepth == 0`, pile par niveau, contenu par `AtxHeadingContent` de la ligne ; budget en quatre étapes de spec §3.3, sommes en `long`, coupure à ⌊k/2⌋. **Step 6: Lancer** → vert ; `dotnet test producers/OkfProducer.sln`.
@@ -364,8 +369,10 @@ Spec §4 (tout).
 1. Parcourir les concepts dans l'ordre de `ConceptAudit.Run(bundle, AuditQuery.All).Findings` (déjà trié par `ConceptId.CompareTo`), en associant chaque finding à son `Concept` par id.
 2. Pour un concept : `Split(body, title ?? id.ToString(), budget)`.
 3. Regrouper les éléments en sections d'origine (un `Part ∈ {0, 1}` ouvre une section d'origine, un `Part ≥ 2` continue la précédente).
-4. Pour chaque section d'origine, dans l'ordre, une **seule fois** : profondeur `d = Headings.Count`. Garder une pile de chemins désambiguïsés indexée par profondeur. Le parent est l'entrée de profondeur `d − 1` (le préambule, `d = 0`, a le chemin vide). On calcule `slug = Slug(Headings[d − 1])`, puis le rang `k` avec un compteur par `(chemin du parent, slug)`. Le segment vaut `slug` si `k = 1`, sinon `slug.k`. Le chemin vaut `parent + "/" + segment` (ou `segment` à la profondeur 1). On empile ce chemin à la profondeur `d` et on tronque la pile au-delà.
-5. Le compteur compte **toutes** les sections d'origine, omises comprises. L'omission (spec §4.2) se décide ensuite, une fois par section d'origine, sur le texte de la section entière privé de sa ligne de heading.
+4. Pour chaque section d'origine, dans l'ordre, une **seule fois**, avec sa profondeur `d = Headings.Count` et une pile de chemins désambiguïsés indexée par profondeur :
+   - **`d == 0` (préambule)** : chemin vide, ni slug ni compteur. La pile est réinitialisée avec le chemin vide à la profondeur 0.
+   - **`d > 0`** : le parent est l'entrée de profondeur `d − 1` de la pile. On calcule `slug = Slug(Headings[d − 1])`, puis le rang `k` avec un compteur par `(chemin du parent, slug)`. Le segment vaut `slug` si `k = 1`, sinon `slug.k`. Le chemin vaut `segment` si `d = 1`, sinon `parent + "/" + segment`. On le place à la profondeur `d` et on tronque la pile au-delà.
+5. Le compteur compte **toutes** les sections d'origine, omises comprises. L'omission (spec §4.2) se décide ensuite, une fois par section d'origine, sur le texte de la section entière : privé de sa ligne de heading si `d > 0`, entier pour le préambule.
 6. Chaque élément émis prend `SectionId = conceptId + "#" + chemin`, puis `Id = SectionId` si `Part = 0`, sinon `SectionId + "~" + Part`. `Ordinal` compte les éléments émis du concept, à partir de 0.
 
 - [ ] **Step 1: Tests qui échouent**, chacun avec un bundle construit par `TempDir` :
@@ -373,11 +380,11 @@ Spec §4 (tout).
   - `stale_after: 2030-01-01T02:00:00+02:00` → `StaleAfter` à `2030-01-01T00:00:00Z` ;
   - concepts malformés de spec §6.3 (`retired`/`not-a-date`, `[deprecated]`/`{bad: value}`), et les cas `null`, `~`, vide non cité, `""` contre le tableau de spec §2.3 C ;
   - `ReviewOutdated` : `generated.at` postérieur à la relecture → `true` ; seulement `timestamp` postérieur → `true` ; jamais relu → `false` ; `generated.at` illisible avec `timestamp` postérieur → `false` ;
-  - **ordre** : fichiers `a.md`, `a/b.md`, `a-b.md` → concepts dans l'ordre `ConceptId.CompareTo` (`a`, `a/b`, `a-b` ; à confirmer en écrivant l'attendu à partir de `CompareTo` sur ces trois ids, pas à la main) ; passages dans l'ordre du document ;
+  - **ordre** : fichiers `a.md`, `a/b.md`, `a-b.md` → concepts dans l'ordre littéral `["a", "a/b", "a-b"]` (alors que `bundle.Concepts` mettrait `a/b` avant `a`) ; passages dans l'ordre du document ;
   - omissions avant budget, et une section omise compte dans les rangs : `"# A\n# A\nx\n"` → seul passage émis `c#a.2` ;
   - ids : `"# A\nx\n# A\ny\n# A-1\nz\n"` → `c#a`, `c#a.2`, `c#a-1` ; `"# !!!\nx\n# ???\ny\n# section-1\nz\n"` → `c#section`, `c#section.2`, `c#section-1` ; `"# A\n## X\nun\n# A\n## X\ndeux\n"` → `c#a/x`, `c#a.2/x`, et après insertion d'un `# A` entre les deux, le second devient `c#a.3/x` ;
   - morceaux : `~1`, `~2`, `SectionId` sans suffixe ; préambule redécoupé `c#~1` ;
-  - **morceaux et homonymes** : `"# A\npara1\n\npara2\n# A\ny\n## B\nz\n"` avec `MaxSize` qui coupe la première section en deux, puis sans budget. Attendu avec budget : `c#a~1`, `c#a~2`, `c#a.2`, `c#a.2/b`. Sans budget : `c#a`, `c#a.2`, `c#a.2/b`. Les `SectionId` sont identiques dans les deux cas ;
+  - **morceaux et homonymes** : `"# A\npara1\n\npara2\n# A\ny\n## B\nz\n"`, titre `T`, d'abord avec `MaxSize = 20`, puis sans budget. Calcul : la première section fait 24 (> 20) et se coupe en morceaux de 18 et 13 ; la seconde `# A` fait 13 ; `## B` fait 18. Attendu avec budget : `c#a~1`, `c#a~2`, `c#a.2`, `c#a.2/b`, ordinaux 0 à 3, aucun `Oversize`. Sans budget : `c#a`, `c#a.2`, `c#a.2/b`, ordinaux 0 à 2. Après regroupement des morceaux consécutifs par section d'origine, les `SectionId` des deux exports sont identiques, section par section ;
   - deux headings `new string('x', 64) + "AAA"` et `new string('x', 64) + "BBB"` → segments `new string('x', 64)` et `new string('x', 64) + ".2"` ;
   - stabilité : `"# [A][r]\nx\n# Z\ny\n"` et la même chaîne + `"\n[r]: /target\n"` → même `SectionId` pour la première section ; l'exemple de la fence de spec §4.3 (`c#b/c` → `c#a/c`) ;
   - troncature : `Headings` tronqués à 200 ; `Title` d'un titre de 300 caractères **intégral** ; l'en-tête de `EmbedText` contient le titre tronqué ;
@@ -430,10 +437,11 @@ Spec §5, §6.4.
 
 - [ ] **Step 1: Tests CLI qui échouent** (`CliTests`) :
   - `passages` ajouté à `AllVerbs` et aux deux théories existantes ;
-  - `--max-chars 0`, `-1`, `abc`, `+5`, `" 5"` → code 1, stdout vide, ``--max-chars expects a positive integer, got '…'`` ; le bundle n'est **pas** lu : sur un chemin inexistant, le message reste celui de `--max-chars` ;
+  - `--max-chars 0`, `-1`, `abc`, `+5`, `" 5"`, `2147483648` → code 1, stdout vide, ``--max-chars expects a positive integer, got '…'`` ; le bundle n'est **pas** lu : sur un chemin inexistant, le message reste celui de `--max-chars` ;
+  - `--max-chars` valide qui coupe : un concept dont une section dépasse → au moins une ligne dont l'`id` se termine par `~1`, code 0 ;
   - `--max-chars` en dernier argument → code 1, ``--max-chars requires a value`` ;
   - bundle inexistant → code 1, stdout vide ;
-  - **échec fatal avec problèmes récupérables** : un concept valide, un fichier au frontmatter illisible et un fichier aux octets UTF-8 invalides (écrits par `File.WriteAllBytes`, comme `BundleTests.cs:193`) → code 1, stdout **vide**, une ligne `error: …` sur stderr ;
+  - **échec fatal après un problème récupérable** : `a-valid.md` (concept valide), `b-malformed.md` (frontmatter illisible) et `z-invalid-utf8.md` (octets UTF-8 invalides, écrits par `File.WriteAllBytes`, comme `BundleTests.cs:193`). Les noms fixent l'ordre des clés : le problème récupérable est rencontré **avant** l'erreur fatale (`Bundle.cs:393`). Attendu : code 1, stdout **vide**, une seule ligne `error: …` sur stderr et **aucune** ligne `warning:` ;
   - un concept valide et un fichier au frontmatter illisible → stdout = les lignes du concept valide, stderr = une ligne `warning: skipped …`, code 1 ;
   - même cas sans aucun concept valide → stdout vide, code 1 ;
   - **Review Focus 3** : `a.md` valide et `a#b.md` → une ligne `warning: skipped …a#b.md…`, code 1 ;
@@ -442,16 +450,16 @@ Spec §5, §6.4.
   - **Review Focus 5** : un bundle avec `index.md` et `log.md` → aucune ligne dont `conceptId` vaut `index` ou `log` ;
   - `okf passages --help` → code 0 et l'usage du verbe ; `okf --help` contient la ligne `passages`.
 
-- [ ] **Step 2: Tests machine** (`MachineOutputTests`) sur un bundle construit dans le test, aux valeurs **contrastées** : un concept `human-reviewed`, `deprecated`, avec `stale_after` et un heading dupliqué ; un autre `unverified`, `draft`, sans échéance, avec `generated.at` postérieur à une relecture. Pour **chaque ligne**, un attendu complet des **20 propriétés**, dérivé à la main dans le test (pas recopié d'une sortie), comparé valeur par valeur après `JsonDocument.Parse`. Plus : les noms de propriétés, dans l'ordre, valent exactement la liste de spec §4.1 ; `text` égal à la tranche de `N(body)` calculée dans le test ; `embedHash` recalculé. Mettre à jour la phrase « the four machine outputs » de `tests/fixtures/README.md` (cinq, avec `passages`).
+- [ ] **Step 2: Tests machine** (`MachineOutputTests`) sur un bundle construit dans le test, aux valeurs **contrastées** : un premier concept `human-reviewed` (une entrée `verified` `human:…`), `deprecated`, avec `stale_after`, un heading dupliqué, et un `generated.at` **postérieur** à sa relecture, donc `reviewOutdated: true` ; un second `unverified` (aucune entrée `verified`), `draft`, sans échéance ni `generated`, donc `reviewOutdated: false`. Un concept `unverified` ne peut pas avoir de relecture dépassée : `Trust.DeriveTier` et `IsReviewOutdated` lisent la même liste `verified`. Pour **chaque ligne**, un attendu complet des **20 propriétés**, dérivé à la main dans le test (pas recopié d'une sortie), comparé valeur par valeur après `JsonDocument.Parse`. Plus : les noms de propriétés, dans l'ordre, valent exactement la liste de spec §4.1 ; `text` égal à la tranche de `N(body)` calculée dans le test ; `embedHash` recalculé. Mettre à jour la phrase « the four machine outputs » de `tests/fixtures/README.md` (cinq, avec `passages`).
 
 - [ ] **Step 3: Lancer** → échec. **Step 4: Implémenter** `CmdPassages` : valider `--max-chars` d'abord, puis `Load(path)` (le chargement est terminé avant toute écriture), puis `foreach` sur `PassageExport.Enumerate` en écrivant chaque ligne (`JsonSerializer.Serialize(json, CliJsonContext.Default.PassageJson)` + `"\n"`), puis les avertissements sur `stderr`, puis le code (1 si `bundle.ParseProblems.Count > 0`). **Step 5: Lancer** → vert.
 
 - [ ] **Step 6: Golden.**
   1. Ajouter `["Passages_jsonl_matches_golden"] = ["passages.jsonl"]` à `GoldenUpdate.Groups`.
   2. Ajouter `Passages_jsonl_matches_golden` dans `GoldenParityTests` : `WithRepoRootAsCwd(() => Run("passages", "tests/fixtures/okf_v02"))`, code 0, comparaison par le même helper que les autres groupes (`AssertGolden` ou son équivalent dans ce fichier).
-  3. Capture, en deux exécutions :
-     - `OKF_UPDATE_GOLDEN=Passages_jsonl_matches_golden dotnet test OKF4net.sln --filter "FullyQualifiedName~GoldenParityTests.Passages_jsonl_matches_golden"`, qui écrit le fichier puis échoue par conception ;
-     - la même commande **sans** `OKF_UPDATE_GOLDEN`, qui passe.
+  3. Capture, en deux exécutions, dans la forme décrite par `tests/fixtures/README.md`. En PowerShell (cette machine) :
+     - `$env:OKF_UPDATE_GOLDEN = 'Passages_jsonl_matches_golden'; dotnet test OKF4net.sln --filter "FullyQualifiedName~GoldenParityTests.Passages_jsonl_matches_golden"`, qui écrit le fichier puis échoue par conception ;
+     - `Remove-Item Env:OKF_UPDATE_GOLDEN`, puis la même commande `dotnet test`, qui passe.
   4. **Lire** `passages.jsonl` : il contient 2 lignes (`metrics/dau#`, et `metrics/legacy#citations`, le préambule vide de ce concept étant omis). Vérifier chaque champ à la main contre `tests/fixtures/okf_v02`.
   5. Ajouter la ligne du tableau de `tests/fixtures/README.md` : invocation ; ce que le golden seul garde (l'ordre des lignes, l'échappement JSON) ; ce qui est figé ailleurs (`MachineOutputTests`, `PassageExportTests`).
   6. `git status` ne montre **aucun autre** golden modifié, et `GoldenUpdateTests` passe.
@@ -466,16 +474,19 @@ if (-not $lines) { throw "okf passages wrote nothing" }
 foreach ($l in $lines) {
   $o = $l | ConvertFrom-Json
   $names = ($o.PSObject.Properties | ForEach-Object Name) -join ','
-  if ($names -ne $expected) { throw "unexpected passage properties: $names" }
-  if ($o.format -ne 'okf-passages/1' -or -not $o.embedHash.StartsWith('sha256:')) { throw "unexpected passage line: $l" }
+  if ($names -cne $expected) { throw "unexpected passage properties: $names" }
+  if ($o.format -cne 'okf-passages/1' -or -not $o.embedHash.StartsWith('sha256:')) { throw "unexpected passage line: $l" }
 }
 $dir = New-Item -ItemType Directory -Force "dist/passages-smoke-${{ matrix.rid }}"
 Set-Content -Encoding utf8NoBOM -Path "$dir/c.md" -Value "---`ntype: Note`ntitle: T`n---`n# Ωmega İstanbul`nx`n"
-$o = (& $env:OKF_BIN passages $dir) | ConvertFrom-Json
-if ($o.id -ne 'c#ωmega-istanbul') { throw "AOT slug differs from the pinned one: $($o.id)" }
+$slugLines = @(& $env:OKF_BIN passages $dir)
+if ($LASTEXITCODE -ne 0) { throw "okf passages failed on the Unicode smoke bundle" }
+if ($slugLines.Count -ne 1) { throw "expected exactly one passage, got $($slugLines.Count)" }
+$o = $slugLines[0] | ConvertFrom-Json
+if ($o.id -cne 'c#ωmega-istanbul') { throw "AOT slug differs from the pinned one: $($o.id)" }
 ```
 
-L'attendu `c#ωmega-istanbul` est aussi figé par un test xunit (`PassageTextTests`, `Slug("Ωmega İstanbul")`). Si ce test donne autre chose en .NET hôte, aligner **les deux** littéraux sur la sortie hôte et noter l'écart éventuel avec l'AOT (`InvariantGlobalization`) dans le CHANGELOG.
+Les comparaisons utilisent `-cne` : `-ne` ignore la casse en PowerShell et laisserait passer `Ωmega` ou `SectionId`. L'attendu `c#ωmega-istanbul` est aussi figé par le test xunit de la tâche 5 (`Slug("Ωmega İstanbul")`). **Un écart entre l'hôte et le binaire AOT est un échec à investiguer**, jamais un littéral à réaligner sur la sortie observée.
 
 - [ ] **Step 8: Lancer** `dotnet test OKF4net.sln`, puis `dotnet publish src/OKF4net.Cli -c Release`, et exécuter le binaire publié sur `tests/fixtures/okf_v02` : sortie identique au golden.
 
