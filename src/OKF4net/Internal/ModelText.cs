@@ -145,7 +145,9 @@ internal static class ModelText
 
     /// <summary>
     /// <paramref name="value"/>, made safe to sit inside one line of
-    /// model-facing text: see the type's remarks for the rule. Idempotent, and
+    /// model-facing text: see the type's remarks for the rule (a tag character
+    /// the removals would assemble from two lone halves is removed too, so the
+    /// output never holds one). Idempotent, and
     /// the identity on any value <see cref="NeedsFold"/> does not flag (the
     /// same instance is returned).
     /// </summary>
@@ -184,6 +186,12 @@ internal static class ModelText
                     break;
                 case ModelTextCharClass.Bidi:
                 case ModelTextCharClass.Invisible:
+                    break;
+                case ModelTextCharClass.Ordinary when c is >= (char)0xDC00 and <= (char)0xDC7F && sb.Length > 0 && sb[^1] == (char)0xDB40:
+                    // A lone tag high surrogate that a removal just put next to a tag low
+                    // surrogate (#251 review): joined, they would be a tag character in the
+                    // output. Both halves are removed, so the output never holds one.
+                    sb.Length--;
                     break;
                 default:
                     sb.Append(c);
