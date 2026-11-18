@@ -7,7 +7,7 @@ l'implémentation parte d'une conception plutôt que d'un problème ouvert.
 Prérequis bloquants : §6.
 Design lié : `2026-11-18-okf-passages-design.md`, qui livre le découpeur
 réutilisé ici.
-Revue externe : Codex (`gpt-6-astra`), passes 1 et 2, intégrées. Plusieurs prémisses
+Revue externe : Codex (`gpt-6-astra`), passes 1 à 3, intégrées. Plusieurs prémisses
 de la première version étaient fausses et ont été corrigées (§7).
 
 ## 1. Le besoin
@@ -104,10 +104,17 @@ le mot `Lazy` ne suffit à garantir ni l'une ni l'autre :
   l'exception, autorise en revanche plusieurs constructions concurrentes.
 
 Le protocole est donc explicite : une entrée `Lazy` en `ExecutionAndPublication`,
-et, en cas d'échec, son **remplacement conditionnel** (on ne retire l'entrée
-que si c'est encore celle qui a échoué), pour que l'appel suivant recommence.
-Les tests couvrent les courses entre échec, nouvelle tentative et publication
-réussie.
+et, en cas d'échec, son **retrait conditionnel et indivisible** (on ne retire
+l'entrée que si c'est encore celle qui a échoué, par une comparaison et un
+retrait en une seule opération, comme `TryRemove` sur une paire clé/valeur),
+pour que l'appel suivant recommence. Les tests couvrent les courses entre
+échec, nouvelle tentative et publication réussie.
+
+**Portée de la garantie** : au plus une construction réussie par clé **et par
+période de résidence** de son entrée. Une entrée évincée puis recréée est
+reconstruite, et c'est normal. Une entrée **en construction** n'est jamais
+évincée, sinon deux constructions concurrentes réussiraient pour la même clé.
+La politique d'éviction elle-même reste à choisir (§6).
 
 **La clé** inclut la configuration de découpage : la valeur du budget, et
 l'identité de la mesure. Une fermeture de delegate peut garder la même identité

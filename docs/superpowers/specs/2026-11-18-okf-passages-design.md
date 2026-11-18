@@ -43,8 +43,10 @@ Chaque consommateur réécrit donc son découpage, et il perd deux choses :
 ### 1.2 Ce qu'il ne fait pas
 
 Aucun embedding, aucune base vectorielle, aucun tokenizer embarqué, aucune
-modification de `ConceptSearch`. Rien ne change au chargement d'un bundle.
-Trois corrections de briques partagées sont des prérequis (§2.3).
+modification de `ConceptSearch`. L'export n'ajoute aucun calcul au chargement
+d'un bundle. Trois corrections de briques partagées sont des prérequis (§2.3).
+L'une d'elles (A) corrige les liens relevés au chargement sur les entrées
+qu'elle concerne : c'est voulu, et ses tests le vérifient.
 
 ## 2. Architecture
 
@@ -84,10 +86,10 @@ une preuve de conformité générale, et la passe a au moins un écart connu
 
 On en tire, **depuis la même passe**, sans seconde grammaire :
 
-- **les headings** : pour chaque heading ATX, son index de ligne, son niveau,
-  son texte (§3.1) et le nombre de conteneurs ouverts. Ce nombre est relevé
-  **après** fermeture des conteneurs non continués et ouverture des nouveaux,
-  là où la passe classe la ligne comme heading.
+- **les headings** : pour chaque heading ATX, son index de ligne, son niveau
+  et le nombre de conteneurs ouverts. Ce nombre est relevé **après** fermeture
+  des conteneurs non continués et ouverture des nouveaux, là où la passe classe
+  la ligne comme heading. Le texte du heading ne vient pas de la passe (§3.1).
 - **les intervalles de blocs atomiques** (§2.3, tâche B) : les plages de lignes
   qui appartiennent à un bloc de code (délimité ou indenté) ou à un bloc HTML,
   **lignes blanches internes comprises**.
@@ -115,23 +117,54 @@ est lancé à la fin de chacune (`CLAUDE.md`).
   HTML seule sur sa ligne (`:1442`), la passe accepte n'importe quel espace
   Unicode (`IsWhiteSpace`). CommonMark n'admet que l'espace et la tabulation.
   Exemple : `"~~~\n~~~ \n# H\nx\n~~~\n"` ferme la fence à la deuxième
-  ligne, et `# H` devient un heading. On corrige les trois sites (U+0020 et
-  U+0009 seulement), avec un test de non-régression par site.
+  ligne, et `# H` devient un heading. On corrige ces trois sites seulement
+  (U+0020 et U+0009). Les autres usages d'espaces de la passe, dans les
+  labels par exemple, ne sont pas concernés et ne changent pas. Chaque site a
+  son test de non-régression.
+
+  **Effet voulu sur le chargement** : `LinkScanner` construit aussi les liens
+  du `Bundle`. Dans `"~~~\n~~~ \n[x](missing.md)\n~~~\n"`, le lien est
+  aujourd'hui relevé après la fermeture erronée ; après A, il reste dans le code
+  et disparaît du graphe. Les liens cassés, `info`, les diagnostics de
+  validation et `graph` changent donc **pour ces entrées**. Les tests des
+  consommateurs (liens, références de notes, headings conventionnels, entrées
+  d'index) vérifient ces changements attendus. Aucune entrée de
+  `tests/fixtures` ne contient ces espaces : aucun golden ne devrait bouger, et
+  tout diff reste soumis au régime de `tests/fixtures/README.md`.
 - **B — Intervalles de blocs.** La passe vide les lignes de code sans dire à
   quel bloc appartient une ligne blanche. Dans `"    a\n\n    b\n"`, la ligne
   blanche fait partie du **même** bloc de code indenté (CommonMark §4.4), mais
   la passe la traite comme une ligne blanche ordinaire. La passe expose donc les
-  intervalles de blocs, en différant la classification des lignes blanches
-  jusqu'à savoir si le bloc indenté continue. Sa sortie existante (paires
-  `Raw`/`Blanked`) ne change pas.
+  intervalles de blocs, enregistrés à part, aux branches de classification
+  existantes. Pour le code indenté, elle garde le début du bloc et une plage de
+  lignes blanches en attente : la plage entre dans le bloc s'il continue, elle
+  en sort s'il se termine. Un changement de conteneur ferme le bloc, car la
+  profondeur seule ne distingue pas deux éléments de liste successifs. Sa
+  sortie existante (paires `Raw`/`Blanked`) ne change pas. Cas figés :
+  `"    a\n\n    b\n\np\n"` (un bloc avec son blanc interne, sans son blanc
+  final) et `"-     a\n\n-     b\n"` (deux blocs distincts).
 - **C — Valeurs de cycle de vie non scalaires.** `Frontmatter.Lifecycle` passe
   `status` et `stale_after` par `AsDisplayString()`, qui rend `null` pour une
   liste ou un mapping. `status: [deprecated]` est alors lu comme absent, donc
-  `stable` et connu. On corrige la brique partagée : une valeur **présente mais
-  non scalaire** donne `StatusIsKnown = false` pour `status`, et
-  `StaleAfterMalformed = true` pour `stale_after`. L'audit et le validateur en
-  profitent aussi. C'est un changement sémantique pour ces bundles malformés, à
-  noter au CHANGELOG.
+  `stable` et connu. On corrige la brique partagée **sans changer le sens des
+  membres existants** :
+  - `Lifecycle` gagne deux propriétés, `StatusNotScalar` et
+    `StaleAfterNotScalar`, posées par `Frontmatter.Lifecycle`, qui voit la
+    valeur YAML. `StatusIsKnown`, `StaleAfterRaw` et `StaleAfterMalformed`
+    gardent leur sens. Il n'y a **aucune valeur sentinelle** dans
+    `StaleAfterRaw`, qui fuirait dans `audit --json`.
+  - Côté validateur, `status` non scalaire est déjà signalé (`StatusNotScalar`),
+    et rien ne change : modifier `StatusIsKnown` aurait ajouté un second
+    diagnostic parasite (`StatusUnknown` avec un texte vide). `stale_after` non
+    scalaire n'est signalé par rien aujourd'hui, puisque `CheckTemporal` ne
+    s'exécute que si `StaleAfterRaw` est non nul. On ajoute le warning
+    symétrique `StaleAfterNotScalar`, **à la fin** de l'enum `DiagnosticCode`.
+    Ses tests fixent la multiplicité exacte des diagnostics pour chaque cas,
+    pas seulement leur présence.
+  - L'audit transporte les nouvelles propriétés sans changer ses rendus.
+
+  C'est un changement sémantique de `okf validate` pour ces bundles malformés
+  (un warning de plus), noté au CHANGELOG.
 
 ## 3. Le découpeur — `PassageSplitter`
 
@@ -175,13 +208,16 @@ autant (§3.3), mais le résultat n'est plus garanti.
 - **Les headings setext ne coupent pas** en v1, bien que la passe les
   reconnaisse. C'est une limite documentée, sans perte : la section est
   simplement plus grosse. On l'étendra s'il y a une demande.
-- **Le texte d'un heading** est la projection que la passe relève déjà, et
-  **pas** le texte rendu : le contenu ATX, sans les `#` d'ouverture et de
-  fermeture ni les espaces ou tabulations aux bords. Les marqueurs d'emphase,
-  les entités et les crochets de lien restent : `# **A** &amp; B` donne
-  `**A** &amp; B`, et `# [A](x)` donne `[A]`. Cette projection est figée par
-  des exemples dans les tests. Obtenir un vrai texte rendu demanderait une
-  évolution de la passe, hors périmètre.
+- **Le texte d'un heading** est son **contenu ATX brut**, tiré de sa seule
+  ligne : sans l'indentation, les `#` d'ouverture, la séquence de `#` de
+  fermeture (précédée d'un espace ou d'une tabulation) et les espaces ou
+  tabulations aux bords (CommonMark §4.2). Ce n'est **pas** le texte rendu : le
+  markdown inline reste tel quel. `# **A** &amp; B` donne `**A** &amp; B`, et
+  `# [A](x)` donne `[A](x)`. La projection « texte visible » de `LinkScanner`
+  est écartée parce qu'elle dépend de tout le body : elle masque `[r]` dès
+  qu'une définition `[r]: /x` apparaît ailleurs, si bien que l'id de
+  `# [A][r]` changerait quand une **autre** section change. Le contenu brut ne
+  dépend que de la ligne. Il est figé par des exemples dans les tests.
 - La pile des headings : un heading de niveau n dépile tout ce qui est de
   niveau ≥ n, puis s'empile. Un saut de niveau (H1 → H3) est toléré.
 
@@ -219,6 +255,12 @@ Le budget s'applique à **`embedText`** (§4.1), puisque c'est lui que le modèl
 d'embedding reçoit. Une section dont l'`embedText` complet tient dans le budget
 n'est **pas** redécoupée : `Part = 0`, même quand un budget est fourni.
 
+Une section **sans bloc de contenu** (vide, ou faite seulement de sa ligne de
+heading et de lignes blanches) n'est jamais redécoupée non plus : `Part = 0`,
+et `Oversize = true` si son `embedText` dépasse le budget. C'est le cas de
+`Split("", "T", new PassageBudget(1))`, dont le préambule vaut `"T\n\n"`.
+L'export omet de toute façon ces sections (§4.2).
+
 **Blocs.** Une section qui dépasse se découpe en blocs aux lignes blanches qui
 ne sont dans aucun intervalle atomique (§2.2). Un bloc de code ou un bloc HTML,
 lignes blanches internes comprises, est atomique. Les règles de rattachement :
@@ -252,15 +294,23 @@ tient toujours.
 **Coût garanti, en caractères soumis à `Measure`** (c'est ce que comptent les
 tests, §6.2, pas des appels ni du temps) :
 
+Le travail d'une section comprend : la mesure de son `embedText` complet (pour
+savoir si elle tient), puis, si elle dépasse, la mesure du préfixe, celle de
+chaque bloc et la vérification de chaque regroupement.
+
 - **avec la mesure par défaut**, qui est exactement additive sur une
-  concaténation, la vérification de l'étape 3 ne coupe jamais rien. Le coût est
-  O(taille de `N(body)` + taille de la sortie) : doubler l'entrée double au plus
-  le travail.
+  concaténation, la vérification de l'étape 3 ne coupe jamais rien. Le total
+  est majoré explicitement : **caractères mesurés ≤ 2 × |N(body)| + 3 × |sortie|**,
+  où |sortie| est la somme des `embedText` émis (préfixes compris). La borne est
+  linéaire, mais ce n'est **pas** un ratio fixe entre deux tailles : franchir le
+  seuil « la section tient » ajoute les phases de découpage, et peut faire plus
+  que doubler le travail pour une entrée deux fois plus grande.
 - **avec une `Measure` quelconque**, chaque niveau de dichotomie peut remesurer
-  les mêmes caractères. Le coût est O((taille de `N(body)` + taille de la
-  sortie) × log k), où k est le nombre de blocs du plus grand regroupement
-  initial. Aucun préfixe grossissant n'est remesuré. Ce design garantit le
-  volume de texte soumis à la mesure, pas le coût propre de celle-ci.
+  les mêmes caractères. Le coût est O((|N(body)| + |sortie|) × (1 + log₂ k)),
+  où k est le nombre de blocs du plus grand regroupement initial (le `1 +`
+  couvre le cas où tous les regroupements sont des singletons). Aucun préfixe
+  grossissant n'est remesuré. Ce design garantit le volume de texte soumis à la
+  mesure, pas le coût propre de celle-ci.
 
 `MaxSize` ≤ 0 lève `ArgumentOutOfRangeException`. Sans budget, rien n'est
 redécoupé : `Part` vaut 0 et `Oversize` vaut `false` partout, quelle que soit la
@@ -317,10 +367,10 @@ respecte trivialement.
 | `trust` | `AuditVocabulary.Name(TrustTier)` (§5.3) |
 | `reviewOutdated` | `AuditFinding.IsReviewOutdated` (§5.2, voir plus bas) |
 | `status` | `AuditVocabulary.Name(ConceptStatus)` (§5.4) |
-| `statusKnown` | `false` si `status` est présent mais non reconnu, ou non scalaire (§2.3 C) ; il est alors lu comme `stable` |
+| `statusKnown` | `Lifecycle.StatusIsKnown && !Lifecycle.StatusNotScalar` : `false` si `status` est présent mais non reconnu, ou non scalaire (§2.3 C) ; il est alors lu comme `stable` |
 | `staleAfter` | `Lifecycle.StaleAfter` en UTC, format fixe `yyyy-MM-ddTHH:mm:ss.fffffffZ`, ou `null` |
 | `staleAfterEpochMs` | la même échéance en millisecondes Unix entières, **arrondie au supérieur**, ou `null` |
-| `staleAfterMalformed` | `true` si `stale_after` est présent mais illisible, ou non scalaire (§2.3 C) |
+| `staleAfterMalformed` | `Lifecycle.StaleAfterMalformed \|\| Lifecycle.StaleAfterNotScalar` : `true` si `stale_after` est présent mais illisible, ou non scalaire (§2.3 C) |
 
 Tous les champs sont toujours présents, dans cet ordre. Les noms sont en
 camelCase, comme `validate`/`info`/`audit --json` (`CliJsonContext`).
@@ -329,8 +379,11 @@ camelCase, comme `validate`/`info`/`audit --json` (`CliJsonContext`).
 modification (`LastChangedAt` : `generated.at`, ou à défaut le `timestamp`
 historique, §13.1) **et** une date de dernière relecture lisible (le plus
 récent `verified[].at` qui se lit comme un horodatage §5), et que la première
-est postérieure à la seconde. Un concept jamais relu vaut `false` : c'est son
-`trust` (`unverified`) qui le signale.
+est strictement postérieure à la seconde. Le choix entre `generated.at` et
+`timestamp` se fait **avant** la lecture de la date : un `generated.at` présent
+mais illisible ne retombe pas sur `timestamp`, et `reviewOutdated` vaut alors
+`false`. Un concept jamais relu vaut `false` : c'est son `trust`
+(`unverified`) qui le signale.
 
 **Troncature.** Un « élément tronqué » fait **au plus 200 points de code,
 ellipse comprise** : au-delà, on garde les 199 premiers et on ajoute `…`. C'est
@@ -359,7 +412,7 @@ pas l'id des autres.
 
 ### 4.3 Identité
 
-**Slug** (règle GitHub, appliquée au texte du heading, §3.1) : minuscules en
+**Slug** (règle GitHub, appliquée au contenu ATX brut du heading, §3.1) : minuscules en
 culture invariante. On garde lettres, chiffres, `-` et `_` (lettres Unicode
 comprises), on remplace espaces et tabulations par `-`, et on retire le reste.
 Le résultat est **coupé à 64 points de code**. Un slug vide devient `section`.
@@ -390,7 +443,9 @@ linéaire, avec un compteur par (chemin du parent, slug).
 dépend que du `conceptId` et, pour elle-même et chacun de ses ancêtres, de son
 slug et de son rang d'occurrence sous son parent. D'où :
 
-- modifier le **contenu** d'une section ne change aucun `sectionId` ;
+- modifier le **contenu** d'une section (hors lignes de heading) ne change
+  aucun `sectionId`, ni le sien ni celui d'une autre section : un slug ne
+  dépend que de la ligne de son heading (§3.1) ;
 - renommer une section change son propre `sectionId` et ceux de tous ses
   descendants, sauf si son slug ne change pas (`A!` → `A?`) ;
 - insérer, retirer ou renommer une section change le rang d'occurrence de ses
@@ -410,10 +465,16 @@ même `id` : un consommateur qui en mélange plusieurs doit préfixer lui-même
 (nom de bundle ou de source). C'est documenté, sans champ dédié.
 
 **Borne de taille.** Avec les slugs coupés à 64 et les `headings` tronqués à
-200, la partie fixe d'une ligne (tout sauf `text` et le `text` répété dans
-`embedText`) est bornée par la profondeur, quelle que soit la longueur des
-headings du body. Un heading d'1 Mo suivi de 10 000 sous-sections ne génère
-donc plus 30 milliards de caractères.
+200, la **contribution des headings** à une ligne (dans `headings`, `id`,
+`sectionId` et l'en-tête de `embedText`) est bornée par la profondeur, quelle
+que soit leur longueur dans le body. Un heading d'1 Mo suivi de 10 000
+sous-sections ne génère donc plus 30 milliards de caractères. Le reste de la
+ligne n'est **pas** borné par la profondeur : `text`, les métadonnées du
+concept répétées sur chacun de ses passages (`conceptId`, `type`, `title`,
+`tags`) et les chiffres des compteurs d'occurrence (`a.10000`). La taille d'une
+ligne est donc O(|text| + |métadonnées du concept| + profondeur ×
+(264 + chiffres d'occurrence)). Ce design ne tronque pas les métadonnées : un
+concept aux tags géants les répète sur chaque passage.
 
 ### 4.4 Péremption : une échéance, pas un booléen
 
@@ -423,7 +484,7 @@ filtre donc au moment de la requête, de deux façons :
 
 - **`staleAfterEpochMs`** (nombre entier) se compare à `now_ms`, l'heure
   courante en **millisecondes Unix entières, arrondie à l'inférieur**
-  (`int(time.time() * 1000)` en Python). C'est le seul filtre portable :
+  (`time.time_ns() // 1_000_000` en Python, sans passer par un flottant). C'est le seul filtre portable :
   certaines bases (Pinecone, par exemple) ne comparent que des nombres. Le
   filtre est quantifié à la milliseconde : une échéance à `…:00.0000001Z` est
   arrondie à la milliseconde suivante, et le concept passe pour périmé au plus
@@ -561,7 +622,12 @@ doivent rester inchangés.
 
   Les trois contre-exemples de la revue Codex sur `ComputationExtractor` sont
   repris tels quels.
-- **Texte des headings** : `# **A** &amp; B`, `# [A](x)`, figés.
+- **Texte des headings** : `# **A** &amp; B`, `# [A](x)`, fermeture après une
+  tabulation, figés ; et `"# [A][r]\nx\n# Z\ny\n"` contre la même chaîne suivie
+  de `"\n[r]: /target\n"` : même `sectionId` pour la première section.
+- **Section sans bloc sous budget** : `Split("", "T", new PassageBudget(1))`
+  (`Part = 0`, `Oversize = true`), et une section faite seulement de lignes
+  blanches.
 - **Budget** :
   - section qui tient entière avec un budget (`Part = 0`) ;
   - regroupement glouton ;
@@ -599,10 +665,12 @@ construites pour l'attaquer, on ne se contente pas de relire :
 - des titres pleins de caractères C0/C1, bidi et de surrogates isolés.
 
 **La linéarité se prouve en comptant** les caractères soumis à `Measure` et
-les lignes visitées, à plusieurs tailles d'entrée. On ne chronomètre jamais.
-Avec la mesure par défaut, doubler l'entrée doit doubler au plus le travail.
-Avec la mesure non additive, le travail doit rester sous la borne
-O(n × log k) de §3.3, vérifiée pour chaque taille. Pour le JSON, on reparse
+les lignes visitées, à plusieurs tailles d'entrée. On ne chronomètre jamais, et
+on ne teste pas un ratio entre deux tailles (§3.3). Avec la mesure par défaut,
+on vérifie pour chaque entrée la majoration explicite
+`mesurés ≤ 2 × |N(body)| + 3 × |sortie|`. Avec la mesure non additive, on
+vérifie `mesurés ≤ c × (|N(body)| + |sortie|) × (1 + log₂ k)` pour une
+constante `c` fixée dans le test. Pour le JSON, on reparse
 chaque ligne, on compare **les valeurs** aux attentes, et on recalcule
 `embedHash` depuis l'`embedText` reparsé. Vérifier seulement que le JSON se
 parse ne suffit pas.
@@ -613,7 +681,10 @@ parse ne suffit pas.
   `staleAfterEpochMs` et `staleAfterMalformed` correspondent à l'`AuditFinding`
   et au `Lifecycle` du même concept ;
 - les concepts malformés : `status: retired` / `stale_after: not-a-date`, et
-  `status: [deprecated]` / `stale_after: { bad: value }` (après §2.3 C) ;
+  `status: [deprecated]` / `stale_after: { bad: value }` (après §2.3 C), avec
+  dans ce dernier cas la liste exacte des diagnostics de `okf validate` :
+  `StatusNotScalar` et `StaleAfterNotScalar`, une fois chacun, et pas de
+  `StatusUnknown` ;
 - `reviewOutdated` avec `generated.at`, avec seulement le `timestamp`
   historique, sans relecture, et avec une relecture illisible ;
 - la normalisation UTC et l'arrondi au supérieur de l'epoch ;
@@ -652,7 +723,7 @@ parse ne suffit pas.
 - README : une section `okf passages`, avec un exemple de filtre côté pipeline
   (`status != "deprecated" and statusKnown and not staleAfterMalformed and not
   reviewOutdated and (staleAfterEpochMs is None or staleAfterEpochMs > now_ms)`,
-  avec `now_ms = int(time.time() * 1000)`). La section reprend aussi les règles
+  avec `now_ms = time.time_ns() // 1_000_000`). La section reprend aussi les règles
   du consommateur de §4.5, la règle de lecture de §4.7, le préfixage
   multi-bundle (§4.3), la jointure pour les champs exclus (§4.6) et la
   publication conditionnelle (§5.2).
@@ -673,6 +744,8 @@ parse ne suffit pas.
 - Le `\r` isolé comme fin de ligne (CommonMark §2.1) : limite partagée avec
   `LinkScanner` et `LfLines` (§3.2).
 - Un vrai texte rendu pour les headings (§3.1).
+- La troncature des métadonnées répétées sur chaque passage (`tags`, `title`,
+  `type`) : leur taille n'est pas bornée (§4.3).
 
 ## 9. Revue externe
 
@@ -724,3 +797,17 @@ Aucun nouveau bloquant. Les constats et leur décision :
 | `now_ms` non entier, `reviewOutdated` sans `timestamp` | `now_ms` entier arrondi à l'inférieur, définition complète (§4.1, §4.4) |
 | Audit matérialisé, mutation pendant l'énumération | mémoire annoncée, précondition (§4) |
 | Priorité des erreurs non testée en combinaison | ordre garanti par construction, tests combinés (§5.2, §6.4) |
+
+### 9.3 Passe 3
+
+Aucun bloquant. Les constats et leur décision :
+
+| Constat | Décision |
+|---|---|
+| La tâche C produirait un diagnostic parasite et ne signalerait pas `stale_after` non scalaire | nouveaux drapeaux sans changer les membres existants, warning `StaleAfterNotScalar` ajouté (§2.3 C) |
+| Le slug dépend des définitions de liens de tout le body | contenu ATX brut de la ligne (§3.1, §4.3) |
+| La borne de taille couvre plus que les headings | garantie limitée à leur contribution, reste annoncé (§4.3, §8) |
+| Section sans bloc sous budget non définie | `Part = 0`, `Oversize` selon l'`embedText` (§3.3) |
+| Le test de doublement contredit la borne | majorations explicites, `1 + log₂ k` (§3.3, §6.2) |
+| « Rien ne change au chargement » trop absolu | effet voulu de A sur les liens annoncé et testé (§1.2, §2.3 A) |
+| Construction unique du cache face à l'éviction | garantie par période de résidence (second document, §3.2) |
