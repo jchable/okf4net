@@ -76,9 +76,13 @@ are the concrete entry points.
   [#139](https://github.com/jchable/okf4net/issues/139)), its asynchronous contract
   ([#152](https://github.com/jchable/okf4net/issues/152)) and the filesystem
   reference implementation ([#140](https://github.com/jchable/okf4net/issues/140))
-  are on `dev`; what follows is tracked as issues: an embedded-resource provider
-  ([#141](https://github.com/jchable/okf4net/issues/141)), an S3 provider in its
-  own project, read-only first ([#142](https://github.com/jchable/okf4net/issues/142)),
+  are on `dev`, and so is the embedded-resource provider
+  (`OKF4net.Providers.EmbeddedResources`,
+  [#141](https://github.com/jchable/okf4net/issues/141)); what follows is tracked
+  as issues: a built-in catalog factory for it (`"provider": "embedded"` in
+  `catalog.json`, [#236](https://github.com/jchable/okf4net/issues/236)), an S3
+  provider in its own project, read-only first
+  ([#142](https://github.com/jchable/okf4net/issues/142)),
   and a per-user OS lock closing the cross-process window of the filesystem
   provider's conditional writes, deferred
   ([#178](https://github.com/jchable/okf4net/issues/178)).
