@@ -238,14 +238,19 @@ public sealed class BundleConceptWriter
 
     /// <summary>
     /// The §7 actor spelling this library uses when it stamps
-    /// <c>generated.by</c> itself: <c>"okf4net/" + OkfSpec.Version</c>. The
-    /// single source of that spelling — <see cref="ProducerActor"/> defaults
-    /// to it, and <c>OKF4net.Agents</c>' <c>OkfContextProvider.MemoryFrontmatter</c>
-    /// reads it directly rather than re-spelling <c>"okf4net/" + OkfSpec.Version</c>
-    /// a second time on a path that never goes through <see cref="ProducerActor"/>
-    /// itself (see that method's remarks).
+    /// <c>generated.by</c> itself: <c>okf4net/&lt;library version&gt;</c>, e.g.
+    /// <c>okf4net/0.8.0</c>. §7 spells a tool's actor
+    /// <c>&lt;producer&gt;/&lt;version&gt;</c> — the producer's own version, which
+    /// tells a reader which build wrote the content — so it is this assembly's
+    /// version (<see cref="ProductVersion.Library"/>, build metadata dropped),
+    /// not <see cref="OkfSpec.Version"/>, which it was until #257
+    /// (<c>okf4net/0.2</c>). The single source of that spelling —
+    /// <see cref="ProducerActor"/> defaults to it, and <c>OKF4net.Agents</c>'
+    /// <c>OkfContextProvider.MemoryFrontmatter</c> reads it directly rather than
+    /// re-spelling it a second time on a path that never goes through
+    /// <see cref="ProducerActor"/> itself (see that method's remarks).
     /// </summary>
-    internal static string DefaultProducerActor => "okf4net/" + OkfSpec.Version;
+    internal static string DefaultProducerActor { get; } = "okf4net/" + ProductVersion.Library;
 
     /// <summary>The §7 actor recorded as <c>generated.by</c> when auto-stamping.</summary>
     internal string ProducerActor { get; set; } = DefaultProducerActor;

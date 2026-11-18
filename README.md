@@ -274,9 +274,10 @@ on a thread of 512 KB or less should lower `MaxDepth`.
 Every rejected `.md` name is a `Bundle.ParseProblems` entry
 (`bundle.DisplayPath(problem)` gives the path to print; the obsolete
 `ParseErrors` projects the same list); other rejected names are skipped silently. The
-filesystem provider is writable (see "Writing through a provider" below); no
-other provider ships yet; the first ones beyond it are tracked in #141 (embedded
-resources) and #142 (S3).
+filesystem provider is writable (see "Writing through a provider" below).
+Beyond it, `OKF4net.Providers.EmbeddedResources` serves, read-only, a bundle
+embedded in an assembly at build time (see "A bundle inside your assembly"
+below, #141); an S3 provider is tracked in #142.
 
 The historical members `Bundle.TryResolveResource` and
 `Bundle.ReadResourceText(string)` still resolve through the OS filesystem, so
@@ -758,6 +759,12 @@ tool list — through a scripted `IChatClient` against `bundles/ga4`
 (`dotnet run --project samples/agents-quickstart/src/AgentsQuickstart`).
 [`samples/acme-retail-agent/`](samples/acme-retail-agent/README.md) is the
 same kind of agent over a real OpenAI-compatible endpoint.
+[`samples/agents-handoff/`](samples/agents-handoff/README.md), also with no
+model or key, hands knowledge from one agent to another over a copy of
+`bundles/ga4`: a curator with the read-write tools writes a note, and a reader
+with the read-only tools finds it in its `OkfContextProvider` context, because
+both tool sets share one `BundleHandle` (see
+[Sharing a `BundleHandle`](src/OKF4net.Agents/README.md#sharing-a-bundlehandle-and-what-can-write)).
 
 The twelve unconditional tools, plus the thirteenth conditional on an attestation
 orchestrator being wired (read → browse → graph → search → audit → write →
