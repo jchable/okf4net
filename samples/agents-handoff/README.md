@@ -88,7 +88,10 @@ the copy the two directory descriptions upstream's generator had written for
 ## Output
 
 A real run (the `generated` timestamp the curator's write stamps into the
-note is the only thing that changes between runs, and it is not printed):
+note is the only thing that changes between runs, and it is not printed).
+The byte and character counts in the transcript vary with the library
+version, since the note's `generated.by` stamp and the rendering of
+`okf_read_concept` can change from one version to the next:
 
 ```text
 OKF4net.Agents hand-off sample

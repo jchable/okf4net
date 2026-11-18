@@ -41,12 +41,13 @@ if (!Directory.Exists(sourceRoot))
 }
 
 // The curator writes, so it never writes into the repository: everything below works on a
-// throwaway copy of the bundle, deleted at exit unless --keep is given.
+// throwaway copy of the bundle, deleted at exit unless --keep is given. The copy is made
+// inside the try, so a copy that fails part-way is deleted too.
 var workRoot = Path.Combine(Path.GetTempPath(), "okf-agents-handoff-" + Guid.NewGuid().ToString("N")[..8]);
-CopyDirectory(sourceRoot, workRoot);
 
 try
 {
+    CopyDirectory(sourceRoot, workRoot);
     return await RunAsync(workRoot);
 }
 finally
@@ -56,7 +57,7 @@ finally
         Console.WriteLine();
         Console.WriteLine($"Working copy kept (--keep): {workRoot}");
     }
-    else
+    else if (Directory.Exists(workRoot))
     {
         Directory.Delete(workRoot, recursive: true);
     }
