@@ -148,17 +148,33 @@ est lancé à la fin de chacune (`CLAUDE.md`).
   liste ou un mapping. `status: [deprecated]` est alors lu comme absent, donc
   `stable` et connu. On corrige la brique partagée **sans changer le sens des
   membres existants** :
-  - `Lifecycle` gagne deux propriétés, `StatusNotScalar` et
+  - `Lifecycle` gagne deux propriétés en `init`, `StatusNotScalar` et
     `StaleAfterNotScalar`, posées par `Frontmatter.Lifecycle`, qui voit la
-    valeur YAML. `StatusIsKnown`, `StaleAfterRaw` et `StaleAfterMalformed`
-    gardent leur sens. Il n'y a **aucune valeur sentinelle** dans
-    `StaleAfterRaw`, qui fuirait dans `audit --json`.
+    valeur YAML. Ses quatre paramètres positionnels ne changent pas, ce qui
+    préserve son constructeur et sa déconstruction. `StatusIsKnown`,
+    `StaleAfterRaw` et `StaleAfterMalformed` gardent leur sens. Il n'y a
+    **aucune valeur sentinelle** dans `StaleAfterRaw`, qui fuirait dans
+    `audit --json`.
+  - Les nouveaux drapeaux ne signalent **que les séquences et les mappings**
+    (même vides). `YamlNull` (`null`, `~`, valeur vide non citée) garde son
+    traitement actuel, celui de l'absence, comme le fait déjà le validateur pour
+    `StatusNotScalar`. Une chaîne vide citée (`""`) est un scalaire : elle reste
+    un statut inconnu ou une échéance illisible, comme aujourd'hui. Résultat
+    attendu, chaque colonne pour son propre champ :
+
+    | Valeur | `statusKnown` | `staleAfterMalformed` |
+    |---|---|---|
+    | absente ou `YamlNull` | `true` | `false` |
+    | scalaire reconnu / échéance lisible | `true` | `false` |
+    | scalaire inconnu / échéance illisible, dont `""` | `false` | `true` |
+    | séquence ou mapping, même vide | `false` | `true` |
   - Côté validateur, `status` non scalaire est déjà signalé (`StatusNotScalar`),
     et rien ne change : modifier `StatusIsKnown` aurait ajouté un second
     diagnostic parasite (`StatusUnknown` avec un texte vide). `stale_after` non
     scalaire n'est signalé par rien aujourd'hui, puisque `CheckTemporal` ne
     s'exécute que si `StaleAfterRaw` est non nul. On ajoute le warning
-    symétrique `StaleAfterNotScalar`, **à la fin** de l'enum `DiagnosticCode`.
+    symétrique `StaleAfterNotScalar`, **à la fin** de l'enum `DiagnosticCode`
+    (après `KeyNotPortable`), ce qui préserve les valeurs numériques existantes.
     Ses tests fixent la multiplicité exacte des diagnostics pour chaque cas,
     pas seulement leur présence.
   - L'audit transporte les nouvelles propriétés sans changer ses rendus.
@@ -217,7 +233,24 @@ autant (§3.3), mais le résultat n'est plus garanti.
   est écartée parce qu'elle dépend de tout le body : elle masque `[r]` dès
   qu'une définition `[r]: /x` apparaît ailleurs, si bien que l'id de
   `# [A][r]` changerait quand une **autre** section change. Le contenu brut ne
-  dépend que de la ligne. Il est figé par des exemples dans les tests.
+  dépend que de la ligne.
+
+  **Une seule règle** : ce contenu est calculé par le helper privé existant de
+  `LinkScanner`, `AtxHeadingContentAt` (`Links.cs`), qui extrait déjà le
+  contenu brut séparément de la projection visible. Il est partagé (visibilité
+  `internal`), pas réécrit. La fermeture n'est retirée que si elle est
+  terminale, non échappée, précédée d'un espace ou d'une tabulation et suivie
+  seulement d'espaces ou de tabulations (CommonMark §4.2). Cas figés dans les
+  tests :
+
+  | Ligne | Contenu brut |
+  |---|---|
+  | `# foo ### b` | `foo ### b` |
+  | `# foo \###` | `foo \###` |
+  | `# foo#` | `foo#` |
+  | `# foo<TAB>###<TAB>` | `foo` |
+  | `### ###` | chaîne vide |
+  | `# A  B` | `A  B` (deux espaces conservés) |
 - La pile des headings : un heading de niveau n dépile tout ce qui est de
   niveau ≥ n, puis s'empile. Un saut de niveau (H1 → H3) est toléré.
 
@@ -301,7 +334,11 @@ chaque bloc et la vérification de chaque regroupement.
 - **avec la mesure par défaut**, qui est exactement additive sur une
   concaténation, la vérification de l'étape 3 ne coupe jamais rien. Le total
   est majoré explicitement : **caractères mesurés ≤ 2 × |N(body)| + 3 × |sortie|**,
-  où |sortie| est la somme des `embedText` émis (préfixes compris). La borne est
+  où |sortie| est la somme des `embedText` de **toutes** les sections produites
+  par le découpeur, préfixes compris, **avant** les omissions de l'export, et où
+  toutes les longueurs sont comptées dans l'unité de la mesure (points de code).
+  Compter seulement les lignes JSONL conservées rendrait la borne fausse : un
+  body vide coûte une mesure et ne donne aucune ligne. La borne est
   linéaire, mais ce n'est **pas** un ratio fixe entre deux tailles : franchir le
   seuil « la section tient » ajoute les phases de découpage, et peut faire plus
   que doubler le travail pour une entrée deux fois plus grande.
@@ -387,8 +424,10 @@ mais illisible ne retombe pas sur `timestamp`, et `reviewOutdated` vaut alors
 
 **Troncature.** Un « élément tronqué » fait **au plus 200 points de code,
 ellipse comprise** : au-delà, on garde les 199 premiers et on ajoute `…`. C'est
-la règle des descriptions du site index du viewer. Elle s'applique au titre et
-à chaque élément de `headings`. `text` n'est jamais tronqué.
+la règle des descriptions du site index du viewer. Elle s'applique à chaque
+élément de `headings`, et à la **copie** du titre (ou de l'id) dans l'en-tête
+de `embedText`. Le champ JSON `title` reste **intégral**, comme les autres
+métadonnées du concept (§4.3, §8). `text` n'est jamais tronqué.
 
 **En-tête de `embedText`** : le titre du concept (ou son id s'il n'a pas de
 titre), puis chaque élément de `headings`, tronqués, joints par ` > `. Pour le
@@ -441,7 +480,14 @@ linéaire, avec un compteur par (chemin du parent, slug).
 
 **Ce que garantit la stabilité, précisément.** Le `sectionId` d'une section ne
 dépend que du `conceptId` et, pour elle-même et chacun de ses ancêtres, de son
-slug et de son rang d'occurrence sous son parent. D'où :
+slug et de son rang d'occurrence sous son parent. Mais **quelles lignes sont des
+headings, et qui est le parent de qui, dépend de la structure de blocs** du
+body. Une modification qui ne touche aucune ligne de heading peut donc changer
+des ids si elle change cet arbre : insérer une fence `~~~` qui englobe `# B`
+fait de `# B` du code, et son enfant `## C` passe sous `A`, de `c#b/c` à
+`c#a/c`. Les garanties qui suivent valent pour les modifications qui
+**préservent les headings reconnus, leurs parents et leurs rangs
+d'occurrence**. D'où :
 
 - modifier le **contenu** d'une section (hors lignes de heading) ne change
   aucun `sectionId`, ni le sien ni celui d'une autre section : un slug ne
@@ -684,7 +730,10 @@ parse ne suffit pas.
   `status: [deprecated]` / `stale_after: { bad: value }` (après §2.3 C), avec
   dans ce dernier cas la liste exacte des diagnostics de `okf validate` :
   `StatusNotScalar` et `StaleAfterNotScalar`, une fois chacun, et pas de
-  `StatusUnknown` ;
+  `StatusUnknown` ; plus les cas `null`, `~`, valeur vide non citée et `""`
+  cité, pour chaque champ, contre le tableau de §2.3 C ;
+- la stabilité structurelle : l'exemple de la fence qui change le parent de
+  `## C` (§4.3) ;
 - `reviewOutdated` avec `generated.at`, avec seulement le `timestamp`
   historique, sans relecture, et avec une relecture illisible ;
 - la normalisation UTC et l'arrondi au supérieur de l'epoch ;
@@ -811,3 +860,16 @@ Aucun bloquant. Les constats et leur décision :
 | Le test de doublement contredit la borne | majorations explicites, `1 + log₂ k` (§3.3, §6.2) |
 | « Rien ne change au chargement » trop absolu | effet voulu de A sur les liens annoncé et testé (§1.2, §2.3 A) |
 | Construction unique du cache face à l'éviction | garantie par période de résidence (second document, §3.2) |
+
+### 9.4 Passe 4
+
+Aucun bloquant ni majeur. Verdict de Codex : **prêt pour un plan
+d'implémentation, avec réserves**. Les réserves et leur décision :
+
+| Réserve | Décision |
+|---|---|
+| Deux contrats pour le champ `title` | champ intégral, seule sa copie dans l'en-tête est tronquée (§4.1) |
+| Stabilité des ids face aux changements de structure | garantie qualifiée par la préservation de l'arbre des headings (§4.3) |
+| `YamlNull` et les nouveaux drapeaux | séquences et mappings seulement, tableau attendu (§2.3 C) |
+| Helper ATX à nommer | `AtxHeadingContentAt` partagé, cas figés (§3.1) |
+| Unité et périmètre de la majoration | sortie du découpeur avant omissions, en points de code (§3.3) |
