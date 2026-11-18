@@ -215,6 +215,7 @@ chargés. On lit l'`AuditFinding` de chaque concept et on ne recalcule rien
 
 | Champ (JSON) | Contenu |
 |---|---|
+| `format` | `okf-passages/1` : version du format de la ligne (§4.7) |
 | `id` | identité stable du passage (§4.3) |
 | `sectionId` | `id` sans le suffixe de morceau `~n` |
 | `conceptId` | `sales/orders` |
@@ -334,7 +335,23 @@ RAG. Une politique comme « relu dans les six derniers mois » ou une citation
 qui résout `sources[].id` exige une **jointure avec le bundle** par
 `conceptId`, et c'est documenté. Ajouter un champ ne casse pas un consommateur
 qui ignore les clés inconnues. Il peut casser un consommateur à schéma fermé :
-toute évolution du format est donc notée au CHANGELOG.
+toute évolution du format est donc notée au CHANGELOG, et versionnée (§4.7).
+
+### 4.7 Version du format
+
+Chaque ligne commence par `"format": "okf-passages/<n>"`. Le JSONL n'a pas
+d'en-tête de fichier, donc la ligne est le seul endroit où mettre la version.
+Un consommateur refuse une version qu'il ne connaît pas au lieu de mal lire en
+silence.
+
+- **`n` augmente** pour tout changement qu'un consommateur strict ne peut pas
+  ignorer : un champ retiré ou renommé, un type ou un sens changé, une règle
+  d'id (§4.3) ou d'en-tête (§4.1) modifiée. Cette dernière change les ids ou les
+  `embedHash` de passages dont le contenu n'a pas bougé.
+- **`n` ne change pas** pour un champ ajouté. L'ajout est noté au CHANGELOG
+  (voir §4.6 pour les consommateurs à schéma fermé).
+
+La première version publiée est `okf-passages/1`.
 
 ## 5. Le verbe — `okf passages`
 
@@ -512,7 +529,7 @@ intégration :
 | Modèle de lignes et sens de « verbatim » | `Document.Body`, `SplitSpans` (§3.2) |
 | Grammaire ATX hors fences simples | couverte par la passe de blocs (§3.1) |
 | Surrogates isolés | remplacés par U+FFFD avant tout traitement (§3.2) |
-| Ordre, version et namespace pour un consommateur | `ordinal` ajouté, namespace documenté (§4.1, §4.3) |
+| Ordre, version et namespace pour un consommateur | `ordinal` et `format` ajoutés, namespace documenté (§4.1, §4.3, §4.7) |
 | Sortie partielle publiée malgré le code 1 | publication conditionnelle documentée (§5.2) |
 | `RoundRobin` quadratique | issue #279, hors périmètre (§8) |
 | Constats propres au barreau 4 | intégrés dans `2026-11-18-passage-search-design.md` |
