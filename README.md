@@ -274,9 +274,10 @@ on a thread of 512 KB or less should lower `MaxDepth`.
 Every rejected `.md` name is a `Bundle.ParseProblems` entry
 (`bundle.DisplayPath(problem)` gives the path to print; the obsolete
 `ParseErrors` projects the same list); other rejected names are skipped silently. The
-filesystem provider is writable (see "Writing through a provider" below); no
-other provider ships yet; the first ones beyond it are tracked in #141 (embedded
-resources) and #142 (S3).
+filesystem provider is writable (see "Writing through a provider" below).
+Beyond it, `OKF4net.Providers.EmbeddedResources` serves, read-only, a bundle
+embedded in an assembly at build time (see "A bundle inside your assembly"
+below, #141); an S3 provider is tracked in #142.
 
 The historical members `Bundle.TryResolveResource` and
 `Bundle.ReadResourceText(string)` still resolve through the OS filesystem, so
