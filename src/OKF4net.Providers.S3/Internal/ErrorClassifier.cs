@@ -47,7 +47,7 @@ internal static class ErrorClassifier
             return e switch
             {
                 GuardException g => new S3RequestException(operation, g.Kind, null, key, g),
-                AmazonClientException c when IsIntegrity(c) => new S3RequestException(operation, S3FailureKind.Integrity, null, key, c),
+                _ when IsIntegrity(e, 0) => new S3RequestException(operation, S3FailureKind.Integrity, null, key, e),
                 _ => new S3RequestException(operation, S3FailureKind.Transport, null, key, e),
             };
         }
@@ -75,6 +75,28 @@ internal static class ErrorClassifier
         return new S3RequestException(operation, kind, status, key, service);
     }
 
-    private static bool IsIntegrity(AmazonClientException c) =>
-        c.Message.StartsWith(HashMismatchMessage, StringComparison.Ordinal);
+    /// <summary>How deep <see cref="IsIntegrity"/> looks into a chain of wrappers: far past any real nesting, a bound all the same.</summary>
+    private const int MaxChainDepth = 16;
+
+    /// <summary>
+    /// Whether <paramref name="e"/> is, or carries in its inner-exception chain, the SDK's hash-mismatch failure: a stream
+    /// wrapper (an IOException) or a task combinator (an AggregateException, every one of its inner exceptions) may carry
+    /// it rather than throw it bare.
+    /// </summary>
+    private static bool IsIntegrity(Exception e, int depth)
+    {
+        if (depth > MaxChainDepth)
+        {
+            return false;
+        }
+
+        if (e is AmazonClientException c && c.Message.StartsWith(HashMismatchMessage, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return e is AggregateException aggregate
+            ? aggregate.InnerExceptions.Any(inner => IsIntegrity(inner, depth + 1))
+            : e.InnerException is { } next && IsIntegrity(next, depth + 1);
+    }
 }

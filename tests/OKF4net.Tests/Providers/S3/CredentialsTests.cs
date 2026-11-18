@@ -13,7 +13,7 @@ namespace OKF4net.Tests.Providers.S3;
 public class CredentialsTests
 {
     private static readonly TimeSpan Long = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(60);
 
     private sealed class HostCredentials(Func<int, ImmutableCredentials> get) : AWSCredentials
     {

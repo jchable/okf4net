@@ -10,15 +10,6 @@ namespace OKF4net.Tests.Providers.S3;
 /// <summary>Spec D8, §4.3 ReadAsync.</summary>
 public class ReadTests
 {
-    /// <summary>
-    /// A deadline no test meets by accident: the credentials are resolved on the thread pool (spec §4.4), which a fully
-    /// loaded test run can starve for seconds. A test ABOUT the deadline drives it with a <see cref="ManualClock"/> instead.
-    /// </summary>
-    private static S3BundleSource Patient => S3Test.Local() with { RequestTimeout = TimeSpan.FromSeconds(60) };
-
-    private static S3BundleProvider Provider(FakeS3Handler fake, S3BundleSource? source = null, AWSCredentials? creds = null) =>
-        S3Test.Provider(fake, source ?? Patient, creds);
-
     private static async Task<byte[]> Bytes(BundleObject o)
     {
         using var ms = new MemoryStream();
@@ -33,7 +24,7 @@ public class ReadTests
         File.WriteAllText(Path.Combine(tmp.Path, "a.md"), "hello\n");
         var fs = await new FileSystemBundleProvider(tmp.Path).ReadAsync(BundleKey.Parse("a.md"), null, default);
         fs.Dispose();
-        using var p = Provider(S3Test.Serving(S3Test.Objects(("kb/a.md", "hello\n"))));
+        using var p = S3Test.Provider(S3Test.Serving(S3Test.Objects(("kb/a.md", "hello\n"))));
         using var o = await p.ReadAsync(BundleKey.Parse("a.md"), null, default);
         Assert.Equal(fs.Version, o.Version);
         Assert.Equal(Convert.ToHexStringLower(SHA256.HashData("hello\n"u8)), o.Version.Token);
@@ -51,7 +42,7 @@ public class ReadTests
         // a plain MD5 ETag is checked by the SDK itself, next test.)
         var etag = "\"" + Convert.ToHexStringLower(MD5.HashData("original"u8)) + "-2\"";
         var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("other", null, "text/plain"), Headers = { ETag = new System.Net.Http.Headers.EntityTagHeaderValue(etag) } }) };
-        using var p = Provider(fake);
+        using var p = S3Test.Provider(fake);
         var expected = new BundleObjectVersion(Convert.ToHexStringLower(SHA256.HashData("original"u8)));
         await Assert.ThrowsAsync<BundleVersionMismatchException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), expected, default));
         Assert.DoesNotContain(fake.Requests, r => r.Headers.IfMatch.Count > 0); // the store's If-Match is not trusted, nor sent
@@ -65,7 +56,7 @@ public class ReadTests
         // Measured on AWSSDK.S3 4.1.0: the SDK compares a single-part (hex MD5) ETag with the MD5 of the body it reads.
         var etag = S3Test.ETag("original"u8.ToArray());
         var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("other", null, "text/plain"), Headers = { ETag = new System.Net.Http.Headers.EntityTagHeaderValue(etag) } }) };
-        using var p = Provider(fake);
+        using var p = S3Test.Provider(fake);
         var e = await Assert.ThrowsAsync<S3RequestException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
         Assert.Equal(S3FailureKind.Integrity, e.Kind);
     }
@@ -73,7 +64,7 @@ public class ReadTests
     [Fact]
     public async Task An_expected_version_equal_to_the_bytes_is_served()
     {
-        using var p = Provider(S3Test.Serving(S3Test.Objects(("kb/a.md", "original"))));
+        using var p = S3Test.Provider(S3Test.Serving(S3Test.Objects(("kb/a.md", "original"))));
         var expected = new BundleObjectVersion(Convert.ToHexStringLower(SHA256.HashData("original"u8)));
         using var o = await p.ReadAsync(BundleKey.Parse("a.md"), expected, default);
         Assert.Equal(expected, o.Version);
@@ -93,27 +84,38 @@ public class ReadTests
                 return Task.FromResult(r);
             },
         };
-        using var p = Provider(fake, Patient with { MaxObjectBytes = 10 });
+        using var p = S3Test.Provider(fake, S3Test.Local() with { MaxObjectBytes = 10 });
         await Assert.ThrowsAsync<BundleObjectTooLargeException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
         Assert.False(read);
     }
+
+    /// <summary>A body far larger than any buffer the SDK or HttpClient could fill ahead of the provider's reads.</summary>
+    private const int HugeBody = 4 * 1024 * 1024;
+
+    /// <summary>
+    /// The read-ahead the read-bound tests allow past the provider's own B + 1 bytes: one 64 KiB chunk, for a later SDK
+    /// or HttpClient that buffers. Measured on AWSSDK.S3 4.1.0 through the real pipeline: exactly 11 bytes (B + 1, B = 10)
+    /// read from a 4 MiB body, with and without Content-Length — no read-ahead at all. Far below <see cref="HugeBody"/>,
+    /// so a reader that drains the body before bounding it fails the assertion (fix round 1: mutation shown RED).
+    /// </summary>
+    private const int ReadAheadAllowance = 64 * 1024;
 
     [Fact]
     public async Task A_body_longer_than_its_bound_without_length_is_refused_at_the_bound()
     {
         // A NON-seekable stream: StreamContent cannot compute a length, so no Content-Length reaches the SDK.
-        var stream = new NonSeekable(new byte[1000]);
+        var stream = new NonSeekable(new byte[HugeBody]);
         var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(stream) }) };
-        using var p = Provider(fake, Patient with { MaxObjectBytes = 10 });
+        using var p = S3Test.Provider(fake, S3Test.Local() with { MaxObjectBytes = 10 });
         await Assert.ThrowsAsync<BundleObjectTooLargeException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
-        Assert.True(stream.BytesRead <= 11 + 8192, $"read {stream.BytesRead} bytes"); // the SDK's own buffering may read ahead one chunk; never the whole body
+        Assert.True(stream.BytesRead <= 11 + ReadAheadAllowance, $"read {stream.BytesRead} of {HugeBody} bytes"); // never the whole body
     }
 
     [Fact]
     public async Task A_body_exactly_at_the_bound_without_length_is_accepted()
     {
         var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new NonSeekable(new byte[10])) }) };
-        using var p = Provider(fake, Patient with { MaxObjectBytes = 10 });
+        using var p = S3Test.Provider(fake, S3Test.Local() with { MaxObjectBytes = 10 });
         using var o = await p.ReadAsync(BundleKey.Parse("a.md"), null, default);
         Assert.Equal(10, o.Length);
     }
@@ -126,7 +128,7 @@ public class ReadTests
     {
         var bytes = Enumerable.Range(0, length).Select(i => (byte)i).ToArray();
         var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(bytes) }) };
-        using var p = Provider(fake, Patient with { MaxObjectBytes = 10 });
+        using var p = S3Test.Provider(fake, S3Test.Local() with { MaxObjectBytes = 10 });
         using var o = await p.ReadAsync(BundleKey.Parse("a.md"), null, default);
         Assert.Equal(expected, o.Length);
         Assert.Equal(bytes, await Bytes(o));
@@ -137,7 +139,7 @@ public class ReadTests
     public async Task A_body_longer_than_its_declared_length_is_refused_at_the_bound()
     {
         // HTTP/1.1 framing makes this impossible on the wire; under the guard it still never passes MaxObjectBytes.
-        var stream = new NonSeekable(new byte[1000]);
+        var stream = new NonSeekable(new byte[HugeBody]);
         var fake = new FakeS3Handler
         {
             Respond = (_, _) =>
@@ -147,9 +149,9 @@ public class ReadTests
                 return Task.FromResult(r);
             },
         };
-        using var p = Provider(fake, Patient with { MaxObjectBytes = 10 });
+        using var p = S3Test.Provider(fake, S3Test.Local() with { MaxObjectBytes = 10 });
         await Assert.ThrowsAsync<BundleObjectTooLargeException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
-        Assert.True(stream.BytesRead <= 11 + 8192, $"read {stream.BytesRead} bytes");
+        Assert.True(stream.BytesRead <= 11 + ReadAheadAllowance, $"read {stream.BytesRead} of {HugeBody} bytes");
     }
 
     [Fact]
@@ -164,7 +166,7 @@ public class ReadTests
                 return Task.FromResult(r);
             },
         };
-        using var p = Provider(fake);
+        using var p = S3Test.Provider(fake);
         var e = await Assert.ThrowsAsync<S3RequestException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
         Assert.Equal(S3FailureKind.Transport, e.Kind); // a truncated body, as HttpClient reports one over the wire
     }
@@ -188,12 +190,12 @@ public class ReadTests
                 return Task.FromResult(r);
             },
         };
-        using (var p = Provider(fake))
+        using (var p = S3Test.Provider(fake))
         {
             using var o = await p.ReadAsync(BundleKey.Parse("a.md"), null, default);
         }
 
-        using (var p = Provider(fake, Patient with { MaxObjectBytes = 10 }))
+        using (var p = S3Test.Provider(fake, S3Test.Local() with { MaxObjectBytes = 10 }))
         {
             await Assert.ThrowsAsync<BundleObjectTooLargeException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
         }
@@ -208,13 +210,13 @@ public class ReadTests
         var deaf = new DeafUntilDisposed();
         var clock = new ManualClock();
         var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(deaf) }) };
-        using var p = new S3BundleProvider(S3Test.Creds, Patient with { RequestTimeout = TimeSpan.FromSeconds(30) }, fake, clock);
+        using var p = new S3BundleProvider(S3Test.Creds, S3Test.Local() with { RequestTimeout = TimeSpan.FromSeconds(30) }, fake, clock);
         var call = p.ReadAsync(BundleKey.Parse("a.md"), null, default).AsTask();
         await Task.WhenAny(deaf.Reading.Task, call).WaitAsync(TimeSpan.FromSeconds(30)); // the body read has started
         Assert.True(deaf.Reading.Task.IsCompleted, call.Exception?.InnerException?.GetType().Name ?? "the read ended before its body");
         clock.Advance(TimeSpan.FromSeconds(30)); // the deadline fires inside the body read
         // Bounded: without the disposal on the deadline, the read would never end (a red test, never a hung run).
-        var e = await Assert.ThrowsAsync<S3RequestException>(() => call.WaitAsync(TimeSpan.FromSeconds(10)));
+        var e = await Assert.ThrowsAsync<S3RequestException>(() => call.WaitAsync(TimeSpan.FromSeconds(60)));
         Assert.Equal(S3FailureKind.Timeout, e.Kind); // not Transport, though the read ended with ObjectDisposedException
     }
 
@@ -222,7 +224,7 @@ public class ReadTests
     public async Task A_failed_read_then_a_failed_disposal_reports_the_read()
     {
         var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new FailsReadAndDispose(new IOException("reset"), new Amazon.Runtime.AmazonClientException("Expected hash not equal to calculated hash"))) }) };
-        using var p = Provider(fake);
+        using var p = S3Test.Provider(fake);
         var e = await Assert.ThrowsAsync<S3RequestException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
         Assert.Equal(S3FailureKind.Transport, e.Kind); // the read's failure, first; the disposal's never masks it
     }
@@ -231,7 +233,7 @@ public class ReadTests
     public async Task A_bound_then_a_failed_disposal_reports_the_bound()
     {
         var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new FailsReadAndDispose(null, new IOException("dispose"), length: 100)) }) };
-        using var p = Provider(fake, Patient with { MaxObjectBytes = 10 });
+        using var p = S3Test.Provider(fake, S3Test.Local() with { MaxObjectBytes = 10 });
         await Assert.ThrowsAsync<BundleObjectTooLargeException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
     }
 
@@ -248,9 +250,9 @@ public class ReadTests
                     : new ByteArrayContent("x"u8.ToArray()),
             }),
         };
-        using var p = Provider(fake, Patient with { MaxConcurrentRequests = 1 });
+        using var p = S3Test.Provider(fake, S3Test.Local() with { MaxConcurrentRequests = 1 });
         await Assert.ThrowsAsync<S3RequestException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
-        using var o = await p.ReadAsync(BundleKey.Parse("a.md"), null, default).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+        using var o = await p.ReadAsync(BundleKey.Parse("a.md"), null, default).AsTask().WaitAsync(TimeSpan.FromSeconds(60));
         Assert.Equal("x"u8.ToArray(), await Bytes(o));
     }
 
@@ -266,7 +268,7 @@ public class ReadTests
                 return Task.FromResult(r);
             },
         };
-        using var p = Provider(fake);
+        using var p = S3Test.Provider(fake);
         var e = await Assert.ThrowsAsync<S3RequestException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
         Assert.Equal(S3FailureKind.Integrity, e.Kind);
     }
@@ -284,7 +286,7 @@ public class ReadTests
                 return Task.FromResult(r);
             },
         };
-        using var p = Provider(fake);
+        using var p = S3Test.Provider(fake);
         using var o = await p.ReadAsync(BundleKey.Parse("a.md"), null, default);
         Assert.Equal("hello"u8.ToArray(), await Bytes(o));
     }
@@ -297,13 +299,13 @@ public class ReadTests
         var clock = new ManualClock();
         var fake = S3Test.Serving(S3Test.Objects(("kb/a.md", "x")));
         using var p = new S3BundleProvider(
-            new CountingCredentials(() => { called.TrySetResult(); never.Wait(); return null!; }), Patient with { RequestTimeout = TimeSpan.FromSeconds(30) }, fake, clock);
+            new CountingCredentials(() => { called.TrySetResult(); never.Wait(); return null!; }), S3Test.Local() with { RequestTimeout = TimeSpan.FromSeconds(30) }, fake, clock);
         try
         {
             var call = p.ReadAsync(BundleKey.Parse("a.md"), null, default).AsTask();
             await called.Task.WaitAsync(TimeSpan.FromSeconds(30)); // the host's provider is blocking now
             clock.Advance(TimeSpan.FromSeconds(30));
-            var e = await Assert.ThrowsAsync<S3RequestException>(() => call.WaitAsync(TimeSpan.FromSeconds(10)));
+            var e = await Assert.ThrowsAsync<S3RequestException>(() => call.WaitAsync(TimeSpan.FromSeconds(60)));
             Assert.Equal(S3FailureKind.Credentials, e.Kind); // through the public member: not Timeout
             Assert.Empty(fake.Requests); // nothing sent without a snapshot
         }
@@ -326,7 +328,7 @@ public class ReadTests
                 : new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent("x"u8.ToArray()) }),
         };
         // A Region source: on an IP ServiceUrl the SDK refuses any redirect with ArgumentException (gate G4).
-        using var p = Provider(fake, new S3BundleSource { Bucket = "demo", Prefix = "kb", Region = Amazon.RegionEndpoint.EUWest1, RequestTimeout = TimeSpan.FromSeconds(60) }, host);
+        using var p = S3Test.Provider(fake, new S3BundleSource { Bucket = "demo", Prefix = "kb", Region = Amazon.RegionEndpoint.EUWest1, RequestTimeout = TimeSpan.FromSeconds(60) }, host);
         using var o = await p.ReadAsync(BundleKey.Parse("a.md"), null, default);
         Assert.Equal(2, fake.Requests.Count);
         Assert.Equal(1, Volatile.Read(ref calls));
@@ -353,7 +355,7 @@ public class ReadTests
             },
         };
         // A long deadline: the queued operations' deadlines start at the call (spec §4.5), and a loaded machine is slow.
-        using var p = Provider(fake, Patient with { MaxConcurrentRequests = 2, RequestTimeout = TimeSpan.FromSeconds(60) });
+        using var p = S3Test.Provider(fake, S3Test.Local() with { MaxConcurrentRequests = 2, RequestTimeout = TimeSpan.FromSeconds(60) });
         var ops = new List<Task>
         {
             p.ReadAsync(BundleKey.Parse("a.md"), null, default).AsTask(),
@@ -385,7 +387,7 @@ public class ReadTests
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(body) });
             },
         };
-        using var p = Provider(fake, Patient with { MaxConcurrentRequests = 1 });
+        using var p = S3Test.Provider(fake, S3Test.Local() with { MaxConcurrentRequests = 1 });
         using var cts = new CancellationTokenSource();
         var stuck = p.ReadAsync(BundleKey.Parse("a.md"), null, cts.Token).AsTask();
         await WaitUntil(() => fake.Requests.Count == 1);
@@ -394,8 +396,8 @@ public class ReadTests
         Assert.False(second.IsCompleted);
         Assert.Single(fake.Requests);
         await cts.CancelAsync();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => stuck);
-        using var o = await second.WaitAsync(TimeSpan.FromSeconds(10));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => stuck.WaitAsync(TimeSpan.FromSeconds(60)));
+        using var o = await second.WaitAsync(TimeSpan.FromSeconds(60));
         Assert.Equal("y"u8.ToArray(), await Bytes(o));
     }
 
@@ -404,8 +406,8 @@ public class ReadTests
     {
         var a = new CountingHandler(S3Test.Serving(S3Test.Objects(("kb/a.md", "x"))));
         var b = new CountingHandler(S3Test.Serving(S3Test.Objects(("kb/a.md", "y"))));
-        var pa = new S3BundleProvider(S3Test.Creds, Patient, a);
-        var pb = new S3BundleProvider(S3Test.Creds, Patient, b);
+        var pa = new S3BundleProvider(S3Test.Creds, S3Test.Local(), a);
+        var pb = new S3BundleProvider(S3Test.Creds, S3Test.Local(), b);
         using (var o = await pa.ReadAsync(BundleKey.Parse("a.md"), null, default)) { }
         await Assert.ThrowsAnyAsync<Exception>(async () => await pa.ReadAsync(BundleKey.Parse("missing.md"), null, default)); // an error
         using (var o = await pa.ReadAsync(BundleKey.Parse("a.md"), null, default)) { }        // the same client still serves
@@ -521,12 +523,12 @@ public class ReadTests
         var stalling = new StallingStream(10);
         var clock = new ManualClock();
         var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(stalling) }) };
-        using var p = new S3BundleProvider(S3Test.Creds, Patient with { RequestTimeout = TimeSpan.FromSeconds(30) }, fake, clock);
+        using var p = new S3BundleProvider(S3Test.Creds, S3Test.Local() with { RequestTimeout = TimeSpan.FromSeconds(30) }, fake, clock);
         var call = p.ReadAsync(BundleKey.Parse("a.md"), null, default).AsTask();
         await Task.WhenAny(stalling.Stalled.Task, call).WaitAsync(TimeSpan.FromSeconds(30)); // 10 bytes in, then nothing
         Assert.True(stalling.Stalled.Task.IsCompleted, call.Exception?.InnerException?.GetType().Name ?? "the read ended before its body stalled");
         clock.Advance(TimeSpan.FromSeconds(30));
-        var e = await Assert.ThrowsAsync<S3RequestException>(() => call.WaitAsync(TimeSpan.FromSeconds(10))); // within the deadline, never a hang
+        var e = await Assert.ThrowsAsync<S3RequestException>(() => call.WaitAsync(TimeSpan.FromSeconds(60))); // within the deadline, never a hang
         Assert.Equal(S3FailureKind.Timeout, e.Kind);
     }
 
@@ -534,9 +536,9 @@ public class ReadTests
     public async Task A_caller_cancellation_stays_a_cancellation()
     {
         var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new StallingStream(10)) }) };
-        using var p = Provider(fake);
+        using var p = S3Test.Provider(fake);
         using var cts = new CancellationTokenSource(200);
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => p.ReadAsync(BundleKey.Parse("a.md"), null, cts.Token).AsTask().WaitAsync(TimeSpan.FromSeconds(10)));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => p.ReadAsync(BundleKey.Parse("a.md"), null, cts.Token).AsTask().WaitAsync(TimeSpan.FromSeconds(60)));
     }
 
     /// <summary>
@@ -569,12 +571,12 @@ public class ReadTests
             },
         };
         AWSCredentials creds = stage == "credentials" ? new PendingCredentials(pending.Task) : S3Test.Creds;
-        using var p = Provider(fake, Patient with { MaxConcurrentRequests = 1, RequestTimeout = TimeSpan.FromMinutes(5) }, creds);
+        using var p = S3Test.Provider(fake, S3Test.Local() with { MaxConcurrentRequests = 1, RequestTimeout = TimeSpan.FromMinutes(5) }, creds);
         Task? holder = null;
         if (stage == "permit")
         {
             holder = p.ReadAsync(BundleKey.Parse("held.md"), null, default).AsTask(); // holds the only permit
-            await arrived.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await arrived.Task.WaitAsync(TimeSpan.FromSeconds(60));
         }
 
         using var cts = new CancellationTokenSource();
@@ -586,7 +588,7 @@ public class ReadTests
         };
         if (stage is "headers" or "body" or "exists" or "list")
         {
-            await arrived.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await arrived.Task.WaitAsync(TimeSpan.FromSeconds(60));
             await Task.Delay(50); // past the headers, into the body, for "body"
         }
         else
@@ -596,13 +598,13 @@ public class ReadTests
 
         Assert.False(call.IsCompleted);
         await cts.CancelAsync();
-        var e = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => call.WaitAsync(TimeSpan.FromSeconds(10)));
+        var e = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => call.WaitAsync(TimeSpan.FromSeconds(60)));
         Assert.Equal(cts.Token, e.CancellationToken);
         pending.TrySetResult(new ImmutableCredentials("A", "S", null));
         p.Dispose();
         if (holder is not null)
         {
-            await Assert.ThrowsAsync<S3RequestException>(() => holder.WaitAsync(TimeSpan.FromSeconds(10)));
+            await Assert.ThrowsAsync<S3RequestException>(() => holder.WaitAsync(TimeSpan.FromSeconds(60)));
         }
     }
 
@@ -637,18 +639,18 @@ public class ReadTests
             },
         };
         AWSCredentials creds = stage == "credentials" ? new PendingCredentials(pending.Task) : S3Test.Creds;
-        var p = Provider(fake, Patient with { MaxConcurrentRequests = 1, RequestTimeout = TimeSpan.FromMinutes(5) }, creds);
+        var p = S3Test.Provider(fake, S3Test.Local() with { MaxConcurrentRequests = 1, RequestTimeout = TimeSpan.FromMinutes(5) }, creds);
         Task? holder = null;
         if (stage == "permit")
         {
             holder = p.ReadAsync(BundleKey.Parse("held.md"), null, default).AsTask();
-            await arrived.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await arrived.Task.WaitAsync(TimeSpan.FromSeconds(60));
         }
 
         var call = p.ReadAsync(BundleKey.Parse("a.md"), null, default).AsTask();
         if (stage is "headers" or "body")
         {
-            await arrived.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await arrived.Task.WaitAsync(TimeSpan.FromSeconds(60));
             await Task.Delay(50);
         }
         else
@@ -658,12 +660,12 @@ public class ReadTests
 
         Assert.False(call.IsCompleted);
         p.Dispose();
-        var e = await Assert.ThrowsAsync<S3RequestException>(() => call.WaitAsync(TimeSpan.FromSeconds(10)));
+        var e = await Assert.ThrowsAsync<S3RequestException>(() => call.WaitAsync(TimeSpan.FromSeconds(60)));
         Assert.Equal(S3FailureKind.Disposed, e.Kind);
         Assert.Equal("S3 read failed: Disposed for 'a.md'", e.Message);
         if (holder is not null)
         {
-            Assert.Equal(S3FailureKind.Disposed, (await Assert.ThrowsAsync<S3RequestException>(() => holder.WaitAsync(TimeSpan.FromSeconds(10)))).Kind);
+            Assert.Equal(S3FailureKind.Disposed, (await Assert.ThrowsAsync<S3RequestException>(() => holder.WaitAsync(TimeSpan.FromSeconds(60)))).Kind);
         }
 
         pending.TrySetResult(new ImmutableCredentials("A", "S", null));
@@ -673,7 +675,7 @@ public class ReadTests
     public async Task A_provider_disposed_during_a_walk_fails_it_as_Disposed()
     {
         var objects = S3Test.Objects(("kb/a.md", "x"), ("kb/b.md", "y"));
-        var p = Provider(S3Test.Serving(objects, pageSize: 1));
+        var p = S3Test.Provider(S3Test.Serving(objects, pageSize: 1));
         var e = await Assert.ThrowsAsync<S3RequestException>(async () =>
         {
             await foreach (var _ in p.EnumerateAsync(null, BundleLimits.Default, default))
@@ -689,7 +691,7 @@ public class ReadTests
         var watch = System.Diagnostics.Stopwatch.StartNew();
         while (!condition())
         {
-            Assert.True(watch.Elapsed < TimeSpan.FromSeconds(10), "condition not reached");
+            Assert.True(watch.Elapsed < TimeSpan.FromSeconds(60), "condition not reached");
             await Task.Delay(10);
         }
     }
@@ -701,7 +703,7 @@ public class ReadTests
         var host = new CountingCredentials(() => Interlocked.Increment(ref calls) == 1 ? new ImmutableCredentials("A", "S", "T") : throw new InvalidOperationException("called from the pipeline"));
         var attempts = 0;
         var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(Interlocked.Increment(ref attempts) < 3 ? FakeS3Handler.Xml(HttpStatusCode.ServiceUnavailable, FakeS3Handler.Error("SlowDown")) : new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent("x"u8.ToArray()) }) };
-        using var p = Provider(fake, creds: host);
+        using var p = S3Test.Provider(fake, creds: host);
         using var o = await p.ReadAsync(BundleKey.Parse("a.md"), null, default);
         Assert.Equal(3, attempts);
         Assert.Equal(1, Volatile.Read(ref calls));
@@ -721,7 +723,7 @@ public class ReadTests
 
             return new ImmutableCredentials("AKIDEXAMPLE", "secret", null);
         });
-        using var p = Provider(S3Test.Serving(S3Test.Objects(("kb/a.md", "x"))), creds: creds);
+        using var p = S3Test.Provider(S3Test.Serving(S3Test.Objects(("kb/a.md", "x"))), creds: creds);
         using (await p.ReadAsync(BundleKey.Parse("a.md"), null, default)) { }
         using (await p.ReadAsync(BundleKey.Parse("a.md"), null, default)) { }
         Assert.Equal(2, seen.Count);
@@ -732,7 +734,7 @@ public class ReadTests
     [Fact]
     public async Task A_disposed_provider_fails_as_Disposed()
     {
-        var p = Provider(S3Test.Serving(S3Test.Objects(("kb/a.md", "x"))));
+        var p = S3Test.Provider(S3Test.Serving(S3Test.Objects(("kb/a.md", "x"))));
         p.Dispose();
         p.Dispose(); // once
         Assert.Equal(S3FailureKind.Disposed, (await Assert.ThrowsAsync<S3RequestException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default))).Kind);

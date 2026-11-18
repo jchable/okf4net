@@ -530,10 +530,10 @@ public class ListingWalkerTests
             "version" => p.GetVersionAsync(limits, default).AsTask(),
             _ => p.ExistsAsync(BundleKey.Parse("a.md"), default).AsTask(),
         };
-        await Task.WhenAny(arrived.Task, call).WaitAsync(TimeSpan.FromSeconds(10)); // the request went out: no deadline already past, no invalid one
+        await Task.WhenAny(arrived.Task, call).WaitAsync(TimeSpan.FromSeconds(60)); // the request went out: no deadline already past, no invalid one
         Assert.True(arrived.Task.IsCompleted, call.Exception?.InnerException?.GetType().Name ?? "the call ended before sending");
         clock.Advance(effective);
-        var e = await Assert.ThrowsAsync<S3RequestException>(() => call.WaitAsync(TimeSpan.FromSeconds(10)));
+        var e = await Assert.ThrowsAsync<S3RequestException>(() => call.WaitAsync(TimeSpan.FromSeconds(60)));
         Assert.Equal(S3FailureKind.Timeout, e.Kind);
     }
 

@@ -11,8 +11,13 @@ internal static class S3Test
 {
     public static readonly BasicAWSCredentials Creds = new("AKIDEXAMPLE", "secret");
 
+    /// <summary>
+    /// A local path-style source. Its deadline (5 minutes) is one no test meets by accident: the credentials are
+    /// resolved on the thread pool (spec §4.4), which a fully loaded test run can starve for seconds. A test ABOUT the
+    /// deadline sets <c>RequestTimeout</c> itself and drives it with a <see cref="ManualClock"/>.
+    /// </summary>
     public static S3BundleSource Local(string prefix = "kb") =>
-        new() { Bucket = "okf", Prefix = prefix, ServiceUrl = new Uri("http://127.0.0.1:9000"), ForcePathStyle = true, AllowInsecureHttp = true, RequestTimeout = TimeSpan.FromSeconds(5) };
+        new() { Bucket = "okf", Prefix = prefix, ServiceUrl = new Uri("http://127.0.0.1:9000"), ForcePathStyle = true, AllowInsecureHttp = true, RequestTimeout = TimeSpan.FromMinutes(5) };
 
     public static S3BundleProvider Provider(FakeS3Handler fake, S3BundleSource? source = null, AWSCredentials? creds = null) =>
         new(creds ?? Creds, source ?? Local(), fake);

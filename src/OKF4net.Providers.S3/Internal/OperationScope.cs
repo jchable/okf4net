@@ -23,10 +23,12 @@ internal sealed class OperationGate(int maxConcurrent, TimeProvider time, Cancel
         catch (Exception e) when (e is not OutOfMemoryException)
         {
             // Decided BEFORE the sources are disposed: the caller's cancellation is sampled first (spec §4.5, rule 1).
-            var failure = caller.IsCancellationRequested ? OperationScope.CallerCancellation(e, caller)
+            // Every exit is classified: anything but a cancellation (none is expected from a semaphore that is never
+            // disposed) is a Transport failure carrying the original, stack intact, as its inner exception.
+            Exception failure = caller.IsCancellationRequested ? OperationScope.CallerCancellation(e, caller)
                 : disposal.IsCancellationRequested ? new S3RequestException(operation, S3FailureKind.Disposed, null, key, e)
                 : e is OperationCanceledException ? new S3RequestException(operation, S3FailureKind.Timeout, null, key)
-                : e;
+                : new S3RequestException(operation, S3FailureKind.Transport, null, key, e);
             linked.Dispose();
             deadline.Dispose();
             throw failure;

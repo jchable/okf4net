@@ -271,9 +271,9 @@ public class OperationScopeTests
         Assert.Same(answers[0], scope.Fail(new IOException()));
     }
 
-    internal static async Task<T> Within<T>(Task<T> task) => await task.WaitAsync(TimeSpan.FromSeconds(10));
+    internal static async Task<T> Within<T>(Task<T> task) => await task.WaitAsync(TimeSpan.FromSeconds(60));
 
-    internal static async Task Within(Task task) => await task.WaitAsync(TimeSpan.FromSeconds(10));
+    internal static async Task Within(Task task) => await task.WaitAsync(TimeSpan.FromSeconds(60));
 
     private static void InterlockedMax(ref int target, int value)
     {
