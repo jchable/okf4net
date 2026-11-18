@@ -84,9 +84,13 @@ foreach ($p in 'src/OKF4net/OKF4net.csproj', 'src/OKF4net.Providers.EmbeddedReso
 }
 dotnet publish tests/EmbeddedBundleAotProbe/EmbeddedBundleAotProbe.csproj -c Release -r win-x64 "-p:OkfProbeVersion=$v" "-p:RestoreAdditionalProjectSources=$work/feed" -o "$work/out"
 if ($LASTEXITCODE -ne 0) { throw "publish failed" }
-$embedded = & "$work/out/EmbeddedBundleAotProbe"
-$filesystem = & "$work/out/EmbeddedBundleAotProbe" --filesystem bundles/acme_retail
-Compare-Object $embedded $filesystem -SyncWindow 0   # no output: the two summaries are identical
+$embedded = @(& "$work/out/EmbeddedBundleAotProbe")
+if ($LASTEXITCODE -ne 0) { throw "embedded run exited $LASTEXITCODE" }
+$filesystem = @(& "$work/out/EmbeddedBundleAotProbe" --filesystem bundles/acme_retail)
+if ($LASTEXITCODE -ne 0) { throw "filesystem run exited $LASTEXITCODE" }
+if (-not ($embedded[0] -match '^concepts=[1-9]')) { throw "no concept loaded: $($embedded[0])" }
+if (Compare-Object $embedded $filesystem -SyncWindow 0) { throw "the two summaries differ" }
+"OK: $($embedded.Count) identical summary lines"
 Remove-Item Env:NUGET_PACKAGES
 ```
 
