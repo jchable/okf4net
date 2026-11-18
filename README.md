@@ -772,7 +772,7 @@ verify → append → regenerate → validate → changes-since → get-computat
 
 | Tool                     | Description                                                                                                                                                                                                    |
 |--------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `okf_read_concept`       | Read one concept from the OKF bundle: its frontmatter, body, outgoing links and backlinks.                                                                                                                    |
+| `okf_read_concept`       | Read one concept from the OKF bundle: its frontmatter (a yaml block that okf_write_concept accepts as is), body, outgoing links and backlinks.                                                                 |
 | `okf_browse`             | Browse the bundle via its index files (progressive disclosure). Without a path, lists the bundle root.                                                                                                        |
 | `okf_graph`              | Inspect the cross-link graph. With a concept id: its outgoing links, backlinks and broken links. Without: bundle-wide stats.                                                                                  |
 | `okf_search`             | Full-text search across concept titles, descriptions, tags and bodies. Returns the best-matching concept id first, then spreads the remaining results across top-level id families, so the list is not in descending score order. |
