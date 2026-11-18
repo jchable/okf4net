@@ -116,14 +116,14 @@ est lancé à la fin de chacune (`CLAUDE.md`).
   (`Links.cs:763`), après un soulignement setext (`:1358`) et après une balise
   HTML seule sur sa ligne (`:1442`), la passe accepte n'importe quel espace
   Unicode (`IsWhiteSpace`). CommonMark n'admet que l'espace et la tabulation.
-  Exemple : `"~~~\n~~~ \n# H\nx\n~~~\n"` ferme la fence à la deuxième
+  Exemple : `"~~~\n~~~\u00A0\n# H\nx\n~~~\n"` ferme la fence à la deuxième
   ligne, et `# H` devient un heading. On corrige ces trois sites seulement
   (U+0020 et U+0009). Les autres usages d'espaces de la passe, dans les
   labels par exemple, ne sont pas concernés et ne changent pas. Chaque site a
   son test de non-régression.
 
   **Effet voulu sur le chargement** : `LinkScanner` construit aussi les liens
-  du `Bundle`. Dans `"~~~\n~~~ \n[x](missing.md)\n~~~\n"`, le lien est
+  du `Bundle`. Dans `"~~~\n~~~\u00A0\n[x](missing.md)\n~~~\n"`, le lien est
   aujourd'hui relevé après la fermeture erronée ; après A, il reste dans le code
   et disparaît du graphe. Les liens cassés, `info`, les diagnostics de
   validation et `graph` changent donc **pour ces entrées**. Les tests des
@@ -237,7 +237,8 @@ autant (§3.3), mais le résultat n'est plus garanti.
   dépend que de la ligne.
 
   **Une seule règle** : ce contenu est calculé par le helper privé existant de
-  `LinkScanner`, `AtxHeadingContentAt` (`Links.cs`), qui extrait déjà le
+  `LinkScanner`, le wrapper `AtxHeadingContent(string)` (`Links.cs`, qui
+  saute l'indentation puis appelle `AtxHeadingContentAt`), qui extrait déjà le
   contenu brut séparément de la projection visible. Il est partagé (visibilité
   `internal`), pas réécrit. La fermeture n'est retirée que si elle est
   terminale, non échappée, précédée d'un espace ou d'une tabulation et suivie
@@ -364,8 +365,11 @@ public static class PassageExport
 }
 ```
 
-L'ordre est déterministe : les concepts par `ConceptId` en ordinal, puis les
-passages dans l'ordre du document.
+L'ordre est déterministe : les concepts dans l'ordre de `ConceptId.CompareTo`
+(segment par segment : `a`, puis `a/b`, puis `a-b`), qui est celui des
+findings de `ConceptAudit`, puis les passages dans l'ordre du document. Ce
+n'est ni l'ordre de `Bundle.Concepts` (chemins de clés avec `.md`), ni l'ordre
+ordinal de la chaîne entière.
 
 Les signaux v0.2 viennent **d'un seul appel à
 `ConceptAudit.Run(bundle, AuditQuery.All)`**, qui couvre tous les concepts
@@ -875,5 +879,5 @@ d'implémentation, avec réserves**. Les réserves et leur décision :
 | Deux contrats pour le champ `title` | champ intégral, seule sa copie dans l'en-tête est tronquée (§4.1) |
 | Stabilité des ids face aux changements de structure | garantie qualifiée par la préservation de l'arbre des headings (§4.3) |
 | `YamlNull` et les nouveaux drapeaux | séquences et mappings seulement, tableau attendu (§2.3 C) |
-| Helper ATX à nommer | `AtxHeadingContentAt` partagé, cas figés (§3.1) |
+| Helper ATX à nommer | wrapper `AtxHeadingContent(string)` partagé, cas figés (§3.1) |
 | Unité et périmètre de la majoration | sortie du découpeur avant omissions, en points de code (§3.3) |
