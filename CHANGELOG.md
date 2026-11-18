@@ -1132,6 +1132,25 @@ and this project adheres to
 
 ### Fixed
 
+- **Model-facing text: four review follow-ups on #122 and #249 (#248, #251).**
+  - The fold could assemble a tag character out of two lone surrogate halves
+    separated by characters it removes (`U+DB40`, `U+200B`, `U+DC41` came out
+    as `U+E0041`, and a second fold removed it). Such a pair is now removed
+    too, so the output never holds a tag character and the fold stays
+    idempotent.
+  - A value beginning a Markdown block with `|` was escaped twice and showed a
+    literal backslash (`\\\|name`); it now reads `\|name`, like any other pipe.
+  - `okf_audit` and `okf_verify` lines start with a concept id, and a valid id
+    can be block syntax (`1.`, file `1..md`, read as an ordered-list item).
+    In the tool result only, such a line is now neutralised after its
+    indentation (`  1\.  …`), and its pipes escaped; the CLI's output is
+    unchanged.
+  - The scoped and V1 context providers sized an element's fence from its
+    whole content, even when truncation dropped the part that needed a long
+    fence: a passage whose excerpt was 1,000 backticks could not fit a
+    200-token budget even with its title alone. The fence is now sized from
+    the part kept.
+
 - **`okf_verify` over a read-only provider throws `BundleReadOnlyException`
   like the other write tools (#218).** `OkfBundleTools.Verify` / `VerifyAsync`
   used to return `Error: the provider is read-only; …` as text; a direct call

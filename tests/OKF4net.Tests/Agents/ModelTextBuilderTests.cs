@@ -161,6 +161,23 @@ public class ModelTextBuilderTests
         Assert.Equal("x " + expected, ModelTextBuilder.Message($"x {value}"));
     }
 
+    /// <summary>
+    /// A pipe that begins a block is escaped once, like any other (#248 review):
+    /// neutralising it as well gave <c>\\\|</c>, a literal backslash before it.
+    /// </summary>
+    [Theory]
+    [InlineData("|name", "\\|name")]
+    [InlineData("| a | b |", "\\| a \\| b \\|")]
+    [InlineData("  |---|", "\\|---\\|")]
+    public void A_pipe_that_begins_a_block_is_escaped_once(string value, string expected)
+    {
+        Assert.Equal(expected, ModelTextBuilder.Message(value));
+
+        var text = new ModelTextBuilder();
+        text.Line($"{value}").Line($"- {value}").Line($"> {value}");
+        Assert.Equal($"{expected}\n- {expected}\n> {expected}\n", text.ToString());
+    }
+
     [Fact]
     public void Frontmatter_style_lines_cannot_form_a_table()
     {

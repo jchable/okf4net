@@ -394,7 +394,7 @@ public class OkfContextProviderTests
         var method = typeof(OkfContextProvider).GetMethod("TruncateWholeLines", BindingFlags.NonPublic | BindingFlags.Static)!;
         const string content = "line one\r\nline two\r\nline three";
 
-        var (kept, truncated, linesKept) = ((string Kept, bool Truncated, int LinesKept))method.Invoke(null, [content, 3])!;
+        var (kept, truncated, linesKept) = ((string Kept, bool Truncated, int LinesKept))method.Invoke(null, [content, new Func<string, int>(_ => 3)])!;
 
         Assert.True(truncated);
         Assert.Equal(1, linesKept);
