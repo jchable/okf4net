@@ -30,7 +30,7 @@ does, checked against the code and by the smoke test below:
 |--------|------|----------------------|
 | Create a note | `okf_write_concept` | Writes `<id>.md`. Refused unless this server process has **read the id first** with `okf_read_concept` and been told it does not exist. |
 | Change or append to a note | `okf_write_concept` | Replaces the **whole** document (frontmatter and body). Refused unless the server process has read the concept with `okf_read_concept`, and refused if the file changed since that read. After a successful write, the next write needs a new read. There is no "append a line" tool: appending is read, add the line, write it all back. |
-| Provenance | (any `okf_write_concept`) | When the frontmatter you send has no `generated` key, the server adds `generated: { by: okf4net/0.2, at: <now> }`. When it has one, it is kept as sent. |
+| Provenance | (any `okf_write_concept`) | When the frontmatter you send has no `generated` key, the server adds `generated: { by: okf4net/<version>, at: <now> }`, where `<version>` is the library's (e.g. `okf4net/0.7.0`). When it has one, it is kept as sent. |
 | Update the listings | `okf_regenerate_indexes` | Rewrites every `index.md` from the concepts on disk. |
 | Record the change | `okf_append_log` | Adds `* **<kind>**: <text>` under today's date in the root `log.md`, then rewrites the whole file through the §9 model. |
 | Review stamp | `okf_verify` | Adds a `{ by, at }` entry to a concept's `verified` list (§5.2). |
@@ -54,24 +54,25 @@ Three more things to know:
   process when it starts, so a concept read in one conversation also counts
   for a write in another one, until Claude Desktop restarts. The record keeps
   the latest 10,000 ids.
-- **`okf_append_log` rewrites `log.md`.** Anything the §9 model does not hold
-  is dropped: frontmatter, prose between entries, comments. The starter
-  `log.md` is already in that form, so an append adds only the new entry.
-- **`okf_read_concept` flattens nested frontmatter**
-  ([#256](https://github.com/jchable/okf4net/issues/256)). It shows
-  `generated: { by: human:me, at: … }` as `generated: by: human:me at: …`,
-  and the `verified` list `okf_verify` adds as `verified: [by: human:me at: …]`.
-  If Claude copies such a line back into a write, it is stored as a plain
-  string and the note loses its provenance or its review stamps. `okf validate`
-  does not warn about it. The guide note tells Claude to leave `generated` out
-  (the server then stamps a new one), to write every other structured field
-  back as valid YAML, e.g. `verified: [{ by: human:me, at: … }]`, and to
-  refuse the rewrite when it cannot rebuild such a field from what it read.
-  This is an instruction to the model, not a guarantee: after a rewrite of a
-  verified note, check its `verified` list.
+- **`okf_append_log` rewrites `log.md`.** It keeps a leading frontmatter
+  block if that block parses as a YAML mapping. Anything between entries that
+  the §9 model does not hold, such as prose and comments, is dropped. The
+  starter `log.md` is already in that form, so an append adds only the new
+  entry.
+- **Rewrites copy the frontmatter back as shown.** `okf_read_concept` shows
+  the frontmatter as a fenced `yaml` block that `okf_write_concept` accepts
+  unchanged. The guide note asks Claude to copy that block back as shown,
+  changing only the fields it means to change, so `generated` and `verified`
+  keep the human provenance and review stamps they had. This is an
+  instruction to the model, not a guarantee, so check the frontmatter after
+  Claude rewrites a reviewed note.
 
 Claude Desktop asks for permission before running a tool, unless you have
-allowed it. `okf-mcp` itself never asks.
+allowed it. `okf-mcp` itself never asks. Note text, and any text Claude brings
+in from other MCP servers or the web, can carry instructions aimed at Claude.
+So keep Claude Desktop's per-call approval on `okf_write_concept` and
+`okf_append_log` rather than choosing "always allow", and read what each call
+is about to write.
 
 ## Set it up
 
@@ -249,17 +250,15 @@ dotnet run samples/second-brain/smoke.cs -- --tool    # the installed okf-mcp do
 dotnet run samples/second-brain/smoke.cs -- --keep    # keep the copy to look at it
 ```
 
-It exits with 0 when every check passed. `okf-mcp` returns each tool's text
-as a JSON string literal (in quotes, with `\n` escapes), and the script
-decodes it before printing. A real run, on 2026-11-18, of the
-repository build. The `--tool` run, against a locally packed `OKF4net.Mcp`,
-passed the same checks:
+It exits with 0 when every check passed, and stops `okf-mcp` and deletes the
+copy (unless `--keep`) even when a check fails or the run throws. A real run of
+the repository build, on 2026-11-18:
 
 <details>
 <summary>Output</summary>
 
-```text
-bundle copy: <temp>/okf-second-brain-1694d371
+````text
+bundle copy: <temp>/okf-second-brain-c5ecaa3b
 server: dotnet run --no-build --project <repo>\src\OKF4net.Mcp -- <copy>
 
 == initialize
@@ -284,7 +283,7 @@ server: dotnet run --no-build --project <repo>\src\OKF4net.Mcp -- <copy>
 
 
 > okf_write_concept {"conceptId":"notes/standing-desk-idea","frontmatterYaml":"type: Note\ntitle: Standing desk idea\ndescription: Try a standing desk for a month before buying one.\ntags: [home, health]","body":"# Idea\n\nBorrow a converter for a month, note how often I actually stand.\nRelated: [running](../areas/running.md).\n"}
-    Written notes/standing-desk-idea (new, 306 bytes). Remember to run okf_regenerate_indexes.
+    Written notes/standing-desk-idea (new, 308 bytes). Remember to run okf_regenerate_indexes.
 
   [ok] the new note exists on disk
   [ok] the server stamped `generated` (none was given)
@@ -294,11 +293,17 @@ server: dotnet run --no-build --project <repo>\src\OKF4net.Mcp -- <copy>
 > okf_read_concept {"conceptId":"notes/reading-list"}
     # Reading list
     
+    ```yaml
     type: Note
     title: Reading list
     description: Books and articles to read, with a line on why each one is on the list.
-    tags: [reading, list]
-    generated: by: human:me at: 2026-11-15T09:00:00Z
+    tags:
+      - reading
+      - list
+    generated:
+      by: human:me
+      at: 2026-11-15T09:00:00Z
+    ```
     
     ```markdown
     # To read
@@ -319,13 +324,13 @@ server: dotnet run --no-build --project <repo>\src\OKF4net.Mcp -- <copy>
     - notes/how-this-brain-works
 
 
-> okf_write_concept {"conceptId":"notes/reading-list","frontmatterYaml":"type: Note\ntitle: Reading list\ndescription: Books and articles to read, with a line on why each one is on the list.\ntags: [reading, list]","body":"# To read\n\n- *The Pragmatic Programmer* — reread the chapter on tracer bullets.\n- *How to Take Smart Notes* (Sönke Ahrens) — the idea behind keeping this bundle.\n- *A Philosophy of Software Design* (John Ousterhout) — recommended by Sam.\n\n# Read\n\n- *Shape Up* (Basecamp) — six-week cycles; the \"appetite\" framing helped scope\n  the [kitchen renovation](../projects/kitchen-renovation.md).\n"}
-    Written notes/reading-list (updated, 606 bytes). Remember to run okf_regenerate_indexes.
+> okf_write_concept {"conceptId":"notes/reading-list","frontmatterYaml":"type: Note\ntitle: Reading list\ndescription: Books and articles to read, with a line on why each one is on the list.\ntags:\n  - reading\n  - list\ngenerated:\n  by: human:me\n  at: 2026-11-15T09:00:00Z","body":"# To read\n\n- *The Pragmatic Programmer* — reread the chapter on tracer bullets.\n- *How to Take Smart Notes* (Sönke Ahrens) — the idea behind keeping this bundle.\n- *A Philosophy of Software Design* (John Ousterhout) — recommended by Sam.\n\n# Read\n\n- *Shape Up* (Basecamp) — six-week cycles; the \"appetite\" framing helped scope\n  the [kitchen renovation](../projects/kitchen-renovation.md).\n"}
+    Written notes/reading-list (updated, 603 bytes). Remember to run okf_regenerate_indexes.
 
   [ok] the appended line is on disk
-  [ok] the rewrite carries a fresh `generated` stamp
+  [ok] the frontmatter copied back as shown keeps `generated.by: human:me`
 
-> okf_write_concept {"conceptId":"notes/reading-list","frontmatterYaml":"type: Note\ntitle: Reading list\ndescription: Books and articles to read, with a line on why each one is on the list.\ntags: [reading, list]","body":"# To read\n\n- *The Pragmatic Programmer* — reread the chapter on tracer bullets.\n- *How to Take Smart Notes* (Sönke Ahrens) — the idea behind keeping this bundle.\n- *A Philosophy of Software Design* (John Ousterhout) — recommended by Sam.\n\n# Read\n\n- *Shape Up* (Basecamp) — six-week cycles; the \"appetite\" framing helped scope\n  the [kitchen renovation](../projects/kitchen-renovation.md).\n"}
+> okf_write_concept {"conceptId":"notes/reading-list","frontmatterYaml":"type: Note\ntitle: Reading list\ndescription: Books and articles to read, with a line on why each one is on the list.\ntags:\n  - reading\n  - list\ngenerated:\n  by: human:me\n  at: 2026-11-15T09:00:00Z","body":"# To read\n\n- *The Pragmatic Programmer* — reread the chapter on tracer bullets.\n- *How to Take Smart Notes* (Sönke Ahrens) — the idea behind keeping this bundle.\n- *A Philosophy of Software Design* (John Ousterhout) — recommended by Sam.\n\n# Read\n\n- *Shape Up* (Basecamp) — six-week cycles; the \"appetite\" framing helped scope\n  the [kitchen renovation](../projects/kitchen-renovation.md).\n"}
     Error: 'notes/reading-list' has not been read by this session; read it first with okf_read_concept (a context block injected for you, or okf_get_computation, does not count), then write it.
 
   [ok] a second write without a fresh read is refused
@@ -391,7 +396,7 @@ server: dotnet run --no-build --project <repo>\src\OKF4net.Mcp -- <copy>
   [ok] okf validate exit code 0
 
 ALL CHECKS PASSED
-```
+````
 
 </details>
 

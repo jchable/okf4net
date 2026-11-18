@@ -28,17 +28,11 @@ Ids are lowercase, words separated by hyphens.
 3. To create a note, read its id first too: the read answers "not found",
    and that is what allows the creation.
 4. Every note needs `type`, `title` and a one-sentence `description`.
-5. The read output shows structured frontmatter flattened onto one line: a
-   map such as `generated: by: human:me at: …`, a list of maps such as
-   `verified: [by: human:me at: …]` (added by `okf_verify`). Never copy those
-   lines back as shown: they would be stored as plain strings.
-   - Leave `generated` out of the frontmatter you write: the server stamps a
-     fresh `generated: { by, at }` on every write that has none.
-   - Write every other structured field back as valid YAML with the values
-     you read, e.g.
-     `verified: [{ by: human:me, at: 2026-11-18T10:00:00Z }]`.
-   - If you cannot tell a field's structure or values from what the read
-     showed, do not write the note: say which field is in the way.
+5. `okf_read_concept` shows the frontmatter as a fenced `yaml` block. When
+   you rewrite a note, copy that block back as shown, changing only the
+   fields you mean to change. Keep `generated` and `verified` exactly as they
+   are: they record who wrote and who reviewed the note. On a new note, leave
+   `generated` out and the server stamps one.
 6. Link related notes with relative markdown links, e.g.
    `[Sam Rivera](../people/sam-rivera.md)`.
 
