@@ -160,8 +160,11 @@ public static class YamlEmitter
     /// (<see cref="MaxOutputChars"/>). Every line goes through
     /// <see cref="WriteLine"/>, which checks both before appending.
     /// </summary>
-    private sealed class EmitState(int maxRepeatedChars, int maxOutputChars)
+    private sealed class EmitState(int maxRepeatedChars, int maxOutputChars, bool escapeInvisible)
     {
+        /// <summary>Whether strings holding an <see cref="IsInvisibleOrBreaking"/> character are quoted with it escaped (<see cref="EmitEscapingInvisible"/>).</summary>
+        public bool EscapeInvisible => escapeInvisible;
+
         /// <summary>
         /// The non-empty collections and long strings written so far, by
         /// reference: equality is structural, sharing is not. Created on first
@@ -281,9 +284,50 @@ public static class YamlEmitter
     /// can reach them with small values. The refusal messages still state the
     /// production constants.
     /// </summary>
-    internal static string EmitWithLimits(YamlValue value, int maxRepeatedChars, int maxOutputChars)
+    internal static string EmitWithLimits(YamlValue value, int maxRepeatedChars, int maxOutputChars) =>
+        EmitWithLimits(value, maxRepeatedChars, maxOutputChars, escapeInvisible: false);
+
+    /// <summary>
+    /// <see cref="Emit(YamlValue)"/> for text shown to a reader rather than
+    /// written to disk (#256: the frontmatter <c>okf_read_concept</c> shows,
+    /// hence the context provider's injection): every string, value or key,
+    /// holding a character <see cref="IsInvisibleOrBreaking"/> accepts is
+    /// double-quoted, never plain, with each such character written as a
+    /// <c>\uXXXX</c> escape, so nothing invisible, reordering or line-breaking
+    /// is left raw in the text. The parser decodes those escapes, so the
+    /// round trip stays exact (<c>parse(emit(v)) == v</c>). Characters outside
+    /// the BMP (the tag characters of the U+E0000 block, say) cannot be
+    /// escaped in the subset — it has no <c>\U</c> escape and its <c>\u</c>
+    /// refuses a surrogate — and are left raw. <see cref="Emit(YamlValue)"/>,
+    /// what every writer to disk uses, is unchanged.
+    /// </summary>
+    /// <exception cref="YamlEmitException">As for <see cref="Emit(YamlValue)"/>.</exception>
+    internal static string EmitEscapingInvisible(YamlValue value) =>
+        EmitWithLimits(value, MaxRepeatedOutputChars, MaxOutputChars, escapeInvisible: true);
+
+    /// <summary>
+    /// Whether <paramref name="c"/> is a BMP character <see cref="EmitEscapingInvisible"/>
+    /// escapes: a C0 control; a C1 control (U+0080–U+009F, NEL included); the
+    /// soft hyphen U+00AD; a bidi control (U+061C, U+200E/U+200F,
+    /// U+202A–U+202E, U+2066–U+2069); a zero-width or invisible character
+    /// (U+180E, U+200B–U+200D, U+2060–U+2064, U+FEFF); a line or paragraph
+    /// separator (U+2028, U+2029).
+    /// </summary>
+    internal static bool IsInvisibleOrBreaking(char c) => (int)c switch
     {
-        var state = new EmitState(maxRepeatedChars, maxOutputChars);
+        < 0x20 => true,
+        >= 0x80 and <= 0x9F => true,
+        0xAD or 0x61C or 0x180E or 0xFEFF => true,
+        >= 0x200B and <= 0x200F => true,
+        >= 0x2028 and <= 0x202E => true,
+        >= 0x2060 and <= 0x2064 => true,
+        >= 0x2066 and <= 0x2069 => true,
+        _ => false,
+    };
+
+    private static string EmitWithLimits(YamlValue value, int maxRepeatedChars, int maxOutputChars, bool escapeInvisible)
+    {
+        var state = new EmitState(maxRepeatedChars, maxOutputChars, escapeInvisible);
         switch (value)
         {
             case YamlMapping m when !m.IsEmpty:
@@ -294,7 +338,7 @@ public static class YamlEmitter
                 break;
             default:
                 CheckInlineCollection(value, 1);
-                var text = EmitScalar(value, maxOutputChars);
+                var text = EmitScalar(value, maxOutputChars, escapeInvisible);
                 if ((long)text.Length + 1 > maxOutputChars)
                 {
                     throw new YamlEmitException(OutputSizeExceededMessage);
@@ -316,7 +360,7 @@ public static class YamlEmitter
         var pad = new string(' ', indent);
         foreach (var (key, value) in map.Entries)
         {
-            var keyText = EmitKey(key, state.OutputLimit);
+            var keyText = EmitKey(key, state.OutputLimit, state.EscapeInvisible);
             var repeatedKey = state.IsRepeatedLongString(key);
             switch (value)
             {
@@ -331,7 +375,7 @@ public static class YamlEmitter
                 default:
                     CheckInlineCollection(value, depth + 1);
                     var repeatedValue = state.IsRepeatedLongString(value);
-                    state.WriteLine(pad, keyText, ':', EmitScalar(value, state.OutputLimit), repeatedKey || repeatedValue);
+                    state.WriteLine(pad, keyText, ':', EmitScalar(value, state.OutputLimit, state.EscapeInvisible), repeatedKey || repeatedValue);
                     break;
             }
         }
@@ -360,7 +404,7 @@ public static class YamlEmitter
                     break;
                 default:
                     CheckInlineCollection(item, depth + 1);
-                    state.WriteLine(pad, null, '-', EmitScalar(item, state.OutputLimit), state.IsRepeatedLongString(item));
+                    state.WriteLine(pad, null, '-', EmitScalar(item, state.OutputLimit, state.EscapeInvisible), state.IsRepeatedLongString(item));
                     break;
             }
         }
@@ -374,14 +418,14 @@ public static class YamlEmitter
     /// as "[]" (not "{}" for a non-empty mapping) if they somehow do. A string
     /// is refused rather than rendered past <paramref name="maxOutputChars"/>.
     /// </summary>
-    private static string EmitScalar(YamlValue value, int maxOutputChars) => value switch
+    private static string EmitScalar(YamlValue value, int maxOutputChars, bool escapeInvisible) => value switch
     {
         YamlNull => "null",
         YamlBool { Value: true } => "true",
         YamlBool { Value: false } => "false",
         YamlInt i => i.Value.ToString(CultureInfo.InvariantCulture),
         YamlFloat f => FormatFloat(f.Value),
-        YamlString s => EmitString(s.Value, maxOutputChars),
+        YamlString s => EmitString(s.Value, maxOutputChars, escapeInvisible),
         YamlSequence { Items.Count: 0 } => "[]",
         YamlMapping { IsEmpty: true } => "{}",
         YamlSequence or YamlMapping => "[]",
@@ -559,10 +603,10 @@ public static class YamlEmitter
     }
 
     /// <summary>Emits a string as a plain scalar when safe, otherwise double-quoted.</summary>
-    private static string EmitString(string s, int maxOutputChars)
+    private static string EmitString(string s, int maxOutputChars, bool escapeInvisible)
     {
         CheckStringLength(s, maxOutputChars);
-        return IsSafePlain(s) ? s : DoubleQuote(s, maxOutputChars);
+        return IsSafePlain(s, escapeInvisible) ? s : DoubleQuote(s, maxOutputChars, escapeInvisible);
     }
 
     /// <summary>
@@ -606,17 +650,17 @@ public static class YamlEmitter
     /// off the key). Keys whose quotes and brackets all close stay plain
     /// (<c>a[b]</c>, <c>a"b"c</c>), as do ordinary keys.
     /// </summary>
-    private static string EmitKey(YamlValue key, int maxOutputChars)
+    private static string EmitKey(YamlValue key, int maxOutputChars, bool escapeInvisible)
     {
         if (key is not YamlString { Value: var s })
         {
-            return EmitScalar(key, maxOutputChars);
+            return EmitScalar(key, maxOutputChars, escapeInvisible);
         }
 
         // One IsSafePlain call: a key it rejects is quoted like a value, one it
         // accepts stays plain unless the split would not end at its colon.
         CheckStringLength(s, maxOutputChars);
-        return IsSafePlain(s) && YamlParser.SplitsAtKeyEnd(s) ? s : DoubleQuote(s, maxOutputChars);
+        return IsSafePlain(s, escapeInvisible) && YamlParser.SplitsAtKeyEnd(s) ? s : DoubleQuote(s, maxOutputChars, escapeInvisible);
     }
 
     private static readonly char[] Indicators =
@@ -631,9 +675,12 @@ public static class YamlEmitter
     /// parser, last, only ever reads one line that cannot open a structure.
     /// Handing it the whole string first cost about 23 times the string's size
     /// for a multi-line one (the parser keeps an entry per line and copies
-    /// them), enough to run a legal value out of memory.
+    /// them), enough to run a legal value out of memory. Under
+    /// <paramref name="escapeInvisible"/>, a string holding any
+    /// <see cref="IsInvisibleOrBreaking"/> character is never plain, so that
+    /// <see cref="DoubleQuote"/> escapes it.
     /// </summary>
-    private static bool IsSafePlain(string s)
+    private static bool IsSafePlain(string s, bool escapeInvisible)
     {
         if (s.Length == 0)
         {
@@ -654,6 +701,11 @@ public static class YamlEmitter
         for (var i = 0; i < s.Length; i++)
         {
             var c = s[i];
+            if (escapeInvisible && IsInvisibleOrBreaking(c))
+            {
+                return false;
+            }
+
             switch (c)
             {
                 case '\n' or '\t' or '\r':
@@ -681,8 +733,11 @@ public static class YamlEmitter
     /// Renders a string as a double-quoted scalar with C-style escapes. An
     /// escape is up to six characters, so the quoted text is refused as soon
     /// as it passes <paramref name="maxOutputChars"/> rather than grown past it.
+    /// Under <paramref name="escapeInvisible"/>, every
+    /// <see cref="IsInvisibleOrBreaking"/> character without a named escape is
+    /// written <c>\uXXXX</c> too.
     /// </summary>
-    private static string DoubleQuote(string s, int maxOutputChars)
+    private static string DoubleQuote(string s, int maxOutputChars, bool escapeInvisible)
     {
         var outSb = new StringBuilder(Math.Min(s.Length, maxOutputChars) + 2);
         outSb.Append('"');
@@ -720,7 +775,7 @@ public static class YamlEmitter
                     outSb.Append("\\0");
                     break;
                 default:
-                    if (c < 0x20)
+                    if (c < 0x20 || (escapeInvisible && IsInvisibleOrBreaking(c)))
                     {
                         outSb.Append("\\u").Append(((int)c).ToString("x4", CultureInfo.InvariantCulture));
                     }

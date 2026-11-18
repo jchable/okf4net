@@ -1152,6 +1152,25 @@ and this project adheres to
   A mapping without a usable `by` was already reported (`GeneratedMissingBy`,
   or `GeneratedInvalidActor` for an empty one) and is unchanged.
 
+- **`okf_read_concept` shows frontmatter as YAML that round-trips (#256).**
+  It used to print one folded `key: value` line per entry, flattening nested
+  values (`generated: { by: human:me, at: … }` came out as
+  `generated: by: human:me at: …`), so a model copying it back into
+  `okf_write_concept` stored `generated`, `verified`, `sources`, `attester`…
+  as plain strings and silently lost §5.2 provenance. The frontmatter is now
+  one fenced `yaml` block written by `YamlEmitter`, which parses back to the
+  stored mapping and can be passed to `okf_write_concept` as is. The
+  `OkfContextProvider` injection, which embeds the same rendering, changes
+  with it, but its element content is HTML-escaped (`&amp;`, `&lt;`), so YAML
+  copied from injected context is not a round-trippable source: re-read the
+  concept with `okf_read_concept` before writing it. Frontmatter values are
+  shown with invisible, bidi, separator and control characters escaped as
+  `\uXXXX` inside quoted scalars (C0 and C1 controls, NEL, soft hyphen, bidi
+  controls, zero-width characters, U+FEFF, U+2028/U+2029), which round-trips
+  exactly; astral tag characters (U+E0000 block) are the exception and stay
+  raw, since the YAML subset cannot escape them. Model-facing text only: what
+  is written to disk and every CLI output (golden) are unchanged.
+
 - **Appending to `log.md` keeps the frontmatter block the file opens with
   (#258).** `BundleConceptWriter.AppendLog` / `AppendLogAsync` (and so
   `okf_append_log`) re-render the log through the §9 model and used to drop a

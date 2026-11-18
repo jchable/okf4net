@@ -536,7 +536,7 @@ public sealed class BundleConceptWriter
     /// validation) — those are reported as a plain-text message instead.
     /// </summary>
     /// <param name="conceptId">The concept id (path without <c>.md</c>), e.g. <c>tables/refunds</c>.</param>
-    /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines (the same YAML subset used inside a document's frontmatter block, without the <c>---</c> delimiters).</param>
+    /// <param name="frontmatterYaml">Frontmatter as YAML (the same subset used inside a document's frontmatter block, without the <c>---</c> delimiters; nested maps and lists keep their structure).</param>
     /// <param name="body">The markdown body.</param>
     /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
     public string WriteConcept(string conceptId, string frontmatterYaml, string body) =>
@@ -552,7 +552,7 @@ public sealed class BundleConceptWriter
     /// to read the concept (again). Never retried: a retry would overwrite what the caller has not seen.
     /// </summary>
     /// <param name="conceptId">The concept id (path without <c>.md</c>), e.g. <c>tables/refunds</c>.</param>
-    /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines (the same YAML subset used inside a document's frontmatter block, without the <c>---</c> delimiters).</param>
+    /// <param name="frontmatterYaml">Frontmatter as YAML (the same subset used inside a document's frontmatter block, without the <c>---</c> delimiters; nested maps and lists keep their structure).</param>
     /// <param name="body">The markdown body.</param>
     /// <param name="condition">The condition on the concept's current version.</param>
     /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
@@ -561,7 +561,7 @@ public sealed class BundleConceptWriter
 
     /// <summary>The asynchronous <see cref="WriteConcept(string, string, string)"/> (#152): the same writing, the provider asked asynchronously; cancellable until the provider commits.</summary>
     /// <param name="conceptId">The concept id (path without <c>.md</c>).</param>
-    /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines.</param>
+    /// <param name="frontmatterYaml">Frontmatter as YAML (subset), without the <c>---</c> delimiters.</param>
     /// <param name="body">The markdown body.</param>
     /// <param name="ct">Cancels the write before its commit: nothing is written, and the call ends with an <see cref="OperationCanceledException"/>. After the commit the result is returned and the write notification runs.</param>
     /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
@@ -570,7 +570,7 @@ public sealed class BundleConceptWriter
 
     /// <summary>The asynchronous <see cref="WriteConcept(string, string, string, BundleWriteCondition)"/> (#152).</summary>
     /// <param name="conceptId">The concept id (path without <c>.md</c>).</param>
-    /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines.</param>
+    /// <param name="frontmatterYaml">Frontmatter as YAML (subset), without the <c>---</c> delimiters.</param>
     /// <param name="body">The markdown body.</param>
     /// <param name="condition">The condition on the concept's current version.</param>
     /// <param name="ct">Cancels the write before its commit.</param>
@@ -2268,7 +2268,7 @@ public sealed class BundleConceptWriter
 
         if (fm is null)
         {
-            return (null, "Error: frontmatter must be a YAML mapping of 'key: value' lines, not a list or scalar.");
+            return (null, "Error: frontmatter must be a YAML mapping (top-level 'key: value' entries; nested maps and lists allowed), not a list or scalar.");
         }
 
         var doc = new OkfDocument(fm, body);
