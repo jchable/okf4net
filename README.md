@@ -759,6 +759,12 @@ tool list — through a scripted `IChatClient` against `bundles/ga4`
 (`dotnet run --project samples/agents-quickstart/src/AgentsQuickstart`).
 [`samples/acme-retail-agent/`](samples/acme-retail-agent/README.md) is the
 same kind of agent over a real OpenAI-compatible endpoint.
+[`samples/agents-handoff/`](samples/agents-handoff/README.md), also with no
+model or key, hands knowledge from one agent to another over a copy of
+`bundles/ga4`: a curator with the read-write tools writes a note, and a reader
+with the read-only tools finds it in its `OkfContextProvider` context, because
+both tool sets share one `BundleHandle` (see
+[Sharing a `BundleHandle`](src/OKF4net.Agents/README.md#sharing-a-bundlehandle-and-what-can-write)).
 
 The twelve unconditional tools, plus the thirteenth conditional on an attestation
 orchestrator being wired (read → browse → graph → search → audit → write →
