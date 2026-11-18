@@ -114,6 +114,26 @@ public class OkfValidateChangesTests
 
     // ----- ChangesSince ---------------------------------------------------
 
+    /// <summary>
+    /// #258: a log's frontmatter block is not read as log content, so its lines produce no
+    /// days, and every day after it is listed; a <c>---</c> thematic break whose region is not
+    /// a YAML mapping hides nothing.
+    /// </summary>
+    [Fact]
+    public void ChangesSince_reads_the_days_after_a_log_frontmatter_and_inside_a_thematic_break()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("log.md", "---\ntype: Log\nnotes: |\n  ## 2026-09-30\n---\n\n## 2026-09-20\n* **Update**: after the block.\n");
+        tmp.Write("sub/log.md", "---\n## 2026-09-25\n* inside the break.\n---\n## 2026-09-21\n* after the break.\n");
+
+        var result = new OkfBundleTools(tmp.Path).ChangesSince("2026-09-01");
+
+        Assert.Contains("after the block.", result, StringComparison.Ordinal);
+        Assert.DoesNotContain("2026-09-30", result, StringComparison.Ordinal);
+        Assert.Contains("inside the break.", result, StringComparison.Ordinal);
+        Assert.Contains("after the break.", result, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void ChangesSince_lists_fixture_log_entries_when_date_is_far_in_the_past()
     {

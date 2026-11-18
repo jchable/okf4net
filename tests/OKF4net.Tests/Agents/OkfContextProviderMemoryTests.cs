@@ -579,7 +579,8 @@ public class OkfContextProviderMemoryTests
         Assert.True(OkfDocument.TryParse(text, out var doc, out var error), error);
         Assert.Equal($"Agent memory {dateStr}", doc!.Frontmatter.Title);
         Assert.Equal($"Captured user/agent exchanges for {dateStr}.", doc.Frontmatter.Description);
-        Assert.Equal("okf4net/" + OkfSpec.Version, doc.Frontmatter.Generated?.By?.Raw);
+        Assert.Equal(BundleConceptWriter.DefaultProducerActor, doc.Frontmatter.Generated?.By?.Raw);
+        Assert.NotEqual("okf4net/" + OkfSpec.Version, doc.Frontmatter.Generated?.By?.Raw);
         Assert.Equal(OkfTimestamp.FormatUtc(now), doc.Frontmatter.Generated?.At);
     }
 
