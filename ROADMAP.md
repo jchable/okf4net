@@ -38,6 +38,16 @@ are the concrete entry points.
   exists** (`BundleLoadPerformanceTests`, a 2,001-concept synthetic bundle,
   [#6](https://github.com/jchable/okf4net/issues/6)) — it prints its timings
   and gates only on a pathology ceiling, not on a target.
+- **Read-write MCP sample shipped** ([#160](https://github.com/jchable/okf4net/issues/160)):
+  [`samples/second-brain/`](samples/second-brain/README.md) is a starter
+  personal-notes bundle served writable by `okf-mcp` in Claude Desktop. It
+  includes the Desktop configuration for Windows and macOS, example prompts,
+  and `smoke.cs`, which drives `okf-mcp` over stdio on a copy of the bundle
+  and checks the disk. The sample states plainly what the MCP write path does
+  not do. `okf_write_concept` changes the concept file only, so the §8
+  indexes and the §9 log are updated only when the model calls
+  `okf_regenerate_indexes` and `okf_append_log`. Nothing makes those calls
+  automatically, and the bundle's own guide note asks the model to make them.
 - Bundle viewer: **interactive viewer shipped** (on `dev`, in the next
   `okf-render` release) as the standalone `okf-render` binary
   (`OKF4net.Render`, over `OKF4net.Viewer`) — split out of `okf` itself so
