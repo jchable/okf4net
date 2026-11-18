@@ -144,12 +144,12 @@ a model.
 Console.WriteLine(await tools.SearchAsync("purchaser"));
 
 var concept = await tools.ReadConceptAsync("references/metrics/purchasers");
-Console.WriteLine(string.Join('\n', concept.Split('\n').Take(9)));
+Console.WriteLine(string.Join('\n', concept.Split('\n').Take(21)));
 ```
 
 Output (the read is cut after its frontmatter):
 
-```text
+````text
 # Search: "purchaser"
 
 Showing 2 of 2 result(s).
@@ -161,16 +161,29 @@ Showing 2 of 2 result(s).
 
 # Purchasers Audience Metric
 
+```yaml
 type: Reference
 resource: https://support.google.com/analytics/answer/9037342
 title: Purchasers Audience Metric
 description: Computes the count or list of users who have completed a purchase or in-app purchase.
-tags: [metric, audience, ga4, purchasers]
-generated: by: reference_agent/gemini-3.5-flash at: 2026-07-10T21:16:12+00:00
-sources: [id: sample_queries title: Sample queries for audiences based on BigQuery data - Analytics Help resource: https://support.google.com/analytics/answer/9037342]
+tags:
+  - metric
+  - audience
+  - ga4
+  - purchasers
+generated:
+  by: reference_agent/gemini-3.5-flash
+  at: 2026-07-10T21:16:12+00:00
+sources:
+  -
+    id: sample_queries
+    title: Sample queries for audiences based on BigQuery data - Analytics Help
+    resource: https://support.google.com/analytics/answer/9037342
 ```
+````
 
-The public methods record nothing. The functions that `GetTools` binds to the
+The frontmatter comes as a fenced YAML block that parses back to the same
+values; the body follows in its own fence. The public methods record nothing. The functions that `GetTools` binds to the
 model-facing names record what the model has seen, and `okf_write_concept`
 refuses to write a concept the model has not read first (step 5 shows the
 read-then-write sequence).
@@ -219,7 +232,7 @@ Output (the indented lines are printed by the scripted model, step 6):
     user: Who counts as a purchaser in GA4
     user: context: index, references/metrics/purchasers, datasets/ga4_obfuscated_sample_ecommerce
     assistant: calls okf_read_concept
-    tool: result (1338 chars)
+    tool: result (1379 chars)
 assistant: A purchaser is a user who logged an in_app_purchase or a purchase event (references/metrics/purchasers).
 ```
 
@@ -279,12 +292,12 @@ var second = await writingAgent.RunAsync(
 Console.WriteLine($"assistant: {second.Text}");
 
 var written = await tools.ReadConceptAsync("notes/purchaser-faq");
-Console.WriteLine(string.Join('\n', written.Split('\n').Take(7)));
+Console.WriteLine(string.Join('\n', written.Split('\n').Take(10)));
 ```
 
-Output (the `generated` time is when you ran it):
+Output (the `generated` time is when you ran it, and the version is the library's):
 
-```text
+````text
   [model, turn 1]
     instructions: Keep the bundle up to date.
     user: Write a FAQ note about purchasers
@@ -302,11 +315,15 @@ approval requested for okf_write_concept
 assistant: Wrote notes/purchaser-faq.
 # Purchaser FAQ
 
+```yaml
 type: Note
 title: Purchaser FAQ
 description: Who counts as a purchaser.
-generated: by: okf4net/0.2 at: 2026-11-18T07:58:23Z
+generated:
+  by: okf4net/0.7.0
+  at: 2026-11-18T11:22:38Z
 ```
+````
 
 The write tool stamped `generated` (§5.2) because the model's frontmatter had
 none. It also ran the producer-grade check (non-empty `type`, `title`,
@@ -391,7 +408,9 @@ serves a catalog of bundles with scoped memory instead of one bundle.
 
 `okf-mcp` is a local [Model Context Protocol](https://modelcontextprotocol.io)
 server that serves one bundle over stdio. It wraps the same `OkfBundleTools`
-operations as part 1, so the tools behave the same way.
+operations as part 1, so the tools behave the same way and return the same
+plain text (the `tools/call` below returns exactly what `SearchAsync` printed
+in step 3).
 
 ### Install
 
@@ -406,11 +425,11 @@ from the `dev` branch and installed from a local folder with
 ### Check that the server answers
 
 The script below starts a server, sends the MCP `initialize` request, then
-`tools/list`, and prints the answers. It uses only Node.js built-ins. Save it
-as `mcp-check.mjs`:
+`tools/list` and one `tools/call` of `okf_search`, and prints the answers. It
+uses only Node.js built-ins. Save it as `mcp-check.mjs`:
 
 ```js
-// Starts an MCP server over stdio, sends initialize and tools/list, prints the answers.
+// Starts an MCP server over stdio, sends initialize, tools/list and one tools/call, prints the answers.
 // Usage: node mcp-check.mjs <command> [args...]
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -443,6 +462,9 @@ const list = await request("tools/list", {});
 for (const tool of list.result.tools) {
   console.log(" ", tool.name);
 }
+
+const call = await request("tools/call", { name: "okf_search", arguments: { query: "purchaser" } });
+console.log(call.result.content[0].text);
 server.kill();
 ```
 
@@ -455,7 +477,7 @@ node mcp-check.mjs okf-mcp kb 2>/dev/null
 ```
 
 ```text
-server: okf 0.7.1-tut174
+server: okf 0.7.1-tut174b
 protocol: 2025-06-18
   okf_read_concept
   okf_browse
@@ -465,6 +487,14 @@ protocol: 2025-06-18
   okf_validate_bundle
   okf_changes_since
   okf_get_computation
+# Search: "purchaser"
+
+Showing 2 of 2 result(s).
+
+* references/metrics/purchasers — Purchasers Audience Metric (6)
+  Computes the audience of purchasers, defined as users who have logged either `in_app_purchase` or `purchase`.
+* tables/events_ — GA4 Events Export (1)
+  \* [Purchasers](../references/metrics/purchasers.md) — Users who have logged either `in_app_purchase` or `purchase`.
 ```
 
 The server is read-only by default: the four write tools are not registered.
@@ -475,7 +505,7 @@ OKF_MCP_WRITABLE=1 node mcp-check.mjs okf-mcp kb 2>/dev/null
 ```
 
 ```text
-server: okf 0.7.1-tut174
+server: okf 0.7.1-tut174b
 protocol: 2025-06-18
   okf_read_concept
   okf_browse
@@ -489,6 +519,14 @@ protocol: 2025-06-18
   okf_validate_bundle
   okf_changes_since
   okf_get_computation
+# Search: "purchaser"
+
+Showing 2 of 2 result(s).
+
+* references/metrics/purchasers — Purchasers Audience Metric (6)
+  Computes the audience of purchasers, defined as users who have logged either `in_app_purchase` or `purchase`.
+* tables/events_ — GA4 Events Export (1)
+  \* [Purchasers](../references/metrics/purchasers.md) — Users who have logged either `in_app_purchase` or `purchase`.
 ```
 
 `okf_run_computation` is never exposed by `okf-mcp`, because the server wires
@@ -499,16 +537,35 @@ no attestation runtime.
 These steps need a model, through the client, and were not run for this
 tutorial.
 
-**Claude Desktop.** Add the server to `claude_desktop_config.json`, with an
-absolute path to the bundle (Desktop starts servers in an unrelated working
-directory):
+**Claude Desktop.** Add the server to `claude_desktop_config.json`. Use
+absolute paths for both the command and the bundle: Desktop starts servers in
+an unrelated working directory, and on macOS it does not inherit your shell's
+`PATH`, so a bare `okf-mcp` is not found there. `dotnet tool install -g` puts
+the command in `~/.dotnet/tools` on macOS and Linux and in
+`%USERPROFILE%\.dotnet\tools` on Windows; `which okf-mcp` (macOS, Linux) or
+`where okf-mcp` (Windows) prints the exact path.
+
+On macOS (replace `you` with your user name):
 
 ```json
 {
   "mcpServers": {
     "okf": {
-      "command": "okf-mcp",
-      "args": ["/absolute/path/to/kb"]
+      "command": "/Users/you/.dotnet/tools/okf-mcp",
+      "args": ["/Users/you/kb"]
+    }
+  }
+}
+```
+
+On Windows (backslashes doubled inside JSON strings):
+
+```json
+{
+  "mcpServers": {
+    "okf": {
+      "command": "C:\\Users\\you\\.dotnet\\tools\\okf-mcp.exe",
+      "args": ["C:\\Users\\you\\kb"]
     }
   }
 }
@@ -516,7 +573,7 @@ directory):
 
 To allow writes, add `"env": { "OKF_MCP_WRITABLE": "1" }` to the `okf` entry.
 Any MCP client that starts stdio servers from a command and arguments takes
-the same two values.
+the same values.
 
 **Claude Code.**
 

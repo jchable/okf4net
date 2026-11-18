@@ -10,6 +10,19 @@ and this project adheres to
 
 ### Added
 
+- **Two end-to-end tutorials under `docs/tutorials/`** (#174).
+  [`library-users.md`](docs/tutorials/library-users.md) writes, indexes, loads
+  and validates a bundle through the asynchronous provider API
+  (`FileSystemBundleProvider`, `BundleConceptWriter`, `IndexGenerator`,
+  `Bundle.LoadAsync`, `BundleValidator`, `ChangeLog`) and checks it with
+  `okf validate`/`info`/`graph`/`verify`/`audit`;
+  [`agent-builders.md`](docs/tutorials/agent-builders.md) exposes a bundle
+  through `OKF4net.Agents` (a shared `BundleHandle`, `OkfToolMode`,
+  `OkfContextProvider`, a write behind host approval) with a scripted
+  `IChatClient`, and through `okf-mcp`, with a Node script that checks
+  `initialize`, `tools/list` and `tools/call` over stdio. Every snippet and
+  command was run to produce the output shown; the steps that need a model
+  say so. Linked from the README.
 - **`samples/agents-handoff`**, an `OKF4net.Agents` sample of two agents
   sharing one bundle, with no LLM endpoint, API key or network access (#159).
   Over a temporary copy of `bundles/ga4`, a curator agent with the read-write
