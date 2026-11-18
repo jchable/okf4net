@@ -168,6 +168,7 @@ est lancé à la fin de chacune (`CLAUDE.md`).
     | scalaire reconnu / échéance lisible | `true` | `false` |
     | scalaire inconnu / échéance illisible, dont `""` | `false` | `true` |
     | séquence ou mapping, même vide | `false` | `true` |
+
   - Côté validateur, `status` non scalaire est déjà signalé (`StatusNotScalar`),
     et rien ne change : modifier `StatusIsKnown` aurait ajouté un second
     diagnostic parasite (`StatusUnknown` avec un texte vide). `stale_after` non
@@ -251,6 +252,7 @@ autant (§3.3), mais le résultat n'est plus garanti.
   | `# foo<TAB>###<TAB>` | `foo` |
   | `### ###` | chaîne vide |
   | `# A  B` | `A  B` (deux espaces conservés) |
+
 - La pile des headings : un heading de niveau n dépile tout ce qui est de
   niveau ≥ n, puis s'empile. Un saut de niveau (H1 → H3) est toléré.
 
