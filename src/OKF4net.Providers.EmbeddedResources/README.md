@@ -65,7 +65,7 @@ Pass the assembly explicitly: never let a manifest choose what code is loaded.
 
 ## Tests
 
-From a clone of [the repository](https://github.com/jchable/okf4net), at its root (.NET SDK 10.0+). The provider's tests include `TargetsBuildTests`, which runs real child `dotnet build`s that import the `.targets` at NuGet's own import point: allow several minutes. Some cases depend on the platform and are skipped elsewhere: FIFOs, `find` and backslash names run outside Windows only, case twins on a case-sensitive volume only, 8.3 aliases and WPF on Windows only, links only where the process may create one. CI runs them on Linux, macOS and Windows:
+From a clone of [the repository](https://github.com/jchable/okf4net), at its root (.NET SDK 10.0+). The provider's tests include `TargetsBuildTests`, which runs real child `dotnet build`s that import the `.targets` at NuGet's own import point: allow several minutes. Some cases depend on the platform and are skipped elsewhere: FIFOs, `find` and backslash names run outside Windows only, case twins on a case-sensitive volume only, exact-case detaching on Linux only (a case-sensitive macOS volume still skips it), 8.3 aliases and WPF on Windows only, links only where the process may create one. CI runs them on Linux, macOS and Windows:
 
 ```sh
 dotnet test tests/OKF4net.Tests --filter "FullyQualifiedName~OKF4net.Tests.Providers.EmbeddedResources"
@@ -77,21 +77,28 @@ The Native AOT check consumes the **packages**, as a user would: it packs the co
 ```powershell
 $v = "0.0.0-local.$(Get-Date -Format yyyyMMddHHmmss)"
 $work = Join-Path ([IO.Path]::GetTempPath()) "okf-probe-$v"
-$env:NUGET_PACKAGES = "$work/packages"   # an isolated cache: the local version never reaches yours
-foreach ($p in 'src/OKF4net/OKF4net.csproj', 'src/OKF4net.Providers.EmbeddedResources/OKF4net.Providers.EmbeddedResources.csproj') {
-  dotnet pack $p -c Release -o "$work/feed" "-p:Version=$v"
-  if ($LASTEXITCODE -ne 0) { throw "pack failed: $p" }
+$savedPackages = $env:NUGET_PACKAGES
+try {
+  $env:NUGET_PACKAGES = "$work/packages"   # an isolated cache: the local version never reaches yours
+  foreach ($p in 'src/OKF4net/OKF4net.csproj', 'src/OKF4net.Providers.EmbeddedResources/OKF4net.Providers.EmbeddedResources.csproj') {
+    dotnet pack $p -c Release -o "$work/feed" "-p:Version=$v"
+    if ($LASTEXITCODE -ne 0) { throw "pack failed: $p" }
+  }
+  dotnet publish tests/EmbeddedBundleAotProbe/EmbeddedBundleAotProbe.csproj -c Release -r win-x64 "-p:OkfProbeVersion=$v" "-p:RestoreAdditionalProjectSources=$work/feed" -o "$work/out"
+  if ($LASTEXITCODE -ne 0) { throw "publish failed" }
+  $embedded = @(& "$work/out/EmbeddedBundleAotProbe")
+  if ($LASTEXITCODE -ne 0) { throw "embedded run exited $LASTEXITCODE" }
+  $filesystem = @(& "$work/out/EmbeddedBundleAotProbe" --filesystem bundles/acme_retail)
+  if ($LASTEXITCODE -ne 0) { throw "filesystem run exited $LASTEXITCODE" }
+  if (-not ($embedded[0] -match '^concepts=[1-9]')) { throw "no concept loaded: $($embedded[0])" }
+  if (Compare-Object $embedded $filesystem -SyncWindow 0) { throw "the two summaries differ" }
+  "OK: $($embedded.Count) identical summary lines"
 }
-dotnet publish tests/EmbeddedBundleAotProbe/EmbeddedBundleAotProbe.csproj -c Release -r win-x64 "-p:OkfProbeVersion=$v" "-p:RestoreAdditionalProjectSources=$work/feed" -o "$work/out"
-if ($LASTEXITCODE -ne 0) { throw "publish failed" }
-$embedded = @(& "$work/out/EmbeddedBundleAotProbe")
-if ($LASTEXITCODE -ne 0) { throw "embedded run exited $LASTEXITCODE" }
-$filesystem = @(& "$work/out/EmbeddedBundleAotProbe" --filesystem bundles/acme_retail)
-if ($LASTEXITCODE -ne 0) { throw "filesystem run exited $LASTEXITCODE" }
-if (-not ($embedded[0] -match '^concepts=[1-9]')) { throw "no concept loaded: $($embedded[0])" }
-if (Compare-Object $embedded $filesystem -SyncWindow 0) { throw "the two summaries differ" }
-"OK: $($embedded.Count) identical summary lines"
-Remove-Item Env:NUGET_PACKAGES
+finally {
+  if ($null -eq $savedPackages) { Remove-Item Env:NUGET_PACKAGES -ErrorAction SilentlyContinue }
+  else { $env:NUGET_PACKAGES = $savedPackages }
+  Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+}
 ```
 
 Native AOT links with the platform's native toolchain ([prerequisites](https://aka.ms/nativeaot-prerequisites); on Windows, the Desktop development with C++ workload). Without it the publish fails with `Platform linker not found`; adding `-p:PublishAot=false` to the publish still checks the packages, the `.targets` at NuGet's import point and the embedded-versus-disk comparison, but not the AOT image itself.
