@@ -86,13 +86,26 @@ text.Block(BlockKind.ConceptBody, body);  // multi-line by design: explicit and 
   lines, which flattened nested values, so copying them back into
   `okf_write_concept` lost the §5.2 `generated`/`verified` structure. It now
   shows the frontmatter as one fenced `yaml` block written by `YamlEmitter`,
-  which parses back to the stored mapping. Frontmatter values are therefore
-  **raw by design inside that fence**, like the body: invisible and bidi
-  controls and U+2028/U+2029 are no longer folded there (the emitter escapes
-  only C0 controls inside a quoted scalar). A line break in a value cannot
+  which parses back to the stored mapping. Frontmatter values are not folded
+  there: they are YAML inside the fence. A line break in a value cannot
   forge an entry, since the emitter writes it as a `\n` escape in a quoted
-  scalar, and the fence cannot be closed from inside. Whether to escape those
-  characters further is left to a separate decision.
+  scalar, and the fence cannot be closed from inside.
+
+  *Hardening (maintainer decision, #256, 2026-11-18):* the block is written by
+  `YamlEmitter.EmitEscapingInvisible`, the same emitter with one internal,
+  reader-facing option. Any key or value holding a BMP character that is
+  invisible or reorders or breaks a line is double-quoted, never plain, with
+  that character written as a `\uXXXX` escape: every C0 control (VT and FF
+  included), every C1 control (U+0080–U+009F, NEL included), the soft hyphen
+  U+00AD, the bidi controls (U+061C, U+200E/U+200F, U+202A–U+202E,
+  U+2066–U+2069), the zero-width and invisible characters (U+180E,
+  U+200B–U+200D, U+2060–U+2064, U+FEFF) and the separators U+2028/U+2029
+  (`YamlEmitter.IsInvisibleOrBreaking`). The parser decodes BMP `\u`
+  escapes, so the round trip stays exact. **Tag characters (the astral
+  U+E0000 block) are left raw**: the subset has no `\U` escape and its `\u`
+  refuses a surrogate, so they cannot be escaped. `YamlEmitter.Emit`, used
+  by everything written to disk (concepts, `okf fmt`, the goldens), is
+  unchanged.
 - A `Block` is delimited so that its content cannot close it. This covers the
   concept body in `okf_read_concept`, which has no delimiter today. It also
   covers the context provider's `<okf-context>` element, where a literal
@@ -123,7 +136,9 @@ orchestrator double:
   outside blocks. Since #256 a concept's frontmatter, titles, descriptions and
   tags included, is shown in `okf_read_concept` inside its `yaml` block, so
   there it is checked as block content (one block that its content cannot
-  close). Outside that read (the H1 title, search and browse lines, the
+  close), and `A_hostile_frontmatter_round_trips_through_the_read` checks
+  that the block parses back to the stored mapping with no forged entry and
+  holds none of the escaped characters raw. Outside that read (the H1 title, search and browse lines, the
   context provider's titles) those values are still holes, checked as above;
 - the tool list is a **closed inventory**, like `ObsoleteMembersTests`. A
   tool that `GetTools()` adds without a hostile-argument entry fails the test

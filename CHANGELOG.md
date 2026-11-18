@@ -1144,9 +1144,12 @@ and this project adheres to
   with it, but its element content is HTML-escaped (`&amp;`, `&lt;`), so YAML
   copied from injected context is not a round-trippable source: re-read the
   concept with `okf_read_concept` before writing it. Frontmatter values are
-  shown raw inside the fence, like the body (invisible and bidi controls and
-  U+2028/U+2029 are no longer folded there). Model-facing text only: no CLI
-  output (golden) moves.
+  shown with invisible, bidi, separator and control characters escaped as
+  `\uXXXX` inside quoted scalars (C0 and C1 controls, NEL, soft hyphen, bidi
+  controls, zero-width characters, U+FEFF, U+2028/U+2029), which round-trips
+  exactly; astral tag characters (U+E0000 block) are the exception and stay
+  raw, since the YAML subset cannot escape them. Model-facing text only: what
+  is written to disk and every CLI output (golden) are unchanged.
 - **`okf_verify` over a read-only provider throws `BundleReadOnlyException`
   like the other write tools (#218).** `OkfBundleTools.Verify` / `VerifyAsync`
   used to return `Error: the provider is read-only; …` as text; a direct call

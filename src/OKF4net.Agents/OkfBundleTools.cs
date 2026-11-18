@@ -2420,6 +2420,12 @@ public sealed class OkfBundleTools
     /// body (<see cref="ModelTextBuilder.Fence"/>), so a line break inside a
     /// value -- the emitter writes it as a <c>\n</c> escape in a quoted scalar
     /// anyway -- cannot pass for another entry or for the tool's own text.
+    /// It is written by <see cref="YamlEmitter.EmitEscapingInvisible"/>, the
+    /// same emitter with one reader-facing option: a key or value holding an
+    /// invisible, bidi, line-separator or control character is quoted with
+    /// that character as a <c>\uXXXX</c> escape, so none is shown raw (astral
+    /// tag characters excepted: the subset cannot escape them). The round trip
+    /// stays exact. What is written to disk is unchanged.
     /// A mapping the emitter refuses (past its nesting or size bounds, which a
     /// mapping the parser read cannot reach; only one built in code can) is
     /// reported on one line instead. Internal as a test seam for that line.
@@ -2435,7 +2441,7 @@ public sealed class OkfBundleTools
         string yaml;
         try
         {
-            yaml = YamlEmitter.Emit(map);
+            yaml = YamlEmitter.EmitEscapingInvisible(map);
         }
         catch (YamlEmitException ex)
         {

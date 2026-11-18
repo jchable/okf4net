@@ -413,6 +413,15 @@ public class ModelFacingBoundaryTests
         var parsed = Assert.IsType<YamlMapping>(YamlParser.Parse(shown));
         Assert.Equal(stored.Count, parsed.Count);
         Assert.True(stored.Equals(parsed), "the shown frontmatter does not parse back to the stored one:\n" + shown);
+
+        // Nothing invisible, reordering or line-breaking is shown raw: each is a \u escape (#256 hardening).
+        var raw = shown.Where(ch => ch != '\n' && YamlEmitter.IsInvisibleOrBreaking(ch)).Select(ch => $"U+{(int)ch:X4}").Distinct().ToList();
+        Assert.True(raw.Count == 0, "raw in the shown yaml block: " + string.Join(", ", raw));
+        if (conceptId == "h/hostile")
+        {
+            // Not vacuous: this frontmatter does carry such characters, which the disk emit leaves raw.
+            Assert.Contains(YamlEmitter.Emit(stored), ch => ch != '\n' && YamlEmitter.IsInvisibleOrBreaking(ch));
+        }
     }
 
     /// <summary>
