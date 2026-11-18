@@ -1132,6 +1132,39 @@ and this project adheres to
 
 ### Fixed
 
+- **A provider failure is no longer reported as a problem of the file being
+  read (#247).** `Bundle.ReadResourceText(BundleKey)` and its two other
+  spellings (`ReadResourceText(BundleKey, expected, out version)`,
+  `ReadResourceTextAsync`) used to turn every provider failure into an
+  `IOException`, so a validation against an unreachable store reported
+  `index.md could not be read` (`UnparseableIndex`, `UnparseableLog`) instead of
+  failing. **Their documented exceptions change:** a failure of the provider
+  itself now throws `BundleLoadException` (message: the key and the exception
+  type only, the cause in `InnerException`). That covers a typed provider
+  failure other than a refusal, a missing object, an oversized object or a
+  version mismatch (a bound, a network, a credential, a timeout), and a raw
+  `IOException` whose code says the storage is unreachable: a device not
+  ready or gone, a network path or host unreachable, a timeout, a reset
+  connection, a stale NFS handle, a device I/O error (`EIO`). Any other raw
+  `IOException` (a locked file, for instance) stays the object's. The object's
+  own problems keep their exceptions: `UnauthorizedAccessException` (refused),
+  `FileNotFoundException` (missing), `BundleObjectTooLargeException`,
+  `IOException` and `DecoderFallbackException` (not UTF-8). A caller that catches
+  those as "unreadable" now lets a provider failure through. The error-priority
+  rule of #139 (global failures abort, per-resource states are local) applies
+  everywhere the image is read:
+  - `BundleValidator.Validate`/`ValidateAsync` throw `BundleLoadException`, and
+    `okf validate` prints `error: …` and exits 1, as for a load failure;
+  - the load's survey of executable resources and its read of the root
+    `index.md` treat such a raw `IOException` as a load failure, no longer as
+    `Unreadable` or as "no declared version";
+  - `AttestationOrchestrator.Capture`/`CaptureAsync`/`RunAsync` throw instead of
+    refusing with `ImageOutdated`;
+  - `okf_browse`, `okf_get_computation`, `okf_changes_since` and
+    `okf_run_computation` return `Error: provider failure reading '…' (…)`, where
+    the log tool used to print a skip note.
+
+  No fixture provider fails, so no snapshot moves.
 - **`okf_verify` over a read-only provider throws `BundleReadOnlyException`
   like the other write tools (#218).** `OkfBundleTools.Verify` / `VerifyAsync`
   used to return `Error: the provider is read-only; …` as text; a direct call

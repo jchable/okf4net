@@ -102,7 +102,8 @@ public sealed class AttestationOrchestrator
     /// (docs/spec-conformance, S10.5-1).</para>
     /// <para>This method is not <c>async</c>: a <see langword="null"/> <paramref name="bundle"/>
     /// (<see cref="ArgumentNullException"/>) and an unexpected exception from <see cref="Capture"/>
-    /// (anything other than the I/O and decoding failures it turns into a refusal) are thrown
+    /// (anything other than the I/O and decoding failures it turns into a refusal — a provider
+    /// failure, <see cref="BundleLoadException"/>, among them, #247) are thrown
     /// synchronously instead of faulting the returned <see cref="ValueTask{TResult}"/>; a stage
     /// failure after the capture is still an outcome (errors-as-data).</para>
     /// </summary>
@@ -163,7 +164,11 @@ public sealed class AttestationOrchestrator
     /// called with a <see langword="null"/> source. This narrows §10.5 for this implementation
     /// (docs/spec-conformance, S10.5-1).</para>
     /// <para>A refusal is an <see cref="AttestationOutcome"/>; only an unexpected exception
-    /// (not I/O, decoding or an object over the bound) escapes.
+    /// (not I/O, decoding or an object over the bound) escapes — and a failure of the provider
+    /// itself, a <see cref="BundleLoadException"/> from the read (#247: a network, a credential, a
+    /// timeout, a storage that is unreachable), which says nothing about the resource and
+    /// nothing a reload of the image would fix, so it is neither a refusal nor
+    /// <see cref="AttestationCaptureResult.ImageOutdated"/>.
     /// <see cref="AttestationCaptureResult.ImageOutdated"/> says whether the failure is one the
     /// image may be behind on — a resource missing, unreadable, refused, over the bound, or whose
     /// version changed — in which case a caller holding a <see cref="BundleHandle"/> invalidates
@@ -263,6 +268,8 @@ public sealed class AttestationOrchestrator
                 }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
                 {
+                    // The object's own failure only: a provider failure is a BundleLoadException,
+                    // which propagates (#247).
                     // The exception TYPE, as for the stage failures: this reason string is
                     // rendered into a model's context, and a raw I/O message can carry a host
                     // path. computation.Path is bundle-relative and safe to name.
