@@ -732,6 +732,46 @@ public class ReadTests
     }
 
     [Fact]
+    public async Task A_persistent_change_with_a_constant_triplet_is_not_reloaded_but_pinned_code_is_refused()
+    {
+        // Spec §4.3 limit 2, T2 "Fraîcheur": a durable replacement at the same size whose listing keeps the same ETag
+        // (a store RustFS cannot be made to emulate) leaves the s3v1 token unchanged, so OnAccess does NOT reload; the
+        // pinned re-read of the changed code is refused all the same, since the version is the SHA-256 of the bytes read.
+        const string concept = "---\ntype: Attested Computation\ntitle: C\ndescription: D.\nruntime: bigquery\ncomputation: q.sql\n---\n";
+        var original = S3Test.Objects(("kb/c.md", concept), ("kb/q.sql", "SELECT 1\n"));
+        var served = new Dictionary<string, byte[]>(original, StringComparer.Ordinal);
+        var listing = S3Test.Serving(original); // its listing triplets (key, ETag, size) never change
+        var fake = new FakeS3Handler
+        {
+            Respond = (req, ct) =>
+            {
+                if (req.RequestUri!.Query.Contains("list-type=2", StringComparison.Ordinal))
+                {
+                    return listing.Respond(req, ct);
+                }
+
+                OKF4net.Providers.S3.Internal.S3KeyCodec.TryDecode(req.RequestUri.AbsolutePath, out var path);
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(served[path!["/okf/".Length..]]) });
+            },
+        };
+        using var handle = new BundleHandle(S3Test.Provider(fake), refreshPolicy: BundleRefreshPolicy.OnAccess);
+        var first = await handle.GetCurrentAsync();
+        var file = first.ExecutableResources[ConceptId.Parse("c")].Computation;
+        Assert.Equal(ExecutableResourceState.Pinned, file.State);
+        Assert.Equal(Convert.ToHexStringLower(SHA256.HashData("SELECT 1\n"u8)), file.Version!.Value.Token);
+
+        served["kb/q.sql"] = "SELECT 2\n"u8.ToArray(); // same size; the listing still reports the original ETag
+        var second = await handle.GetCurrentAsync();
+
+        Assert.Same(first, second); // the token did not change: not reloaded (limit 2 of §4.3)
+        Assert.False(handle.IsStale);
+        await Assert.ThrowsAsync<BundleVersionMismatchException>(async () => await second.ReadResourceTextAsync(file.Key!, file.Version));
+        var (text, version) = await second.ReadResourceTextAsync(file.Key!); // unpinned, the new bytes are what is served
+        Assert.Equal("SELECT 2\n", text);
+        Assert.NotEqual(file.Version, version);
+    }
+
+    [Fact]
     public async Task A_disposed_provider_fails_as_Disposed()
     {
         var p = S3Test.Provider(S3Test.Serving(S3Test.Objects(("kb/a.md", "x"))));
