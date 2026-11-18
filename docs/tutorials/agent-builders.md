@@ -468,12 +468,14 @@ console.log(call.result.content[0].text);
 server.kill();
 ```
 
-Run it against the bundle copied earlier. The server writes its log to
-standard error, which `2>/dev/null` hides; standard output carries only the
-JSON-RPC stream.
+Run it against a fresh copy of `bundles/ga4`: the copy from part 1 now also
+holds `notes/purchaser-faq`, written in step 5, which the search below would
+list as a third result. The server writes its log to standard error, which
+`2>/dev/null` hides; standard output carries only the JSON-RPC stream.
 
 ```sh
-node mcp-check.mjs okf-mcp kb 2>/dev/null
+cp -r path/to/okf4net/bundles/ga4 kb-mcp
+node mcp-check.mjs okf-mcp kb-mcp 2>/dev/null
 ```
 
 ```text
@@ -501,7 +503,7 @@ The server is read-only by default: the four write tools are not registered.
 `OKF_MCP_WRITABLE=1` registers them:
 
 ```sh
-OKF_MCP_WRITABLE=1 node mcp-check.mjs okf-mcp kb 2>/dev/null
+OKF_MCP_WRITABLE=1 node mcp-check.mjs okf-mcp kb-mcp 2>/dev/null
 ```
 
 ```text
