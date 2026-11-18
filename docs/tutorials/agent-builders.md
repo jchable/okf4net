@@ -99,8 +99,10 @@ Output:
 ### Step 2: choose what the model may write
 
 `GetTools(OkfToolMode)` returns the tools as `AITool`s. Bundle content is
-untrusted: a concept body can carry a prompt injection, and it only becomes
-dangerous when a write tool is reachable. The mode decides that:
+untrusted: a concept body can carry a prompt injection. No mode makes that
+harmless (retrieved text can still steer the answer, or push the model toward
+other tools the host registered), but the mode decides whether the model can
+change the bundle persistently:
 
 - `ReadOnly` leaves out the four write tools (`okf_write_concept`,
   `okf_verify`, `okf_append_log`, `okf_regenerate_indexes`).
@@ -240,7 +242,16 @@ in the next run of the same session. Here the scripted model first reads the
 concept it wants to create (the read records that it is absent), then asks to
 write it.
 
+This is a new conversation, so it gets its own tool set over the same handle.
+What the model has been shown is recorded per `OkfBundleTools` instance, not
+per Agent Framework session: reusing `tools` from step 4 would let this agent
+overwrite `references/metrics/purchasers` on the strength of the first
+agent's read, without reading it itself. Two tool sets over one handle share
+the image and each other's writes, but not their observations.
+
 ```csharp
+var writingTools = new OkfBundleTools(handle);
+
 IChatClient writingModel = new ScriptedChatClient(
     new ChatMessage(ChatRole.Assistant, [new FunctionCallContent("call_1", "okf_read_concept",
         new Dictionary<string, object?> { ["conceptId"] = "notes/purchaser-faq" })]),
@@ -255,7 +266,7 @@ IChatClient writingModel = new ScriptedChatClient(
 
 AIAgent writingAgent = writingModel.AsAIAgent(
     instructions: "Keep the bundle up to date.",
-    tools: tools.GetTools(OkfToolMode.RequireApprovalForWrites));
+    tools: writingTools.GetTools(OkfToolMode.RequireApprovalForWrites));
 var session = await writingAgent.CreateSessionAsync();
 
 var first = await writingAgent.RunAsync("Write a FAQ note about purchasers", session);
@@ -300,8 +311,8 @@ generated: by: okf4net/0.2 at: 2026-11-18T07:58:23Z
 The write tool stamped `generated` (§5.2) because the model's frontmatter had
 none. It also ran the producer-grade check (non-empty `type`, `title`,
 `description`) before writing. Because the tool set's writer is built over the
-handle, the write invalidated the handle, and the read that follows sees the
-new concept.
+handle, the write invalidated the handle, and the read that follows, through
+step 1's `tools` over the same handle, sees the new concept.
 
 ### Step 6: the scripted model
 
