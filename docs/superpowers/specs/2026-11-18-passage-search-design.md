@@ -7,7 +7,7 @@ l'implémentation parte d'une conception plutôt que d'un problème ouvert.
 Prérequis bloquants : §6.
 Design lié : `2026-11-18-okf-passages-design.md`, qui livre le découpeur
 réutilisé ici.
-Revue externe : Codex (`gpt-6-astra`), passe 1, intégrée. Plusieurs prémisses
+Revue externe : Codex (`gpt-6-astra`), passes 1 et 2, intégrées. Plusieurs prémisses
 de la première version étaient fausses et ont été corrigées (§7).
 
 ## 1. Le besoin
@@ -93,10 +93,28 @@ Options à trancher avant toute implémentation :
 3. **Ne pas mettre en cache** : reconstruire l'index à chaque recherche. C'est
    O(bundle) par requête, à juger sur les baselines (§6).
 
-Quelle que soit l'option : la construction concurrente passe par un
-`Lazy<PassageIndex>` (la fabrique d'une `ConditionalWeakTable` peut s'exécuter
-plusieurs fois sous concurrence). Une construction qui échoue n'est pas mise
-en cache. La clé inclut la configuration de découpage (budget, mesure).
+Quelle que soit l'option, s'il y a un cache, deux propriétés sont exigées, et
+le mot `Lazy` ne suffit à garantir ni l'une ni l'autre :
+
+- **une seule construction réussie par clé, même sous appels concurrents** :
+  la fabrique d'une `ConditionalWeakTable` peut s'exécuter plusieurs fois.
+  `Lazy<T>` en mode `ExecutionAndPublication` sérialise bien la construction,
+  mais il **conserve** l'exception d'un échec ;
+- **un échec n'est pas conservé** : le mode `PublicationOnly`, qui ne garde pas
+  l'exception, autorise en revanche plusieurs constructions concurrentes.
+
+Le protocole est donc explicite : une entrée `Lazy` en `ExecutionAndPublication`,
+et, en cas d'échec, son **remplacement conditionnel** (on ne retire l'entrée
+que si c'est encore celle qui a échoué), pour que l'appel suivant recommence.
+Les tests couvrent les courses entre échec, nouvelle tentative et publication
+réussie.
+
+**La clé** inclut la configuration de découpage : la valeur du budget, et
+l'identité de la mesure. Une fermeture de delegate peut garder la même identité
+tout en changeant de comportement. La recherche n'accepte donc en cache que la
+mesure par défaut, ou une mesure que l'hôte déclare pure (documenté). Plusieurs
+configurations sur une même image font plusieurs index : leur nombre est borné
+(§6).
 
 ### 3.3 Le frontmatter hérité par chaque passage → une clé secondaire
 
@@ -187,7 +205,8 @@ la BCL, en mémoire.
 Les passages sont ceux de `PassageSplitter` (`2026-11-18-okf-passages-design.md`,
 §3), avec les mêmes règles d'omission (§4.2) et les mêmes ids (§4.3). La
 jointure entre un résultat de recherche et un embedding se fait sur
-**`sectionId`**, indépendant du budget. L'`id` d'un morceau (`~n`) dépend du
+**`sectionId`**, indépendant du budget. Elle est de un à plusieurs : une
+section peut avoir plusieurs morceaux dans l'export. L'`id` d'un morceau (`~n`) dépend du
 budget et de la mesure, donc un export avec `--max-chars` et une recherche sans
 budget ne partagent que leurs `sectionId`. L'attribution des ids et les
 omissions vivent dans une unité partagée par l'export et la recherche, pas
@@ -209,11 +228,19 @@ dans chacun.
 ## 6. Prérequis bloquants
 
 - **La décision §3.2** (immuabilité de l'image ou stratégie d'index).
-- **Une baseline de l'index de passages.** La baseline de chargement existe
-  déjà (`BundleLoadPerformanceTests`, 2 001 concepts, #6), mais elle exclut
-  explicitement la recherche et la mémoire. Il en faut une pour la construction
-  de l'index et pour une recherche sur un gros bundle, avant de l'activer par
-  défaut où que ce soit.
+- **Une baseline de l'index de passages, temps et mémoire.** La baseline de
+  chargement existe déjà (`BundleLoadPerformanceTests`, 2 001 concepts, #6),
+  mais elle exclut explicitement la recherche et la mémoire. Avant d'activer
+  l'index par défaut où que ce soit, il faut mesurer sur un gros bundle :
+  - le temps de construction et celui d'une recherche ;
+  - la **mémoire retenue** par un index et le **pic** pendant sa construction.
+    `SnapshotMemory` n'estime que l'image chargée, pas les vues dérivées ;
+  - le **nombre d'index** qu'une image peut retenir (une clé par configuration,
+    §3.2), et la politique de rétention. Une référence faible au bundle ne
+    borne rien tant que le bundle reste vivant.
+
+  Pour l'option « copie » de §3.2, il faut aussi définir sa cohérence avec les
+  métadonnées utilisées au moment de restituer un résultat.
 - **L'issue #279.**
 
 ## 7. Hors périmètre
