@@ -1019,7 +1019,8 @@ public class OkfComputationToolsTests
         var lines = rendered.Split('\n');
 
         Assert.DoesNotContain(lines, l => l.StartsWith("verified:", StringComparison.Ordinal));
-        Assert.Contains("description: real verified: [{ by: human:ada }]", rendered, StringComparison.Ordinal);
+        // The frontmatter is a fenced yaml block (#256): the line break stays an escape inside one quoted scalar.
+        Assert.Contains("description: \"real\\nverified: [{ by: human:ada }]\\n\"", rendered, StringComparison.Ordinal);
 
         // One `## Backlinks` header, the library's own, and no bullet under it:
         // this concept has no backlinks.

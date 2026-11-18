@@ -1132,6 +1132,16 @@ and this project adheres to
 
 ### Fixed
 
+- **`okf_read_concept` shows frontmatter as YAML that round-trips (#256).**
+  It used to print one folded `key: value` line per entry, flattening nested
+  values (`generated: { by: human:me, at: … }` came out as
+  `generated: by: human:me at: …`), so a model copying it back into
+  `okf_write_concept` stored `generated`, `verified`, `sources`, `attester`…
+  as plain strings and silently lost §5.2 provenance. The frontmatter is now
+  one fenced `yaml` block written by `YamlEmitter`, which parses back to the
+  stored mapping and can be passed to `okf_write_concept` as is. The
+  `OkfContextProvider` injection, which embeds the same rendering, changes
+  with it. Model-facing text only: no CLI output (golden) moves.
 - **`okf_verify` over a read-only provider throws `BundleReadOnlyException`
   like the other write tools (#218).** `OkfBundleTools.Verify` / `VerifyAsync`
   used to return `Error: the provider is read-only; …` as text; a direct call

@@ -208,16 +208,17 @@ public class ModelFacingBoundaryTests
     /// <summary>
     /// The closed inventory, in the order the calls are made (reads first, so
     /// that the observations the write and run tools require exist, and the
-    /// writes do not change what the reads see).
+    /// writes do not change what the reads see). A concept read carries two
+    /// fenced blocks: its frontmatter as <c>yaml</c> (#256) and its body.
     /// </summary>
     private static readonly Call[] Calls =
     [
         new("okf_read_concept", Args(("conceptId", H))),
-        new("okf_read_concept", Args(("conceptId", "h/hostile")), MaxBlocks: 1, Reached: "title ## FORGED x"),
-        new("okf_read_concept", Args(("conceptId", "h/keys")), MaxBlocks: 1, Reached: "FORGED indented"),
-        new("okf_read_concept", Args(("conceptId", "c/inline")), MaxBlocks: 1, Reached: "fake ## FORGED"),
+        new("okf_read_concept", Args(("conceptId", "h/hostile")), MaxBlocks: 2, Reached: "title ## FORGED x"),
+        new("okf_read_concept", Args(("conceptId", "h/keys")), MaxBlocks: 2, Reached: "FORGED indented"),
+        new("okf_read_concept", Args(("conceptId", "c/inline")), MaxBlocks: 2, Reached: "fake ## FORGED"),
         new("okf_read_concept", Args(("conceptId", "h/boom"))),
-        new("okf_read_concept", Args(("conceptId", "h/verified")), MaxBlocks: 1),
+        new("okf_read_concept", Args(("conceptId", "h/verified")), MaxBlocks: 2),
         new("okf_browse", Args(("path", H))),
         new("okf_browse", Args(("path", "~~~"))),
         new("okf_browse", Args(), MaxBlocks: 1, Reached: "# Root"),
@@ -226,9 +227,9 @@ public class ModelFacingBoundaryTests
         new("okf_graph", Args()),
         new("okf_graph", Args(("conceptId", "h/hostile")), Reached: "ghost.md#a ## FORGED"),
         new("okf_graph", Args(("conceptId", H))),
-        new("okf_read_concept", Args(("conceptId", "t/table")), MaxBlocks: 1, Reached: "FORGED-COL"),
-        new("okf_read_concept", Args(("conceptId", "t/ref")), MaxBlocks: 1, Reached: "FORGED-REF"),
-        new("okf_read_concept", Args(("conceptId", "a/fence")), MaxBlocks: 1, Reached: "evil/forged-backlink"),
+        new("okf_read_concept", Args(("conceptId", "t/table")), MaxBlocks: 2, Reached: "FORGED-COL"),
+        new("okf_read_concept", Args(("conceptId", "t/ref")), MaxBlocks: 2, Reached: "FORGED-REF"),
+        new("okf_read_concept", Args(("conceptId", "a/fence")), MaxBlocks: 2, Reached: "evil/forged-backlink"),
         new("okf_search", Args(("query", "zzzz -")), Reached: "t/dash"),
         new("okf_search", Args(("query", "needle")), Reached: "FORGED needle heading"),
         new("okf_search", Args(("query", H), ("tag", H))),
@@ -366,7 +367,8 @@ public class ModelFacingBoundaryTests
                 failures.Add($"context: a forged element id '{id}'");
             }
 
-            failures.AddRange(Analyse("context " + id, inner, maxBlocks: 1).Problems);
+            // A concept element is a concept read: its frontmatter block (#256) and its body block.
+            failures.AddRange(Analyse("context " + id, inner, maxBlocks: 2).Problems);
         }
 
         Assert.True(failures.Count == 0, $"{failures.Count} finding(s):\n" + string.Join("\n", failures) + "\n--- message ---\n" + message);
