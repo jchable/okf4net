@@ -84,18 +84,27 @@ internal sealed class ProviderS3Client(AWSCredentials credentials, AmazonS3Confi
     /// <summary>The pipeline's handler types after customization, for the structural test (Task 10).</summary>
     internal IReadOnlyList<Type> HandlerTypes { get; private set; } = [];
 
-    /// <summary>The retry policy type in effect, for the structural test (Task 10).</summary>
-    internal Type? RetryPolicyType { get; private set; }
+    /// <summary>The retry policy type of every RetryHandler of the pipeline after customization, for the structural test (Task 10).</summary>
+    internal IReadOnlyList<Type> RetryPolicyTypes { get; private set; } = [];
 
     protected override void CustomizeRuntimePipeline(Amazon.Runtime.Internal.RuntimePipeline pipeline)
     {
         base.CustomizeRuntimePipeline(pipeline);
+        (RetryPolicyTypes, HandlerTypes) = Neutralize(pipeline, Config);
+    }
+
+    /// <summary>
+    /// The customization itself, static so a test can apply it to a pipeline it builds (the SDK adds the CSM handlers
+    /// only when CSM is enabled for the whole process). Returns the retry policy of every RetryHandler, and every handler
+    /// type, both READ BACK from the pipeline after the change, never recorded from what this method meant to install.
+    /// </summary>
+    internal static (IReadOnlyList<Type> RetryPolicyTypes, IReadOnlyList<Type> HandlerTypes) Neutralize(Amazon.Runtime.Internal.RuntimePipeline pipeline, IClientConfig config)
+    {
         TryRemove<Amazon.Runtime.Internal.CSMCallAttemptHandler>(pipeline);
         TryRemove<Amazon.Runtime.Internal.CSMCallEventHandler>(pipeline);
-        var policy = new Amazon.Runtime.Internal.StandardRetryPolicy(Config);
-        pipeline.ReplaceHandler<Amazon.Runtime.Internal.RetryHandler>(new Amazon.Runtime.Internal.RetryHandler(policy));
-        RetryPolicyType = policy.GetType();
-        HandlerTypes = pipeline.EnumerateHandlers().Select(h => h.GetType()).ToArray();
+        pipeline.ReplaceHandler<Amazon.Runtime.Internal.RetryHandler>(new Amazon.Runtime.Internal.RetryHandler(new Amazon.Runtime.Internal.StandardRetryPolicy(config)));
+        var handlers = pipeline.EnumerateHandlers().ToArray();
+        return (handlers.OfType<Amazon.Runtime.Internal.RetryHandler>().Select(h => h.RetryPolicy.GetType()).ToArray(), handlers.Select(h => h.GetType()).ToArray());
     }
 
     private static void TryRemove<T>(Amazon.Runtime.Internal.RuntimePipeline pipeline)
