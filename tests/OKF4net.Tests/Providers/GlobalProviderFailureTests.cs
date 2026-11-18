@@ -14,9 +14,10 @@ namespace OKF4net.Tests.Providers;
 /// one is a <see cref="BundleLoadException"/> naming the exception type only — and every
 /// consumer follows the error-priority rule of #139 (2026-10-12: global failures abort,
 /// per-resource states are local): the validator fails instead of reporting
-/// <c>UnparseableIndex</c>/<c>UnparseableLog</c>, the load fails instead of surveying a resource
-/// as <c>Unreadable</c>, a capture fails instead of refusing, and a tool reports an error instead
-/// of a skip note. No provider text reaches a message.
+/// <c>UnparseableIndex</c>/<c>UnparseableLog</c>, a capture fails instead of refusing, and a tool
+/// reports an error instead of a skip note. The load is the exception that is pinned here too: its
+/// survey and root-index read keep every raw I/O failure local, since one bad entry must never
+/// make the whole bundle unloadable. No provider text reaches a message.
 /// </summary>
 public class GlobalProviderFailureTests
 {
@@ -147,13 +148,16 @@ public class GlobalProviderFailureTests
             Assert.True(StorageFailure.IsStorageFailure(new IOException("x", unchecked((int)0x800704CF)))); // ERROR_NETWORK_UNREACHABLE
             Assert.False(StorageFailure.IsStorageFailure(new IOException("x", unchecked((int)0x80070020)))); // ERROR_SHARING_VIOLATION: the file is locked
             Assert.False(StorageFailure.IsStorageFailure(new IOException("x", unchecked((int)0x80070021)))); // ERROR_LOCK_VIOLATION
+            Assert.True(StorageFailure.IsStorageFailure(new IOException("x", unchecked((int)0x8007045D)))); // ERROR_IO_DEVICE (after the load only)
+            Assert.False(StorageFailure.IsStorageFailure(new IOException("x", unchecked((int)0x80070017)))); // ERROR_CRC: a bad sector of one file
             Assert.False(StorageFailure.IsStorageFailure(new IOException("x", 0x35))); // the right code, but not a Win32 HRESULT
         }
         else
         {
             Assert.True(StorageFailure.IsStorageFailure(new IOException("x", 5))); // EIO
-            Assert.True(StorageFailure.IsStorageFailure(new IOException("x", 6))); // ENXIO
             Assert.True(StorageFailure.IsStorageFailure(new IOException("x", OperatingSystem.IsLinux() ? 116 : 70))); // ESTALE
+            Assert.False(StorageFailure.IsStorageFailure(new IOException("x", 6))); // ENXIO: a socket inside the bundle, opened as a file
+            Assert.False(StorageFailure.IsStorageFailure(new IOException("x", 19))); // ENODEV: a device node without a driver
             Assert.False(StorageFailure.IsStorageFailure(new IOException("x", 11))); // EAGAIN / EDEADLK: a lock
             Assert.False(StorageFailure.IsStorageFailure(new IOException("x", 21))); // EISDIR
         }
@@ -212,27 +216,45 @@ public class GlobalProviderFailureTests
 
     // ---- Bundle.Load: the survey and the root index ------------------------------------
 
-    [Fact]
-    public void An_unreachable_storage_during_the_survey_fails_the_load_where_a_local_IOException_is_a_state()
+    /// <summary>
+    /// The load does not classify raw I/O failures (#247 review, B1): an <c>EIO</c> can be one bad
+    /// sector, an <c>ENXIO</c> a socket inside the bundle, so one entry must never make the whole
+    /// bundle unloadable. Every raw <see cref="IOException"/> of the survey is the resource's state.
+    /// </summary>
+    [Theory]
+    [InlineData("plain")]
+    [InlineData("unreachable")]
+    [InlineData("device-io")]
+    [InlineData("enxio")]
+    public void Every_raw_IOException_during_the_survey_is_a_state_and_the_load_succeeds(string kind)
     {
-        var cause = StorageUnreachable();
-        var e = Assert.Throws<BundleLoadException>(() => Bundle.Load(Storage().FailReadOf("att.py", cause)));
-        AssertNamesTypeOnly(e, "att.py", cause);
+        var bundle = Bundle.Load(Storage().FailReadOf("att.py", RawIOException(kind)));
 
-        var local = Bundle.Load(Storage().FailReadOf("att.py", new IOException("disk")));
-        Assert.Equal(ExecutableResourceState.Unreadable, local.ExecutableResources[ConceptId.Parse("rev")].Attester.State);
+        Assert.Equal(ExecutableResourceState.Unreadable, bundle.ExecutableResources[ConceptId.Parse("rev")].Attester.State);
+        Assert.Equal(ExecutableResourceState.Pinned, bundle.ExecutableResources[ConceptId.Parse("rev")].Computation.State);
     }
 
-    [Fact]
-    public void An_unreachable_storage_reading_the_root_index_fails_the_load_where_a_local_IOException_declares_no_version()
+    [Theory]
+    [InlineData("plain")]
+    [InlineData("unreachable")]
+    [InlineData("device-io")]
+    [InlineData("enxio")]
+    public void Every_raw_IOException_reading_the_root_index_declares_no_version_and_the_load_succeeds(string kind)
     {
-        var cause = StorageUnreachable();
-        var e = Assert.Throws<BundleLoadException>(() => Bundle.Load(Storage().FailReadOf("index.md", cause)));
-        AssertNamesTypeOnly(e, "index.md", cause);
+        var bundle = Bundle.Load(Storage().Add("index.md", "---\nokf_version: \"0.2\"\n---\n# B\n").FailReadOf("index.md", RawIOException(kind)));
 
-        var local = Bundle.Load(Storage().Add("index.md", "---\nokf_version: \"0.2\"\n---\n# B\n").FailReadOf("index.md", new IOException("disk")));
-        Assert.Null(local.OkfVersion);
+        Assert.Null(bundle.OkfVersion);
+        Assert.Equal(1, bundle.Count);
     }
+
+    /// <summary>A plain <see cref="IOException"/>, the storage-unreachable one, <c>EIO</c>/<c>ERROR_IO_DEVICE</c> (global after the load), and <c>ENXIO</c> (a socket opened as a file on Linux).</summary>
+    private static IOException RawIOException(string kind) => kind switch
+    {
+        "plain" => new IOException("disk"),
+        "unreachable" => StorageUnreachable(),
+        "device-io" => new IOException("x", OperatingSystem.IsWindows() ? unchecked((int)0x8007045D) : 5),
+        _ => new IOException("x", OperatingSystem.IsWindows() ? unchecked((int)0x80070006) : 6),
+    };
 
     // ---- AttestationOrchestrator.Capture -------------------------------------------------
 

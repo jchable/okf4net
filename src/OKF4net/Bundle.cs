@@ -7,20 +7,25 @@ using OKF4net.Providers;
 namespace OKF4net;
 
 /// <summary>
-/// Error raised by <see cref="Bundle.Load(string)"/> and
-/// <see cref="Bundle.Load(IBundleProvider, BundleLoadOptions?)"/>: a root
-/// that is not a directory (the <see cref="string"/> overload); an I/O error while listing
-/// the bundle, taking its version or reading a concept; a concept that is not valid UTF-8;
-/// a provider failure or refusal (a path through a reparse point or an entry that cannot be
-/// inspected, a root outside its confinement boundary, an object gone or changed while it
-/// was read); or a global bound exceeded (entries, depth). The message is library-authored
-/// (spec §7); the raw cause, when there is one, is the inner exception. Per-file problems —
-/// a rejected name, an oversized or unparseable concept — are recorded in
-/// <see cref="Bundle.ParseProblems"/> instead (loading is permissive, §11).
+/// The GLOBAL failure of reading a bundle through its provider: the bundle as a whole (or its
+/// provider) failed, as opposed to a problem of one object, which is a local state or a
+/// finding (the error-priority rule of #139: global failures abort, per-resource states are
+/// local). The message is library-authored (spec §7); the raw cause, when there is one, is
+/// the inner exception.
 /// <para>
-/// It is also the global failure of a read made on a loaded image (#247):
-/// <see cref="Bundle.ReadResourceTextAsync"/> and its synchronous spellings throw it when the
-/// provider failed rather than the object, and so do the readers built on it —
+/// A load (<see cref="Bundle.Load(string)"/>, <see cref="Bundle.Load(IBundleProvider, BundleLoadOptions?)"/>)
+/// raises it for a root that is not a directory (the <see cref="string"/> overload); an I/O
+/// error while listing the bundle, taking its version or reading a concept; a concept that is
+/// not valid UTF-8; a provider failure or refusal (a path through a reparse point or an entry
+/// that cannot be inspected, a root outside its confinement boundary, an object gone or changed
+/// while it was read); or a global bound exceeded (entries, depth). Per-file problems — a
+/// rejected name, an oversized or unparseable concept — are recorded in
+/// <see cref="Bundle.ParseProblems"/> instead (loading is permissive, §11).
+/// </para>
+/// <para>
+/// A read made on a loaded image raises it too (#247): <see cref="Bundle.ReadResourceTextAsync"/>
+/// and its synchronous spellings, for a typed provider failure or a raw storage error raised
+/// while reading the object, and so do the readers built on it —
 /// <see cref="BundleValidator.ValidateAsync"/> reading <c>index.md</c> and <c>log.md</c>, and
 /// <c>AttestationOrchestrator.CaptureAsync</c> — instead of reporting the object as unreadable.
 /// </para>
@@ -690,12 +695,11 @@ public sealed class Bundle
         {
             throw Translate(e, key); // a bound or a global refusal: the load fails, as without the survey
         }
-        catch (IOException e) when (StorageFailure.IsStorageFailure(e))
-        {
-            throw StorageFailed(e, key); // the storage is unreachable: a load failure, not Unreadable (decision 31, #247)
-        }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
         {
+            // Every raw I/O failure stays the resource's state here, StorageFailure's codes
+            // included (#247): a code such as EIO can be one bad file, and one entry must
+            // never make the whole bundle unloadable. Only post-load reads classify them.
             return (ExecutableResourceState.Unreadable, null);
         }
     }
@@ -1098,11 +1102,6 @@ public sealed class Bundle
         {
             text = (await ReadTextAtAsync(provider, key, limits, chunk, null, ct).ConfigureAwait(false)).Text;
         }
-        catch (IOException e) when (StorageFailure.IsStorageFailure(e))
-        {
-            // The storage is unreachable (#247): a load failure, like a typed provider failure below.
-            throw StorageFailed(e, key);
-        }
         catch (Exception e) when (e is BundleObjectNotFoundException or BundleObjectTooLargeException or IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
         {
             // Only the LOCAL failures mean "no declared version": a missing, oversized,
@@ -1391,13 +1390,21 @@ public sealed class Bundle
     /// (<see cref="BundleObjectTooLargeException"/> and <see cref="FileNotFoundException"/>
     /// included) and <see cref="System.Text.DecoderFallbackException"/> are problems of THIS
     /// object, which a caller may report as a finding about it; a failure of the provider itself
-    /// is a <see cref="BundleLoadException"/>, which is none of those, so a caller that absorbs
-    /// the local ones lets it through (#247).
+    /// — a typed provider failure, or a raw storage error raised while reading the object — is a
+    /// <see cref="BundleLoadException"/>, which is none of those, so a caller that absorbs the
+    /// local ones lets it through (#247).
+    /// </para>
+    /// <para>
+    /// Known limit: a provider can only be classified by what it raises. The filesystem
+    /// provider resolves the exact name by listing directories and still reads a listing that
+    /// fails — a share lost after the load, before the read — as an absent object, so that case
+    /// is a <see cref="FileNotFoundException"/>, not a <see cref="BundleLoadException"/>; it is
+    /// tracked separately.
     /// </para>
     /// </summary>
     /// <exception cref="UnauthorizedAccessException">The key is not allowed, or the provider refused the access.</exception>
     /// <exception cref="IOException">The object is missing, too large, or cannot be read (a failure of that object, never of the storage).</exception>
-    /// <exception cref="BundleLoadException">The provider failed rather than the object (#247): a typed provider failure other than a refusal, a missing object, an oversized object or a version mismatch — a bound, a network, a credential, a timeout — or a raw I/O failure that says the storage itself is unreachable. Global, like a load failure: the message names the key and the exception type only; the cause is the inner exception.</exception>
+    /// <exception cref="BundleLoadException">The provider failed rather than the object (#247): a typed provider failure other than a refusal, a missing object, an oversized object or a version mismatch — a bound, a network, a credential, a timeout — or a raw storage error raised while reading the object (a device not ready, a network path or host unreachable, a timeout, <c>EIO</c>). Global, like a load failure: the message names the key and the exception type only; the cause is the inner exception. A provider reports only what it raises: the filesystem provider still reports a share lost BEFORE the read (while it matches the object's name) as a missing object, <see cref="FileNotFoundException"/>.</exception>
     /// <exception cref="System.Text.DecoderFallbackException">The content is not valid UTF-8.</exception>
     public string ReadResourceText(BundleKey key) => ReadResourceText(key, null, out _);
 
@@ -1413,7 +1420,7 @@ public sealed class Bundle
     /// <exception cref="BundleVersionMismatchException">The object's version is not <paramref name="expected"/>; nothing is returned.</exception>
     /// <exception cref="UnauthorizedAccessException">The key is not allowed, or the provider refused the access.</exception>
     /// <exception cref="IOException">The object is missing, too large, or cannot be read (a failure of that object, never of the storage).</exception>
-    /// <exception cref="BundleLoadException">The provider failed rather than the object (#247): a typed provider failure other than a refusal, a missing object, an oversized object or a version mismatch — a bound, a network, a credential, a timeout — or a raw I/O failure that says the storage itself is unreachable. Global, like a load failure: the message names the key and the exception type only; the cause is the inner exception.</exception>
+    /// <exception cref="BundleLoadException">The provider failed rather than the object (#247): a typed provider failure other than a refusal, a missing object, an oversized object or a version mismatch — a bound, a network, a credential, a timeout — or a raw storage error raised while reading the object (a device not ready, a network path or host unreachable, a timeout, <c>EIO</c>). Global, like a load failure: the message names the key and the exception type only; the cause is the inner exception. A provider reports only what it raises: the filesystem provider still reports a share lost BEFORE the read (while it matches the object's name) as a missing object, <see cref="FileNotFoundException"/>.</exception>
     /// <exception cref="System.Text.DecoderFallbackException">The content is not valid UTF-8.</exception>
     /// <exception cref="InvalidOperationException">The provider answers later (it does not complete synchronously): this synchronous spelling never waits, so it throws; use <see cref="ReadResourceTextAsync"/>.</exception>
     public string ReadResourceText(BundleKey key, BundleObjectVersion? expected, out BundleObjectVersion version)
@@ -1431,7 +1438,7 @@ public sealed class Bundle
     /// <exception cref="BundleVersionMismatchException">The object's version is not <paramref name="expected"/>; nothing is returned.</exception>
     /// <exception cref="UnauthorizedAccessException">The key is not allowed, or the provider refused the access.</exception>
     /// <exception cref="IOException">The object is missing, too large, or cannot be read (a failure of that object, never of the storage).</exception>
-    /// <exception cref="BundleLoadException">The provider failed rather than the object (#247): a typed provider failure other than a refusal, a missing object, an oversized object or a version mismatch — a bound, a network, a credential, a timeout — or a raw I/O failure that says the storage itself is unreachable. Global, like a load failure: the message names the key and the exception type only; the cause is the inner exception.</exception>
+    /// <exception cref="BundleLoadException">The provider failed rather than the object (#247): a typed provider failure other than a refusal, a missing object, an oversized object or a version mismatch — a bound, a network, a credential, a timeout — or a raw storage error raised while reading the object (a device not ready, a network path or host unreachable, a timeout, <c>EIO</c>). Global, like a load failure: the message names the key and the exception type only; the cause is the inner exception. A provider reports only what it raises: the filesystem provider still reports a share lost BEFORE the read (while it matches the object's name) as a missing object, <see cref="FileNotFoundException"/>.</exception>
     /// <exception cref="System.Text.DecoderFallbackException">The content is not valid UTF-8.</exception>
     public async ValueTask<(string Text, BundleObjectVersion Version)> ReadResourceTextAsync(BundleKey key, BundleObjectVersion? expected = null, CancellationToken ct = default)
     {

@@ -101,11 +101,11 @@ public sealed class AttestationOrchestrator
     /// sees its computations refused until the bundle declares a file attester
     /// (docs/spec-conformance, S10.5-1).</para>
     /// <para>This method is not <c>async</c>: a <see langword="null"/> <paramref name="bundle"/>
-    /// (<see cref="ArgumentNullException"/>) and an unexpected exception from <see cref="Capture"/>
-    /// (anything other than the I/O and decoding failures it turns into a refusal — a provider
-    /// failure, <see cref="BundleLoadException"/>, among them, #247) are thrown
-    /// synchronously instead of faulting the returned <see cref="ValueTask{TResult}"/>; a stage
-    /// failure after the capture is still an outcome (errors-as-data).</para>
+    /// (<see cref="ArgumentNullException"/>) is thrown synchronously, at the call. An unexpected
+    /// exception from the capture (anything other than the I/O and decoding failures it turns
+    /// into a refusal — a provider failure, <see cref="BundleLoadException"/>, among them, #247)
+    /// faults the returned <see cref="ValueTask{TResult}"/> instead of becoming an outcome; a
+    /// stage failure after the capture is still an outcome (errors-as-data).</para>
     /// </summary>
     /// <param name="bundle">The bundle to load the concept from.</param>
     /// <param name="conceptId">The attested-computation concept to run.</param>

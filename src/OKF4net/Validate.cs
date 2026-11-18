@@ -350,7 +350,7 @@ public static class BundleValidator
     /// </summary>
     /// <param name="bundle">The loaded bundle to validate.</param>
     /// <param name="clock">Supplies "now" for staleness checks (§5.5); defaults to <see cref="SystemClock"/>.</param>
-    /// <exception cref="BundleLoadException">The provider failed while the validation read <c>index.md</c> or <c>log.md</c> (#247): a global failure fails the validation, as it fails a load, instead of becoming a finding about the file.</exception>
+    /// <exception cref="BundleLoadException">The provider failed while the validation read <c>index.md</c> or <c>log.md</c> — a typed provider failure, or a raw storage error raised while reading the file (#247): a global failure fails the validation, as it fails a load, instead of becoming a finding about the file.</exception>
     public static ValidationReport Validate(Bundle bundle, IOkfClock? clock = null) =>
         SyncBridge.RunCancellable(ct => ValidateAsync(bundle, clock, ct));
 
@@ -363,7 +363,7 @@ public static class BundleValidator
     /// <param name="bundle">The loaded bundle to validate.</param>
     /// <param name="clock">Supplies "now" for staleness checks (§5.5); defaults to <see cref="SystemClock"/>.</param>
     /// <param name="ct">Cancels the validation: the call ends with an <see cref="OperationCanceledException"/>.</param>
-    /// <exception cref="BundleLoadException">The provider failed while the validation read <c>index.md</c> or <c>log.md</c> (#247; the error-priority rule of #139: global failures abort, per-resource states are local). A problem of the file itself — missing, refused, over the bound, an I/O failure of that object, not UTF-8 — is still a <see cref="DiagnosticCode.UnparseableIndex"/> or <see cref="DiagnosticCode.UnparseableLog"/> finding.</exception>
+    /// <exception cref="BundleLoadException">The provider failed while the validation read <c>index.md</c> or <c>log.md</c> — a typed provider failure, or a raw storage error raised while reading the file (#247; the error-priority rule of #139: global failures abort, per-resource states are local). A problem of the file itself — missing, refused, over the bound, an I/O failure of that object, not UTF-8 — is still a <see cref="DiagnosticCode.UnparseableIndex"/> or <see cref="DiagnosticCode.UnparseableLog"/> finding; so, for now, is a share the filesystem provider lost before the read, which it reports as a missing file (see <see cref="Bundle.ReadResourceTextAsync"/>).</exception>
     public static async ValueTask<ValidationReport> ValidateAsync(Bundle bundle, IOkfClock? clock = null, CancellationToken ct = default)
     {
         // Checked first, whatever the bundle holds: a bundle with nothing to ask its provider
