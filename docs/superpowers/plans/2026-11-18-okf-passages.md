@@ -274,7 +274,7 @@ Spec §3 (mesure par défaut), §3.2 (`N`), §4.1 (en-tête, troncature, hash), 
   - `const int ElementLimit = 200`, `const int SlugLimit = 64`, `const string HeaderSeparator = " > "`, `const string PrefixTerminator = "\n\n"`
   - `string Normalize(string body)` : `N` = `\r\n` → `\n`, surrogate isolé → U+FFFD ; `\r` isolé conservé
   - `int CountCodePoints(string text)` : la mesure par défaut
-  - `string Slug(string rawHeadingContent)` : règle de spec §4.3, minuscules par **`UnicodeCaseFold.ToLowercase`** (la casse complète Unicode déjà partagée avec le tri des titres, `Internal/UnicodeCaseFold.cs` ; jamais `Rune.ToLowerInvariant` seul, qui laisse `İ` inchangé) ; le parcours **s'arrête dès que 64 points de code ont été gardés** ; vide → `section`
+  - `string Slug(string rawHeadingContent)` : règle de spec §4.3, minuscules par **`UnicodeCaseFold.ToLowercase`** (la casse complète Unicode déjà partagée avec le tri des titres, `Internal/UnicodeCaseFold.cs` ; jamais `Rune.ToLowerInvariant` seul, qui laisse `İ` inchangé). `ToLowercase` s'applique **une seule fois au contenu brut complet** : la règle Final_Sigma lit la suite de la chaîne, donc convertir un préfixe changerait un `Σ` en bordure de coupe. Seul le **filtrage** qui suit s'arrête dès que 64 points de code ont été gardés. Le coût est linéaire dans la longueur du heading, et chaque heading n'est slugué qu'une fois (tâche 7). Vide → `section`
   - `string TruncateElement(string element)` → `DisplayText.TruncateCodePoints(element, ElementLimit)`
   - `string Header(string titleOrId, IReadOnlyList<string> rawHeadings)` : chaque élément passé par `TruncateElement`, joints par ` > `
   - `string Prefix(string header)` → `header + PrefixTerminator`
@@ -287,6 +287,7 @@ Spec §3 (mesure par défaut), §3.2 (`N`), §4.1 (en-tête, troncature, hash), 
   - `Slug("**A** &amp; B")` == `"a-amp-b"` ; `Slug("[A](x)")` == `"ax"` ; `Slug("!!!")` == `"section"` ; `Slug("Été 2026")` == `"été-2026"` ; `Slug("Ωmega")` == `"ωmega"` ;
   - `Slug("Ωmega İstanbul")` == `"ωmega-istanbul"` : `UnicodeCaseFold.ToLowercase` donne `i` + U+0307 pour `İ`, et la marque U+0307 n'est ni lettre ni chiffre, donc retirée. Le même littéral est vérifié contre le binaire AOT en tâche 9 ;
   - `Slug(new string('a', 100))` == `new string('a', 64)` ; `Slug(new string('!', 199) + "abc")` == `"abc"` (le slug part du brut) ;
+  - Final_Sigma en bordure de coupe : `Slug(new string('a', 63) + "ΣA")` == `new string('a', 63) + "σ"` (σ, pas ς : le Σ est suivi d'une lettre dans le contenu complet) ;
   - propriété : sur 1 000 chaînes aléatoires (graine fixe), `Slug` ne contient jamais `.`, `~`, `/` ni `#` ;
   - `Header("Orders", ["Schema", "Partitioning"])` == `"Orders > Schema > Partitioning"` ; `Header("T", [])` == `"T"` ; `Header("T", [new string('h', 300)])` == `"T > " + new string('h', 199) + "…"` ;
   - `EmbedText("T", "x")` == `"T\n\nx"` ; `EmbedHash("T\n\nx")` égal au hash calculé dans le test par `"sha256:" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes("T\n\nx")))`.
@@ -510,7 +511,7 @@ Spec §7.
   - le préfixage multi-bundle (§4.3) ; un `conceptId` ne contient jamais `#` ;
   - la jointure par `conceptId` pour les champs exclus (§4.6) ;
   - la publication conditionnelle (`> out.jsonl.tmp && mv …`, §5.2) ;
-  - les limites : seuls les headings ATX de premier niveau coupent (pas setext) ; les ids dépendent de l'arbre des headings (§4.3) ; le bundle ne doit pas être modifié pendant `Enumerate` ;
+  - les limites : seuls les headings ATX de premier niveau coupent (pas setext) ; les ids dépendent de l'arbre des headings (§4.3) ; le bundle ne doit pas être modifié pendant `Enumerate` ; la mise en minuscules des slugs s'appuie sur les tables de casse du runtime, qui peuvent différer entre un hôte ICU et le binaire `okf` (`InvariantGlobalization`) pour des caractères rares ou récemment encodés, et donc donner un id différent pour un même heading (`UnicodeCaseFold.cs`, commentaire sur les versions Unicode) ;
   - l'API : `PassageExport.Enumerate` et `PassageBudget`, avec un exemple `Measure: t => tokenizer.CountTokens(t)`.
 - [ ] **Step 2: CHANGELOG** `[Unreleased]` :
   - *Added* : `okf passages` et l'API publique (`PassageSplitter`, `PassageBudget`, `PassageSection`, `PassageExport`, `Passage`) ;
