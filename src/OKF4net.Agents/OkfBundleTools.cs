@@ -257,7 +257,7 @@ public sealed class OkfBundleTools
     private DateTimeOffset Now => new(DateTime.SpecifyKind(UtcNow(), DateTimeKind.Utc), TimeSpan.Zero);
 
     /// <summary>
-    /// Returns the handle's image (<see cref="BundleHandle.Current"/>): loaded on first
+    /// Returns the handle's image (<see cref="BundleHandle.GetCurrentAsync"/>, taken synchronously here): loaded on first
     /// access, reloaded under the handle's refresh policy and after <see cref="InvalidateBundle"/>.
     /// Taken under the write lock, as before the handle, so that a read never interleaves
     /// with this tool set's own writes.

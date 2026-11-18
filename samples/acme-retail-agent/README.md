@@ -100,9 +100,10 @@ concept's §5.3–§5.5 frontmatter — the `[tools: ...]` line is what shows yo
 which path the model actually took.
 
 "Read-only" is enforced by construction, not just by convention:
-`Program.cs` filters `okf_write_concept`, `okf_append_log`, and
-`okf_regenerate_indexes` out of the tool list before it ever reaches the
-agent (mirroring `OkfMcpToolset`'s write-tool filter in `src/OKF4net.Mcp`),
+`Program.cs` asks for `GetTools(OkfToolMode.ReadOnly)`, which leaves every
+write tool (`OkfBundleTools.WriteToolNames`: `okf_write_concept`,
+`okf_append_log`, `okf_regenerate_indexes` and `okf_verify`) out of the tool
+list before it ever reaches the agent,
 so the model has no way to mutate the bundle's byte-exact, license-attributed
 upstream copy — even a model that tries to claim it made a change (small
 local models sometimes fabricate a plausible-looking "done" response) cannot
