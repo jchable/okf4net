@@ -798,7 +798,7 @@ nouveau rebase les change. Chacun est identifié par son sujet, qui survit :
 - C1 : garder le décodage en formulaire des clés listées (`+` brut → espace) ; mesuré sur MinIO le 2026-11-19 (#292), reste à mesurer sur Amazon S3.
 - C3 : garder le plafond de 3 envois par opération ; à replier dans le corps de la spec (#287).
 - C4 : confirmé (l'extension de D15 (b) au relevé des ressources exécutables, pour tous les providers).
-- C5c : implémenté — une `FormatException` (contrôle MD5 du SDK sur un ETag simple non hexadécimal) est classée `InvalidResponse` ; le remède de fond (ne plus dépendre de ce contrôle) reste #286.
+- C5c : une `FormatException` est classée `InvalidResponse` ; le remède de fond est réalisé (#286, 2026-11-19) : un ETag simple qui n'est pas un MD5 (32 chiffres hexadécimaux) est retiré de la réponse d'une lecture réussie, le SDK n'a plus rien à contrôler, et l'intégrité reste la version, le SHA-256 des octets lus.
 - C10 : accepté et implémenté — une page tronquée sans clé est suivie et comptée dans le budget de pages.
 - C11 : reporté (#284).
 - C12 : corrigé — le garde retire `x-amzn-trace-id` et reconstruit le `User-Agent` à partir d'une liste fermée de formes de jetons.
@@ -863,7 +863,7 @@ Aucun golden n'a bougé.
   (`AmazonS3ResponseHandler.ProcessResponseHandlers` → `AWSSDKUtils.HexStringToBytes` → `Convert.FromHexString`, mesuré) ;
   `ErrorClassifier` la cherche le long de la chaîne d'`InnerException` (comme pour `Integrity`) et la classe
   `InvalidResponse`, message fermé inchangé, l'exception brute en `InnerException`. Une défaillance de transport reste
-  `Transport`. Désactiver le contrôle du SDK reste #286. Tests : `ReadTests.A_single_part_ETag_that_is_not_hex_is_InvalidResponse`,
+  `Transport`. *Réalisé (#286, 2026-11-19)* : `BoundingHandler` retire l'en-tête `ETag` d'une lecture réussie quand ce n'est pas 32 chiffres hexadécimaux (ni une forme multipart) ; mesuré : un ETag hexadécimal de SHA-1 ou SHA-256 échouait en `Integrity` (faussement), un non-hexadécimal en `FormatException`. Un vrai MD5 qui ne correspond pas reste `Integrity` (mutation : retirer aussi les vrais MD5 fait échouer le test). `ReadTests.An_opaque_single_part_ETag_is_not_the_SDKs_to_check_and_the_read_succeeds`. Test de la première décision (supprimé, remplacé par le précédent) : `ReadTests.A_single_part_ETag_that_is_not_hex_is_InvalidResponse`,
   `ErrorTests.A_format_failure_is_InvalidResponse_wherever_it_sits_and_a_transport_failure_is_not`.
 - d. Un corps plus court que son `Content-Length` n'est **pas** détecté par le SDK : le provider le refuse
   lui-même (`Transport`).

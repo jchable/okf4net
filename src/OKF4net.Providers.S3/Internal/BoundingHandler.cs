@@ -29,6 +29,11 @@ internal sealed class BoundingHandler : DelegatingHandler
         int? bound = status >= 300 ? ErrorBodyBytes : isList ? ListBodyBytes : null;
         if (bound is null)
         {
+            if (operation?.Operation == S3Operation.Read)
+            {
+                DropEtagTheSdkCannotCheck(response);
+            }
+
             return response;
         }
 
@@ -87,6 +92,31 @@ internal sealed class BoundingHandler : DelegatingHandler
 
         copy.Content.Headers.ContentLength = body.Length;
         return copy;
+    }
+
+    /// <summary>
+    /// The SDK checks the body of a successful GetObject against its ETag, as an MD5 digest, whenever the ETag is a single
+    /// part (no '-'): it hex-decodes the ETag and compares. An ETag that is not 32 hexadecimal digits is not an MD5, so the
+    /// check can only fail, wrongly: a non-hex value throws a FormatException, a hex digest of another length (SHA-1, SHA-256)
+    /// fails as an integrity error (measured on AWSSDK.S3 4.1.0, #286). The header is dropped from such a response, so the SDK
+    /// has nothing to check; the provider's own integrity is the version, the SHA-256 of the bytes it read, whatever the ETag
+    /// says. A genuine MD5 ETag (32 hex digits) and a multipart-shaped one (<c>&lt;hex&gt;-&lt;parts&gt;</c>, which the SDK skips)
+    /// are left alone, so a body that does not match a real MD5 is still refused as <see cref="S3FailureKind.Integrity"/>.
+    /// </summary>
+    private static void DropEtagTheSdkCannotCheck(HttpResponseMessage response)
+    {
+        if (!response.Headers.TryGetValues("ETag", out var values))
+        {
+            return;
+        }
+
+        var etag = string.Concat(values).Trim().Trim('"');
+        if (etag.Contains('-', StringComparison.Ordinal) || (etag.Length == 32 && etag.All(char.IsAsciiHexDigit)))
+        {
+            return;
+        }
+
+        response.Headers.Remove("ETag");
     }
 
     /// <returns>The body, or null when it is longer than <paramref name="bound"/>. Never reads more than B + 1 bytes.</returns>

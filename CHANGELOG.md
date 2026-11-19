@@ -12,6 +12,7 @@ and this project adheres to
 
 - `OKF4net.Providers.S3`: `S3BundleSource.SigningRegion` sets the region of the SigV4 credential scope for a `ServiceUrl` source, for a compatible store that validates it (the default stays `us-east-1`). It is part of the provider's `Id` only when set, so existing ids do not change (#284).
 - `OKF4net.Providers.S3`: `S3BundleSource.Anonymous` and the `S3BundleProvider(S3BundleSource)` constructor read a public bucket without credentials: no request is signed and no host credential is asked for. The constructor that takes credentials refuses an anonymous source and the reverse, so an unsigned request is never an accident (#291).
+- `OKF4net.Providers.S3`: a store whose single-part ETags are not MD5 digests (opaque text, or a SHA-1 or SHA-256 digest) can now be read: the SDK's MD5 check, which could only fail on them, no longer runs for such an ETag, and the object version stays the SHA-256 of the bytes read. A body that does not match a genuine MD5 ETag is still refused as `Integrity` (#286).
 
 ## [0.8.0] - 2026-11-19
 

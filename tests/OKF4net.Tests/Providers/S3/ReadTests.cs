@@ -38,7 +38,7 @@ public class ReadTests
     {
         // The ETag the ORIGINAL object had, served over other bytes: a store whose ETag does not follow the content.
         // A multipart-shaped ETag ("<hex>-<parts>"), which the SDK does not check against the body. (An ETag that is not
-        // hex fails inside the SDK's own MD5 check: InvalidResponse, A_single_part_ETag_that_is_not_hex_is_InvalidResponse;
+        // hex is not checked at all: the read succeeds, An_opaque_single_part_ETag_is_not_the_SDKs_to_check_and_the_read_succeeds;
         // a plain MD5 ETag is checked by the SDK itself, next test.)
         var etag = "\"" + Convert.ToHexStringLower(MD5.HashData("original"u8)) + "-2\"";
         var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("other", null, "text/plain"), Headers = { ETag = new System.Net.Http.Headers.EntityTagHeaderValue(etag) } }) };
@@ -64,34 +64,35 @@ public class ReadTests
     [Theory]
     [InlineData("\"same\"")]
     [InlineData("\"zz0123456789abcdef0123456789abcd\"")] // MD5-length, not hex
-    public async Task A_single_part_ETag_that_is_not_hex_is_InvalidResponse(string etag)
+    [InlineData("\"da39a3ee5e6b4b0d3255bfef95601890afd80709\"")] // a SHA-1 hex digest: hex, but not an MD5
+    [InlineData("\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"")] // a SHA-256 hex digest
+    public async Task An_opaque_single_part_ETag_is_not_the_SDKs_to_check_and_the_read_succeeds(string etag)
     {
-        // Spec Annexe C5c (maintainer's decision 2026-11-19). Measured on AWSSDK.S3 4.1.0: the SDK's own MD5 check reads a
-        // single-part ETag as hex and throws FormatException on one that is not. That is the store's response, not the
-        // transport: InvalidResponse, the closed message, the raw failure as the inner exception. (Not disabling the SDK's
-        // check: ticket #286.)
+        // #286 (supersedes the first remedy of Annexe C5c, which only CLASSIFIED the failure). Measured on AWSSDK.S3 4.1.0: the
+        // SDK's own MD5 check hex-decodes a single-part ETag and throws FormatException on one that is not hex (a SHA-1 or
+        // SHA-256 digest decodes, then fails as Integrity). Such an ETag is not an MD5, so the SDK cannot check anything
+        // with it: the provider drops it from a successful read response, and the bytes are verified where they always are,
+        // in the version, which is the SHA-256 of what was read (never the ETag). Before this change each row failed:
+        // InvalidResponse (not hex) or Integrity (a hex digest of another length).
         var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("other", null, "text/plain"), Headers = { ETag = new System.Net.Http.Headers.EntityTagHeaderValue(etag) } }) };
         using var p = S3Test.Provider(fake);
-        var e = await Assert.ThrowsAsync<S3RequestException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
-        Assert.Equal(S3FailureKind.InvalidResponse, e.Kind);
-        Assert.Equal("S3 read failed: InvalidResponse for 'a.md'", e.Message);
-        Assert.Null(e.StatusCode);
-        Assert.True(ChainHas<FormatException>(e.InnerException), e.InnerException?.ToString());
-        Assert.Single(fake.Requests); // not retried
+        using var o = await p.ReadAsync(BundleKey.Parse("a.md"), null, default);
+        Assert.Equal("other"u8.ToArray(), await Bytes(o));
+        Assert.Equal(Convert.ToHexStringLower(SHA256.HashData("other"u8)), o.Version.Token);
+        Assert.Single(fake.Requests);
     }
 
-    private static bool ChainHas<T>(Exception? e)
-        where T : Exception
+    [Fact]
+    public async Task A_pinned_read_over_an_opaque_ETag_still_compares_the_bytes()
     {
-        for (var depth = 0; e is not null && depth < 16; depth++, e = e.InnerException)
-        {
-            if (e is T || (e is AggregateException a && a.InnerExceptions.Any(ChainHas<T>)))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        // The pinning contract does not depend on the ETag: with the opaque one dropped, a wrong expected version is still refused.
+        var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("other", null, "text/plain"), Headers = { ETag = new System.Net.Http.Headers.EntityTagHeaderValue("\"opaque\"") } }) };
+        using var p = S3Test.Provider(fake);
+        var wrong = new BundleObjectVersion(Convert.ToHexStringLower(SHA256.HashData("original"u8)));
+        await Assert.ThrowsAsync<BundleVersionMismatchException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), wrong, default));
+        var right = new BundleObjectVersion(Convert.ToHexStringLower(SHA256.HashData("other"u8)));
+        using var o = await p.ReadAsync(BundleKey.Parse("a.md"), right, default);
+        Assert.Equal(right, o.Version);
     }
 
     [Fact]
