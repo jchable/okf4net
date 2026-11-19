@@ -1,0 +1,23 @@
+<!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Not in OKF4net.sln: it consumes the REAL packages, packed by ci.yml's "S3 provider AOT smoke test" job at a
+    run-unique version passed as OkfProbeVersion. OkfAwsSdkVersion and OkfAwsCoreVersion select the AWSSDK.S3 and
+    AWSSDK.Core under test: the package's minimum (4.1.0 / 4.1.0), or the latest published of each (spec D1, T3).
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="OKF4net.Providers.S3" Version="$(OkfProbeVersion)" />
+    <PackageReference Include="AWSSDK.S3" Version="$(OkfAwsSdkVersion)" />
+    <PackageReference Include="AWSSDK.Core" Version="$(OkfAwsCoreVersion)" />
+  </ItemGroup>
+
+</Project>

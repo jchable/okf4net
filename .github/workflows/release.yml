@@ -44,7 +44,8 @@ jobs:
         # registry. ubuntu-latest would actually run them (it has working Docker);
         # a Windows runner defaults to Windows containers and would fail outright
         # rather than skip. Excluded by decision, like producers/ — see CLAUDE.md.
-        run: dotnet test OKF4net.sln -c Release --filter "Category!=ContainerIntegration"
+        # S3Integration starts RustFS in a container: excluded for the same reason (spec D14).
+        run: dotnet test OKF4net.sln -c Release --filter "Category!=ContainerIntegration&Category!=S3Integration"
 
       - name: Pack
         run: >
@@ -67,6 +68,12 @@ jobs:
       - name: Pack (Providers.EmbeddedResources)
         run: >
           dotnet pack src/OKF4net.Providers.EmbeddedResources/OKF4net.Providers.EmbeddedResources.csproj -c Release -o artifacts
+          -p:Version=$VERSION
+          -p:ContinuousIntegrationBuild=true
+
+      - name: Pack (Providers.S3)
+        run: >
+          dotnet pack src/OKF4net.Providers.S3/OKF4net.Providers.S3.csproj -c Release -o artifacts
           -p:Version=$VERSION
           -p:ContinuousIntegrationBuild=true
 

@@ -41,7 +41,7 @@ jobs:
         run: dotnet build OKF4net.sln -c Release --no-restore
 
       - name: Test
-        run: dotnet test OKF4net.sln -c Release --no-build --filter "Category!=ContainerIntegration"
+        run: dotnet test OKF4net.sln -c Release --no-build --filter "Category!=ContainerIntegration&Category!=S3Integration"
 
   format:
     name: code style
@@ -505,3 +505,102 @@ jobs:
           $diff = Compare-Object $embedded $filesystem -SyncWindow 0
           if ($diff) { $diff | Format-Table -AutoSize | Out-String | Write-Host; throw "embedded and filesystem summaries differ" }
           Write-Host "OK: $($embedded.Count) summary lines identical, $($embedded[0])"
+
+  # Spec of 2026-11-16 §6 T3 (#142): the S3 provider as a host really consumes it -- the core and the provider PACKED
+  # at a run-unique version, published Native AOT against the minimum AWSSDK.S3 and against the latest one, run
+  # against a fake S3 the probe serves itself: S3 and filesystem summaries equal, the guard refusing a 307 under AOT,
+  # and a counter-proof client without the guard following it. Loopback only: no AWS endpoint, no credential, no secret.
+  s3-aot:
+    name: S3 provider AOT smoke test (${{ matrix.rid }}, AWSSDK ${{ matrix.sdk }})
+    strategy:
+      fail-fast: false
+      matrix:
+        rid: [linux-x64, osx-arm64, win-x64]
+        sdk: [minimum, latest]
+        include:
+          - rid: linux-x64
+            os: ubuntu-latest
+          - rid: osx-arm64
+            os: macos-latest
+          - rid: win-x64
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    # The probe bounds its own waits (seconds); this bounds the pack, the restore and the native compile.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      # A version no feed can already hold, so restore cannot take a published core or provider.
+      - name: Derive a CI-only version, an isolated package cache and the AWSSDK version
+        shell: pwsh
+        run: |
+          $declared = (Select-String -Path Directory.Build.props -Pattern '<Version>([^<]*)</Version>').Matches[0].Groups[1].Value
+          echo "PROBE_VERSION=$declared-ci.${{ github.run_id }}.${{ github.run_attempt }}" >> $env:GITHUB_ENV
+          echo "PROBE_FEED=${{ runner.temp }}/okf-s3-feed" >> $env:GITHUB_ENV
+          echo "NUGET_PACKAGES=${{ runner.temp }}/okf-s3-packages" >> $env:GITHUB_ENV
+          $minimum = (Select-String -Path src/OKF4net.Providers.S3/OKF4net.Providers.S3.csproj -Pattern 'Include="AWSSDK.S3" Version="([^"]*)"').Matches[0].Groups[1].Value
+          if (-not $minimum) { throw "no AWSSDK.S3 version found in the provider's csproj" }
+          function Latest($id) { (Invoke-RestMethod "https://api.nuget.org/v3-flatcontainer/$id/index.json").versions | Where-Object { $_ -notmatch '-' } | Select-Object -Last 1 }
+          if ('${{ matrix.sdk }}' -eq 'minimum') { $sdk = $minimum; $core = $minimum } else { $sdk = Latest 'awssdk.s3'; $core = Latest 'awssdk.core' }
+          if (-not $sdk -or -not $core) { throw "could not determine the AWSSDK versions (S3 '$sdk', Core '$core')" }
+          Write-Host "AWSSDK.S3 $sdk, AWSSDK.Core $core ($('${{ matrix.sdk }}'))"
+          echo "AWS_SDK_VERSION=$sdk" >> $env:GITHUB_ENV
+          echo "AWS_CORE_VERSION=$core" >> $env:GITHUB_ENV
+
+      - name: Pack the core and the provider
+        shell: pwsh
+        run: |
+          foreach ($project in 'src/OKF4net/OKF4net.csproj', 'src/OKF4net.Providers.S3/OKF4net.Providers.S3.csproj') {
+            dotnet pack $project -c Release -o $env:PROBE_FEED -p:Version=$env:PROBE_VERSION -p:ContinuousIntegrationBuild=true
+            if ($LASTEXITCODE -ne 0) { throw "dotnet pack failed: $project" }
+          }
+
+      # NuGet writes a bare version for a minimum (">= 4.1.0"); an exact pin would read "[4.1.0]" and a capped
+      # range "[4.1.0, 5.0.0)", both refused here (spec D1).
+      - name: The package declares AWSSDK.S3 as a minimum
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead((Get-ChildItem $env:PROBE_FEED -Filter "OKF4net.Providers.S3.$env:PROBE_VERSION.nupkg").FullName)
+          $nuspec = [IO.StreamReader]::new(($zip.Entries | Where-Object Name -like '*.nuspec').Open()).ReadToEnd()
+          $zip.Dispose()
+          if ($nuspec -notmatch 'id="AWSSDK.S3" version="4\.1\.0"') { throw "AWSSDK.S3 is not declared as the minimum 4.1.0: $nuspec" }
+
+      # `dotnet publish` restores for itself (see embedded-aot): no separate restore.
+      - name: Publish the probe Native AOT, then check the resolved versions
+        shell: pwsh
+        run: |
+          $config = Join-Path $env:RUNNER_TEMP 'okf-s3-nuget.config'
+          @(
+            '<?xml version="1.0" encoding="utf-8"?>',
+            '<configuration>',
+            '  <packageSources>',
+            '    <clear />',
+            "    <add key=`"okf-s3`" value=`"$env:PROBE_FEED`" />",
+            '    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />',
+            '  </packageSources>',
+            '</configuration>'
+          ) | Set-Content $config
+          dotnet publish tests/S3ProviderAotProbe/S3ProviderAotProbe.csproj -c Release -r ${{ matrix.rid }} -p:PublishAot=true "-p:OkfProbeVersion=$env:PROBE_VERSION" "-p:OkfAwsSdkVersion=$env:AWS_SDK_VERSION" "-p:OkfAwsCoreVersion=$env:AWS_CORE_VERSION" "-p:RestoreConfigFile=$config" -o probe-out
+          if ($LASTEXITCODE -ne 0) { throw "publish failed" }
+          $assets = Get-Content tests/S3ProviderAotProbe/obj/project.assets.json -Raw | ConvertFrom-Json
+          foreach ($id in 'OKF4net', 'OKF4net.Providers.S3') {
+            if (-not $assets.libraries.PSObject.Properties["$id/$env:PROBE_VERSION"]) { throw "$id was not resolved at $env:PROBE_VERSION" }
+          }
+          $resolved = $assets.libraries.PSObject.Properties.Name | Where-Object { $_ -like 'AWSSDK.*' }
+          Write-Host "Resolved AWS packages: $($resolved -join ', ')"
+          if (-not ($resolved -contains "AWSSDK.S3/$env:AWS_SDK_VERSION")) { throw "AWSSDK.S3 is not $env:AWS_SDK_VERSION" }
+          if (-not ($resolved -contains "AWSSDK.Core/$env:AWS_CORE_VERSION")) { throw "AWSSDK.Core is not $env:AWS_CORE_VERSION" }
+
+      # Exit codes: 1 summaries differ, 2 the guard did not refuse, 3 a counter-proof missed its target,
+      # 4 the probe's own server failed its concurrency check.
+      - name: Run the probe
+        shell: pwsh
+        run: |
+          $exe = Join-Path (Resolve-Path probe-out) ('S3ProviderAotProbe' + $(if ('${{ matrix.rid }}'.StartsWith('win-')) { '.exe' } else { '' }))
+          & $exe (Resolve-Path bundles/acme_retail).Path
+          if ($LASTEXITCODE -ne 0) { throw "probe exited $LASTEXITCODE" }
