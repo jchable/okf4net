@@ -1,19 +1,26 @@
 # Provider de bundle S3 — design
 
 Date : 2026-11-16
-Statut : **révision 4**, à relire par le mainteneur. La révision 1 (design validé
+Statut : **révision 5** (2026-11-19, #287). La révision 1 (design validé
 section par section le 2026-11-15) a reçu une revue interne et une revue externe ;
 la révision 2 les intégrait avec cinq arbitrages du mainteneur (D15, D5, D1, D8,
 consignation sur les tickets) ; la révision 3 intégrait une seconde revue externe
-et un arbitrage de plus (portée de D15, ticket #247) ; la révision 4 intègre une
+et un arbitrage de plus (portée de D15, ticket #247) ; la révision 4 intégrait une
 troisième revue externe (garde lié au bucket et au chemin, instantané
-d'identifiants, décodage strict, limites de fraîcheur).
+d'identifiants, décodage strict, limites de fraîcheur). **La révision 5 replie
+dans le corps les écarts constatés à l'exécution et les décisions du mainteneur
+du 2026-11-19** (ancienne Annexe C), ainsi que les ajouts d'API faits depuis
+(`SigningRegion`, #284 ; `Anonymous`, #291) et l'abandon des ETags non MD5
+(#286) : le corps dit ce que fait le code. L'Annexe C ne garde que les points
+encore ouverts et la table de repli.
 Ticket : [#142](https://github.com/jchable/okf4net/issues/142). Suites hors lot :
 [#238](https://github.com/jchable/okf4net/issues/238) (`okf-mcp` sur S3),
 [#239](https://github.com/jchable/okf4net/issues/239) (fabrique de catalogue S3,
 emplacement à trancher avec [#236](https://github.com/jchable/okf4net/issues/236)),
 [#247](https://github.com/jchable/okf4net/issues/247) (panne globale pendant la
-lecture d'`index.md`/`log.md` par la validation).
+lecture d'`index.md`/`log.md` par la validation ; réglé depuis, dans 0.8.0,
+§4.7), [#292](https://github.com/jchable/okf4net/issues/292) (mesures hors
+RustFS : MinIO fait, Amazon S3 réel non mesuré).
 
 Prérequis de lecture : la couture provider
 ([`2026-10-07-bundle-provider-seam-design.md`](2026-10-07-bundle-provider-seam-design.md)),
@@ -49,21 +56,21 @@ une dépendance tierce.
 
 | # | Question | Décision |
 |---|---|---|
-| D1 | Client S3 | **SDK AWS pour .NET, `AWSSDK.S3`**, plutôt qu'un client `HttpClient` + SigV4 écrit à la main. Arbitré le 2026-11-15 sur deux prototypes mesurés (annexe A) ; remplace la décision du 2026-10-05, prise sans mesure. Exception de dépendance propre au projet, comme `Catalog.Hosting` : rien d'autre dans `src/` ne référence ce projet. **Politique de version (2026-11-16)** : un **minimum** déclaré (`AWSSDK.S3 >= 4.1.0`, qui admet `AWSSDK.Core [4.1.0, 5.0.0)`), pas d'épinglage exact. Les garanties sont vérifiées à l'exécution et par des tests de sensibilité, **sur chaque combinaison testée** : la porte §9 et T3 portent sur la version minimale et sur la dernière publiée ; toute montée de S3 ou de Core les rejoue. |
-| D2 | Qui construit le client, et comment | **Le provider**, à partir d'un `AWSCredentials` et d'une `S3BundleSource` fournis par l'hôte ; aucune surcharge n'accepte un `IAmazonS3`. Le provider ne lit jamais l'environnement, un fichier ou la chaîne d'identifiants par défaut (#139, §3), et **aucun réglage ambiant n'influence ce qu'il envoie, ni où** : il fixe explicitement chaque réglage que le SDK irait chercher dans l'environnement ou `~/.aws/config` (§4.4), et la sonde d'environnement hostile compare URI, en-têtes et signatures. Le trafic des fournisseurs d'identifiants (STS, IMDS, SSO) appartient à l'hôte : D3 ne le couvre pas. |
+| D1 | Client S3 | **SDK AWS pour .NET, `AWSSDK.S3`**, plutôt qu'un client `HttpClient` + SigV4 écrit à la main. Arbitré le 2026-11-15 sur deux prototypes mesurés (annexe A) ; remplace la décision du 2026-10-05, prise sans mesure. Exception de dépendance propre au projet, comme `Catalog.Hosting` : rien d'autre dans `src/` ne référence ce projet. **Politique de version (2026-11-16)** : un **minimum** déclaré (`AWSSDK.S3 >= 4.1.0`, qui admet `AWSSDK.Core [4.1.0, 5.0.0)`), pas d'épinglage exact. Les garanties sont vérifiées à l'exécution et par des tests de sensibilité, **sur chaque combinaison testée** : la porte §9 et T3 portent sur la version minimale et sur la dernière publiée, et un second job CI fait passer toute la tranche de tests T1 du provider à la dernière publiée (§6, T3, #288) ; toute montée de S3 ou de Core les rejoue. |
+| D2 | Qui construit le client, et comment | **Le provider**, à partir d'une `S3BundleSource` et d'un `AWSCredentials` fournis par l'hôte, ou, pour une source déclarée `Anonymous` (#291), sans identifiants, par un constructeur à part (§4.2) ; aucune surcharge n'accepte un `IAmazonS3`. Le provider ne lit jamais l'environnement, un fichier ou la chaîne d'identifiants par défaut (#139, §3), et **aucun réglage ambiant n'influence ce qu'il envoie, ni où** : il fixe explicitement chaque réglage que le SDK irait chercher dans l'environnement ou `~/.aws/config` (§4.4), et la sonde d'environnement hostile compare URI, en-têtes et signatures. Le trafic des fournisseurs d'identifiants (STS, IMDS, SSO) appartient à l'hôte : D3 ne le couvre pas. |
 | D3 | Sorties réseau | **Garde obligatoire, non désactivable**, sur **une seule autorité** (schéma, hôte, port) **et un préfixe de chemin**, calculés depuis `S3BundleSource` et le mode d'adressage effectif : toute requête S3 qui ne vise pas exactement ce bucket sous ce préfixe est refusée avant l'envoi, avec une marque identifiable (§4.4). Deux hôtes admis à la fois permettraient à une redirection de changer de bucket sans changer de chemin. Mesuré nécessaire : le SDK suit une 307 vers tout hôte `*.amazonaws.com`, la re-signe et y envoie le jeton de session (annexe A). **Deux sorties du SDK échappent au `HttpClientFactory` et doivent être empêchées pour ce client, sans effet sur les autres clients AWS de l'hôte** : la détection de région (`BucketRegionDetector`, `HEAD` par un transport à part) et la télémétrie CSM (UDP, `AWS_CSM_*`). C'est la porte §9 ; si l'une ne peut pas l'être, le plan s'arrête et D1 est rouvert. |
 | D4 | Écriture | **Lecture seule** : `WriteAsync`/`DeleteAsync` rendent `BundleReadOnlyException(Id)` sans rien tenter. |
-| D5 | `Location` et `Id` | **Le nom du bucket n'atteint jamais le modèle** (#139, §3, sans amendement). `Location = "s3:<nom>/<prefix>"`, où `<nom>` est le `DisplayName` donné par l'hôte, ou à défaut les 8 premiers hex de l'`Id`. `Id = "s3:" + 32 hex` d'un SHA-256 de la configuration effective (§4.3) : stable, non vide, opaque. |
-| D6 | Domaine de la configuration | `Prefix` : vide (tout le bucket) ou une suite de segments du socle `BundleKey`, **en Unicode bien formé**. `DisplayName` : un segment du socle en Unicode bien formé, sans `:`. `Bucket` : un nom de bucket S3 d'usage général (3 à 63 caractères, minuscules, chiffres, `-`, `.`) ; ARN, points d'accès, alias et buckets de répertoire (`--x-s3`, `--ol-s3`, `-s3alias`) refusés. `ServiceUrl` : une **origine** seule, sans userinfo, chemin, query ni fragment. `MaxObjectBytes` : de 1 à `Array.MaxLength`. Clé S3 = `<prefix>/<key>`, ou `<key>` sans préfixe : injective, à frontière de segment. |
+| D5 | `Location` et `Id` | **Le nom du bucket n'atteint jamais le modèle** (#139, §3, sans amendement). `Location = "s3:<nom>/<prefix>"`, où `<nom>` est le `DisplayName` donné par l'hôte, ou à défaut les 8 premiers hex de l'`Id`. `Id = "s3:" + 32 hex` d'un SHA-256 de la configuration effective (§4.3), région de signature (`SigningRegion`) et accès anonyme (`Anonymous`) compris quand ils sont posés : stable, non vide, opaque. |
+| D6 | Domaine de la configuration | `Prefix` : vide (tout le bucket) ou une suite de segments du socle `BundleKey`, **en Unicode bien formé**. `DisplayName` : un segment du socle en Unicode bien formé, sans `:`. `Bucket` : un nom de bucket S3 d'usage général (3 à 63 caractères, minuscules, chiffres, `-`, `.`, sans `..` ni forme d'adresse IPv4) ; ARN, points d'accès, alias, buckets de répertoire et de tables (suffixes `--x-s3`, `--ol-s3`, `-s3alias`, `--table-s3`) et préfixes réservés (`xn--`, `sthree-`, `amzn-s3-demo-`) refusés. Sans `ForcePathStyle`, un bucket qui contient `.` et un `ServiceUrl` dont l'hôte est une adresse IP sont refusés (le SDK passerait de lui-même en path-style, Annexe B, G3). `Region` et `ServiceUrl` : exactement un des deux ; une `Region` hors de la partition DNS `amazonaws.com` (Chine, `amazonaws.com.cn`) est refusée, ce cas passe par un `ServiceUrl`. `ServiceUrl` : une **origine** `http(s)` seule, sans userinfo, chemin, query ni fragment. `SigningRegion` : source `ServiceUrl` seulement, 2 à 32 caractères `[a-z][a-z0-9]*(-[a-z0-9]+)*`. `MaxObjectBytes` : de 1 à `Array.MaxLength`. Clé S3 = `<prefix>/<key>`, ou `<key>` sans préfixe : injective, à frontière de segment. |
 | D7 | Erreurs | `S3RequestException : BundleProviderException` pour tout échec qui n'est pas propre à un objet : le cœur en fait un **échec de chargement**, jamais un état local (règle de priorité de #139). Les exceptions typées du contrat pour un objet absent, un refus propre à l'objet, une version différente, un objet trop grand ; la distinction se fait par une **table fermée** (statut et code reconnu, §4.6). Message à vocabulaire fermé ; aucun texte venu du serveur. |
-| D8 | Versions | **Version d'objet = SHA-256 des octets lus, en hex minuscule**, au même format que le provider filesystem : l'épinglage ne dépend ni d'`If-Match` ni d'un ETag MD5. **Version du bundle = `s3v1:`** + SHA-256 d'un encodage canonique du listing, ETag compris : elle ne sert qu'à la fraîcheur. Pas d'`IBundleChangeNotifier`. |
-| D9 | Listing | `EncodingType=url` toujours, décodé une seule fois **strictement** (pourcent vers octets, puis UTF-8 sans remplacement) ; corps de réponse borné **avant** désérialisation (§4.6) ; progrès exigé de chaque page tronquée ; **échec fermé** sur toute incohérence de transport (§4.3). Un nom bien transporté mais invalide n'est **pas** une incohérence : il est rendu brut au cœur, qui le juge. |
+| D8 | Versions | **Version d'objet = SHA-256 des octets lus, en hex minuscule**, au même format que le provider filesystem : l'épinglage ne dépend ni d'`If-Match` ni d'un ETag MD5. **Version du bundle = `s3v1:`** + SHA-256 d'un encodage canonique du listing, ETag compris : elle ne sert qu'à la fraîcheur. Pas d'`IBundleChangeNotifier` : la politique `Notify` est refusée à la construction du `BundleHandle` (`ArgumentException`), S3 n'envoyant aucun signal à un client qui interroge. |
+| D9 | Listing | `EncodingType=url` toujours, chaque clé listée décodée une seule fois **strictement** (pourcent vers octets, un `+` brut lu comme une espace, puis UTF-8 sans remplacement, §4.3) ; corps de réponse borné **avant** désérialisation (§4.6) ; une page tronquée **sans clé** est suivie, et comptée dans un **budget de pages** (`MaxEntries + 1` pour un listing, 1 000 pour `ExistsAsync`) ; chaque page tronquée doit porter un jeton de continuation **nouveau** ; **échec fermé** sur toute incohérence de transport (§4.3). Un nom bien transporté mais invalide n'est **pas** une incohérence : il est rendu brut au cœur, qui le juge. |
 | D10 | Internes du cœur | **Aucun.** Le listing est un itérateur `async` ; le cœur n'accorde aucun `InternalsVisibleTo` à ce projet (garde de test). Ce projet accorde les siens au seul projet de tests. |
 | D11 | Transport | `https://` exigé ; `http://` seulement avec `AllowInsecureHttp = true`. |
 | D12 | Checksums | Réglage explicite dans `S3BundleSource` (par défaut : ceux du SDK, mesurés acceptés par RustFS) ; jamais lu de l'environnement. |
 | D13 | Périmètre | Bibliothèque seule. Pas de fabrique de catalogue (#239), pas d'option `okf-mcp` (#238), pas de notification S3, pas d'écriture. |
-| D14 | Tests sans CI | Catégorie **`S3Integration`**, distincte de `ContainerIntegration`, contre `docker.io/rustfs/rustfs:1.0.3@sha256:9ca9559533b537d10482fe923288b676ad08f92a7069d9a17327fbae3cab688b` (MinIO n'est plus disponible sur Docker Hub ; l'étiquette seule pourrait être déplacée, le condensé de l'index multi-architecture, mesuré sous Podman et sous Docker, ne le peut pas). `ci.yml` et `release.yml` excluent les deux catégories. |
-| D15 | Changements du cœur | **Deux, en tête du plan, en TDD, dans cette branche** (arbitrages du 2026-11-16) : (a) `LoadCoreAsync` lit la version du bundle **avant** de lister ; (b) `ResolveResourceKeyAsync` ne rend `Unsafe` que sur un refus d'accès, et toute autre défaillance du provider remonte **traduite par le cœur** (§4.7). Rien d'autre : la même confusion dans la lecture d'`index.md`/`log.md` par la validation est commune à tous les providers et part dans #247. |
+| D14 | Tests sans CI | Catégorie **`S3Integration`**, distincte de `ContainerIntegration`, contre `docker.io/rustfs/rustfs:1.0.3@sha256:9ca9559533b537d10482fe923288b676ad08f92a7069d9a17327fbae3cab688b` par défaut, et contre MinIO avec `OKF_S3IT_STORE=minio` (`cgr.dev/chainguard/minio@sha256:dc5e098902c102b848a72b96671c235f1f8464ccad60a62d1f205f8c221ce12b`, `RELEASE.2026-11-16T00-11-40Z` : MinIO Inc. ne publie plus son image communautaire, #292). Chaque image est épinglée par le condensé de son index (l'étiquette seule pourrait être déplacée, le condensé ne le peut pas). `ci.yml` et `release.yml` excluent les deux catégories. |
+| D15 | Changements du cœur | **Deux, en tête du plan, en TDD, dans cette branche** (arbitrages du 2026-11-16) : (a) `LoadCoreAsync` lit la version du bundle **avant** de lister ; (b) `ResolveResourceKeyAsync` ne rend `Unsafe` que sur un refus d'accès, et toute autre défaillance du provider remonte **traduite par le cœur** (§4.7). (b) vaut **pour tous les providers**, filesystem compris, et s'étend au relevé des ressources exécutables, qui passe par la même résolution (confirmé par le mainteneur le 2026-11-19). Rien d'autre dans ce lot : la même confusion dans la lecture d'`index.md`/`log.md` par la validation, commune à tous les providers, est partie dans #247, réglé depuis (0.8.0, §4.7). |
 | D16 | Concurrence | Le provider borne ses **opérations** en vol par un permis (`MaxConcurrentRequests`, 16 par défaut), tenu de l'appel jusqu'à la fin du corps et du nettoyage, acquisition des identifiants comprise : c'est sa responsabilité (spec de la couture ; spec asynchrone §3.6 ; #139 §4). |
 
 ## 3. Conformité à la spécification
@@ -100,6 +107,8 @@ public sealed record S3BundleSource
     public string? DisplayName { get; init; }
     public RegionEndpoint? Region { get; init; }     // AWS ; exclusif de ServiceUrl
     public Uri? ServiceUrl { get; init; }            // origine d'un store compatible ; exclusif de Region
+    public string? SigningRegion { get; init; }      // portée SigV4 d'une source ServiceUrl ; null : us-east-1 (#284)
+    public bool Anonymous { get; init; }             // bucket public lu sans signature (#291)
     public bool ForcePathStyle { get; init; }
     public bool AllowInsecureHttp { get; init; }
     public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromSeconds(30);
@@ -114,8 +123,12 @@ public sealed class S3BundleProvider : IBundleProvider, IDisposable
 {
     /// Aucune E/S. ArgumentException sur toute valeur hors du domaine de D6, ni
     /// ou les deux de Region/ServiceUrl, http:// sans AllowInsecureHttp, un délai
-    /// ou une borne <= 0.
+    /// ou une borne <= 0, et sur une source Anonymous.
     public S3BundleProvider(AWSCredentials credentials, S3BundleSource source);
+
+    /// Bucket public (#291) : aucune E/S, aucune signature, aucun appel d'identifiants.
+    /// ArgumentException hors du domaine de D6 et sur une source qui n'est pas Anonymous.
+    public S3BundleProvider(S3BundleSource source);
 
     /// Libère, une seule fois, le client S3 et le HttpClient que le provider a construits.
     public void Dispose();
@@ -133,13 +146,35 @@ public sealed class S3RequestException : BundleProviderException
 ```
 
 Le provider n'a **qu'un chemin de construction** du client et de son
-`HttpClient` ; un constructeur **interne**, pour les tests, ne fait qu'y injecter
-le `HttpMessageHandler` intérieur, sous le garde D3.
+`HttpClient` ; des constructeurs **internes**, pour les tests, ne font qu'y
+injecter le `HttpMessageHandler` intérieur, sous le garde D3. Le handler réseau
+n'est construit qu'une fois la source validée : une source refusée ne laisse
+aucun objet réseau à libérer.
+
+**Région de signature (#284).** Une source `ServiceUrl` signe avec la portée
+SigV4 `SigningRegion ?? "us-east-1"` ; une source `Region` signe avec sa région
+(`SigningRegion` y est refusé). Un store compatible qui vérifie la région de la
+portée répond `400 AuthorizationHeaderMalformed` à une portée fausse, classé
+`BucketUnavailable` (§4.6) : le README dit de soupçonner la région de signature
+avant le bucket quand un store connu répond ainsi.
+
+**Accès anonyme (#291).** Une source `Anonymous` se construit par
+`S3BundleProvider(S3BundleSource)` : le client reçoit des identifiants anonymes
+du SDK, aucune requête n'est signée et aucun identifiant de l'hôte n'est jamais
+demandé. Les deux constructeurs ne se croisent jamais (celui qui prend des
+identifiants refuse une source `Anonymous`, l'autre toute source qui ne l'est
+pas) : une requête non signée est toujours une décision écrite dans la source,
+jamais un identifiant manquant. Le garde est inchangé. Un bucket qui n'est pas
+public répond 403, rendu `ClientError` (une lecture d'une clé :
+`BundleAccessRefusedException`).
 
 L'hôte possède les identifiants (tout `AWSCredentials`) et le provider ; le
 provider possède son client et son `HttpClient`. Un `BundleHandle` ne libère pas
 son provider. Un appel sur un provider libéré échoue en `S3RequestException`
-(`Kind = Disposed`), jamais en `ObjectDisposedException` brute.
+(`Kind = Disposed`), jamais en `ObjectDisposedException` brute ; une opération
+**en cours** quand `Dispose` est appelé est interrompue (attente du permis, des
+identifiants, requête, corps) par un jeton de libération lié à chaque opération,
+et échoue de même en `Disposed`.
 
 ### 4.3 Contrat
 
@@ -150,37 +185,65 @@ sont trois projections.
 | Membre | Comportement |
 |---|---|
 | `Capabilities` | `CanWrite = false`, `CompletesSynchronously = false`. |
-| `Id` | `"s3:" + hex(SHA-256(UTF-8("s3v1\n" + endpoint + "\n" + bucket + "\n" + prefix)))[..32]`, hex minuscule, où `endpoint` vaut `aws:<nom système de la région>` ou l'origine de `ServiceUrl` (schéma et hôte en minuscules, port explicite en décimal), suivie de `\|path` ou `\|vhost` selon `ForcePathStyle`. Deux sources de même configuration effective ont le même `Id` (déduplication du catalogue, `FusedResolverEngine.cs:141`), deux sources différentes jamais. |
+| `Id` | `"s3:" + hex(SHA-256(UTF-8("s3v1\n" + endpoint + "\n" + bucket + "\n" + prefix)))[..32]`, hex minuscule, où `endpoint` vaut `aws:<nom système de la région>` ou l'origine de `ServiceUrl` (schéma et hôte en minuscules, port explicite en décimal), suivie de `\|path` ou `\|vhost` selon `ForcePathStyle`, puis de `\|sign:<SigningRegion>` **seulement** quand `SigningRegion` est posé et de `\|anon` **seulement** quand `Anonymous` est vrai (dans cet ordre) : tout `Id` calculé avant ces options est inchangé (vecteurs connus dans `SourceTests`, calculés hors du code). Deux sources de même configuration effective ont le même `Id` (déduplication du catalogue, `FusedResolverEngine.cs:141`), deux sources différentes jamais. |
 | `Location` | `s3:<DisplayName ou 8 hex de l'Id>` suivi de `/<prefix>` quand le préfixe n'est pas vide. Affichage seulement ; jamais le bucket ni l'endpoint (D5). |
 | `NativeConstraints` | `BundleKeyConstraints.WellFormedUnicode`. |
-| `EnumerateAsync` | Itérateur `async` sur `ListObjectsV2` (`Prefix = <prefix>/` plus le préfixe de clé demandé suivi de `/`, `MaxKeys = 1000`, `EncodingType=url`), une page à la fois : la borne d'entrées du cœur l'arrête par `DisposeAsync`. Nom brut = clé décodée moins `<prefix>/` ; `Length = Size` ; `Version = null` (comme le filesystem ; le cœur ne garde que le nom brut). Aucune validation de nom. |
+| `EnumerateAsync` | Itérateur `async` sur `ListObjectsV2` (`Prefix = <prefix>/` plus le préfixe de clé demandé suivi de `/`, `MaxKeys = 1000`, `EncodingType=url`), une page à la fois, au plus `limits.MaxEntries + 1` pages : la borne d'entrées du cœur l'arrête par `DisposeAsync`, et aucun permis n'est tenu pendant qu'une entrée est rendue. Nom brut = clé décodée moins `<prefix>/` ; `Length = Size` ; `Version = null` (comme le filesystem ; le cœur ne garde que le nom brut). Aucune validation de nom. |
 | `GetVersionAsync` | Listing complet par l'itérateur privé, borné par `limits.MaxEntries` et `limits.MaxDepth` comptés sur **tous** les noms (invalides et non Markdown compris ; `BundleLimitExceededException`), haché **en flux, dans l'ordre du listing** (§4.5). |
-| `ReadAsync` | `GetObject` sans condition. Un `Content-Length` supérieur à `MaxObjectBytes` est refusé avant la lecture du corps (`BundleObjectTooLargeException`) ; le corps est lu **en entier**, sous le délai et le permis de l'opération, dans **un seul tampon** dimensionné par `Content-Length` (agrandi en comptant contre la même borne s'il est absent), puis haché : version = hex minuscule du SHA-256. Avec `expected` différent : `BundleVersionMismatchException`. Le `BundleObject` rendu porte un `MemoryStream` en lecture seule sur ce tampon, sans copie, et `Length` exact. |
-| `ExistsAsync` | `ListObjectsV2(Prefix = <clé S3>, MaxKeys = 1, EncodingType=url)` : `true` si la première clé rendue est **exactement** la clé (elle trie avant toute clé qu'elle préfixe), `false` sinon. Même droit que le listing ; un refus n'est jamais `false` (`S3RequestException`). |
+| `ReadAsync` | `GetObject` sans condition. Un `Content-Length` supérieur à `MaxObjectBytes` est refusé avant la lecture du corps (`BundleObjectTooLargeException`) ; le corps est lu **en entier**, sous le délai et le permis de l'opération, dans **un seul tampon** dimensionné par `Content-Length` (agrandi en comptant contre la même borne s'il est absent ; jamais plus de `MaxObjectBytes + 1` octets lus), puis haché : version = hex minuscule du SHA-256. Un corps plus court que son `Content-Length`, que le SDK ne détecte pas, est refusé par le provider (`Transport`). Avec `expected` différent : `BundleVersionMismatchException` ; aucun en-tête conditionnel n'est envoyé. Le `BundleObject` rendu porte un `MemoryStream` en lecture seule sur ce tampon, sans copie, et `Length` exact. |
+| `ExistsAsync` | `ListObjectsV2(Prefix = <clé S3>, MaxKeys = 1, EncodingType=url)` : `true` si la première clé rendue est **exactement** la clé (elle trie avant toute clé qu'elle préfixe), `false` sinon. Les pages tronquées **sans clé** qui la précèdent sont suivies, au plus `ExistsMaxPages = 1000` pages en tout, chacune une opération avec son propre délai et son propre plafond d'envois ; au-delà, `InvalidResponse`, jamais `false`. Même droit que le listing ; un refus n'est jamais `false` (`S3RequestException`). |
 | `WriteAsync` / `DeleteAsync` | `ValueTask.FromException(new BundleReadOnlyException(Id))`. |
 
 **Incohérences de transport (D9), toutes en `S3RequestException` (`Kind =
-InvalidResponse`)** : clé rendue hors de `<prefix>/` ; ordre des clés non
-strictement croissant en octets UTF-8 (doublon et recul compris) ; jeton de
-continuation répété, vide quand la page est tronquée, ou plus long que la borne
-de §4.6 ; page plus grande que `MaxKeys` ; **page tronquée sans progrès** (aucune
-clé) ; plus de `MaxEntries + 1` pages dans un parcours (borne qui découle du
-progrès exigé : chaque page tronquée apporte au moins une entrée, si bien que des
-pages plus petites que `MaxKeys`, que S3 autorise, ne sont jamais refusées tant
-que la borne d'entrées ne l'est pas ; un store hostile peut donc coûter jusqu'à
-`MaxEntries` requêtes d'une clé, ce que le README dit en conseillant d'abaisser
-`MaxEntries` pour un bucket non fiable) ; ETag absent ou vide, taille absente ou
-négative ; XML indécodable ; `EncodingType` absent ou différent de `url` dans la
-réponse ; une clé dont le décodage échoue.
+InvalidResponse`)** : clé rendue hors du préfixe listé ; ordre des clés non
+strictement croissant en octets UTF-8 (doublon et recul compris, **d'une page à
+l'autre aussi**, pages vides comprises) ; jeton de continuation répété (mémorisé
+par son SHA-256, 32 octets par page), absent ou vide quand la page est tronquée,
+ou plus long que la borne de §4.6 ; page plus grande que `MaxKeys` (refusée dès
+l'entrée de trop) ; **budget de pages dépassé** : plus de `MaxEntries + 1` pages dans
+un parcours de listing, plus de 1 000 dans un `ExistsAsync`, pages vides
+comprises ; ETag absent ou vide, taille absente, signée ou non décimale ; XML
+indécodable, DTD comprise ; racine autre que `ListBucketResult` ; un champ de
+page ou d'entrée (`Contents`, `EncodingType`, `IsTruncated`,
+`NextContinuationToken`, `MaxKeys`, `Key`, `ETag`, `Size`) répété, ou dans un
+autre espace de noms que celui de la racine — l'espace de noms S3
+(`http://s3.amazonaws.com/doc/2006-03-01/`) ou aucun —, refusé plutôt que lu ou
+ignoré (un store qui en emploie un autre, comme l'interopérabilité S3 de Google
+Cloud Storage, est donc refusé : limite au README) ; `EncodingType` absent ou
+différent de `url`, `IsTruncated` autre que `true`/`false` ; une clé dont le
+décodage échoue. Les autres éléments (`Prefix`, `CommonPrefixes`, `KeyCount`…)
+sont ignorés avec leur sous-arbre ; seul `Key` est décodé.
 
-**Décodage d'une clé.** Chaque `%XX` devient un octet, tout autre caractère
-ses octets UTF-8 ; la suite d'octets est décodée en UTF-8 **strict** (sans
-remplacement : `new UTF8Encoding(false, throwOnInvalidBytes: true)`). Un `%` non
-suivi de deux chiffres hexadécimaux, une séquence UTF-8 invalide (`%FF`, la forme
-trop longue `%C0%AF`, le surrogate encodé `%ED%A0%80`) : `InvalidResponse`.
-Jamais `Uri.UnescapeDataString`, qui laisse `%FF` tel quel et confond `%FF` avec
-`%25FF`. Un nom correctement transporté mais invalide (`bad%01.md`, `a//b.md`)
-est rendu brut : le cœur en fait un problème local et charge le reste.
+**Page tronquée sans clé (décision du mainteneur, 2026-11-19).** Elle n'est
+**pas** une incohérence : Amazon S3 peut en rendre sur un bucket versionné, sous
+une longue suite de marqueurs de suppression (non mesuré). Elle est suivie, à
+condition que son jeton soit nouveau, et **comptée** dans le budget de pages.
+C'est le budget, avec le refus d'un jeton répété, qui arrête un store qui ne
+finit jamais, en pages et en mémoire. Ce budget est partagé avec la borne
+d'entrées : sous un `MaxEntries` très bas, des pages vides l'épuisent et l'échec
+est un `InvalidResponse`, pas une borne d'entrées ; des pages plus petites que
+`MaxKeys`, que S3 autorise, ne sont jamais refusées tant que le budget tient. Un
+store hostile peut donc coûter jusqu'à `MaxEntries + 1` requêtes, ce que le
+README dit en conseillant d'abaisser `MaxEntries` pour un bucket non fiable.
+
+**Décodage d'une clé listée.** Chaque `%XX` devient un octet, un `+` **brut**
+devient une espace (0x20), tout autre caractère ses octets UTF-8 ; la suite
+d'octets est décodée en UTF-8 **strict** (sans remplacement :
+`new UTF8Encoding(false, throwOnInvalidBytes: true)`). C'est le décodage en
+formulaire (`S3KeyCodec.TryDecodeListed`), qu'emploient Amazon S3 (cru, non
+mesuré, #292) et MinIO (mesuré le 2026-11-19 : une espace en `+` brut, un `+` en
+`%2B`) ; RustFS, qui écrit l'espace en `%20`, se décode de même (décision du
+mainteneur du 2026-11-19). Un `%` non suivi de deux chiffres hexadécimaux, une
+séquence UTF-8 invalide (`%FF`, la forme trop longue `%C0%AF`, le surrogate
+encodé `%ED%A0%80`), un surrogate isolé : `InvalidResponse`. Jamais
+`Uri.UnescapeDataString`, qui laisse `%FF` tel quel et confond `%FF` avec
+`%25FF`. Ce qui est **envoyé** ou vérifié par le garde (chemin, valeurs de
+requête) se décode strictement **sans** cette règle (`TryDecode` : un `+` y
+reste un `+`), et le garde **refuse un `+` brut** dans toute valeur de requête
+admise, qu'un store lirait comme une espace (§4.4). Une erreur de convention
+échoue fermé dans les deux lectures possibles (ordre D9, ou 404 à la lecture).
+Un nom correctement transporté mais invalide (`bad%01.md`, `a//b.md`) est rendu
+brut : le cœur en fait un problème local et charge le reste.
 
 Le cœur, pas le provider, applique `MaxKeyBytes`, la validation des clés, sa
 propre concurrence de `LoadAsync` et D7 de #141 (§8). Un chargement coûte la
@@ -229,32 +292,53 @@ borne, avec et sans `Content-Length`.
 
 ### 4.4 Configuration du SDK, garde et identifiants (D2, D3)
 
-**Configuration hermétique.** `AmazonS3Config` reçoit explicitement :
-`IgnoreConfiguredEndpointUrls = true` ; `RetryMode = Standard`,
-`MaxErrorRetry = 2` (3 tentatives) ; `UseFIPSEndpoint = false`,
-`UseDualstackEndpoint = false` ; `DefaultConfigurationMode = Standard` ;
-`DisableClockSkewCorrection = false` ; `ClientAppId` fixé à une **valeur
-explicite neutre** (un `ClientAppId` nul retombe sur `AWS_SDK_UA_APP_ID` et
-`sdk_ua_app_id` : la porte §9 vérifie la valeur qui neutralise ce repli sur
-chaque version testée ; ce réglage ne suffit pas à lui seul : le garde reconstruit
-le `User-Agent` depuis une liste fermée de jetons, Annexe C12, et T1 vérifie par
-un témoin positif que ni le marqueur `app/`, ni `exec-env/`, ni le texte de
-`AWS_INTERNAL_ENV` n'atteignent le fil) ; `AuthSchemePreference` **n'est pas
-fixé** (le SDK n'offre que SigV4 pour un bucket ordinaire, Annexe C12) ; la région (`Region`, ou `us-east-1` d'authentification pour
-`ServiceUrl`) ; `ForcePathStyle` ; `RequestChecksumCalculation` et
-`ResponseChecksumValidation` depuis `Checksums` ; le point de terminaison
-régional de `us-east-1` et les points d'accès multirégions fixés ; **CSM
-désactivé pour ce client** ; la détection de région empêchée. La liste exacte et
-le moyen de chaque neutralisation sont relevés sur le binaire par la porte §9,
-pour chaque version testée : là où ce texte nomme un réglage que le SDK
-n'expose pas sous ce nom, c'est la porte qui fait foi.
+**Configuration hermétique.** `AmazonS3Config` reçoit explicitement
+(`ClientBuilder`) : `IgnoreConfiguredEndpointUrls = true` ;
+`RetryMode = Standard`, `MaxErrorRetry = 2` (3 tentatives) ;
+`UseFIPSEndpoint = false`, `UseDualstackEndpoint = false`,
+`UseAccelerateEndpoint = false`, `UseArnRegion = false`,
+`DisableMultiregionAccessPoints = true` ;
+`USEast1RegionalEndpointValue = Regional` (sous
+`AWS_S3_US_EAST_1_REGIONAL_ENDPOINT=legacy`, variable ou profil, une source
+`us-east-1` visait sinon `s3.amazonaws.com` et toute opération était refusée par
+le garde) ; `AccountIdEndpointMode = PREFERRED` (`AWS_ACCOUNT_ID_ENDPOINT_MODE`
+changeait sinon la métrique du `User-Agent`) ;
+`DefaultConfigurationMode = Standard` (défense en profondeur : mesuré, le
+provider envoie les mêmes requêtes sans ce réglage sous `AWS_DEFAULTS_MODE`
+`auto`, `mobile` ou `in-region` et ne contacte aucun IMDS ; la ligne est gardée,
+décision du mainteneur) ; `DisableClockSkewCorrection = false` ;
+`AllowAutoRedirect = false`, `CacheHttpClient = false`,
+`Timeout = InfiniteTimeSpan` ; `ClientAppId = ""` (un `ClientAppId` nul retombe
+sur `AWS_SDK_UA_APP_ID` et `sdk_ua_app_id`, `" "` laisse `app/` : Annexe B, G4) ;
+la région (`Region`, ou la région d'authentification
+`SigningRegion ?? "us-east-1"` pour `ServiceUrl`, §4.2) ; `ForcePathStyle` ;
+`RequestChecksumCalculation` et `ResponseChecksumValidation` depuis
+`Checksums`. **CSM est désactivé et la détection de région empêchée pour ce
+client** (sous-classe `ProviderS3Client`, Annexe B, G1). `AuthSchemePreference`
+**n'est pas fixé** : mesuré, `AWS_AUTH_SCHEME_PREFERENCE=sigv4a` (avec
+`AWS_SIGV4A_SIGNING_REGION_SET`) ne change rien, le SDK n'offrant que SigV4 pour
+un bucket ordinaire (ARN, points d'accès multirégions et buckets de répertoire
+sont refusés à la construction, D6). Toutes les chaînes `AWS_*` et toutes les clés
+de profil d'`AWSSDK.Core` et d'`AWSSDK.S3` 4.1.0 ont été relevées sur les
+binaires et mesurées une à une (relevé systématique du 2026-11-19) : chaque
+réglage ambiant trouvé qui change où va une requête ou ce qu'elle porte est
+surchargé, et épinglé avec un **témoin positif** (un client ordinaire change sous
+lui) par `HostileEnvironmentTests` (processus enfant) ou `AmbientEndpointTests`
+(en processus, sources `Region`), à une exception près : l'orthographe *profil*
+du réglage us-east-1 (`s3_us_east_1_regional_endpoint`, lue une fois par
+processus) n'a été mesurée qu'en processus frais, sans test permanent (décision
+du mainteneur). Ce qu'aucun réglage ne retire, le garde le retire (plus bas).
 
 **Un `HttpClient` possédé par le provider.** Le `HttpClientFactory` du provider
 rend toujours **le même** `HttpClient`, créé à la construction :
 `UseSDKHttpClientCaching = false`, `DisposeHttpClientsAfterUse = false`,
 `HttpClient.Timeout = InfiniteTimeSpan` (le délai est celui de l'opération,
-§4.5), sur `PinningHandler(SocketsHttpHandler { AllowAutoRedirect = false,
-UseProxy = false })`. Le provider le libère une fois, dans `Dispose`.
+§4.5), sur la chaîne `PinningHandler` (le garde) → `BoundingHandler` (bornes de
+transport, §4.6) → `SocketsHttpHandler { AllowAutoRedirect = false,
+UseProxy = false, UseCookies = false, PooledConnectionLifetime = 2 min }` (pas de
+cookie rejoué que le garde ne verrait pas ; une durée de connexion finie, pour
+qu'un hôte de longue durée résolve à nouveau le nom du store). Le provider le
+libère une fois, dans `Dispose`.
 
 **Garde : une autorité et un préfixe de chemin.** Le mode d'adressage effectif
 est fixé à la construction, jamais laissé au SDK : path-style quand
@@ -270,30 +354,80 @@ autorité admise et le préfixe de chemin qui désigne le bucket :
 | `Region`, `ForcePathStyle` | `s3.<région>.amazonaws.com` (HTTPS, 443) | `/<bucket>/` |
 | `Region`, *virtual-hosted* | `<bucket>.s3.<région>.amazonaws.com` (HTTPS, 443) | `/` |
 
-Le `PinningHandler` compare schéma, hôte et port de `RequestUri` à l'autorité
-admise **et** vérifie que le chemin brut (`AbsolutePath`, sans décodage) commence
-par le préfixe de la table, puis, pour une lecture, que la suite est exactement
-l'encodage attendu de `<prefix>/<key>`, et pour un listing, que la requête porte
-le `prefix` attendu. Tout écart lève, sans envoyer, une exception marquée
+Le `PinningHandler` refuse, sans rien envoyer, toute requête faite hors d'une
+opération du provider, toute méthode autre que `GET` (comparée ordinalement :
+chaque opération est un `GET`, aucun `HEAD` n'est jamais envoyé), et compare
+schéma, hôte et port de `RequestUri` — et d'un en-tête `Host` explicite, lu
+brut — à l'autorité admise. Il vérifie ensuite que le chemin brut
+(`AbsolutePath`, sans décodage) est, pour une lecture, exactement le préfixe de
+la table suivi de l'encodage attendu de `<prefix>/<key>` (`S3KeyCodec.EncodePath`,
+l'encodage que le SDK envoie, Annexe B, G3), sans aucune query ; pour un listing,
+exactement le préfixe de la table, avec une query tirée de la liste fermée
+`list-type`, `prefix`, `encoding-type`, `continuation-token`, `max-keys` (chacun
+au plus une fois, `list-type=2` et `encoding-type=url` présents, aucun `+` brut
+dans une valeur, chaque valeur décodable strictement) et un `prefix` égal, une
+fois décodé, au préfixe attendu. Tout écart lève une exception marquée
 (`Kind = RefusedHost`). Aucune redirection ne peut ainsi faire lire un autre
 bucket ou une autre clé, même vers une autorité qui serait admise pour une autre
 configuration (`demo.s3.<région>…/kb/code.py` contre `s3.<région>…/kb/code.py`).
-Une région mal configurée se manifeste par un refus du garde, pas par une
-correction silencieuse : le README le dit. Les hôtes exacts pour chaque région
-(dont les partitions hors `aws`) sont relevés par la porte §9.
+Les autorités des régions de la partition `amazonaws.com` sont celles de la
+table ; les autres partitions sont refusées à la construction (D6).
+
+**Une région mal configurée** n'est jamais corrigée en silence (la détection de
+région est empêchée), mais elle ne se manifeste pas toujours par un refus du
+garde : une 307 vers un autre hôte est refusée par le garde (`RefusedHost`) ;
+un 301 `PermanentRedirect` (ou 301 sans corps) et un 400
+`AuthorizationHeaderMalformed` sont des réponses du store, classées
+`BucketUnavailable` (§4.6). Aucun de ces cas n'a été mesuré contre Amazon S3
+réel (#292) ; le README dit les deux.
+
+**Plafond d'envois.** Le garde refuse tout envoi au-delà de **3 par opération**
+(`PinningHandler.MaxSendsPerOperation`, les 3 tentatives de
+`MaxErrorRetry = 2`), réessais et redirections compris (`Kind = InvalidResponse`).
+Une 307 répondue indéfiniment vers une URL que le garde **admet** (même autorité,
+même chemin) faisait boucler le SDK sans borne (Annexe B, conséquence 4 :
+3,6 Go en quelques minutes) ; elle est refusée au quatrième envoi, après trois
+envois. Aucun chemin légitime n'a besoin de plus ; plafond confirmé par le
+mainteneur le 2026-11-19. Pour un listing, l'opération est une page : le plafond
+ne s'étend jamais sur plusieurs pages.
+
+**Ce que le garde retire.** Ni le `User-Agent` ni `x-amzn-trace-id` ne sont
+signés (mesuré : `SignedHeaders` = `host`, `x-amz-content-sha256`, `x-amz-date`
+et, pour une lecture, `x-amz-checksum-mode`), si bien que le garde les modifie
+sans toucher à la signature (décision du mainteneur du 2026-11-19) :
+
+- l'en-tête `x-amzn-trace-id`, que le SDK ajoute dans AWS Lambda
+  (`AWS_LAMBDA_FUNCTION_NAME` et `_X_AMZN_TRACE_ID` posés) avec la valeur
+  ambiante, est retiré, quelle que soit sa casse ;
+- le `User-Agent`, et `x-amz-user-agent` où le SDK met son texte quand l'hôte
+  pose `AWSConfigs.UseAlternateUserAgentHeader` (non signé non plus, mesuré), est
+  **reconstruit** depuis une liste fermée d'emplacements relevée sur `AWSSDK`
+  4.1.0 : `aws-sdk-dotnet-coreclr/…`, `ua/…`, `os/<nom>#<version>`,
+  `md/ARCH#…`, `lang/<nom>#<version>`, `md/aws-sdk-dotnet-core#…`, `ft/aot`,
+  `api/S3#…`, `md/ClientAsync|ClientSync`, `cfg/init-coll#…`, `m/<codes>`,
+  écrits dans cet ordre. Chaque valeur est un **nombre** (un à quatre groupes de un
+  à cinq chiffres) ou un élément d'un **ensemble fermé** (architectures, noms de
+  système et de langage, codes de métrique `b e E F N P R`), jamais du texte
+  libre. Tout autre jeton est retiré (échec fermé) — `exec-env/`
+  (`AWS_EXECUTION_ENV`), `app/` (`AWS_SDK_UA_APP_ID`) et le texte de
+  `AWS_INTERNAL_ENV` n'atteignent donc jamais le fil — ; un emplacement vu deux
+  fois avec des valeurs différentes (texte ambiant qui imite un jeton) est retiré
+  entier ; sans aucun jeton reconnu, aucun `User-Agent` n'est envoyé. Un SDK plus
+  récent, ou une plateforme hors des ensembles fermés (mesurés sous Windows
+  seulement), perd de l'information, jamais une requête.
 
 **Sensibilité.** Le seul cas que le SDK suit sans garde est la **307** avec
 `Location` (son gestionnaire de redirection transforme les autres 3xx en
 erreurs) : c'est sur elle que portent les contre-épreuves (sans garde, la
 requête atteint la cible ; avec, elle est refusée avec sa marque), vers un autre
-hôte, **et entre les deux autorités d'un même bucket, dans les deux sens** (path
-et *virtual-hosted*, où le chemin inchangé désigne un autre bucket). Les 301 et
-`PermanentRedirect` sont testés comme refus natifs du SDK, traduits par §4.6.
-
-*Précision (Annexe B, conséquence 4 ; Annexe C3)* : le garde refuse aussi tout envoi au-delà de **3 par
-opération**, redirections comprises (`InvalidResponse`). Une 307 vers une URL que le garde **admet** (même
-autorité, même chemin) et répondue indéfiniment n'est donc pas suivie sans borne : elle est refusée au
-troisième envoi.
+hôte, **et entre les deux autorités d'un même bucket, dans les deux sens**. Le
+chemin inchangé ne désigne un autre bucket que **dans le sens *virtual-hosted* →
+régional** (`/kb/a.md` de `demo.s3…` vers `s3…` lit le bucket `kb`) ; dans le
+sens *path-style* → *virtual-hosted*, le SDK retire le segment du bucket et garde
+le chemin de la clé, en ignorant le chemin du `Location` : la contre-épreuve de
+ce sens le constate, et le garde ferme les deux sens de la même façon (il compare
+l'autorité et le chemin brut). Les 301 et `PermanentRedirect` sont testés comme
+refus natifs du SDK, traduits par §4.6.
 
 **Identifiants : un instantané, jamais le fournisseur de l'hôte dans le
 pipeline.** `AWSCredentials.GetCredentialsAsync` ne prend pas de jeton et peut
@@ -310,31 +444,44 @@ fournisseur rafraîchissant de l'hôte met lui-même en cache). À
 l'expiration : `S3RequestException` (`Kind = Credentials`), le résultat tardif
 est ignoré, et la tâche abandonnée occupe un permis de concurrence jusqu'à sa
 fin réelle : au plus `MaxConcurrentRequests` fils bloqués par un fournisseur
-défaillant, jamais une accumulation sans borne. Rien n'est envoyé à S3 sans
-instantané.
+défaillant, jamais une accumulation sans borne. Un résultat nul est un échec
+`Credentials`. Rien n'est envoyé à S3 sans instantané : hors d'une opération,
+l'`AWSCredentials` interne lève (`Credentials`). Les identifiants sont résolus
+**avant** que le contexte de l'opération ne soit posé : `Task.Run` fait suivre
+l'`ExecutionContext`, et un contexte posé d'abord atteindrait le code de l'hôte.
+Une source `Anonymous` (§4.2) ne résout rien : le client porte des identifiants
+anonymes et rien n'est signé.
 
 ### 4.5 Délais, priorité des échecs et version du bundle
 
 **Délai par opération.** Chaque opération du provider (une page de listing, une
 lecture complète corps compris, un `ExistsAsync`) s'exécute sous un jeton lié au
-jeton de l'appelant et à un délai : `source.RequestTimeout`, ou pour
-`EnumerateAsync`/`GetVersionAsync` le plus court de `source.RequestTimeout` et
-`limits.RequestTimeout`. Le délai court dès l'appel : il couvre l'attente du
-permis, l'acquisition des identifiants, les réessais du SDK et leur attente, et
-la lecture du corps.
+jeton de l'appelant, à un jeton de libération du provider et à un délai :
+`source.RequestTimeout`, ou pour `EnumerateAsync`/`GetVersionAsync`
+`limits.RequestTimeout` quand il est positif et plus court (une valeur infinie,
+nulle ou négative ne l'emporte jamais), plafonné dans tous les cas à
+`int.MaxValue` millisecondes (environ 24,8 jours). Le délai court dès l'appel :
+il couvre l'attente du permis, l'acquisition des identifiants, les réessais du
+SDK et leur attente, et la lecture du corps.
+
+**Le délai est par page, non par parcours** (statué le 2026-11-19 : gardé tel
+quel). Un store qui répond chaque page juste avant le délai tient un parcours
+jusqu'au produit du budget de pages (§4.3 : `MaxEntries + 1` pour un listing,
+1 000 pour `ExistsAsync`) par le délai ; c'est le budget de pages qui borne un
+parcours, et le README le dit.
 
 **Priorité des échecs.** Une opération retient **un seul échec principal**, le
 premier constaté, et le rend :
 
 1. si le jeton de l'appelant était annulé avant cet échec, l'annulation
-   (`OperationCanceledException`) ;
+   (`OperationCanceledException`, qui porte **le jeton de l'appelant lui-même**) ;
 2. sinon une borne du cœur ou du provider (`BundleObjectTooLargeException`,
    `BundleLimitExceededException`) si c'est elle ;
 3. sinon l'échec traduit par §4.6.
 
 Une `OperationCanceledException` qui ne vient pas du jeton de l'appelant (délai,
-fournisseur d'identifiants, SDK) est un échec (`Kind = Timeout` ou
-`Credentials`), jamais une annulation. Un échec pendant le nettoyage (libération
+fournisseur d'identifiants, SDK) est un échec (`Kind = Timeout`, `Credentials`
+ou, si le provider a été libéré, `Disposed`), jamais une annulation. Un échec pendant le nettoyage (libération
 du flux, de la réponse) ne masque jamais l'échec principal ; **seul**, il est
 classé comme tout autre échec par §4.6 (un checksum faux constaté à la fermeture
 est donc `Integrity`).
@@ -373,7 +520,8 @@ autre couple tombe dans la ligne de son statut) :
 | délai dépassé | `S3RequestException` (`Timeout`) |
 | refus du garde | `S3RequestException` (`RefusedHost`) |
 | incohérence de §4.3, XML indécodable, réponse au-delà d'une borne de transport | `S3RequestException` (`InvalidResponse`) |
-| checksum de réponse faux ; ETag MD5 simple (sans `-<parts>`) qui ne correspond pas aux octets — le SDK le vérifie lui-même à la lecture (mesuré sur 4.1.0, tâche 8) | `S3RequestException` (`Integrity`) |
+| checksum de réponse faux ; ETag MD5 véritable (32 chiffres hexadécimaux, sans `-<parts>`) qui ne correspond pas aux octets — le SDK le vérifie lui-même à la lecture (mesuré sur 4.1.0) | `S3RequestException` (`Integrity`) |
+| `FormatException` levée en lisant une réponse, nue ou portée dans la chaîne d'`InnerException` | `S3RequestException` (`InvalidResponse`) |
 | `HttpRequestException`, `IOException`, `AmazonClientException` d'une autre nature, `InvalidOperationException`, `ArgumentException` du gestionnaire de redirection — **avant les en-têtes, pendant le corps ou à la libération** | `S3RequestException` (`Transport`) |
 | provider libéré | `S3RequestException` (`Disposed`) |
 | annulation par le jeton de l'appelant ; `OutOfMemoryException` | propagées telles quelles |
@@ -386,6 +534,30 @@ le relevé n'est donc jamais rendue en `Unsafe`.
 `S3RequestException` porte l'original en `InnerException` ; les exceptions
 typées du contrat n'acceptent pas de cause (constructeurs scellés à la clé),
 c'est assumé.
+
+**ETags que le SDK ne peut pas vérifier (#286).** Le SDK contrôle le corps d'un
+`GetObject` réussi contre un ETag simple (sans `-`) comme un MD5 : il en décode
+l'hexadécimal et compare. Un ETag qui n'est pas 32 chiffres hexadécimaux n'est
+pas un MD5, et ce contrôle ne pouvait qu'échouer à tort (mesuré sur 4.1.0 : un
+ETag non hexadécimal levait `FormatException`, un condensé SHA-1 ou SHA-256
+hexadécimal échouait en faux `Integrity`), si bien qu'un store compatible aux
+ETags opaques échouait sur toute lecture. Le `BoundingHandler` **retire donc
+l'en-tête `ETag` d'une réponse de lecture réussie** quand il n'est ni un MD5
+véritable (32 chiffres hexadécimaux) ni de forme multipart (qui contient `-`, que
+le SDK ne vérifie pas) : le SDK n'a plus rien à contrôler. Un vrai MD5 qui ne
+correspond pas reste `Integrity`. L'intégrité du provider ne dépend jamais de
+l'ETag : la version est toujours le SHA-256 des octets lus (D8). Une
+`FormatException` qui atteindrait encore le classement est `InvalidResponse`
+(décision du mainteneur du 2026-11-19) : la réponse du store est malformée, pas
+le transport.
+
+**`Integrity` repose sur le texte du SDK.** `AWSSDK.Core` 4.1.0 n'a pas
+d'exception typée pour un condensé faux : le classement reconnaît le message du
+SDK (« Expected hash not equal to calculated hash »), cherché le long de la
+chaîne d'`InnerException`, `AggregateException` comprise (profondeur 16,
+64 exceptions examinées au plus). Un SDK plus récent qui changerait ce texte
+donnerait `Transport` : échec fermé, gardé par deux tests sur le vrai pipeline,
+que le job CI à la dernière version du SDK rejoue (§6, T3).
 
 **Message à vocabulaire fermé.** `"S3 <opération> failed: <kind>"`, plus
 `" (HTTP <code>)"` et la clé du bundle quand il y en a une. Le code d'erreur S3
@@ -421,44 +593,56 @@ portée de provider rend déjà les deux appels cohérents sur les noms. Tests :
 (`Bundle.cs:1244`) rend `Unsafe` pour `BundleAccessRefusedException` seulement.
 Toute autre défaillance d'`ExistsAsync` — une autre `BundleProviderException`,
 une `IOException` ou une `UnauthorizedAccessException` brutes d'un autre
-provider — remonte **traduite par le cœur** : une `BundleLoadException` dont le
-message nomme la clé et le type de l'exception, jamais son texte, avec
-l'original en cause. Une panne pendant la validation la fait donc échouer au
-lieu d'émettre « escapes the bundle » (`Validate.cs:709`), et aucun texte de
-provider n'atteint le modèle par `OkfBundleTools` (`OkfBundleTools.cs:2758`
-affiche `ex.Message`). Tests : un provider dont `ExistsAsync` lève chacune de ces
+provider — remonte **traduite par le cœur** : une `BundleLoadException` de
+message `provider failure resolving '<clé>' (<Type>)`, qui nomme la clé et le
+type de l'exception, jamais son texte, avec l'original en cause. Une panne
+pendant la validation la fait donc échouer au lieu d'émettre « escapes the
+bundle », et aucun texte de provider n'atteint le modèle par `OkfBundleTools`.
+**Portée** (confirmée par le mainteneur le 2026-11-19) : le changement vaut pour
+**tous les providers**, filesystem compris, et pour le relevé des ressources
+exécutables (`Bundle.SurveyResourceAsync`, qui passe par
+`ResolveResourceKeyAsync`) : toute défaillance du provider autre qu'un refus,
+y compris une `IOException` ou une `UnauthorizedAccessException` brutes, y fait
+désormais **échouer le chargement** (image précédente conservée, périmée) là où
+elle consignait l'état `Unsafe`. Aucun golden n'a bougé. Tests : un provider dont `ExistsAsync` lève chacune de ces
 familles, dont une `IOException` portant une URL et un secret sentinelles ; le
 résultat réel de `ValidateBundleAsync` ne contient ni l'un ni l'autre. Les
 goldens n'en sont pas affectés (aucun provider de fixture ne lève) ; le plan le
 vérifie.
 
-**Hors D15, dans #247** : `ReadResourceTextAsync` traduit toute
-`BundleProviderException` en `IOException` (`Bundle.cs:1321`), que la
-validation absorbe en `UnparseableIndex`/`UnparseableLog` (`Validate.cs:971`,
-`:1050`). Une panne réseau pendant la lecture d'`index.md` ou de `log.md` par la
-validation donne donc un diagnostic local au lieu d'un échec, pour tout
-provider. Le README du provider S3 documente cette limite jusqu'à #247.
+**Hors D15, dans #247** : au moment de ce lot, `ReadResourceTextAsync`
+traduisait toute `BundleProviderException` en `IOException`, que la validation
+absorbait en `UnparseableIndex`/`UnparseableLog` : une panne réseau pendant la
+lecture d'`index.md` ou de `log.md` par la validation donnait un diagnostic
+local au lieu d'un échec, pour tout provider. **#247 l'a réglé depuis (0.8.0)** :
+une défaillance du provider pendant la lecture d'une image chargée lève
+`BundleLoadException` (`provider failure reading '<clé>' (<Type>)`), et la
+validation n'absorbe plus que les problèmes propres au fichier
+(`IOException`, `UnauthorizedAccessException`, `DecoderFallbackException`).
 
 ## 5. Sécurité, récapitulatif
 
 | Menace | Réponse |
 |---|---|
-| Redirection vers un hôte arbitraire, fuite du jeton de session | garde D3 sur une autorité, mesuré (M3c) ; contre-épreuve sur la 307 ; au plus 3 envois par opération, une 307 admise répondue sans fin étant refusée au troisième (Annexe B, conséquence 4) |
-| Redirection entre autorités admissibles d'un même bucket (le chemin inchangé désigne un autre bucket) | une seule autorité et un préfixe de chemin vérifiés par requête (§4.4) ; contre-épreuves dans les deux sens |
+| Redirection vers un hôte arbitraire, fuite du jeton de session | garde D3 sur une autorité, mesuré (M3c) ; contre-épreuve sur la 307 ; au plus 3 envois par opération, une 307 admise répondue sans fin n'étant jamais envoyée une quatrième fois (§4.4) |
+| Redirection entre autorités admissibles d'un même bucket (dans le sens *virtual-hosted* → régional, le chemin inchangé désigne un autre bucket) | une seule autorité et un préfixe de chemin vérifiés par requête (§4.4) ; contre-épreuves dans les deux sens |
+| Requête d'une autre nature (écriture, `HEAD`, paramètre de listing inattendu, `+` brut lu comme une espace par le store) | garde : `GET` seul, query de lecture vide, liste fermée de paramètres de listing, `+` brut refusé (§4.4) |
 | Fournisseur d'identifiants rappelé par le SDK hors de tout délai (signatures, réessais, redirection synchrone) | instantané interne au provider (§4.4) ; le fournisseur de l'hôte n'est appelé qu'isolé |
 | Alias de clés par un décodage laxiste (`%FF` contre `%25FF`) | décodage strict (§4.3) |
 | Détection de région, télémétrie CSM (transports hors `HttpClientFactory`) | empêchées pour ce client (D3) ; porte §9, arrêt du plan sinon |
-| Configuration ambiante (endpoints, proxy, FIPS, réessais, User-Agent, schéma d'authentification) | configuration hermétique (D2) ; sonde en environnement hostile sur URI, en-têtes et signatures |
+| Configuration ambiante (endpoints, proxy, FIPS, double pile, point de terminaison us-east-1, mode de point de terminaison par compte, mode par défaut, réessais, checksums, CSM, User-Agent, en-tête de trace Lambda) | configuration hermétique (D2, §4.4) relevée sur les binaires ; `User-Agent` reconstruit depuis une liste fermée et `x-amzn-trace-id` retiré par le garde ; sonde en environnement hostile sur URI, en-têtes et signatures, avec témoin positif |
+| Requête non signée par accident | une source `Anonymous` est explicite, ses deux constructeurs ne se croisent jamais (§4.2) |
 | Trafic des fournisseurs d'identifiants | hors garde, à l'hôte ; isolé et borné par le délai de l'opération (§4.4) |
 | Normalisation du chemin par le client | le SDK envoie la clé telle quelle (M4) ; représentation sur le fil vérifiée (T1) |
 | Clé hors du bundle | préfixe à frontière de segment (D6), échec fermé sur clé rendue hors préfixe (D9). Pour `GET`, le confinement suppose un store qui décode le chemin une fois sans normaliser les points : hypothèse énoncée au README, mesurée sur RustFS (T2) |
 | Alias de préfixes (surrogates isolés → U+FFFD) | `WellFormedUnicode` sur le préfixe (D6) |
 | Alias de clés (`/` initial, NFC/NFD, casse) | `/` initial impossible dans une `BundleKey` ; NFC/NFD et casse distincts côté S3, signalés comme non portables sous `Strict` |
-| Listing hostile (page démesurée, jeton géant, pages vides sans fin, XML invalide) | bornes de transport avant désérialisation, budget de pages, invariants de page (§4.3, §4.6) |
+| Listing hostile (page démesurée, jeton géant, pages vides sans fin, jeton répété, XML invalide ou d'un autre espace de noms) | bornes de transport avant désérialisation, budget de pages comptant les pages vides, refus d'un jeton répété, invariants de page (§4.3, §4.6) ; le délai étant par page, un parcours lent est borné par ce budget (§4.5) |
+| ETag opaque (non MD5) faisant échouer le contrôle du SDK | en-tête retiré d'une lecture réussie ; version = SHA-256 des octets (§4.6, #286) |
 | Réponse d'erreur démesurée | borne de 64 Kio avant désérialisation (§4.6) |
 | Objets démesurés | `Content-Length` et comptage (D8) ; bornes du cœur |
 | Code sanctionné remplacé, collision MD5, store qui ignore `If-Match` | version = SHA-256 des octets (D8) |
-| Panne globale déguisée en état local | table fermée (§4.6), D15 (b) ; reste #247 |
+| Panne globale déguisée en état local | table fermée (§4.6), D15 (b) pour tous les providers ; la lecture d'`index.md`/`log.md` par la validation, réglée par #247 (§4.7) |
 | Texte du serveur ou d'un provider dans un message lu par le modèle | vocabulaire fermé (§4.6) ; traduction par le cœur (D15 b) |
 | Bucket ou endpoint visibles du modèle | `Location` sans bucket (D5), messages sans bucket ni endpoint |
 | Transport en clair | D11 ; la détection de région, qui peut viser `http://`, est empêchée (D3) |
@@ -489,50 +673,67 @@ unique (§4.2).
 
 | Test | Ce qu'il prouve |
 |---|---|
-| Domaine de la configuration | `ArgumentException` pour chaque valeur hors D6 (préfixe `/x`, `x/`, `a//b`, `..`, surrogate isolé ; `DisplayName` avec `/` ou `:` ; bucket ARN, `--x-s3`, majuscules ; `ServiceUrl` avec userinfo, chemin, query ; `MaxObjectBytes` hors domaine) ; aucune requête émise |
+| Domaine de la configuration | `ArgumentException` pour chaque valeur hors D6 (préfixe `/x`, `x/`, `a//b`, `..`, surrogate isolé ; `DisplayName` avec `/` ou `:` ; bucket ARN, `--x-s3`, majuscules, formes réservées ; `ServiceUrl` avec userinfo, chemin, query ; `SigningRegion` mal formée ou sur une source `Region` ; `MaxObjectBytes` hors domaine) ; aucune requête émise ; une source refusée ne laisse aucun objet réseau vivant (`SourceTests`) |
+| Région de signature (#284) | un store scripté qui impose la région de la portée lue dans l'en-tête `Authorization` refuse la source par défaut (400, `BucketUnavailable`) et accepte la source déclarée ; la portée par défaut reste `us-east-1` (`SigningRegionTests`) |
+| Accès anonyme (#291) | une source `Anonymous` liste et lit sans aucun en-tête `Authorization` ni appel d'identifiants, contre-épreuve signée ; les deux constructeurs ne se croisent jamais ; `\|anon` dans l'`Id` seulement quand il est posé (`AnonymousTests`) |
 | Injectivité | deux préfixes différents, U+FFFD réel compris, donnent des clés S3 différentes sur le fil ; `kb` ne demande jamais `kb2/…` ; préfixe vide = tout le bucket |
 | Représentation sur le fil | pour chaque nom de la batterie, la cible de la requête est exactement l'encodage attendu de la clé |
-| Incohérences de transport | une par ligne de §4.3 (dont les pages tronquées vides enchaînées : refusées dès la première, réponses libérées) : l'énumération échoue (`InvalidResponse`), le chargement aussi, rien n'est servi |
-| Décodage strict | vecteurs `%FF`, `%C0%AF`, `%ED%A0%80`, `%`, `%4` : `InvalidResponse` ; `%25FF`, `%25C0%25AF` : noms littéraux `%FF`, `%C0%AF` ; deux noms qui ne diffèrent que par `%FF` contre `%25FF` ne se confondent jamais ; `EncodingType` absent ou autre dans la réponse : `InvalidResponse` |
+| Incohérences de transport | une par ligne de §4.3 : l'énumération échoue (`InvalidResponse`), le chargement aussi, rien n'est servi ; un document hostile passé par le vrai SDK est `InvalidResponse` |
+| Pages tronquées vides | suivies, et une page suivante porteuse de clés se charge ; comptées dans le budget de pages, qui arrête un store sans fin ; l'ordre des clés tient d'une page à l'autre à travers une page vide ; `ExistsAsync` les suit, s'arrête à son budget de 1 000 et refuse un jeton répété (`ListingWalkerTests`) |
+| Décodage strict | vecteurs `%FF`, `%C0%AF`, `%ED%A0%80`, `%`, `%4` : `InvalidResponse` ; `%25FF`, `%25C0%25AF` : noms littéraux `%FF`, `%C0%AF` ; deux noms qui ne diffèrent que par `%FF` contre `%25FF` ne se confondent jamais ; une espace et un `+` reviennent sous leur nom, qu'un store écrive l'espace en `+` brut (Amazon S3, MinIO) ou en `%20` (RustFS) ; `EncodingType` absent ou autre dans la réponse : `InvalidResponse` (`CodecTests`, `ListPageParserTests`, `ListingWalkerTests`) |
 | Noms invalides bien transportés | `bad%01.md`, `a//b.md` : rendus bruts, problème local du cœur, le reste du bundle chargé |
 | Bornes de transport | lecture bornée : une page de 8 Mio passe, 8 Mio + 1 échoue, et le handler n'a jamais lu plus de `B + 1` octets du corps d'origine, avec et sans `Content-Length` ; désérialisation non commencée : le corps d'origine est un flux témoin qui enregistre ses lecteurs, et le SDK n'en reçoit jamais la référence (une réponse rejetée ne parvient pas au SDK : aucun appel de son démarshalleur, observé par un compteur dans le handler de test placé sous le SDK) ; une erreur `GetObject` de 64 Kio + 1 et un jeton de 1 025 octets échouent de même |
 | Pagination et borne | plus de 1 000 objets sur plusieurs pages ; **beaucoup de petites pages valides** (pages de 1 à 100 clés, `MaxEntries = 1000`) sont acceptées tant que la borne d'entrées ne l'est pas ; une borne d'entrées atteinte arrête le listing et le libère |
 | `ExistsAsync` | correspondance exacte (`a.md` contre `a.md.bak`), `false` sur absence, `S3RequestException` sur refus |
-| Lecture | version = SHA-256 hex minuscule des octets (égale à celle du filesystem pour les mêmes octets) ; `expected` différent → `VersionMismatch` ; d'autres octets sous le même ETag → `VersionMismatch` (ETag multipart ; un ETag MD5 simple est refusé avant par le SDK, `Integrity`, §4.6) ; `Content-Length` trop grand refusé sans lire le corps ; corps plus long que son `Content-Length` refusé à la borne ; flux rendu en lecture seule, sans copie |
-| Classement des erreurs | une ligne de la table de §4.6 par test, **par le vrai pipeline du SDK**, injectée avant les en-têtes, pendant le corps et à la libération, dont 302, 308, 307 sans `Location` et un statut 4xx/5xx inconnu (règle terminale) ; une panne d'identifiants pendant le relevé des ressources exécutables fait échouer le chargement (jamais `Unsafe`) |
+| Lecture | version = SHA-256 hex minuscule des octets (égale à celle du filesystem pour les mêmes octets) ; `expected` différent → `VersionMismatch` ; d'autres octets sous le même ETag → `VersionMismatch` (ETag multipart ; un ETag MD5 véritable est refusé avant par le SDK, `Integrity`, §4.6) ; un ETag simple opaque (non hexadécimal, ou SHA-1/SHA-256 hexadécimal) n'est plus contrôlé par le SDK et la lecture réussit, tandis qu'une lecture épinglée compare toujours les octets (`ReadTests.An_opaque_single_part_ETag_is_not_the_SDKs_to_check_and_the_read_succeeds` ; mutation : retirer aussi les vrais MD5 fait échouer le test MD5) ; `Content-Length` trop grand refusé sans lire le corps ; corps plus long que son `Content-Length` refusé à la borne ; flux rendu en lecture seule, sans copie |
+| Classement des erreurs | une ligne de la table de §4.6 par test, **par le vrai pipeline du SDK**, injectée avant les en-têtes, pendant le corps et à la libération, dont 302, 308, 307 sans `Location` et un statut 4xx/5xx inconnu (règle terminale) ; une `FormatException` est `InvalidResponse` où qu'elle soit dans la chaîne, une défaillance de transport reste `Transport` (`ErrorTests.A_format_failure_is_InvalidResponse_wherever_it_sits_and_a_transport_failure_is_not`) ; une panne d'identifiants pendant le relevé des ressources exécutables fait échouer le chargement (jamais `Unsafe`) |
 | Priorité des échecs | matrice de doubles échecs (borne puis annulation, annulation puis échec de libération, checksum faux puis délai, `OperationCanceledException` venue des identifiants sans annulation de l'appelant) : type, `Kind` et cause retenus selon §4.5 ; un checksum faux constaté **seul** à la fermeture : `Integrity` |
 | Messages | des valeurs sentinelles (bucket, endpoint, id de requête, URL, `\n`, U+2028) placées dans **chaque champ distant** (`<Code>`, `<Message>`, `<RequestId>`, `<HostId>`, `<Endpoint>`, `<Region>`, en-têtes) n'apparaissent dans aucun `Message` d'exception, ni dans les `Path` des diagnostics de validation, ni dans les diagnostics du catalogue |
 | Délais | un corps qui cale, une suite de réessais, une attente de permis : `Timeout` dans le délai ; le jeton de l'appelant est transmis et reste une annulation (modèle : `AsyncProviderContractTests`) |
 | Identifiants | un fournisseur qui bloque de façon synchrone, une tâche jamais terminée, une fin tardive : `Credentials` dans le délai, rien d'envoyé, permis tenu jusqu'à la fin réelle, résultat tardif ignoré ; un fournisseur qui **réussit une fois puis bloque** : les signatures suivantes, réessais et chemin de redirection compris, utilisent l'instantané sans jamais rappeler le fournisseur hors de l'isolement (compteur d'appels du fournisseur) |
 | Concurrence (D16) | plus de `N` appels mixtes (listing, lecture, `ExistsAsync`) : jamais plus de `N` opérations en vol, corps suspendus compris ; une annulation en file libère sa place ; un échec de nettoyage rend le permis |
 | `HttpClient` | même instance sur des appels successifs et concurrents ; libérée une seule fois par `Dispose` ; deux providers d'origines différentes n'échangent ni `HttpClient` ni garde |
-| Garde | la 307 vers `<autre-bucket>.s3.<région>.amazonaws.com` **et** la 307 entre les deux autorités d'un même bucket, dans les deux sens (`demo.s3.<région>…/kb/x` ↔ `s3.<région>…/kb/x`) : refus marqué, rien d'envoyé, pas de réessai, **et contre-épreuve sans garde** pour chacune (la requête atteint la cible) ; un chemin de lecture ou un `prefix` de listing altérés sur la bonne autorité : refusés ; 301 et `PermanentRedirect` : refus natifs du SDK, traduits ; l'autorité et le préfixe de chemin de chaque ligne de la table de §4.4, relevés par un handler qui refuse tout |
-| Environnement hostile | une sonde en **processus enfant** (`AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL`, `AWS_USE_FIPS_ENDPOINT`, `AWS_USE_DUALSTACK_ENDPOINT`, `AWS_RETRY_MODE`, `AWS_MAX_ATTEMPTS`, `AWS_SDK_UA_APP_ID` avec un marqueur, `AWS_CSM_ENABLED`/`AWS_CSM_PORT` vers un écouteur UDP, `HTTPS_PROXY`, `HTTP_PROXY`, un `AWS_CONFIG_FILE` hostile portant `sdk_ua_app_id`, et les variables que la porte §9 ajoute) : mêmes URI, en-têtes (hors date et identifiant d'invocation) et signatures qu'en environnement vide, à horloge fixée ; le marqueur absent du User-Agent ; aucun datagramme reçu |
+| Garde | la 307 vers `<autre-bucket>.s3.<région>.amazonaws.com` **et** la 307 entre les deux autorités d'un même bucket, dans les deux sens (`demo.s3.<région>…/kb/x` ↔ `s3.<région>…/kb/x`) : refus marqué, rien d'envoyé, pas de réessai, **et contre-épreuve sans garde** pour chacune (la requête atteint la cible) ; un chemin de lecture ou un `prefix` de listing altérés sur la bonne autorité, une autre méthode que `GET`, un en-tête `Host` explicite étranger, un paramètre de listing hors liste ou répété, un `+` brut : refusés ; une 307 répondue indéfiniment sur une URL admise s'arrête à 3 envois (`GuardTests.A_307_answered_forever_stops_at_three_sends`) ; 301 et `PermanentRedirect` : refus natifs du SDK, traduits ; l'autorité et le préfixe de chemin de chaque ligne de la table de §4.4, relevés par un handler qui refuse tout ; la reconstruction du `User-Agent` ligne par ligne (emplacement vide, ensemble fermé, emplacement ambigu, en-tête alternatif `x-amz-user-agent`) |
+| Environnement hostile | une sonde en **processus enfant** (`HostileEnvironmentTests`) sous les variables et clés de profil du relevé systématique (§4.4), dont `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL`, `AWS_USE_FIPS_ENDPOINT`, `AWS_USE_DUALSTACK_ENDPOINT`, `AWS_RETRY_MODE`, `AWS_MAX_ATTEMPTS`, `AWS_SDK_UA_APP_ID` et `AWS_EXECUTION_ENV` avec un marqueur, `AWS_CSM_*` vers un écouteur UDP, les modes de checksum, `AWS_AUTH_SCHEME_PREFERENCE`, `AWS_ACCOUNT_ID_ENDPOINT_MODE`, `AWS_S3_US_EAST_1_REGIONAL_ENDPOINT=legacy`, `AWS_DEFAULTS_MODE`, le cas Lambda (`AWS_LAMBDA_FUNCTION_NAME`, `_X_AMZN_TRACE_ID`, `AWS_INTERNAL_ENV`), `HTTPS_PROXY`, `HTTP_PROXY`, et un `AWS_CONFIG_FILE` hostile : mêmes URI, en-têtes (hors date et identifiant d'invocation) et signatures qu'en environnement vide, à horloge fixée, **et un client ordinaire perturbé dans le même cas** (témoin positif) ; aucun marqueur ni en-tête de trace sur le fil ; aucun datagramme reçu. `AmbientEndpointTests` (en processus, sources `Region`) épingle de même les points de terminaison ambiants et la variable us-east-1 |
 | `Id`, `Location` | `Id` stable, opaque, égal pour deux configurations effectives égales, différent sinon ; `Location` sans bucket, avec `DisplayName` ou les 8 hex |
 | Version `s3v1` | vecteurs attendus (dont U+E000 / U+10000) ; ajout, suppression, renommage, taille ou ETag changent le jeton ; découpage en pages et culture ne le changent pas |
+| Fraîcheur, triplet constant | un faux S3 remplace durablement des octets à nom, ETag et taille constants : le jeton ne change pas et l'image n'est pas rechargée (limite 2 de §4.3), tandis que la relecture épinglée du code changé est refusée (`ReadTests.A_persistent_change_with_a_constant_triplet_is_not_reloaded_but_pinned_code_is_refused`) ; un store réel ne peut pas produire ce triplet, d'où sa place en T1 |
 | Écritures | `WriteAsync`/`DeleteAsync`, `BundleConceptWriter`, `IndexGenerator` : `BundleReadOnlyException`, rien n'est envoyé ; `OkfBundleTools` n'offre aucun outil d'écriture |
-| Pont synchrone | avec un handler **réellement suspendu**, une lecture synchrone lève `InvalidOperationException` (`SyncBridge.IncompleteMessage`) et annule la requête ; une écriture synchrone est refusée avant de commencer |
-| D7 de #141, frère de `NoResidualFileIoTests` | les membres `[Obsolete]` à chemin refusent ce provider ; les points d'entrée de lecture, répertoire courant sur un dossier vide, n'y écrivent rien ; un segment `c:x.md` sous Windows : `Path` documenté, `Key` exact |
+| Pont synchrone | avec un handler **réellement suspendu**, une lecture synchrone lève `InvalidOperationException` (`SyncBridge.IncompleteMessage`) et annule la requête ; une écriture synchrone est refusée avant de commencer, en `BundleReadOnlyException` (le contrôle `CanWrite` précède `RequireSynchronousProvider`) |
+| D7 de #141, frère de `NoResidualFileIoTests` | les membres `[Obsolete]` à chemin refusent ce provider ; les points d'entrée de lecture, répertoire courant sur un dossier vide, n'y écrivent rien ; un segment `c:x.md` sous Windows (jamais un concept : `:` est interdit, spec OKF §2) : la **clé exacte** sur le problème d'analyse et sur le problème de portabilité |
 | Gardes de dépendance | le cœur n'accorde aucun `InternalsVisibleTo` à `OKF4net.Providers.S3` ; l'assembly ne référence qu'`OKF4net`, `AWSSDK.*` et la BCL |
 
 ### T2 — `[Trait("Category", "S3Integration")]`, hors CI
 
 Un fixture choisit le moteur explicitement (`podman` s'il répond, sinon
-`docker`), vérifie l'accès au moteur, démarre `docker.io/rustfs/rustfs:1.0.3`
-(épinglé par le condensé de son index multi-architecture, D14) sur un port libre avec des identifiants générés, crée un bucket, téléverse, et
-arrête le conteneur à la fin. Moteur absent : chaque test est **rapporté
-ignoré** avec la raison. Moteur présent mais conteneur en échec : les tests
-**échouent**. Garantie : `dotnet test tests/OKF4net.Tests --filter
-Category=S3Integration` avec **0 skipped** (35 tests : 10 scénarios et 25 cas de
-parité), en tête du README du paquet et dans CLAUDE.md ; exécutée sous Podman
-sans compatibilité Docker et sous Docker.
+`docker`), vérifie l'accès au moteur, démarre le store que nomme
+`OKF_S3IT_STORE` — `rustfs` (défaut, `docker.io/rustfs/rustfs:1.0.3`) ou
+`minio` (`cgr.dev/chainguard/minio`, `RELEASE.2026-11-16T00-11-40Z`), chacun
+épinglé par le condensé de son index (D14), une autre valeur faisant échouer le
+run — sur un port libre avec des identifiants générés, crée un bucket,
+téléverse, et arrête le conteneur à la fin. Moteur absent : chaque test est
+**rapporté ignoré** avec la raison. Moteur présent mais conteneur en échec (un
+condensé élagué par Chainguard compris) : les tests **échouent**. Garantie :
+`dotnet test tests/OKF4net.Tests --filter Category=S3Integration` avec
+**0 skipped**, une fois par store (**37 tests** : 12 scénarios et 25 cas de
+parité, cinq théories sur cinq bundles), en tête du README du paquet et dans
+CLAUDE.md. RustFS : Podman sans compatibilité Docker et Docker ; MinIO : Podman
+(l'image démarre aussi sous Docker). **Amazon S3 réel n'a jamais été mesuré**
+(#292, Annexe C).
 
-**Ce que RustFS ne peut pas prouver** (README, section Testing) : il envoie une
-espace en `%20` et un `+` en `%2B`, jamais un `+` brut ; il **ne discrimine donc
-pas** le `+` brut d'un nom listé, que seuls les tests T1 (le vrai SDK contre des
-pages scriptées) gardent. Le SDK ne peut pas `PUT` une clé à `/` initial vers
-RustFS : la fixture signe cette requête elle-même, avec l'horloge de l'hôte, qui
-doit s'accorder avec celle du moteur à moins de 15 minutes près.
+**Ce que chaque store ne peut pas prouver** (README, section Testing) : RustFS
+envoie une espace en `%20` et un `+` en `%2B`, jamais un `+` brut ; il **ne
+discrimine donc pas** le `+` brut d'un nom listé. MinIO écrit une espace en `+`
+brut : le test des noms épingle la forme propre à chaque store, et c'est la passe
+MinIO qui exerce le décodage en formulaire (mesuré : avec la règle du `+` brut
+inversée, la passe MinIO échoue, la passe RustFS non) ; en CI, seuls les tests T1
+(le vrai SDK contre des pages scriptées) le gardent. MinIO n'a envoyé aucune page
+tronquée vide, et aucun des deux stores ne couvre les ETags simples non MD5, la
+limitation de débit (`SlowDown`), un jeton expiré, une région fausse ni une
+vérification de la région de signature. Le SDK ne peut pas `PUT` une clé à `/`
+initial vers RustFS : la fixture signe cette requête elle-même (SigV4,
+`UNSIGNED-PAYLOAD`), avec l'horloge de l'hôte, qui doit s'accorder avec celle du
+moteur à moins de 15 minutes près.
 
 | Test | Ce qu'il prouve |
 |---|---|
@@ -541,11 +742,13 @@ doit s'accorder avec celle du moteur à moins de 15 minutes près.
 | Noms acceptés, oracle indépendant | `%2F`, `%2e%2e`, `%25`, `%252e`, `+`, espace, `\`, `?`, `#`, NFC et NFD de `café.md`, `dir/`, `/kb/lead.md` (normalisé par RustFS), `kb2/…` à côté de `kb/…` : chaque objet a un **contenu distinctif** ; le listing est comparé à celui d'un client d'administration distinct, sans `EncodingType` (chemin de décodage indépendant : texte XML), `mc` n'étant plus garanti disponible (image MinIO retirée de Docker Hub) ; chaque objet servi par le provider a le contenu de sa clé ; ce que le cœur rejette suit son socle sous `Native` |
 | Longueur | `MaxKeyBytes` abaissé, plutôt qu'une clé de plus de 1 024 octets que RustFS refuse |
 | Lecture épinglée | après réécriture d'un objet, `ReadResourceTextAsync(key, expected, …)` lève `BundleVersionMismatchException` ; `AttestationOrchestrator.CaptureAsync` rend le refus exact et aucune étape d'exécution ne démarre |
-| Fraîcheur | `OnAccess` voit une modification qui change le jeton ; `Every` seulement après l'intervalle ; un remplacement durable à taille et ETag constants **n'est pas** rechargé, ce qui fixe la limite 2 de §4.3, tandis que la relecture épinglée du code changé est refusée (ce cas n'est **pas** un test T2 : RustFS ne peut pas produire un triplet constant, il est couvert en T1 par un faux S3, `ReadTests.A_persistent_change_with_a_constant_triplet_is_not_reloaded_but_pinned_code_is_refused`, Annexe C6) |
+| Fraîcheur | `OnAccess` voit une modification qui change le jeton ; `Every` seulement après l'intervalle. Le remplacement durable à triplet constant (limite 2 de §4.3) n'est **pas** un test T2 : un store réel ne peut pas le produire, il est en T1 (« Fraîcheur, triplet constant ») |
+| Erreurs réelles (#292) | bucket absent (404 `NoSuchBucket` → `BucketUnavailable`), clé d'accès inconnue (403 `InvalidAccessKeyId` → `Credentials`), secret faux (403 `SignatureDoesNotMatch` → `Credentials`), clé absente (`BundleObjectNotFoundException`) : le statut et le code lus en `InnerException`, jamais dans le message (`Real_store_errors_land_in_the_documented_kinds`) |
+| Accès anonyme (#291) | une politique de bucket rend un préfixe public : une source `Anonymous` le charge sans signature, le préfixe privé voisin est refusé par le store (`An_anonymous_source_reads_a_public_prefix_and_is_refused_on_a_private_one`) |
 | Courses | un concept, une ressource du relevé et l'`index.md` racine supprimés entre le listing et leur lecture : échec du chargement avec image précédente servie et périmée, état `Missing`, `okf_version` absent (table de §4.3) |
 | Bornes | un objet au-delà d'un `MaxObjectBytes` abaissé : problème local ; un listing au-delà d'un `MaxEntries` abaissé : échec du chargement |
 | Panne | conteneur arrêté pendant un rechargement : l'image précédente reste servie, marquée périmée, `LastLoadError` renseigné |
-| Ordre | RustFS rend les clés de la batterie en ordre UTF-8 strictement croissant (précondition de §4.5) |
+| Ordre | le store rend les clés de la batterie en ordre UTF-8 strictement croissant (précondition de §4.5) ; assertion portée par le test des noms acceptés, pas un test à part |
 
 ### T3 — job CI `S3 provider AOT smoke test`
 
@@ -559,13 +762,24 @@ résolues, affichées dans le journal) ; publication Native AOT de
 **faux S3 en boucle locale** sur un `TcpListener` (HTTP/1.1 minimal), charge un
 petit bundle, compare son résumé au provider filesystem, et vérifie sous AOT le
 garde **par l'API publique du paquet** : une 307 vers un autre hôte et une 307
-entre autorités du même bucket sont refusées avec leur marque. Pour la
+entre autorités du même bucket sont refusées avec leur marque (job `S3 provider
+AOT smoke test (<rid>, AWSSDK <minimum|latest>)` de `ci.yml`). Pour la
 **contre-épreuve**, la sonde n'utilise aucun interne du provider (D10) : elle
 construit **directement un `AmazonS3Client` témoin**, sans garde, dont le
 `HttpClientFactory` rend un `HttpClient` dont le `SocketsHttpHandler` a pour
 proxy explicite un second `TcpListener` local ; la même 307 y arrive (compteur
 du second écouteur à 1). Rien ne touche le fichier hosts ni TLS (la sonde est en
 `http://` avec `AllowInsecureHttp`). Aucun conteneur.
+
+**Second job : `S3 provider tests at the latest AWSSDK`** (`ci.yml`, job
+`s3-latest-sdk`, #288). Sur `ubuntu-latest`, il fait monter les deux projets de
+test (`OKF4net.Tests` et la sonde `S3HostileEnvProbe`) à la dernière version
+publiée d'`AWSSDK.S3` et d'`AWSSDK.Core`, vérifie que les assemblies chargées
+sont bien celles-là (un run resté au minimum échoue), puis exécute toute la
+tranche T1 du provider (`FullyQualifiedName~Providers.S3&Category!=S3Integration`),
+sonde d'environnement hostile comprise. Le job AOT ne vérifie que le garde ; ce
+job rejoue les témoins qui dépendent du comportement du SDK (texte d'`Integrity`,
+réglages ambiants, pipeline) sur la dernière version.
 
 ## 7. Livraison et documentation
 
@@ -763,234 +977,56 @@ dans le plan ; aucune ne contredit une décision D1–D16) :
    `Region` ; sur un `ServiceUrl` IP, le SDK refuse la redirection par
    `ArgumentException`.
 
-## Annexe C — Écarts constatés à l'exécution (2026-11-18)
+## Annexe C — Points ouverts et écarts repliés (révision 5, 2026-11-19)
 
-Ajoutée à la fin de l'exécution (tâches 1 à 12). Cette annexe ne réécrit pas le
-corps ; les retouches faites pendant l'exécution (tâches 6, 8, 11) sont citées
-entrée par entrée. Chaque entrée dit ce que le
-texte énonçait, ce qui a été mesuré ou décidé, le commit qui le porte et son
-statut. « Tranché par le contrôleur — à arbitrer par le mainteneur » désigne une
-décision prise pendant l'exécution, faute de pouvoir interroger le mainteneur ; elle
-reste à confirmer ou à renverser, et son coût est dit. Les mesures portent sur
-`AWSSDK.S3` 4.1.0 avec `AWSSDK.Core` 4.1.0 (et 4.1.0.1 pour la porte), RustFS 1.0.3,
-Windows 11.
+Jusqu'à la révision 4, cette annexe consignait les écarts constatés à
+l'exécution (tâches 1 à 12, 2026-11-18) sans réécrire le corps, puis les
+décisions du mainteneur du 2026-11-19. La révision 5 (#287) les replie dans le
+corps, qui dit désormais ce que fait le code. Ne restent ici que les points
+encore ouverts, avec leur ticket, les arbitrages qui ferment un point sans
+changer le code, et la table de repli. Les mesures historiques sont dans les
+annexes A et B.
 
-Les commits cités ci-dessous sont ceux de la branche après son rebase sur `origin/dev` (2026-11-19) ; un
-nouveau rebase les change. Chacun est identifié par son sujet, qui survit :
+### C.1 Points ouverts
 
-- `2befd07a` — docs(s3): gate results (spec appendix B) and the plan amendments they require (#142)
-- `25c11bf1` — docs(s3): maintainer decisions of 2026-11-19 (#142)
-- `7344c24c` — docs(s3): package README, root README, CHANGELOG, CLAUDE.md, spec annex (#142)
-- `8a84c0ed` — feat(s3): buffered reads versioned by SHA-256, closed error table (#142)
-- `80ddd674` — feat(s3): project, S3BundleSource validation, opaque Id and bucket-free Location (#142)
-- `f312670b` — feat(s3): request guard on one authority and path, transport bounds, provider-owned HttpClient, hermetic client (#142)
-- `0b4fd0e0` — feat(s3): strict key decoding, page parser, listing walker with D9 invariants, s3v1 token (#142)
-- `b666d859` — fix(core): only a refusal resolves as Unsafe; other provider failures surface, translated (#142, spec D15 b)
-- `43ebc131` — fix(s3): guard admits GET only, one Host, an allowlisted query; bounds follow the operation (#142)
-- `fccbd988` — fix(s3): listed keys form-decoded, raw '+' refused by the guard, bounded operation deadline, re-parse never escapes (#142)
-- `95d9eaad` — fix(s3): load-robust deadlines, a read-ahead guard that can fail, integrity through wrappers (#142)
-- `bbb29d9d` — test(s3): consumers, synchronous bridge, D7, no residual file I/O, bucket-free output (#142)
-- `65567c88` — test(s3): RustFS integration (parity, hostile names, pinning, freshness, bounds, outage) (#142)
+- **Amazon S3 réel jamais mesuré (#292).** Toutes les mesures portent sur
+  RustFS 1.0.3 et MinIO `RELEASE.2026-11-16T00-11-40Z`. Restent à mesurer sur
+  Amazon S3 : le décodage en formulaire des clés listées (§4.3, cru, non
+  mesuré), une région fausse (307, 301 `PermanentRedirect`, 400
+  `AuthorizationHeaderMalformed`, §4.4), la limitation de débit (`SlowDown`), un
+  jeton expiré, les pages tronquées vides d'un bucket versionné sous des
+  marqueurs de suppression (D9, §4.3) et les ETags SSE-KMS. Même ticket : la
+  vérification de la région de signature par un store compatible
+  (`SigningRegion`, §4.2 : MinIO avec une région de site, Wasabi, Scaleway,
+  Backblaze B2, OVH, Garage, aucun mesuré ; la passe MinIO a tourné avec la
+  région de site par défaut).
 
-**Reste ouvert après les décisions du 2026-11-19 (ci-dessous) : C11 (région de signature d'une source `ServiceUrl`), reporté. À confirmer : C8. C1, C3, C4, C5c, C10 et C12 sont tranchés. Les autres entrées (C2, C5 hors c, C6, C7, C9) sont des constats.**
+### C.2 Arbitrages sans changement de code (2026-11-19)
 
-**Décisions du mainteneur (2026-11-19).**
-- C1 : garder le décodage en formulaire des clés listées (`+` brut → espace) ; mesuré sur MinIO le 2026-11-19 (#292), reste à mesurer sur Amazon S3.
-- C3 : garder le plafond de 3 envois par opération ; à replier dans le corps de la spec (#287).
-- C4 : confirmé (l'extension de D15 (b) au relevé des ressources exécutables, pour tous les providers).
-- C5c : une `FormatException` est classée `InvalidResponse` ; le remède de fond est réalisé (#286, 2026-11-19) : un ETag simple qui n'est pas un MD5 (32 chiffres hexadécimaux) est retiré de la réponse d'une lecture réussie, le SDK n'a plus rien à contrôler, et l'intégrité reste la version, le SHA-256 des octets lus.
-- C10 : accepté et implémenté — une page tronquée sans clé est suivie et comptée dans le budget de pages.
-- C11 : reporté (#284).
-- C12 : corrigé — le garde retire `x-amzn-trace-id` et reconstruit le `User-Agent` à partir d'une liste fermée de formes de jetons.
+- **Délai par page, non par parcours** : gardé ; un parcours est borné par le
+  budget de pages, propriété documentée (§4.5, README).
+- **`DefaultConfigurationMode = Standard`** : gardé comme défense en profondeur
+  inerte (mesuré sans effet ; §4.4).
+- **Orthographe *profil* du réglage us-east-1** (`s3_us_east_1_regional_endpoint`) :
+  mesurée en processus frais seulement, sans test permanent (§4.4).
+- **`Notify`** : refusé à la construction du `BundleHandle` (`ArgumentException`),
+  le provider n'étant pas un `IBundleChangeNotifier` (D8).
+- **Espace de noms XML du listing** : seul celui de S3 ou aucun ; limite gardée,
+  à rouvrir sur la demande d'un store réel (§4.3).
 
-*Suivi (tickets GitHub, 2026-11-19)* : C1 et les mesures hors RustFS → #292 ; C5c → #286 ; C10 → #283 ; C11 → #284 ; C12 (3) → #285 ; repli de ces écarts dans le corps de la spec → #287 ; la ligne « premier run CI Linux/macOS, Trusted Publishing » → #293.
+### C.3 Table de repli
 
-**C1 — §4.3, décodage d'une clé listée.**
-*Le texte* : chaque `%XX` devient un octet, « tout autre caractère ses octets UTF-8 » (un `+` brut reste `+`).
-*Constaté et décidé* : `S3KeyCodec.TryDecodeListed`, pour les seules valeurs **listées** : un `+` brut
-devient une espace (0x20), `%2B` un `+`, le reste est décodé strictement comme avant. Le décodage strict
-(`TryDecode`) des chemins et des requêtes du garde est inchangé, et le **garde refuse en plus un `+` brut**
-dans toute valeur de requête admise (un store le lit comme une espace, le garde comme un `+`). RustFS ne peut pas
-trancher (G12) : il rend l'espace en `%20` et le `+` en `%2B`, jamais un `+` brut. MinIO rend
-l'espace en `+` et le `+` littéral en `%2B` (mesuré le 2026-11-19, RELEASE.2026-11-16T00-11-40Z, #292 : la passe T2
-sur MinIO fait lire « a b.md » et « a+b.md » par ce décodage et échoue si la règle est inversée) ; Amazon S3 est
-crû faire de même (relecteur sûr à 80–85 %, non mesuré). Échec **fermé** dans
-les deux lectures possibles (ordre D9, ou 404 à la lecture) ; le coût d'une erreur est un nom avec espace ou
-`+` mal nommé sur un store qui rendrait un `+` brut pour un `+`. Gardé par les tests unitaires seuls
-(`CodecTests`, `ListPageParserTests`, `ListingWalkerTests`) et par la passe T2 sur MinIO, pas par la passe RustFS.
-*Commit* : `fccbd988`. *Statut* : tranché par le contrôleur — à arbitrer par le mainteneur.
-
-**C2 — §4.4 et §5, redirection 307 entre les deux autorités d'un même bucket.**
-*Le texte* : « le chemin inchangé désigne un autre bucket », dans les deux sens.
-*Constaté* : vrai **dans le sens *virtual-hosted* → régional** seulement. Pour *path-style* → *virtual-hosted*,
-le SDK **retire le segment du bucket** et garde le chemin de la clé (`/kb/x`) ; il ignore le chemin du
-`Location`. La contre-épreuve de ce sens a été corrigée en conséquence ; le garde ferme les deux sens sans
-changement (il compare l'autorité et le chemin brut). La phrase de §4.4 se lit donc « dans le sens
-*virtual-hosted* → régional ».
-*Commits* : `f312670b` (mesure et contre-épreuve), `43ebc131` (garde durci). *Statut* : constat mesuré ;
-formulation du corps à corriger à la prochaine révision.
-
-**C3 — Annexe B, conséquence 4 : au plus 3 envois par appel du SDK.**
-*Le texte* : rien (constat hors des douze points de §9).
-*Constaté et décidé* : une 307 répondue indéfiniment vers une URL que le garde admet faisait boucler le SDK
-sans borne (3,6 Go en quelques minutes). `PinningHandler.MaxSendsPerOperation = 3` : au-delà,
-`InvalidResponse`. C'est une **addition explicite à la spec, pas encore reconnue par le mainteneur** ; coût
-d'une erreur : un cas de refus de plus (aucun chemin légitime n'a besoin de plus de 3 envois, `MaxErrorRetry = 2`).
-*Commits* : `2befd07a` (annexe B), `f312670b` (garde). *Statut* : tranché par le contrôleur — à arbitrer par le mainteneur.
-
-**C4 — D15 (b), §4.7 : effet du changement sur tous les providers.**
-*Le texte* : `ResolveResourceKeyAsync` ne rend `Unsafe` que sur un refus ; toute autre défaillance remonte
-traduite par le cœur en `BundleLoadException`.
-*Constaté* : implémenté tel quel, avec deux conséquences à connaître. (1) Le relevé des ressources
-exécutables (`Bundle.SurveyResourceAsync`, qui passe par `ResolveResourceKeyAsync`) fait désormais **échouer le
-chargement** (image précédente conservée, périmée) là où il consignait l'état `Unsafe`, pour toute défaillance du
-provider autre qu'un refus, y compris une `IOException` ou une `UnauthorizedAccessException` brutes. (2) Le message est
-`provider failure resolving '<clé>' (<Type>)` : la clé et le **type** de l'exception, jamais son texte, l'original
-en cause. La lecture d'`index.md`/`log.md` par la validation reste `UnparseableIndex`/`UnparseableLog` (#247).
-Aucun golden n'a bougé.
-*Commit* : `b666d859`. *Statut* : D15 arbitrée le 2026-11-16 ; son extension au relevé et au filesystem est à confirmer.
-
-**C5 — §4.6, mesures de l'exécution** (toutes sur `AWSSDK.S3` 4.1.0).
-- a. Un ETag simple (MD5 hexadécimal) qui ne correspond pas aux octets est refusé par le SDK lui-même :
-  `Integrity` (ligne ajoutée au corps de §4.6).
-- b. Un 301 sans corps : le SDK nomme l'erreur `MovedPermanently` (jamais vide) : `BucketUnavailable` (corps de
-  §4.6 corrigé).
-- c. Un ETag simple **non hexadécimal** (`"same"`) fait lever `FormatException` au contrôle MD5 du SDK, rendue
-  `Transport` : un store compatible aux ETags simples opaques **échouerait sur toute lecture**. Non corrigé
-  (piste : `FormatException` → `InvalidResponse`), documenté au README. *Statut* : limite assumée par le
-  contrôleur — à arbitrer par le mainteneur.
-  *Décision (2026-11-19)* : implémentée. La `FormatException` sort nue de `GetObjectAsync`
-  (`AmazonS3ResponseHandler.ProcessResponseHandlers` → `AWSSDKUtils.HexStringToBytes` → `Convert.FromHexString`, mesuré) ;
-  `ErrorClassifier` la cherche le long de la chaîne d'`InnerException` (comme pour `Integrity`) et la classe
-  `InvalidResponse`, message fermé inchangé, l'exception brute en `InnerException`. Une défaillance de transport reste
-  `Transport`. *Réalisé (#286, 2026-11-19)* : `BoundingHandler` retire l'en-tête `ETag` d'une lecture réussie quand ce n'est pas 32 chiffres hexadécimaux (ni une forme multipart) ; mesuré : un ETag hexadécimal de SHA-1 ou SHA-256 échouait en `Integrity` (faussement), un non-hexadécimal en `FormatException`. Un vrai MD5 qui ne correspond pas reste `Integrity` (mutation : retirer aussi les vrais MD5 fait échouer le test). `ReadTests.An_opaque_single_part_ETag_is_not_the_SDKs_to_check_and_the_read_succeeds`. Test de la première décision (supprimé, remplacé par le précédent) : `ReadTests.A_single_part_ETag_that_is_not_hex_is_InvalidResponse`,
-  `ErrorTests.A_format_failure_is_InvalidResponse_wherever_it_sits_and_a_transport_failure_is_not`.
-- d. Un corps plus court que son `Content-Length` n'est **pas** détecté par le SDK : le provider le refuse
-  lui-même (`Transport`).
-- e. Les identifiants sont résolus **avant** que l'`OperationContext` soit posé : `Task.Run` fait suivre le
-  `ExecutionContext`, et un contexte posé d'abord atteindrait le code de l'hôte.
-- f. Un provider libéré en cours d'opération échoue en `Disposed`, par un jeton de libération lié à chaque
-  opération (§4.2 ne le disait que des appels suivants).
-- g. Une annulation de l'appelant porte **son propre jeton** à toutes les sorties (`e.CancellationToken == ct`).
-- h. `Integrity` repose sur le **texte** du message du SDK : `AWSSDK.Core` 4.1.0 n'a pas d'exception typée
-  (§9 point 8 demandait « par quelle exception »). Le texte est cherché le long de la chaîne d'`InnerException`
-  (`AggregateException` comprise, profondeur 16). Un SDK plus récent peut donner `Transport` ; échec fermé, gardé
-  par deux tests sur le vrai pipeline.
-
-*Commits* : `8a84c0ed`, `95d9eaad`. *Statut* : mesures ; c et h assumées comme limites documentées.
-
-**C6 — §6, tableaux de tests.**
-- **T2 « Fraîcheur »** : le cas à triplet (nom, ETag, taille) constant y est dit « servi par un double scripté au-dessus
-  de RustFS ». C'est un test **T1** (faux S3 : `ReadTests.A_persistent_change_with_a_constant_triplet_is_not_reloaded_but_pinned_code_is_refused`),
-  que RustFS ne peut pas produire.
-- **T1 « D7 de #141 »** : `c:x.md` ne peut **jamais être un concept** (`:` interdit, spec OKF §2) ; le test
-  asserte la **clé exacte** sur le problème d'analyse et sur le problème de portabilité.
-- **T1 « Pont synchrone »** : une écriture synchrone rend `BundleReadOnlyException` (le contrôle `CanWrite`
-  précède `RequireSynchronousProvider`), non l'`InvalidOperationException` du pont ; la lecture synchrone
-  lève bien celle-ci, mesurée par une surcharge interne du cœur.
-- **T2 « Noms acceptés »** : le SDK **ne peut pas** `PUT` une clé à `/` initial vers RustFS (403) ; la fixture signe
-  elle-même cette requête (SigV4, `UNSIGNED-PAYLOAD`, horloge de l'hôte à moins de 15 minutes de celle du
-  moteur) ; RustFS la range sous la clé normalisée (M4).
-
-*Commits* : `65567c88`, `bbb29d9d`. *Statut* : constats ; les lignes du corps n'ont pas été réécrites.
-
-**C7 — §4.3, D9 : espace de noms du XML de listing.**
-*Le texte* : non précisé.
-*Constaté* : l'analyseur de page n'accepte que l'espace de noms racine de S3
-(`http://s3.amazonaws.com/doc/2006-03-01/`) **ou aucun** ; un champ (`Contents`, `Key`, `ETag`, `Size`…) dans un
-autre espace de noms est refusé (`InvalidResponse`) plutôt que lu ou ignoré. Un store qui en emploie un autre est
-donc refusé, par exemple l'interopérabilité S3 de Google Cloud Storage (`http://doc.s3.amazonaws.com/2006-03-01`).
-Limite consignée au README.
-*Commit* : `0b4fd0e0`. *Statut* : limite assumée, à rouvrir sur la demande d'un store réel.
-
-**C8 — D6, §4.4 : partitions hors `aws`.**
-*Le texte* : « les hôtes exacts pour chaque région (dont les partitions hors `aws`) sont relevés par la porte ».
-*Constaté* : une `Region` hors de la partition DNS `amazonaws.com` (Chine, `amazonaws.com.cn`) est **refusée à la
-construction** (`ArgumentException`) ; ce cas passe par un `ServiceUrl`. Les autorités des régions `amazonaws.com`
-sont celles de la table de §4.4.
-*Commit* : `80ddd674`. *Statut* : décision d'implémentation, à confirmer par le mainteneur.
-
-**C9 — §4.4 : « une région mal configurée se manifeste par un refus du garde ».**
-*Le texte* (§4.4, avant-dernier paragraphe) : une région mal configurée se manifeste par un refus du garde.
-*Constaté* : cette phrase contredit le tableau de §4.6 de la même spec et le code. Une redirection 307 vers un
-autre hôte est bien refusée par le garde (`RefusedHost`) ; mais un 301 `PermanentRedirect` ou un 400
-`AuthorizationHeaderMalformed` est classé `BucketUnavailable`. Le README du paquet dit les deux cas ; aucun des
-deux n'a été mesuré contre Amazon S3 réel. Formulation du corps à corriger à la prochaine révision.
-*Commit* : `7344c24c` (README). *Statut* : constat.
-
-**C10 — D9, §4.3 : page tronquée sans clé.**
-*Le texte* (D9) : « progrès exigé de chaque page tronquée » ; une page tronquée (`IsTruncated=true`) qui ne porte
-aucune clé est une incohérence de transport.
-*Constaté* : implémenté tel quel (`ListingWalker`) : une telle page est refusée (`InvalidResponse`) et **tout le
-chargement échoue**. Amazon S3 réel pourrait rendre de telles pages sur un bucket versionné, sous une longue suite de
-marqueurs de suppression (non mesuré ; relecteur sûr à 70 % environ) : un bundle placé là ne se chargerait jamais,
-en échec **fermé**. Le refus n'est pas nécessaire à la borne : le budget de `MaxEntries + 1` pages et le refus d'un
-jeton de continuation répété arrêtent déjà un store hostile. Alternative probable : accepter une page tronquée vide,
-comptée dans le budget de pages. Le README du paquet l'énonce comme précondition d'un store compatible. Un changement
-de code demande la passe locale `S3Integration` à 0 ignoré.
-*Commit* : celui de cette entrée (README et annexe). *Statut* : tranché par le contrôleur — à arbitrer par le mainteneur.
-*Décision (2026-11-19)* : acceptée et implémentée. Une page tronquée sans clé est suivie et comptée dans le budget de
-`MaxEntries + 1` pages d'un parcours ; `ExistsAsync` la suit aussi, sous un budget fixe de 1 000 pages
-(`S3BundleProvider.ExistsMaxPages`), chaque page étant une opération avec son échéance et son plafond d'envois ; au-delà,
-`InvalidResponse`, jamais `false`. Un jeton de continuation répété, ou une page tronquée sans jeton, restent refusés
-(`InvalidResponse`) ; la borne de 1 024 octets du jeton est inchangée. Le corps de la spec (D9, « progrès exigé de chaque
-page tronquée ») dit encore « refuser » : le repli dans le corps est #287, de même que la ligne du plan de test
-« refusées dès la première » (Incohérences de transport). Le budget de pages est partagé avec `MaxEntries + 1` : sous un
-`MaxEntries` très bas, des pages vides épuisent ce budget et l'échec est un `InvalidResponse`, pas une borne d'entrées.
-L'échéance est par page, non par parcours : un store qui répond chaque page juste avant `RequestTimeout` tient un
-parcours (`ExistsAsync` : 1 000 pages) jusqu'au produit du budget par le délai (suivi : #283). Passe `S3Integration`
-locale à 0 ignoré : 35/35 le 2026-11-19 sur `25c11bf1` (reprise après le complément de l'entrée C12 : voir ci-dessous).
-
-**C11 — §4.4, D2 : région de signature d'une source `ServiceUrl`.**
-*Le texte* : la région d'authentification est `us-east-1` pour `ServiceUrl` ; `Region` et `ServiceUrl` sont
-exclusifs (`SourceRules`).
-*Constaté* : une source `ServiceUrl` signe **toujours** avec la région `us-east-1`, et `S3BundleSource` n'a aucune
-option de région de signature. Un store compatible qui vérifie la région de la portée SigV4 (Wasabi en point de
-terminaison régional, Scaleway, Backblaze B2, OVH, Garage, MinIO avec une région de site — selon le relecteur ;
-**aucun mesuré**) répond `400 AuthorizationHeaderMalformed`, que le provider rapporte en `BucketUnavailable`
-(`ErrorClassifier`) : le diagnostic désigne le bucket plutôt que la signature. API proposée si le mainteneur la
-veut : une propriété facultative `SigningRegion` sur `S3BundleSource`, incluse dans le hachage de l'`Id`. Le README
-du paquet l'énonce comme précondition d'un store compatible.
-*Réalisé (#284, 2026-11-19)* : `S3BundleSource.SigningRegion` (source `ServiceUrl` seulement, 2 à 32 caractères minuscules, chiffres et tirets simples), `AuthenticationRegion = SigningRegion ?? "us-east-1"`, et un segment `|sign:<région>` dans l'identité de l'endpoint **seulement quand l'option est posée** : tous les `Id` existants sont inchangés (vecteurs connus des deux cas dans `SourceTests`, calculés hors du code). Test T1 : un store scripté qui impose la région de la portée lue dans l'en-tête `Authorization` refuse la source par défaut (400, `BucketUnavailable`) et accepte la source déclarée (mutation : ignorer l'option fait échouer le test). Le 400 reste classé `BucketUnavailable` ; le README dit de soupçonner la région de signature avant le bucket. Hors périmètre : `signingRegion` dans les `AcceptedSettings` de la fabrique de catalogue (la fabrique S3 n'existe pas encore, #239). *Statut* : tranché et réalisé.
-
-**C12 — Annexe B, G2 : relevé systématique des réglages ambiants (2026-11-19).**
-*Le texte* (§4.4, G2) : le client durci envoie des requêtes identiques sous tout environnement hostile, sauf le
-jeton `exec-env/` retiré par le garde ; « le point de terminaison régional de `us-east-1` » est fixé.
-*Constaté* : toutes les chaînes `AWS_*` et toutes les clés de profil présentes dans `AWSSDK.Core` 4.1.0 et
-`AWSSDK.S3` 4.1.0 ont été relevées sur les binaires puis mesurées une à une (client ordinaire contre provider,
-source `Region` et source `ServiceUrl`, faux store local). Trois écarts : (1) `USEast1RegionalEndpointValue`
-n'était pas fixé — sous `AWS_S3_US_EAST_1_REGIONAL_ENDPOINT=legacy` (variable ou profil) toute opération d'une
-source `us-east-1` échouait `RefusedHost` sans aucun envoi ; (2) `AWS_ACCOUNT_ID_ENDPOINT_MODE` (variable ou
-profil) changeait la métrique du `User-Agent` (`P` → `R`). Les deux sont désormais fixés dans `ClientBuilder`
-(`Regional`, `PREFERRED`) et épinglés avec témoin positif (`AmbientEndpointTests` pour la variable us-east-1 — la clé de profil, que le SDK lit une fois par processus, a été mesurée en processus frais, avant et après —, `HostileEnvironmentTests`),
-ainsi que `AWS_DEFAULTS_MODE` en variable (seule la clé de profil l'était ; mesuré : sans `DefaultConfigurationMode = Standard` le provider envoie les mêmes requêtes sous `auto`, `mobile` ou `in-region` et ne contacte aucun IMDS — la ligne est une défense en profondeur que la mutation laisse verte). (3) **Restent ouverts**, sans
-changement de destination ni de signature (en-têtes non signés) : dans AWS Lambda (`AWS_LAMBDA_FUNCTION_NAME` et
-`_X_AMZN_TRACE_ID` posés), le SDK ajoute un en-tête `x-amzn-trace-id` portant la valeur ambiante, et le texte de
-`AWS_INTERNAL_ENV` est inséré tel quel dans le `User-Agent` (entre `md/aws-sdk-dotnet-core#…` et `api/S3#…`).
-Les retirer touche au garde au-delà de la conséquence 2 de l'Annexe B (retirer l'en-tête de trace, et reconstruire
-ou filtrer le `User-Agent` par position) : décision de conception laissée au mainteneur. Le README du paquet et
-CLAUDE.md les nomment au lieu de prétendre que tout réglage ambiant est neutralisé. Par ailleurs, §4.4 dit
-`AuthSchemePreference` « fixé à SigV4 » : le code ne le fixe pas, et la mesure montre que
-`AWS_AUTH_SCHEME_PREFERENCE=sigv4a` (avec `AWS_SIGV4A_SIGNING_REGION_SET`) ne change rien pour un bucket ordinaire
-(SigV4 seul offert ; ARN, points d'accès multirégions et buckets de répertoire refusés à la construction).
-*Commits* : `fix(s3)` de cette passe (code et tests), `docs(s3)` (README, CLAUDE.md, annexe). *Statut* : (1), (2)
-corrigés ; (3) à arbitrer par le mainteneur.
-*Décision (2026-11-19)* : (3) corrigé dans `PinningHandler`. L'en-tête `x-amzn-trace-id` est retiré (quelle que soit sa
-casse). Le `User-Agent` est **reconstruit** à partir d'une liste fermée de formes de jetons, relevées sur `AWSSDK` 4.1.0
-(mesure en environnement propre, plus les chaînes de format du SDK pour `ft/aot` et `md/ClientSync`) :
-`aws-sdk-dotnet-coreclr/…`, `ua/…`, `os/<nom>#<version>`, `md/ARCH#…`, `lang/<nom>#<version>`,
-`md/aws-sdk-dotnet-core#…`, `ft/aot`, `api/S3#…`, `md/ClientAsync|ClientSync`, `cfg/init-coll#…`, `m/<codes>` — écrits dans
-cet ordre ; tout autre jeton est retiré (échec fermé), une forme vue deux fois avec des valeurs différentes (texte ambiant
-qui imite un jeton connu) est retirée entière, et sans aucun jeton reconnu aucun `User-Agent` n'est envoyé (un SDK plus
-récent perd de l'information, jamais une requête). Témoins positifs : `HostileEnvironmentTests`, cas
-`variables-lambda-internal-env` (le client ordinaire envoie l'en-tête et le marqueur ; le provider, des requêtes identiques
-à l'exécution propre) ; lignes unitaires : `GuardTests`. Reste vrai : la clé de profil `s3_us_east_1_regional_endpoint`
-n'a pas de test permanent (mesurée en processus frais seulement).
-*Complément (revue du 2026-11-19, même jour)* : la liste ne vérifiait que la **forme** de chaque valeur ; un texte
-ambiant qui imite un jeton pouvait donc passer dans un emplacement que le SDK laisse vide (SDK plus récent, valeur hors
-forme). Chaque valeur est désormais un **nombre** (un à quatre groupes de un à cinq chiffres) ou un élément d'un
-**ensemble fermé** (architectures, noms de système et de langage, codes de métrique `b e E F N P R`), jamais du texte
-libre. Mesuré avec le vrai client : `AWSConfigs.UseAlternateUserAgentHeader` (réglage de processus de l'hôte) place le
-texte du SDK dans `x-amz-user-agent` (non signé) ; la même reconstruction s'applique à cet en-tête. Les ensembles fermés
-sont mesurés sous Windows seulement ; ailleurs un nom hors ensemble retire le jeton (information perdue, requête
-envoyée). Tests : `GuardTests` (lignes d'emplacement vide, d'ensemble fermé et d'en-tête alternatif).
+| Entrée | Titre | Où elle vit désormais |
+|---|---|---|
+| C1 | Décodage d'une clé listée (`+` brut → espace), `+` brut refusé par le garde | §4.3 « Décodage d'une clé listée », §4.4 (garde), D9 ; mesure Amazon S3 : C.1 (#292) |
+| C2 | 307 entre les deux autorités d'un même bucket : autre bucket dans le seul sens *virtual-hosted* → régional | §4.4 « Sensibilité », §5 |
+| C3 | Au plus 3 envois par opération | §4.4 « Plafond d'envois », §5 |
+| C4 | D15 (b) pour tous les providers et pour le relevé des ressources exécutables | D15, §4.7 (b) |
+| C5 | Mesures de l'exécution sur §4.6 (a ETag MD5 → `Integrity` ; b 301 sans corps → `BucketUnavailable` ; c `FormatException` → `InvalidResponse` et ETags non MD5 retirés, #286 ; d corps court → `Transport` ; e identifiants résolus avant le contexte ; f `Disposed` en cours d'opération ; g jeton propre de l'appelant ; h `Integrity` sur le texte du SDK) | §4.6 (a, b, c, h), §4.3 `ReadAsync` (d), §4.4 identifiants (e), §4.2 (f), §4.5 (g) |
+| C6 | Lignes des tableaux de tests (triplet constant en T1, `c:x.md`, pont synchrone, `PUT` à `/` initial) | §6 T1 et T2 |
+| C7 | Espace de noms du XML de listing | §4.3 « Incohérences de transport » ; arbitrage en C.2 |
+| C8 | Régions hors de la partition `amazonaws.com` refusées | D6, §4.4 |
+| C9 | « Une région mal configurée se manifeste par un refus du garde » contredisait §4.6 | §4.4 « Une région mal configurée » ; mesure Amazon S3 : C.1 (#292) |
+| C10 | Page tronquée sans clé acceptée et comptée dans le budget de pages ; délai par page (#283) | D9, §4.3, §4.5 ; arbitrage en C.2 |
+| C11 | Région de signature d'une source `ServiceUrl` (`SigningRegion`, #284) | §4.2, D5, D6, §4.3 (`Id`), §4.4 ; mesure sur un store qui la vérifie : C.1 (#292) |
+| C12 | Relevé systématique des réglages ambiants ; `x-amzn-trace-id` retiré et `User-Agent` reconstruit (#285) | §4.4 « Configuration hermétique » et « Ce que le garde retire », §5, §6 T1 ; arbitrages en C.2 |

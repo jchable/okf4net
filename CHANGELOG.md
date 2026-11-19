@@ -708,7 +708,7 @@ The detail of every entry is in the sections after this digest.
   resources (`computation`, `attester.resource`) fails the load instead of
   recording the state `Unsafe`. This affects every provider. The same
   confusion while a validation reads `index.md`/`log.md` (reported as
-  `UnparseableIndex`/`UnparseableLog`) is unchanged and tracked in #247.
+  `UnparseableIndex`/`UnparseableLog`) is fixed too (#247, see Fixed).
 
 - **`Bundle.TryResolveResource(…)` and `Bundle.ReadResourceText(string)`**
   (both `[Obsolete]`) now throw `NotSupportedException` when the bundle's

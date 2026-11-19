@@ -124,7 +124,7 @@ Preconditions on a store other than Amazon S3:
 | Store | Version | Date | Result |
 |---|---|---|---|
 | RustFS | 1.0.3 | 2026-11-19 | the whole `S3Integration` suite, under Podman and Docker |
-| MinIO | `RELEASE.2026-11-16T00-11-40Z` (Chainguard build) | 2026-11-19 | the whole `S3Integration` suite (36 tests), 0 skipped, under Podman 5.4.2; the image also starts under Docker |
+| MinIO | `RELEASE.2026-11-16T00-11-40Z` (Chainguard build) | 2026-11-19 | the whole `S3Integration` suite (37 tests), 0 skipped, under Podman 5.4.2; the image also starts under Docker |
 | Amazon S3 | n/a | never | not measured: see "Running against Amazon S3" in Testing |
 
 Anything else is a precondition, not a claim. Measured on MinIO (#292): it writes a space in a URL-encoded listing as a **raw `+`** (a literal `+` as `%2B`), where RustFS writes `%20`, so the provider's form-decoding of listed keys is exercised by a real store; its answers for a missing bucket (`404 NoSuchBucket`), an unknown access key (`403 InvalidAccessKeyId`), a wrong secret (`403 SignatureDoesNotMatch`) and a missing key land in the same kinds as on RustFS. Not covered by MinIO: empty truncated listing pages (it did not send one), non-MD5 single-part ETags, throttling (`SlowDown`), an expired token, a wrong region, and a signing-region check (the run used the default site region).
@@ -140,10 +140,6 @@ Every failure that is not about one object is an `S3RequestException` (a `Bundle
 An object that is absent, refused, of another version or too large is reported with the contract's own exceptions (`BundleObjectNotFoundException`, `BundleAccessRefusedException`, `BundleVersionMismatchException`, `BundleObjectTooLargeException`). A load failure reaches the host as a `BundleLoadException` whose `InnerException` is the `S3RequestException`, and a handle keeps serving its previous image (`IsStale`, `LastLoadError`).
 
 The `Integrity` kind rests on the SDK's message text: AWSSDK.Core 4.1.0 has no typed exception for a hash mismatch, so the provider recognizes the SDK's own wording. It fails closed, but if you float `AWSSDK.Core` above the 4.1.0 minimum, a hash mismatch may be reported as `Transport` instead of `Integrity`. Two tests that go through the real SDK pipeline guard this and run on every SDK bump.
-
-## Known limitation (#247)
-
-While a validation reads `index.md` or `log.md`, a store that fails shows as an `UnparseableIndex` or `UnparseableLog` diagnostic instead of failing the validation. It is the same for every provider and is tracked in [#247](https://github.com/jchable/okf4net/issues/247). Resolving a resource of a concept (`computation`, `attester.resource`) during validation does fail on a store failure.
 
 ## Versions
 
@@ -193,7 +189,7 @@ Register it with `KnowledgeCatalogOptions.ProviderFactories`. The catalog never 
 
 ## Testing
 
-Two layers. The unit tests run in CI with no service: the real SDK against scripted responses, with the guard in place, plus a child-process probe under a hostile environment. The `S3Integration` tests (36 in all: 11 scenario tests and 25 parity cases) start a store themselves, each image pinned by its multi-architecture index digest so that a re-tagged image cannot change what runs, driven by Podman if it answers, otherwise Docker. `OKF_S3IT_STORE` chooses the store: `rustfs` (the default, `docker.io/rustfs/rustfs:1.0.3@sha256:9ca95595…`) or `minio` (`cgr.dev/chainguard/minio@sha256:dc5e0989…`, because MinIO Inc. no longer publishes its community image; Chainguard keeps only recent tags, so a pruned digest fails the pull, never silently). An unknown value fails the run. Run the suite once per store, each at **0 skipped**:
+Two layers. The unit tests run in CI with no service: the real SDK against scripted responses, with the guard in place, plus a child-process probe under a hostile environment. The `S3Integration` tests (37 in all: 12 scenario tests and 25 parity cases) start a store themselves, each image pinned by its multi-architecture index digest so that a re-tagged image cannot change what runs, driven by Podman if it answers, otherwise Docker. `OKF_S3IT_STORE` chooses the store: `rustfs` (the default, `docker.io/rustfs/rustfs:1.0.3@sha256:9ca95595…`) or `minio` (`cgr.dev/chainguard/minio@sha256:dc5e0989…`, because MinIO Inc. no longer publishes its community image; Chainguard keeps only recent tags, so a pruned digest fails the pull, never silently). An unknown value fails the run. Run the suite once per store, each at **0 skipped**:
 
 ```sh
 dotnet test tests/OKF4net.Tests --filter Category=S3Integration                          # RustFS
