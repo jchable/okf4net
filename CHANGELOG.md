@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-19
+
 The headline is bundle providers: the storage seam under `Bundle`, an
 asynchronous `IBundleProvider`, a shared `BundleHandle`, and two new packages
 that read a bundle from an assembly or from S3. This release is large: 99
@@ -4695,7 +4697,8 @@ host-scopeable long-term memory — all built on the same zero-dependency core.
 - Relicensed from Apache-2.0 to LGPL-3.0-or-later; Apache-2.0 attribution for
   upstream ported portions is preserved in `NOTICE` and `LICENSE.Apache-2.0`.
 
-[Unreleased]: https://github.com/jchable/okf4net/compare/v0.7.0...main
+[Unreleased]: https://github.com/jchable/okf4net/compare/v0.8.0...main
+[0.8.0]: https://github.com/jchable/okf4net/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jchable/okf4net/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jchable/okf4net/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jchable/okf4net/compare/v0.4.0...v0.5.0
