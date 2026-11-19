@@ -48,24 +48,41 @@ public sealed class S3BundleProvider : IBundleProvider, IDisposable
     /// <exception cref="ArgumentNullException">An argument is null.</exception>
     /// <exception cref="ArgumentException"><paramref name="source"/> is outside the documented domain (see <see cref="S3BundleSource"/>).</exception>
     public S3BundleProvider(AWSCredentials credentials, S3BundleSource source)
-        : this(credentials, source, ClientBuilder.Network(), TimeProvider.System)
+        : this(credentials, source, static () => ClientBuilder.Network(), TimeProvider.System)
     {
     }
 
     /// <summary>Tests only: the network handler is replaced; the guard is still above it.</summary>
     internal S3BundleProvider(AWSCredentials credentials, S3BundleSource source, HttpMessageHandler network, TimeProvider? time = null)
+        : this(credentials, source, Supplying(network), time)
+    {
+    }
+
+    /// <summary>Tests only: the network handler comes from a factory, called once the source is validated.</summary>
+    internal S3BundleProvider(AWSCredentials credentials, S3BundleSource source, Func<HttpMessageHandler> networkFactory, TimeProvider? time = null)
     {
         ArgumentNullException.ThrowIfNull(credentials);
         ArgumentNullException.ThrowIfNull(source);
-        ArgumentNullException.ThrowIfNull(network);
+        ArgumentNullException.ThrowIfNull(networkFactory);
         _source = SourceRules.Normalize(source);
         _plan = AddressingPlan.For(_source);
+
+        // Built only now that nothing left can refuse the configuration: a refused source never owns a handler, so it
+        // has nothing to dispose. From here the HttpClient owns the handler, and Dispose releases both.
+        var network = networkFactory();
+        ArgumentNullException.ThrowIfNull(network);
         _client = ClientBuilder.Build(new SnapshotCredentials(), _source, network, out _http);
         _gate = new OperationGate(_source.MaxConcurrentRequests, time ?? TimeProvider.System, _disposal.Token);
         _credentials = new CredentialResolver(credentials);
         _walker = new ListingWalker(_client, _source.Bucket, _gate, _credentials);
         Id = _source.Id;
         Location = _source.Location;
+    }
+
+    private static Func<HttpMessageHandler> Supplying(HttpMessageHandler network)
+    {
+        ArgumentNullException.ThrowIfNull(network);
+        return () => network;
     }
 
     /// <inheritdoc/>
@@ -139,6 +156,7 @@ public sealed class S3BundleProvider : IBundleProvider, IDisposable
     /// <exception cref="S3RequestException">A request failed, or a page is inconsistent, or the page budget is spent.</exception>
     public async ValueTask<bool> ExistsAsync(BundleKey key, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(key); // as ReadAsync: a null key would ask about the prefix's own folder marker
         ThrowIfDisposed(S3Operation.Exists);
         var s3Key = _plan.S3Key(key);
         await foreach (var entry in _walker.WalkAsync(s3Key, 1, ExistsMaxPages, OperationTimeout(_source.RequestTimeout, null), S3Operation.Exists, key, ct).ConfigureAwait(false))

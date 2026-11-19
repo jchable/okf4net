@@ -39,6 +39,55 @@ public class SourceTests
     public void An_invalid_source_is_refused(S3BundleSource source) =>
         Assert.Throws<ArgumentException>(() => SourceRules.Normalize(source));
 
+    /// <summary>Counts its own disposal: the network object a provider builds and, when its source is refused, must not leave alive.</summary>
+    private sealed class TrackedNetwork : HttpMessageHandler
+    {
+        public bool Disposed { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            Disposed = true;
+            base.Dispose(disposing);
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(Invalid))]
+    public void A_refused_source_leaves_no_network_object_alive(S3BundleSource source)
+    {
+        // Minors A2: the public constructor built its SocketsHttpHandler BEFORE the source was validated, and nothing
+        // disposed it when validation threw. The network seam is a factory now: whatever it built must be disposed
+        // (and, validation coming first, it is not even called).
+        var built = new List<TrackedNetwork>();
+        Assert.Throws<ArgumentException>(() => new S3BundleProvider(S3Test.Creds, source, () =>
+        {
+            var network = new TrackedNetwork();
+            built.Add(network);
+            return network;
+        }));
+        Assert.All(built, n => Assert.True(n.Disposed));
+    }
+
+    [Fact]
+    public void A_valid_source_calls_the_network_factory_once_and_the_provider_disposes_what_it_built()
+    {
+        // The positive witness of the test above: the factory IS called for a valid source, so an empty list there means
+        // "validated first", not "the seam is never reached"; and Dispose releases the handler through the HttpClient.
+        var built = new List<TrackedNetwork>();
+        var p = new S3BundleProvider(S3Test.Creds, Local(), () =>
+        {
+            var network = new TrackedNetwork();
+            built.Add(network);
+            return network;
+        });
+        Assert.Single(built);
+        Assert.False(built[0].Disposed);
+        p.Dispose();
+        Assert.True(built[0].Disposed);
+    }
+
     [Fact]
     public void The_id_is_opaque_stable_and_follows_the_effective_configuration()
     {

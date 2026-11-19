@@ -585,6 +585,17 @@ public class ListingWalkerTests
         Assert.Empty(fake.Requests);
     }
 
+    [Fact]
+    public async Task A_null_key_is_refused_by_ExistsAsync_as_by_ReadAsync_before_any_request()
+    {
+        // Minors A1: a null key used to ask, silently, about the bundle prefix's own folder marker (KeyPrefix + null).
+        var fake = S3Test.Serving(S3Test.Objects(("kb/a.md", "x")));
+        using var p = S3Test.Provider(fake);
+        await Assert.ThrowsAsync<ArgumentNullException>(async () => await p.ExistsAsync(null!, default));
+        await Assert.ThrowsAsync<ArgumentNullException>(async () => await p.ReadAsync(null!, null, default)); // the sibling this one follows
+        Assert.Empty(fake.Requests);
+    }
+
     private static readonly TimeSpan Cap = TimeSpan.FromMilliseconds(int.MaxValue);
 
     public static TheoryData<TimeSpan, TimeSpan?, TimeSpan> Timeouts => new()
