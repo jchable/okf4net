@@ -204,6 +204,22 @@ public sealed class GuardTests : IDisposable
         Assert.False(await Admitted(list, listUrl, HttpMethod.Head));
     }
 
+    [Theory]
+    [InlineData("get")]
+    [InlineData("Get")]
+    [InlineData("gET")]
+    public async Task A_method_token_that_only_equals_GET_ignoring_case_is_refused(string token)
+    {
+        // Minors A4: HttpMethod equality is case-insensitive, so `request.Method != HttpMethod.Get` admitted "get", which
+        // would then have been sent on the wire as "get" (a store may read it as another method, or refuse it).
+        var read = new OperationContext(S3Operation.Read) { ExpectedObjectS3Key = "kb/a.md", Credentials = Creds };
+        var method = new HttpMethod(token);
+        Assert.Equal(HttpMethod.Get, method); // the premise: the framework's own equality cannot tell them apart
+        Assert.NotEqual(HttpMethod.Get.Method, method.Method);
+        Assert.False(await Admitted(read, "http://127.0.0.1:9000/okf/kb/a.md", method));
+        Assert.True(await Admitted(read, "http://127.0.0.1:9000/okf/kb/a.md", new HttpMethod("GET"))); // the exact token is admitted
+    }
+
     [Fact]
     public async Task A_host_header_must_name_the_admitted_authority()
     {

@@ -22,8 +22,21 @@ internal static class ClientBuilder
         return new AmazonS3Client(credentials, Configure(source, new ProviderHttpClientFactory(httpClient)));
     }
 
-    /// <summary>The network handler of a real provider: no redirect following, no ambient proxy (spec §4.4).</summary>
-    public static SocketsHttpHandler Network() => new() { AllowAutoRedirect = false, UseProxy = false };
+    /// <summary>How long a pooled connection is reused before it is replaced (minors A3): the default is infinite, so a long-lived host never re-resolved the store's DNS name. Two minutes: well past a request's life, short against a DNS change.</summary>
+    internal static readonly TimeSpan PooledConnectionLifetime = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// The network handler of a real provider (spec §4.4): no redirect following, no ambient proxy, no cookie jar (a
+    /// Set-Cookie from the store would be replayed on every later request: state the guard never sees), and a finite
+    /// connection lifetime (<see cref="PooledConnectionLifetime"/>).
+    /// </summary>
+    public static SocketsHttpHandler Network() => new()
+    {
+        AllowAutoRedirect = false,
+        UseProxy = false,
+        UseCookies = false,
+        PooledConnectionLifetime = PooledConnectionLifetime,
+    };
 
     private static AmazonS3Config Configure(NormalizedSource source, HttpClientFactory factory)
     {

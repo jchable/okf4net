@@ -38,7 +38,9 @@ internal sealed class PinningHandler(AddressingPlan plan) : DelegatingHandler
     {
         var context = OperationContext.Current.Value;
         var uri = request.RequestUri;
-        if (context is null || uri is null || request.Method != HttpMethod.Get || !HostHeaderAdmitted(request.Headers) || !Admits(context, uri))
+
+        // The method TOKEN is compared ordinally: HttpMethod equality ignores case, and "get" would be sent as "get".
+        if (context is null || uri is null || !string.Equals(request.Method.Method, HttpMethod.Get.Method, StringComparison.Ordinal) || !HostHeaderAdmitted(request.Headers) || !Admits(context, uri))
         {
             throw new GuardException(S3FailureKind.RefusedHost);
         }
