@@ -8,6 +8,7 @@ on:
     branches: [main]
     paths:
       - "web/**"
+      - "Directory.Build.props" # the site shows the library version declared there
       - ".github/workflows/pages.yml"
   workflow_dispatch: # manual deploy from any branch (e.g. dev, to preview)
 

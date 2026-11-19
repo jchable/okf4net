@@ -29,11 +29,12 @@ export default function Colophon({ variant = 'full' }: ColophonProps) {
         <div className="links">
           <a href="https://github.com/jchable/okf4net">source</a>
           <a href="https://www.nuget.org/packages?q=OKF4net">nuget</a>
+          <a href="https://github.com/jchable/okf4net/blob/main/CHANGELOG.md">changelog</a>
           <a href="https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md">okf spec v0.2</a>
           <a href="https://github.com/jchable/okf4net/blob/main/LICENSE">license</a>
         </div>
         <p>
-          OKF4net — LGPL-3.0-or-later. Published packages and the okf binary carry no third-party code; the two
+          OKF4net v{__OKF4NET_VERSION__} — LGPL-3.0-or-later. Published packages and the okf binary carry no third-party code; the two
           exceptions, a vendored copy of marked.js (MIT) and three font families (Inter, Inter Tight, Space Mono —
           SIL OFL 1.1), ship only in okf-render (see NOTICE). An independent implementation of Google LLC's Open
           Knowledge Format, not affiliated with or endorsed by Google.
