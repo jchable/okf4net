@@ -99,8 +99,13 @@ On main (worktree), synchronize **every user-visible version with the tag**:
   `okf --version` reads the assembly's stamped version, so there is no separate
   CLI constant to keep in sync any more (there was, and it drifted: the winget
   package for 0.2.0 shipped a binary printing `0.1.0-alpha.1`).
-2. Any user-facing version sample, currently
-  `web/src/pages/docs/Cli.tsx` (`versionHtml`), must show the same `X.Y.Z`.
+2. The website needs no manual edit for the version: `web/vite.config.ts`
+  reads `<Version>` from `Directory.Build.props` at build time and injects it
+  as `__OKF4NET_VERSION__`, shown in the home page hero, the footer and the
+  `okf --version` sample of `web/src/pages/docs/Cli.tsx`. `pages.yml` also
+  deploys when `Directory.Build.props` changes, so the release commit on `main`
+  redeploys the site even if it touches nothing under `web/`. Any other
+  user-facing version sample hard-coded elsewhere must show the same `X.Y.Z`.
   Search the tracked source tree for the previous version before committing
   to catch further copies: `git grep -n "<previous-version>" -- ':!bin' ':!obj'`.
 3. `CHANGELOG.md` (Keep a Changelog format):
