@@ -7,7 +7,8 @@ namespace OKF4net.Providers.S3.Internal;
 /// The closed table of spec §4.6, as (status, code) PAIRS: a code counts only with the status S3 sends it with.
 /// A pair the table does not list falls into its status range (429 Throttled, 5xx ServerError, 4xx ClientError); any
 /// other status (1xx, 2xx, a 3xx the SDK did not follow, ≥ 600) is InvalidResponse — the terminal rule. Anything not
-/// from the service is Transport, except the response-integrity failure gate G8 recorded. The S3 error code decides
+/// from the service is Transport, except the response-integrity failure gate G8 recorded (Integrity) and a
+/// FormatException the SDK raises reading a response (InvalidResponse, Annexe C5c). The S3 error code decides
 /// the row and never leaves this class: no message and no property carries it (it is server text).
 /// </summary>
 internal static class ErrorClassifier
@@ -48,6 +49,7 @@ internal static class ErrorClassifier
             {
                 GuardException g => new S3RequestException(operation, g.Kind, null, key, g),
                 _ when IsIntegrity(e, 0) => new S3RequestException(operation, S3FailureKind.Integrity, null, key, e),
+                _ when Carries<FormatException>(e, 0) => new S3RequestException(operation, S3FailureKind.InvalidResponse, null, key, e),
                 _ => new S3RequestException(operation, S3FailureKind.Transport, null, key, e),
             };
         }
@@ -98,5 +100,32 @@ internal static class ErrorClassifier
         return e is AggregateException aggregate
             ? aggregate.InnerExceptions.Any(inner => IsIntegrity(inner, depth + 1))
             : e.InnerException is { } next && IsIntegrity(next, depth + 1);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="e"/> is, or carries in its inner-exception chain (same walk and bound as
+    /// <see cref="IsIntegrity"/>), a <typeparamref name="T"/>. Used for <see cref="FormatException"/> (spec Annexe C5c,
+    /// maintainer's decision 2026-11-19): measured on AWSSDK.S3 4.1.0, a single-part ETag that is not an MD5 hex digest
+    /// makes the SDK's own MD5 check (AmazonS3ResponseHandler.ProcessResponseHandlers → AWSSDKUtils.HexStringToBytes →
+    /// Convert.FromHexString) throw a bare FormatException out of GetObjectAsync — the store's response is malformed, not
+    /// the transport: <see cref="S3FailureKind.InvalidResponse"/>. Nothing in the provider's own code throws one
+    /// (ListPageParser turns its own into a refusal), so any FormatException here comes from reading a response.
+    /// </summary>
+    private static bool Carries<T>(Exception e, int depth)
+        where T : Exception
+    {
+        if (depth > MaxChainDepth)
+        {
+            return false;
+        }
+
+        if (e is T)
+        {
+            return true;
+        }
+
+        return e is AggregateException aggregate
+            ? aggregate.InnerExceptions.Any(inner => Carries<T>(inner, depth + 1))
+            : e.InnerException is { } next && Carries<T>(next, depth + 1);
     }
 }

@@ -129,6 +129,41 @@ public class ErrorTests
         Assert.Equal(S3FailureKind.Transport, ((S3RequestException)OKF4net.Providers.S3.Internal.ErrorClassifier.Classify(S3Operation.Read, key, new IOException("x", other))).Kind);
     }
 
+    /// <summary>
+    /// Spec Annexe C5c: a FormatException (the SDK's MD5 check on a non-hex single-part ETag) is InvalidResponse wherever
+    /// it sits in the chain; a genuine transport failure stays Transport, and a hash mismatch stays Integrity.
+    /// </summary>
+    [Fact]
+    public void A_format_failure_is_InvalidResponse_wherever_it_sits_and_a_transport_failure_is_not()
+    {
+        var key = BundleKey.Parse("a.md");
+        var format = new FormatException("not hex");
+        Exception[] wrapped =
+        [
+            format,
+            new Amazon.Runtime.AmazonClientException("wrapped", format),
+            new IOException("read failed", format),
+            new AggregateException(new InvalidOperationException("first"), format),
+            new IOException("outer", new AggregateException(new IOException("inner", format))),
+        ];
+        foreach (var e in wrapped)
+        {
+            var classified = Assert.IsType<S3RequestException>(OKF4net.Providers.S3.Internal.ErrorClassifier.Classify(S3Operation.Read, key, e));
+            Assert.Equal(S3FailureKind.InvalidResponse, classified.Kind);
+            Assert.Equal("S3 read failed: InvalidResponse for 'a.md'", classified.Message);
+            Assert.Same(e, classified.InnerException);
+        }
+
+        Exception[] transport = [new IOException("reset"), new HttpRequestException("refused"), new IOException("x", new System.Net.Sockets.SocketException())];
+        foreach (var e in transport)
+        {
+            Assert.Equal(S3FailureKind.Transport, ((S3RequestException)OKF4net.Providers.S3.Internal.ErrorClassifier.Classify(S3Operation.Read, key, e)).Kind);
+        }
+
+        var mismatch = new Amazon.Runtime.AmazonClientException(OKF4net.Providers.S3.Internal.ErrorClassifier.HashMismatchMessage);
+        Assert.Equal(S3FailureKind.Integrity, ((S3RequestException)OKF4net.Providers.S3.Internal.ErrorClassifier.Classify(S3Operation.Read, key, new AggregateException(mismatch, format))).Kind);
+    }
+
     [Fact]
     public async Task A_transport_failure_after_the_headers_is_Transport()
     {

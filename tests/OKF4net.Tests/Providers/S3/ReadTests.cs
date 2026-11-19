@@ -37,8 +37,8 @@ public class ReadTests
     public async Task An_expected_version_is_checked_on_the_bytes_not_the_etag()
     {
         // The ETag the ORIGINAL object had, served over other bytes: a store whose ETag does not follow the content.
-        // A multipart-shaped ETag ("<hex>-<parts>"), which the SDK does not check against the body. (Measured: an ETag
-        // that is not hex, "\"same\"", fails inside the SDK's own response handling with FormatException — Transport;
+        // A multipart-shaped ETag ("<hex>-<parts>"), which the SDK does not check against the body. (An ETag that is not
+        // hex fails inside the SDK's own MD5 check: InvalidResponse, A_single_part_ETag_that_is_not_hex_is_InvalidResponse;
         // a plain MD5 ETag is checked by the SDK itself, next test.)
         var etag = "\"" + Convert.ToHexStringLower(MD5.HashData("original"u8)) + "-2\"";
         var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("other", null, "text/plain"), Headers = { ETag = new System.Net.Http.Headers.EntityTagHeaderValue(etag) } }) };
@@ -59,6 +59,39 @@ public class ReadTests
         using var p = S3Test.Provider(fake);
         var e = await Assert.ThrowsAsync<S3RequestException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
         Assert.Equal(S3FailureKind.Integrity, e.Kind);
+    }
+
+    [Theory]
+    [InlineData("\"same\"")]
+    [InlineData("\"zz0123456789abcdef0123456789abcd\"")] // MD5-length, not hex
+    public async Task A_single_part_ETag_that_is_not_hex_is_InvalidResponse(string etag)
+    {
+        // Spec Annexe C5c (maintainer's decision 2026-11-19). Measured on AWSSDK.S3 4.1.0: the SDK's own MD5 check reads a
+        // single-part ETag as hex and throws FormatException on one that is not. That is the store's response, not the
+        // transport: InvalidResponse, the closed message, the raw failure as the inner exception. (Not disabling the SDK's
+        // check: ticket #286.)
+        var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("other", null, "text/plain"), Headers = { ETag = new System.Net.Http.Headers.EntityTagHeaderValue(etag) } }) };
+        using var p = S3Test.Provider(fake);
+        var e = await Assert.ThrowsAsync<S3RequestException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
+        Assert.Equal(S3FailureKind.InvalidResponse, e.Kind);
+        Assert.Equal("S3 read failed: InvalidResponse for 'a.md'", e.Message);
+        Assert.Null(e.StatusCode);
+        Assert.True(ChainHas<FormatException>(e.InnerException), e.InnerException?.ToString());
+        Assert.Single(fake.Requests); // not retried
+    }
+
+    private static bool ChainHas<T>(Exception? e)
+        where T : Exception
+    {
+        for (var depth = 0; e is not null && depth < 16; depth++, e = e.InnerException)
+        {
+            if (e is T || (e is AggregateException a && a.InnerExceptions.Any(ChainHas<T>)))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     [Fact]
