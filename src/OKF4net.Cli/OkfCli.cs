@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Globalization;
-using System.Reflection;
 using System.Text;
 using OKF4net.Internal;
 
@@ -36,10 +35,10 @@ public static class OkfCli
     /// AOT-safe: this reads an attribute on a statically-known assembly, not a
     /// dynamically-discovered one, so nothing here is trimmed away — CI's Native
     /// AOT job runs the published binary's <c>--version</c> to keep that honest.
+    /// Read through <see cref="ProductVersion"/>, the one reader the library's
+    /// own §7 producer actor uses too.
     /// </summary>
-    private static readonly string CliVersion =
-        typeof(OkfCli).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
-        ?? "0.0.0-unknown";
+    private static readonly string CliVersion = ProductVersion.Of(typeof(OkfCli).Assembly);
 
     /// <summary>The <c>--help</c> / usage text.</summary>
     private const string Usage =
@@ -68,7 +67,7 @@ public static class OkfCli
         "        --by <actor>     Who is recording the review, for `verify` (required)\n" +
         "        --at <ts>        UTC timestamp yyyy-MM-ddTHH:mm:ssZ for `verify` (default: now)\n" +
         "        --dry-run        Show what `verify` would record, write nothing\n" +
-        "        --stale, --trust <tiers>, --status <s>, --type <t>\n" +
+        "        --stale, --trust <tiers>, --status <s>, --type <t>, --review-outdated\n" +
         "                         Filter `audit`'s worklist";
 
     /// <summary>
@@ -86,7 +85,7 @@ public static class OkfCli
     // `Verbs` capture a null array.
 
     /// <summary>The flags that make <c>audit</c> a filtered query rather than a report.</summary>
-    private static readonly string[] AuditFilterFlags = ["--stale", "--trust", "--status", "--type"];
+    private static readonly string[] AuditFilterFlags = ["--stale", "--trust", "--status", "--type", "--review-outdated"];
 
     /// <summary>The flag that pins "today", shared by <c>validate</c> and <c>audit</c>.</summary>
     private const string AsOfFlag = "--as-of";
@@ -146,11 +145,12 @@ public static class OkfCli
         ["audit"] = new(
             "okf audit <bundle> [filters] [--as-of <date>] [--json]",
             "Report trust, freshness and lifecycle across the bundle (§5.3–§5.5).",
-            AuditValuedFlags, ["--stale", "--json"],
+            AuditValuedFlags, ["--stale", "--review-outdated", "--json"],
             ["    --stale           Only concepts past their stale_after",
              "    --trust <tiers>   Filter by trust tier (comma-separated)",
              "    --status <s>      Filter by lifecycle status",
              "    --type <t>        Filter by concept type",
+             "    --review-outdated Only concepts changed (generated.at) after their latest review",
              "    --as-of <date>    Evaluate staleness as of YYYY-MM-DD, not today",
              "    --json            Machine-readable output"],
             CmdAudit),
@@ -568,7 +568,8 @@ public static class OkfCli
             args.Has("--stale"),
             tiers,
             status,
-            args.Value("--type"));
+            args.Value("--type"),
+            args.Has("--review-outdated"));
     }
 
     /// <summary>Renders the report form: summary counters over the whole bundle, then the worklist.</summary>
@@ -634,7 +635,7 @@ public static class OkfCli
         // spelling out its own character test.
         if (LineSafeText.ContainsControlCharacter(by))
         {
-            throw new CliOperationException("--by must not contain control characters");
+            throw new CliOperationException("--by must not contain control, bidirectional or invisible format characters");
         }
 
         if (!Actor.Parse(by).IsWellFormed)
@@ -648,7 +649,7 @@ public static class OkfCli
         // that wrote nothing. Refused before it is quoted.
         if (at is not null && LineSafeText.ContainsControlCharacter(at))
         {
-            throw new CliOperationException("--at must not contain control characters");
+            throw new CliOperationException("--at must not contain control, bidirectional or invisible format characters");
         }
 
         // The writer applies the same strict UTC rule; checking here too turns a

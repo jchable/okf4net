@@ -208,6 +208,27 @@ public class ConceptSearchTests
         Assert.DoesNotContain('\r', excerpt!);
     }
 
+    /// <summary>
+    /// #122, defect 1: the excerpt is split on LF only, so a lone CR, NEL, VT,
+    /// FF, U+2028 or U+2029 INSIDE a line, and a bidi control or ESC, used to
+    /// reach every consumer that prints it on a line of its own (okf_search,
+    /// the scoped context provider through OKF4net.Catalog). It is folded now.
+    /// Payload characters are numeric constants.
+    /// </summary>
+    [Fact]
+    public void Excerpt_returns_one_folded_line()
+    {
+        char[] interior = [(char)0x0D, (char)0x85, (char)0x0B, (char)0x0C, (char)0x2028, (char)0x2029];
+        foreach (var terminator in interior)
+        {
+            var body = "orders here" + terminator + "## FORGED" + terminator + "- FORGED" + (char)0x202E + (char)0x1B + "x\n";
+
+            var excerpt = ConceptSearch.Excerpt(body, "orders");
+
+            Assert.Equal("orders here ## FORGED - FORGED" + (char)0xFFFD + "x", excerpt);
+        }
+    }
+
     // ---- TopDiversified: scarce slots across top-level id families ---------
 
     /// <summary>
@@ -399,5 +420,73 @@ public class ConceptSearchTests
     {
         Assert.Throws<ArgumentNullException>(() => ConceptSearch.TopDiversifiedBy<string>(null!, FamilyOf, 1));
         Assert.Throws<ArgumentNullException>(() => ConceptSearch.TopDiversifiedBy(["code/a"], null!, 1));
+    }
+
+    private static List<(string Family, Queue<int> Queue)> Families(params int[] sizes)
+    {
+        var next = 0;
+        return [.. sizes.Select((size, i) => ($"f{i}", new Queue<int>(Enumerable.Range(next, size).Select(_ => next++))))];
+    }
+
+    /// <summary>The pre-#279 rotation, kept as the oracle for the observable order.</summary>
+    private static List<int> ReferenceRoundRobin(List<(string Family, Queue<int> Queue)> families, int count)
+    {
+        var picked = new List<int>();
+        var drained = false;
+        while (!drained && picked.Count < count)
+        {
+            drained = true;
+            foreach (var (_, queue) in families)
+            {
+                if (queue.Count == 0)
+                {
+                    continue;
+                }
+
+                drained = false;
+                picked.Add(queue.Dequeue());
+                if (picked.Count == count)
+                {
+                    break;
+                }
+            }
+        }
+
+        return picked;
+    }
+
+    [Fact]
+    public void RoundRobin_work_is_linear_in_items_on_skewed_families()
+    {
+        // 2000 singleton families, then one family holding 2000 more: the old
+        // loop made ~2000 rotations over ~2000 families (#279). Counted, not timed.
+        var sizes = Enumerable.Repeat(1, 2000).ToArray();
+        sizes[0] = 2001;
+        var families = Families(sizes);
+        var total = sizes.Sum();
+        var visits = 0L;
+
+        var picked = ConceptSearch.RoundRobin(families, total, total, ref visits);
+
+        Assert.Equal(total, picked.Count);
+        Assert.Equal(total, visits);
+    }
+
+    [Theory]
+    [InlineData(100, 1, 2, 3)]
+    [InlineData(100, 5, 0, 1, 7, 2)]
+    [InlineData(4, 3, 3, 3)]
+    [InlineData(1, 3, 3, 3)]
+    [InlineData(100, 1)]
+    [InlineData(100, 4, 1, 1, 1, 6)]
+    public void RoundRobin_keeps_the_pre_279_order(int count, params int[] sizes)
+    {
+        var nonEmpty = sizes.Where(s => s > 0).ToArray();
+        var expected = ReferenceRoundRobin(Families(nonEmpty), count);
+        var visits = 0L;
+
+        var actual = ConceptSearch.RoundRobin(Families(nonEmpty), count, nonEmpty.Sum(), ref visits);
+
+        Assert.Equal(expected, actual);
     }
 }

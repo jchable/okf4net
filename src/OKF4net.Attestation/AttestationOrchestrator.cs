@@ -25,6 +25,7 @@ public sealed class AttestationOrchestrator
     private readonly IAttestationRuntimeRegistry _runtimes;
     private readonly IOkfClock _clock;
     private readonly StalePolicy _defaultPolicy;
+    private readonly HashSet<string>? _allowedDigests;
 
     /// <summary>
     /// Creates an orchestrator over <paramref name="runtimes"/>.
@@ -33,10 +34,42 @@ public sealed class AttestationOrchestrator
     /// <param name="clock">Supplies the instant staleness gating is evaluated at. Defaults to <see cref="SystemClock"/>.</param>
     /// <param name="defaultPolicy">The gating policy used when <see cref="RunAsync"/> is not given one. Defaults to <see cref="StalePolicy.Use"/>.</param>
     public AttestationOrchestrator(IAttestationRuntimeRegistry runtimes, IOkfClock? clock = null, StalePolicy? defaultPolicy = null)
+        : this(runtimes, new AttestationOrchestratorOptions { Clock = clock, DefaultPolicy = defaultPolicy })
     {
+    }
+
+    /// <summary>Creates an orchestrator over <paramref name="runtimes"/> with <paramref name="options"/>, an allowlist of sanctioned code included (#154).</summary>
+    /// <param name="runtimes">Resolves an <see cref="IAttestationRuntime"/> by the concept's <c>runtime</c> field.</param>
+    /// <param name="options">The clock, the default policy and the allowlist.</param>
+    /// <returns>The configured orchestrator.</returns>
+    /// <exception cref="ArgumentException">An allowlist entry that is not a digest of the form <see cref="AttestationCodeDigest.Of"/> produces: a configuration mistake is refused at construction, never read as an entry that matches nothing.</exception>
+    /// <remarks>
+    /// A named factory, not a constructor overload: a public <c>(runtimes, options)</c> constructor would make
+    /// the long-standing <c>new AttestationOrchestrator(runtimes, null)</c> ambiguous.
+    /// </remarks>
+    public static AttestationOrchestrator Create(IAttestationRuntimeRegistry runtimes, AttestationOrchestratorOptions options) =>
+        new(runtimes, options);
+
+    private AttestationOrchestrator(IAttestationRuntimeRegistry runtimes, AttestationOrchestratorOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
         _runtimes = runtimes;
-        _clock = clock ?? new SystemClock();
-        _defaultPolicy = defaultPolicy ?? StalePolicy.Use;
+        _clock = options.Clock ?? new SystemClock();
+        _defaultPolicy = options.DefaultPolicy ?? StalePolicy.Use;
+        if (options.AllowedCodeDigests is { } allowed)
+        {
+            // Copied: a host mutating its set after construction does not change what this orchestrator allows.
+            _allowedDigests = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var digest in allowed)
+            {
+                if (!AttestationCodeDigest.IsWellFormed(digest))
+                {
+                    throw new ArgumentException("every allowed code digest must be 64 hexadecimal digits (SHA-256, AttestationCodeDigest.Of)", nameof(options));
+                }
+
+                _allowedDigests.Add(digest.ToLowerInvariant());
+            }
+        }
     }
 
     /// <summary>
@@ -76,10 +109,11 @@ public sealed class AttestationOrchestrator
     /// sees its computations refused until the bundle declares a file attester
     /// (docs/spec-conformance, S10.5-1).</para>
     /// <para>This method is not <c>async</c>: a <see langword="null"/> <paramref name="bundle"/>
-    /// (<see cref="ArgumentNullException"/>) and an unexpected exception from <see cref="Capture"/>
-    /// (anything other than the I/O and decoding failures it turns into a refusal) are thrown
-    /// synchronously instead of faulting the returned <see cref="ValueTask{TResult}"/>; a stage
-    /// failure after the capture is still an outcome (errors-as-data).</para>
+    /// (<see cref="ArgumentNullException"/>) is thrown synchronously, at the call. An unexpected
+    /// exception from the capture (anything other than the I/O and decoding failures it turns
+    /// into a refusal — a provider failure, <see cref="BundleLoadException"/>, among them, #247)
+    /// faults the returned <see cref="ValueTask{TResult}"/> instead of becoming an outcome; a
+    /// stage failure after the capture is still an outcome (errors-as-data).</para>
     /// </summary>
     /// <param name="bundle">The bundle to load the concept from.</param>
     /// <param name="conceptId">The attested-computation concept to run.</param>
@@ -138,7 +172,11 @@ public sealed class AttestationOrchestrator
     /// called with a <see langword="null"/> source. This narrows §10.5 for this implementation
     /// (docs/spec-conformance, S10.5-1).</para>
     /// <para>A refusal is an <see cref="AttestationOutcome"/>; only an unexpected exception
-    /// (not I/O, decoding or an object over the bound) escapes.
+    /// (not I/O, decoding or an object over the bound) escapes — and a failure of the provider
+    /// itself, a <see cref="BundleLoadException"/> from the read (#247: a network, a credential, a
+    /// timeout, a storage that is unreachable), which says nothing about the resource and
+    /// nothing a reload of the image would fix, so it is neither a refusal nor
+    /// <see cref="AttestationCaptureResult.ImageOutdated"/>.
     /// <see cref="AttestationCaptureResult.ImageOutdated"/> says whether the failure is one the
     /// image may be behind on — a resource missing, unreadable, refused, over the bound, or whose
     /// version changed — in which case a caller holding a <see cref="BundleHandle"/> invalidates
@@ -238,6 +276,8 @@ public sealed class AttestationOrchestrator
                 }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
                 {
+                    // The object's own failure only: a provider failure is a BundleLoadException,
+                    // which propagates (#247).
                     // The exception TYPE, as for the stage failures: this reason string is
                     // rendered into a model's context, and a raw I/O message can carry a host
                     // path. computation.Path is bundle-relative and safe to name.
@@ -345,6 +385,35 @@ public sealed class AttestationOrchestrator
         var contract = frontmatter.ComputationContract;
         var resolved = capture.Computation;
         var attesterSourceText = capture.AttesterSourceText;
+
+        // The host's allowlist of sanctioned code (#154), before any runtime stage: the digests are taken over
+        // the exact texts the stages would receive. The reasons a model may be shown name the roles only; the
+        // digests go to the host, on the outcome.
+        if (_allowedDigests is not null)
+        {
+            var unapproved = new List<UnapprovedCode>();
+            var computationDigest = AttestationCodeDigest.Of(resolved.InlineCode ?? string.Empty);
+            if (!_allowedDigests.Contains(computationDigest))
+            {
+                unapproved.Add(new UnapprovedCode(SanctionedCodeRole.Computation, computationDigest));
+            }
+
+            var attesterDigest = AttestationCodeDigest.Of(attesterSourceText);
+            if (!_allowedDigests.Contains(attesterDigest))
+            {
+                unapproved.Add(new UnapprovedCode(SanctionedCodeRole.Attester, attesterDigest));
+            }
+
+            if (unapproved.Count > 0)
+            {
+                return Fail(unapproved.Select(u => u.Role == SanctionedCodeRole.Computation
+                    ? "the computation is not approved by the host's allowlist of sanctioned code, and is not run"
+                    : "the attester is not approved by the host's allowlist of sanctioned code, and is not run").ToList()) with
+                {
+                    UnapprovedCode = unapproved,
+                };
+            }
+        }
 
         // Step 3: resolve the runtime.
         if (string.IsNullOrEmpty(contract.Runtime) || !_runtimes.TryGet(contract.Runtime, out var runtime) || runtime is null)

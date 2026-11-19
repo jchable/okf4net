@@ -234,6 +234,14 @@ export default function Agents() {
             <Link to="/docs/spec">spec mapping</Link> for the frontmatter contract.
           </p>
           <p>
+            An orchestrator runs whatever sanctioned code the bundle references. To pin <em>what</em> may run,
+            whoever can write to the bundle&rsquo;s source, give it{' '}
+            <code>AttestationOrchestratorOptions.AllowedCodeDigests</code>. That is an allowlist of SHA-256
+            digests of the exact computation and attester texts (<code>AttestationCodeDigest.Of</code>). Anything
+            else is refused before any runtime stage. The refused digests go to the host on{' '}
+            <code>outcome.UnapprovedCode</code>, never into the text the model reads.
+          </p>
+          <p>
             Binding, execution and attestation are <strong>host-plugged</strong>: the orchestrator resolves an{' '}
             <code>IParameterBinder</code>/<code>IComputationExecutor</code>/<code>IAttester</code> per the concept's{' '}
             <code>runtime</code> and supplies none of them itself. <code>OKF4net.Attestation.Containers</code>, in

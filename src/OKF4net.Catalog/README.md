@@ -261,7 +261,10 @@ through them: an unchanged source is loaded once across requests, and a
 change in its storage is seen at the next request under the default
 `OnAccess` policy (`KnowledgeCatalogOptions.RefreshPolicy`, overridable per
 source with `RefreshPolicyFor`; `LoadOptions` sets the bounds and key policy
-of every load). For a directory the version token is weak (names, lengths and
+of every load, and `MemoryCeilingFor` gives a source its own memory ceiling,
+`BundleLoadOptions.MemoryCeilingBytes`, set by the host and never read from
+`catalog.json`. A source refused for its ceiling is `SourceUnavailable` on a
+first load and `SourceStale` on a refresh, like any failed load). For a directory the version token is weak (names, lengths and
 modification times): two edits of the same size within one modification-time
 tick can be missed until the next change, and `Handle.Refresh()` or
 `Handle.Invalidate()` forces a re-read. A reload keeps a source's handle while
@@ -288,7 +291,7 @@ instance, is reported the same way, by type name).
 A source may name its storage:
 
 ```json
-{ "id": "remote", "provider": "s3", "settings": { "bucket": "docs", "prefix": "okf/" } }
+{ "id": "remote", "provider": "s3", "settings": { "bucket": "docs", "prefix": "okf/prod" } }
 ```
 
 `provider` defaults to `filesystem` (the only type shipped here, named by
@@ -303,6 +306,12 @@ enabled source (`UnknownProvider`), a `path` on a non-filesystem type
 exception type only). Credentials never travel through the manifest: the host
 gives them to the factory. A `role:"memory"` source must stay on the
 filesystem (`IllegalMemoryProvider`).
+
+A bundle embedded in an assembly
+([OKF4net.Providers.EmbeddedResources](https://www.nuget.org/packages/OKF4net.Providers.EmbeddedResources))
+has no built-in factory yet ([#236](https://github.com/jchable/okf4net/issues/236)):
+that package's README shows the few lines of one a host registers, the
+assembly passed by the host, never named by the manifest.
 
 ### Deleting a memory scope
 
@@ -350,8 +359,9 @@ under `memory-user/` and `memory-session/`. No other identifier changes.
 ## V1 limits
 
 - Bundles under the catalog root unless the host registers a provider
-  factory (see above); no provider but the filesystem ships with this
-  package, and memory sources are always on the filesystem.
+  factory (see above); no provider factory but the filesystem ships with
+  this package (an embedded-resource one is #236), and memory sources named
+  in `catalog.json` are always on the filesystem.
 - One shared catalog per `FileKnowledgeCatalog` instance.
 - No semantic/fuzzy deduplication — two concepts with similar content in
   genuinely different bundles are both returned. Only under the two merged

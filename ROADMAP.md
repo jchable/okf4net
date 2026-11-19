@@ -34,10 +34,42 @@ are the concrete entry points.
   Backed by the new `BundleConceptWriter.RecordVerifications` — the single
   governed writer of `verified` — and exposed to agents as `okf_verify`. See
   [its design spec](docs/superpowers/specs/2026-08-28-okf-verify-design.md).
+- **End-to-end tutorials shipped** (on `dev`,
+  [#174](https://github.com/jchable/okf4net/issues/174), formerly the "Now" item
+  "tutorials for both audiences"): [library users](docs/tutorials/library-users.md)
+  write, index, load and validate a bundle through the asynchronous provider
+  API and check it with `okf`; [agent builders](docs/tutorials/agent-builders.md)
+  expose a bundle through `OKF4net.Agents` (a shared `BundleHandle`,
+  `OkfToolMode`, `OkfContextProvider`, an approved write) and through
+  `okf-mcp`. Every snippet and command was run to produce the outputs they
+  show; the agent steps use a scripted `IChatClient`, and the two steps that
+  need a model (a real `IChatClient`, an MCP client configuration) say so.
+  They link to `samples/` rather than duplicate them.
+- More `OKF4net.Agents` samples ([#159](https://github.com/jchable/okf4net/issues/159),
+  open: further agent patterns are welcome). Shipped so far:
+  [`samples/acme-retail-agent`](samples/acme-retail-agent/README.md) (0.4.0),
+  [`samples/agents-quickstart`](samples/agents-quickstart/README.md) and
+  **[`samples/agents-handoff`](samples/agents-handoff/README.md)** (on `dev`) —
+  a curator agent (`OkfToolMode.ReadWrite`) writes a note that a reader agent
+  (`OkfToolMode.ReadOnly` plus `OkfContextProvider`) finds in its injected
+  context, because both tool sets share one `BundleHandle` (§5.2); it also
+  shows `okf_write_concept`'s read-before-write gate (§5.4) and how a consumer
+  with its own `Manual` or `OnAccess` handle sees the change. The last two need
+  no model or API key.
 - Performance baselines for large bundle loads: **a `Bundle.Load` baseline
   exists** (`BundleLoadPerformanceTests`, a 2,001-concept synthetic bundle,
   [#6](https://github.com/jchable/okf4net/issues/6)) — it prints its timings
   and gates only on a pathology ceiling, not on a target.
+- **Read-write MCP sample shipped** ([#160](https://github.com/jchable/okf4net/issues/160)):
+  [`samples/second-brain/`](samples/second-brain/README.md) is a starter
+  personal-notes bundle served writable by `okf-mcp` in Claude Desktop. It
+  includes the Desktop configuration for Windows and macOS, example prompts,
+  and `smoke.cs`, which drives `okf-mcp` over stdio on a copy of the bundle
+  and checks the disk. The sample states plainly what the MCP write path does
+  not do. `okf_write_concept` changes the concept file only, so the §8
+  indexes and the §9 log are updated only when the model calls
+  `okf_regenerate_indexes` and `okf_append_log`. Nothing makes those calls
+  automatically, and the bundle's own guide note asks the model to make them.
 - Bundle viewer: **interactive viewer shipped** (on `dev`, in the next
   `okf-render` release) as the standalone `okf-render` binary
   (`OKF4net.Render`, over `OKF4net.Viewer`) — split out of `okf` itself so
@@ -67,6 +99,48 @@ are the concrete entry points.
     marked) is the actual guard, and CI runs it as the `viewer sanitizer (JS)`
     job. Re-vendoring `marked.min.js` is the change most likely to regress the
     defense, and that job is what catches it.
+- **S3 bundle provider shipped** — `OKF4net.Providers.S3`
+  ([#142](https://github.com/jchable/okf4net/issues/142), see its
+  [design spec](docs/superpowers/specs/2026-11-16-s3-bundle-provider-design.md)):
+  a bundle in Amazon S3 or an S3-compatible store, read-only and truly
+  asynchronous, in its own package. It is the one backend with a third-party
+  dependency (`AWSSDK.S3`, declared as a minimum, `>= 4.1.0`); the core and the
+  other providers stay zero-dependency. Three decisions worth knowing: the
+  provider builds **its own client and pins every request** (one authority, one
+  path prefix, `GET` only), because a 307 between two S3 hostnames would
+  otherwise silently change the bucket, and no ambient AWS setting is allowed to
+  change what it sends; **credentials are the host's** (the provider never reads
+  the environment or a config file, and resolves them once per operation, in
+  isolation); and **objects are versioned by the SHA-256 of their bytes**, so
+  sanctioned code (§5.1, §5.4) can only run at the version the load surveyed.
+  Two core changes ride with it, for every provider: the load reads the bundle
+  token *before* listing, and `ResolveResourceKeyAsync` throws instead of
+  reporting `Unsafe` for a provider failure other than a refusal (the same
+  confusion while validation reads `index.md`/`log.md` is
+  [#247](https://github.com/jchable/okf4net/issues/247)).
+  - **The guarantee against a real store is local, not CI — decided, not
+    pending.** The `Category=S3Integration` tests start RustFS 1.0.3 themselves
+    (Podman or Docker) and are excluded from CI like `ContainerIntegration`: run
+    `dotnet test tests/OKF4net.Tests --filter Category=S3Integration` and check
+    the run reports **0 skipped**, after any change to the package or any bump
+    of `AWSSDK.S3`/`AWSSDK.Core`. CI's own guard is the `S3 provider AOT smoke
+    test` job (the real packages, Native AOT, at the minimum and the latest SDK).
+  - **What was and was not measured.** Tested against RustFS 1.0.3 only (Podman,
+    Docker, Docker in WSL) and, for Native AOT, on Windows. MinIO, real AWS S3
+    and the Linux/macOS legs of the CI job had not run when this shipped
+    ([#292](https://github.com/jchable/okf4net/issues/292),
+    [#293](https://github.com/jchable/okf4net/issues/293)). The limits the final
+    review found are tickets; the maintainer's decisions of 2026-11-19 are
+    implemented and recorded in the spec's Annexe C (an empty truncated listing
+    page is followed within a page budget, the guard drops the ambient headers
+    and rebuilds the User-Agent from numbers and closed sets, a non-hex
+    single-part ETag is an `InvalidResponse`), with residuals in
+    [#283](https://github.com/jchable/okf4net/issues/283),
+    [#285](https://github.com/jchable/okf4net/issues/285) and
+    [#286](https://github.com/jchable/okf4net/issues/286). Still open: a
+    `ServiceUrl` source always signs for `us-east-1`
+    ([#284](https://github.com/jchable/okf4net/issues/284)), anonymous access is
+    unsupported ([#291](https://github.com/jchable/okf4net/issues/291)).
 
 ## Later
 
@@ -76,12 +150,19 @@ are the concrete entry points.
   [#139](https://github.com/jchable/okf4net/issues/139)), its asynchronous contract
   ([#152](https://github.com/jchable/okf4net/issues/152)) and the filesystem
   reference implementation ([#140](https://github.com/jchable/okf4net/issues/140))
-  are on `dev`; what follows is tracked as issues: an embedded-resource provider
-  ([#141](https://github.com/jchable/okf4net/issues/141)), an S3 provider in its
-  own project, read-only first ([#142](https://github.com/jchable/okf4net/issues/142)),
-  and a per-user OS lock closing the cross-process window of the filesystem
-  provider's conditional writes, deferred
-  ([#178](https://github.com/jchable/okf4net/issues/178)).
+  are on `dev`, and so are the embedded-resource provider
+  (`OKF4net.Providers.EmbeddedResources`,
+  [#141](https://github.com/jchable/okf4net/issues/141)) and the S3 provider
+  ([#142](https://github.com/jchable/okf4net/issues/142), described above); what
+  follows is tracked as issues: a built-in catalog factory for the embedded one
+  (`"provider": "embedded"` in `catalog.json`,
+  [#236](https://github.com/jchable/okf4net/issues/236)) and for the S3 one
+  ([#239](https://github.com/jchable/okf4net/issues/239)), `okf-mcp` over S3
+  ([#238](https://github.com/jchable/okf4net/issues/238)), the S3 follow-ups
+  [#283](https://github.com/jchable/okf4net/issues/283) to
+  [#293](https://github.com/jchable/okf4net/issues/293), and a per-user OS lock
+  closing the cross-process window of the filesystem provider's conditional
+  writes, deferred ([#178](https://github.com/jchable/okf4net/issues/178)).
 
 ## `producers/OkfProducer`
 

@@ -410,7 +410,9 @@ public class OkfWriteToolsTests
         var doc = OkfDocument.Parse(File.ReadAllText(Path.Combine(tmp.Path, "metrics", "dau.md")));
         var gen = doc.Frontmatter.Generated;
         Assert.NotNull(gen);
-        Assert.Equal("okf4net/0.2", gen!.Value.By!.Value.Raw);
+        Assert.Equal(BundleConceptWriter.DefaultProducerActor, gen!.Value.By!.Value.Raw);
+        Assert.StartsWith("okf4net/", gen.Value.By.Value.Raw, StringComparison.Ordinal);
+        Assert.NotEqual("okf4net/" + OkfSpec.Version, gen.Value.By.Value.Raw);
         Assert.Equal("2026-07-27T10:00:00Z", gen.Value.At);
     }
 

@@ -47,4 +47,35 @@ version (`Bundle.ReadResourceText(BundleKey, expected, out version)`), so a file
 replaced after the load is refused rather than run. This holds for any provider,
 including one whose `Location` is not a path.
 
+## Allowing only approved code (#154)
+
+Wiring an orchestrator trusts whatever sanctioned code the bundle references,
+so in effect everyone who can write to the bundle's source. A host can pin
+*what* may run instead, with an allowlist of digests:
+
+```csharp
+var orchestrator = AttestationOrchestrator.Create(runtimes, new AttestationOrchestratorOptions
+{
+    AllowedCodeDigests = new HashSet<string> { approvedComputationDigest, approvedAttesterDigest },
+});
+```
+
+A digest is `AttestationCodeDigest.Of(text)`: SHA-256 of the UTF-8 encoding of
+the exact text the runtime receives, as 64 lowercase hex digits (case is
+ignored on input), with no normalisation. A change of line endings is a
+different digest. That text is what `AttestationOrchestrator.Capture` holds:
+`Capture.Computation.InlineCode`, which is the fence's content (without its
+final line break) or the computation file's text, and `Capture.AttesterSourceText`.
+One set covers both roles and every provider: a digest approves a content
+wherever a bundle references it.
+
+When set, a run whose computation or attester is not in the set is refused
+before any runtime stage. The outcome's `Reasons` name the refused roles, never
+their digests, because a tool may show them to a model. `UnapprovedCode` gives
+the host each refused role with its digest, so an operator can approve it
+deliberately. A malformed entry is refused when the orchestrator is built.
+Without an allowlist (`null`, the default) nothing changes. The allowlist and
+the pinning are complementary: the pinning decides *which* bytes are read, the
+allowlist whether they may run.
+
 Licensed LGPL-3.0-or-later.

@@ -238,14 +238,19 @@ public sealed class BundleConceptWriter
 
     /// <summary>
     /// The §7 actor spelling this library uses when it stamps
-    /// <c>generated.by</c> itself: <c>"okf4net/" + OkfSpec.Version</c>. The
-    /// single source of that spelling — <see cref="ProducerActor"/> defaults
-    /// to it, and <c>OKF4net.Agents</c>' <c>OkfContextProvider.MemoryFrontmatter</c>
-    /// reads it directly rather than re-spelling <c>"okf4net/" + OkfSpec.Version</c>
-    /// a second time on a path that never goes through <see cref="ProducerActor"/>
-    /// itself (see that method's remarks).
+    /// <c>generated.by</c> itself: <c>okf4net/&lt;library version&gt;</c>, e.g.
+    /// <c>okf4net/0.8.0</c>. §7 spells a tool's actor
+    /// <c>&lt;producer&gt;/&lt;version&gt;</c> — the producer's own version, which
+    /// tells a reader which build wrote the content — so it is this assembly's
+    /// version (<see cref="ProductVersion.Library"/>, build metadata dropped),
+    /// not <see cref="OkfSpec.Version"/>, which it was until #257
+    /// (<c>okf4net/0.2</c>). The single source of that spelling —
+    /// <see cref="ProducerActor"/> defaults to it, and <c>OKF4net.Agents</c>'
+    /// <c>OkfContextProvider.MemoryFrontmatter</c> reads it directly rather than
+    /// re-spelling it a second time on a path that never goes through
+    /// <see cref="ProducerActor"/> itself (see that method's remarks).
     /// </summary>
-    internal static string DefaultProducerActor => "okf4net/" + OkfSpec.Version;
+    internal static string DefaultProducerActor { get; } = "okf4net/" + ProductVersion.Library;
 
     /// <summary>The §7 actor recorded as <c>generated.by</c> when auto-stamping.</summary>
     internal string ProducerActor { get; set; } = DefaultProducerActor;
@@ -531,7 +536,7 @@ public sealed class BundleConceptWriter
     /// validation) — those are reported as a plain-text message instead.
     /// </summary>
     /// <param name="conceptId">The concept id (path without <c>.md</c>), e.g. <c>tables/refunds</c>.</param>
-    /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines (the same YAML subset used inside a document's frontmatter block, without the <c>---</c> delimiters).</param>
+    /// <param name="frontmatterYaml">Frontmatter as YAML (the same subset used inside a document's frontmatter block, without the <c>---</c> delimiters; nested maps and lists keep their structure).</param>
     /// <param name="body">The markdown body.</param>
     /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
     public string WriteConcept(string conceptId, string frontmatterYaml, string body) =>
@@ -547,7 +552,7 @@ public sealed class BundleConceptWriter
     /// to read the concept (again). Never retried: a retry would overwrite what the caller has not seen.
     /// </summary>
     /// <param name="conceptId">The concept id (path without <c>.md</c>), e.g. <c>tables/refunds</c>.</param>
-    /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines (the same YAML subset used inside a document's frontmatter block, without the <c>---</c> delimiters).</param>
+    /// <param name="frontmatterYaml">Frontmatter as YAML (the same subset used inside a document's frontmatter block, without the <c>---</c> delimiters; nested maps and lists keep their structure).</param>
     /// <param name="body">The markdown body.</param>
     /// <param name="condition">The condition on the concept's current version.</param>
     /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
@@ -556,7 +561,7 @@ public sealed class BundleConceptWriter
 
     /// <summary>The asynchronous <see cref="WriteConcept(string, string, string)"/> (#152): the same writing, the provider asked asynchronously; cancellable until the provider commits.</summary>
     /// <param name="conceptId">The concept id (path without <c>.md</c>).</param>
-    /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines.</param>
+    /// <param name="frontmatterYaml">Frontmatter as YAML (subset), without the <c>---</c> delimiters.</param>
     /// <param name="body">The markdown body.</param>
     /// <param name="ct">Cancels the write before its commit: nothing is written, and the call ends with an <see cref="OperationCanceledException"/>. After the commit the result is returned and the write notification runs.</param>
     /// <exception cref="BundleReadOnlyException">The provider cannot write; nothing was attempted.</exception>
@@ -565,7 +570,7 @@ public sealed class BundleConceptWriter
 
     /// <summary>The asynchronous <see cref="WriteConcept(string, string, string, BundleWriteCondition)"/> (#152).</summary>
     /// <param name="conceptId">The concept id (path without <c>.md</c>).</param>
-    /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines.</param>
+    /// <param name="frontmatterYaml">Frontmatter as YAML (subset), without the <c>---</c> delimiters.</param>
     /// <param name="body">The markdown body.</param>
     /// <param name="condition">The condition on the concept's current version.</param>
     /// <param name="ct">Cancels the write before its commit.</param>
@@ -1065,7 +1070,7 @@ public sealed class BundleConceptWriter
         // caller's error output — the very thing being closed here.
         if (by is not null && LineSafeText.ContainsControlCharacter(by))
         {
-            return Failed("Error: a §7 actor must not contain control characters.");
+            return Failed("Error: a §7 actor must not contain control, bidirectional or invisible format characters.");
         }
 
         // Strict on input, permissive on read: `human:` with no id promotes the
@@ -1092,7 +1097,7 @@ public sealed class BundleConceptWriter
         // on a run that wrote nothing. Refused before it is quoted.
         if (LineSafeText.ContainsControlCharacter(stampedAt))
         {
-            return Failed("Error: a timestamp must not contain control characters.");
+            return Failed("Error: a timestamp must not contain control, bidirectional or invisible format characters.");
         }
 
         if (!OkfTimestamp.IsEmittedUtcForm(stampedAt))
@@ -1480,7 +1485,16 @@ public sealed class BundleConceptWriter
     /// existing file, if any, is read as strict UTF-8, then re-rendered through
     /// <see cref="ChangeLog.ToMarkdown"/> — the strict §9 model — so any
     /// non-conforming prose or comments in a hand-authored <c>log.md</c> are not
-    /// preserved. Never throws for expected errors (a <paramref name="kind"/> or
+    /// preserved. A frontmatter block the file opens with is the exception (#258):
+    /// a <c>---</c> fence at column 0 on the first line, closed by the next one,
+    /// around what <see cref="OkfDocument.Parse"/> reads as a non-empty YAML
+    /// mapping. It is not part of the §9 log, is parsed only to recognise it, and
+    /// is written back byte for byte, its fences and line ends included, followed
+    /// by a blank line in its closing fence's line end and the re-rendered log, in
+    /// LF (so a CRLF block is followed by LF lines). A <c>---</c> thematic break
+    /// around anything else — invalid YAML, comments only, nothing — is no block:
+    /// what it holds is read and rewritten as the log, as before. A log without a
+    /// block, or created by this call, is written with none. Never throws for expected errors (a <paramref name="kind"/> or
     /// <paramref name="text"/> that <see cref="GuardLogField"/> refuses — empty,
     /// or carrying a line break, a control character or a bidirectional control
     /// character — a <c>log.md</c> that fails strict UTF-8 decoding, a path the
@@ -1550,7 +1564,12 @@ public sealed class BundleConceptWriter
 
                     // ChangeLog.Parse is permissive (never throws); used here
                     // only to locate the day (if any) among the existing entries.
-                    var changeLog = ChangeLog.Parse(current?.Text ?? string.Empty);
+                    // It skips a leading frontmatter block, which is carried
+                    // over below as the bytes it was (#258).
+                    var currentText = current?.Text ?? string.Empty;
+                    var blockLength = ChangeLog.FrontmatterBlockLength(currentText, out var blockLineEnd);
+                    var frontmatter = currentText[..blockLength];
+                    var changeLog = ChangeLog.ParseFrom(currentText, blockLength);
                     var days = changeLog.Days.ToList();
                     var dayIndex = days.FindIndex(d => string.Equals(d.Date, day, StringComparison.Ordinal));
                     if (dayIndex >= 0)
@@ -1574,7 +1593,16 @@ public sealed class BundleConceptWriter
                     // conditioned Write of its own. Its commit is reported to
                     // WriteThenNotify, as AppendToConceptAtomic's is, so the
                     // notification runs once, after the retries (decision B48).
-                    await _provider.WriteAsync(key, OkfEncodings.NoBom.GetBytes(new ChangeLog(changeLog.Title, days).ToMarkdown()), ConditionFor(current), run.Ct).ConfigureAwait(false);
+                    var rendered = new ChangeLog(changeLog.Title, days).ToMarkdown();
+                    if (frontmatter.Length > 0)
+                    {
+                        // The block verbatim, then one blank line before the log, in
+                        // the closing fence's line end (a fence that ended the file
+                        // gets its line end first, the opening fence's).
+                        rendered = frontmatter + (frontmatter.EndsWith('\n') ? blockLineEnd : blockLineEnd + blockLineEnd) + rendered;
+                    }
+
+                    await _provider.WriteAsync(key, OkfEncodings.NoBom.GetBytes(rendered), ConditionFor(current), run.Ct).ConfigureAwait(false);
                     committed();
 
                     // The FOLDED kind, not the raw argument: this message is
@@ -1638,15 +1666,15 @@ public sealed class BundleConceptWriter
     /// is written (and echoed) as <c>Update</c>, not <c>&lt;TAB&gt;Update&lt;TAB&gt;</c>.</item>
     /// </list>
     ///
-    /// <para>The control-character half reuses
-    /// <see cref="LineSafeText.ContainsControlCharacter"/> — the repo's shared
-    /// predicate, already used at <c>okf_verify</c>'s <c>by</c> — rather than a
-    /// second character list here, which is exactly the drift that predicate's
-    /// own doc comment exists to prevent. Two adjustments are made to the value
-    /// it sees, not to the predicate: it runs over the FOLDED text (by then the
-    /// four soft separators are spaces, and the predicate would otherwise
-    /// refuse U+2028/U+2029 and undo the fold), and over a probe in which tabs
-    /// are spaces (the exemption above). The value WRITTEN keeps its tabs.</para>
+    /// <para>The control-character half reads <see cref="ModelText.Classify"/>
+    /// — the repository's one classification, shared with
+    /// <see cref="LineSafeText.ContainsControlCharacter"/> and the model-facing
+    /// fold — rather than a second character list here. It runs over the FOLDED
+    /// text (by then the four soft separators are spaces, and a terminator
+    /// check would otherwise refuse U+2028/U+2029 and undo the fold), counts a
+    /// remaining terminator or a control (TAB is ordinary there: the exemption
+    /// above), and leaves the bidi class to the check after it, which has its
+    /// own message. The value WRITTEN keeps its tabs.</para>
     /// </summary>
     /// <param name="value">The argument's value.</param>
     /// <param name="fieldName">The argument's name, as it appears in the message.</param>
@@ -1669,9 +1697,11 @@ public sealed class BundleConceptWriter
         }
 
         var folded = FoldLogField(value);
-        var probe = folded.Replace('\t', ' ');
 
-        if (LineSafeText.ContainsControlCharacter(probe))
+        // ModelText's classes, the bidi ones left to the check below so that a
+        // bidi control keeps its own message: a terminator the fold left (VT)
+        // or a control other than TAB, which ModelText counts as ordinary.
+        if (folded.Any(c => ModelText.Classify(c) is ModelTextCharClass.LineTerminator or ModelTextCharClass.Control))
         {
             return $"Error: invalid {fieldName} — it must not contain a control character other than a "
                 + "tab (ESC, backspace and BEL forge what a human reading log.md sees).";
@@ -1691,13 +1721,8 @@ public sealed class BundleConceptWriter
     /// True when the value carries any Unicode bidirectional CONTROL
     /// character — see <see cref="IsBidiControl"/> for the list and for why
     /// the whole class is refused rather than the two overrides alone.
-    ///
-    /// Local to the log.md write path rather than added to
-    /// <see cref="LineSafeText.ContainsControlCharacter"/>: none of these code
-    /// points is a <see cref="char.IsControl(char)"/> character, so putting
-    /// them there would widen the shared cross-assembly predicate that also
-    /// gates §7 actors and <c>at</c> timestamps — a decision for those call
-    /// sites, not one this write path may take on their behalf.
+    /// Checked apart from the control characters so that the refusal names
+    /// the class it found.
     /// </summary>
     /// <param name="value">The guarded argument's value.</param>
     private static bool ContainsBidiControl(string value)
@@ -1727,20 +1752,13 @@ public sealed class BundleConceptWriter
     /// <c>RLO</c> and pass <c>RLE</c>, which is not a distinction any reader
     /// of a rendered <c>log.md</c> can see.</para>
     ///
-    /// <para><b>One list, two call sites</b> — <see cref="ContainsBidiControl"/>
-    /// (the write guard) and <c>OkfBundleTools.NeedsVisibleEscape</c> (the read
-    /// rendering). They must agree: a character the write refuses is exactly a
-    /// character the read has to make visible when an older build, another
-    /// producer or a human already put it in the file.</para>
+    /// <para><b>One list</b>, <see cref="ModelText.IsBidiControl"/>'s: the write
+    /// guard (<see cref="ContainsBidiControl"/>) and the model-facing fold
+    /// (<see cref="ModelText.Fold"/>, which removes what an older build, another
+    /// producer or a human already put in the file) read the same twelve.</para>
     /// </summary>
     /// <param name="c">The character to classify.</param>
-    internal static bool IsBidiControl(char c) =>
-        // Numeric constants on purpose: every one of these is invisible in
-        // source, in a diff and in a review (the convention
-        // Internal/LineSafeText.cs sets).
-        c is (char)0x061C or (char)0x200E or (char)0x200F
-            or (char)0x202A or (char)0x202B or (char)0x202C or (char)0x202D or (char)0x202E
-            or (char)0x2066 or (char)0x2067 or (char)0x2068 or (char)0x2069;
+    internal static bool IsBidiControl(char c) => ModelText.IsBidiControl(c);
 
     /// <summary>
     /// The four separators <see cref="GuardLogField"/> deliberately does NOT
@@ -1762,7 +1780,7 @@ public sealed class BundleConceptWriter
     /// persisted verbatim into the user's repository, where every other
     /// consumer inherits them. Refusing them too would fail a call over a
     /// character most callers cannot see, so they are folded and the call
-    /// succeeds. Same rule as the read side (<c>OkfBundleTools.OneLine</c>): nothing
+    /// succeeds. Same rule as the read side (<c>ModelText.Fold</c>): nothing
     /// downstream can start a new line.</para>
     ///
     /// <para><see cref="string.ReplaceLineEndings(string)"/> rather than a
@@ -2250,7 +2268,7 @@ public sealed class BundleConceptWriter
 
         if (fm is null)
         {
-            return (null, "Error: frontmatter must be a YAML mapping of 'key: value' lines, not a list or scalar.");
+            return (null, "Error: frontmatter must be a YAML mapping (top-level 'key: value' entries; nested maps and lists allowed), not a list or scalar.");
         }
 
         var doc = new OkfDocument(fm, body);

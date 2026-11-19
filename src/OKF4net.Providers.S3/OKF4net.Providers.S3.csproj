@@ -1,0 +1,49 @@
+<!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Packaging">
+    <PackageId>OKF4net.Providers.S3</PackageId>
+    <Authors>Julien CHABLE</Authors>
+    <Description>Serve an OKF knowledge bundle from Amazon S3 or an S3-compatible store: a read-only, asynchronous IBundleProvider over a bucket and prefix, with a mandatory request guard, host-owned credentials and content-hash versions.</Description>
+    <Copyright>Copyright 2026 Julien CHABLE</Copyright>
+    <PackageLicenseExpression>LGPL-3.0-or-later</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/jchable/okf4net</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/jchable/okf4net</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>okf;knowledge;s3;aws;object-storage;knowledge-base</PackageTags>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\NOTICE" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The one dependency-policy exception of this project (CLAUDE.md, spec D1): a MINIMUM
+         version. Every bump of AWSSDK.S3 or AWSSDK.Core needs the local S3Integration run at
+         0 skipped and the s3-aot CI job green. -->
+    <PackageReference Include="AWSSDK.S3" Version="4.1.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OKF4net\OKF4net.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="OKF4net.Tests" />
+  </ItemGroup>
+
+</Project>

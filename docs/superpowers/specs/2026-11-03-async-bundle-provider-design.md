@@ -514,7 +514,10 @@ est une décision de version (Q2).
   goldens ne se régénèrent jamais pour ça : c'est une régression côté C#.
 - **R6. Changement cassant pour 0.7.0.** Les outils `string` publics, et
   `Validate` si on supprimait la version sync : Q3, Q4.
-- **R7. Taille AOT de `okf`.** Elle est inconnue avant l'étape 2.
+- **R7. Taille AOT de `okf`.** Elle est inconnue avant l'étape 2. Mesurée le
+  2026-11-16 sur linux-x64 (SDK 10.0.404, conteneur `dotnet/sdk:10.0`) :
+  4 842 784 octets avant #152 (3216bbe), 5 234 736 après (3a83070), soit
+  +391 952 octets (+8,1 %).
 
 ### 3.11 Les tests qui le prouvent (aucune borne d'horloge)
 

@@ -258,8 +258,9 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
     /// The effective configuration a source's handle was built for (spec §9): a handle is
     /// reused across reloads only when every point is equal, so a changed <c>path</c> (its
     /// resolved directory), setting, policy or option rebuilds it. Every handle is built with
-    /// the catalog's one <see cref="KnowledgeCatalogOptions.LoadOptions"/> instance, which is
-    /// why comparing the record is stable from one reload to the next.
+    /// the catalog's one <see cref="KnowledgeCatalogOptions.LoadOptions"/> instance, or a record
+    /// copy of it carrying the source's memory ceiling, which is why comparing the record is
+    /// stable from one reload to the next.
     /// </summary>
     private sealed record HandleConfiguration(string ProviderType, string? ResolvedDirectory, ProviderSettings Settings, BundleRefreshPolicy RefreshPolicy, BundleLoadOptions LoadOptions);
 
@@ -302,9 +303,16 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
             }
 
             BundleRefreshPolicy policy;
+            BundleLoadOptions loadOptions;
             try
             {
                 policy = _options.RefreshPolicyFor?.Invoke(source) ?? _options.RefreshPolicy;
+
+                // The per-source ceiling (#151) on top of the catalog's options; a record copy, so equal
+                // answers give equal configurations and a reload keeps the handle.
+                loadOptions = _options.MemoryCeilingFor?.Invoke(source) is { } ceiling
+                    ? _options.LoadOptions with { MemoryCeilingBytes = ceiling }
+                    : _options.LoadOptions;
             }
             catch (Exception e) when (e is not OutOfMemoryException)
             {
@@ -321,7 +329,7 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
                 source.IsFileSystem ? resolvedDirectories[source.Id] : null,
                 source.Settings,
                 policy,
-                _options.LoadOptions);
+                loadOptions);
 
             if (previous is not null
                 && previous.Handles.TryGetValue(source.Id, out var existing)
@@ -350,7 +358,7 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
                     continue;
                 }
 
-                var handle = new BundleHandle(provider, _options.LoadOptions, policy);
+                var handle = new BundleHandle(provider, loadOptions, policy);
                 created.Add(handle);
                 built[source.Id] = handle;
                 keys[source.Id] = configuration;

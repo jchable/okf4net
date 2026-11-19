@@ -43,7 +43,7 @@ internal sealed record InfoJsonResult(
     IReadOnlyList<ParseErrorJson> ParseErrors);
 
 /// <summary>The query <c>okf audit</c> applied, replayed for <c>--json</c> consumers.</summary>
-internal sealed record AuditQueryJson(bool Stale, IReadOnlyList<string>? Trust, string? Status, string? Type);
+internal sealed record AuditQueryJson(bool Stale, IReadOnlyList<string>? Trust, string? Status, string? Type, bool ReviewOutdated);
 
 /// <summary>
 /// Concept counts per trust tier (§5.3), over the whole bundle. The property
@@ -64,7 +64,11 @@ internal sealed record TrustCountsJson(
 /// </summary>
 internal sealed record StatusCountsJson(int Draft, int Stable, int Deprecated);
 
-/// <summary>One selected concept, projected for <c>--json</c> output.</summary>
+/// <summary>
+/// One selected concept, projected for <c>--json</c> output. <c>lastVerifiedAt</c> and
+/// <c>lastChangedAt</c> are the instants the audit compared (#156), in the emitted UTC form, or
+/// null when unknown; <c>reviewOutdated</c> is their comparison.
+/// </summary>
 internal sealed record AuditFindingJson(
     string ConceptId,
     string Path,
@@ -73,7 +77,10 @@ internal sealed record AuditFindingJson(
     string Trust,
     string Status,
     string? StaleAfter,
-    bool Stale);
+    bool Stale,
+    string? LastVerifiedAt,
+    string? LastChangedAt,
+    bool ReviewOutdated);
 
 /// <summary>The full result of <c>okf audit --json</c>.</summary>
 internal sealed record AuditJsonResult(
@@ -206,7 +213,10 @@ internal static class JsonOutput
                 AuditVocabulary.Name(f.Trust),
                 AuditVocabulary.Name(f.Lifecycle.Status),
                 f.Lifecycle.StaleAfterRaw,
-                f.IsStale))
+                f.IsStale,
+                f.LastVerifiedAt is { } verified ? OkfTimestamp.FormatInstantUtc(verified) : null,
+                f.LastChangedAt is { } changed ? OkfTimestamp.FormatInstantUtc(changed) : null,
+                f.IsReviewOutdated))
             .ToList();
 
         var result = new AuditJsonResult(
@@ -218,7 +228,8 @@ internal static class JsonOutput
                 query.StaleOnly,
                 trustQuery,
                 query.Status is { } status ? AuditVocabulary.Name(status) : null,
-                query.Type),
+                query.Type,
+                query.ReviewOutdatedOnly),
             new TrustCountsJson(
                 report.TrustCounts[TrustTier.Unverified],
                 report.TrustCounts[TrustTier.MachineConfirmed],
