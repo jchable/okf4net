@@ -12,6 +12,15 @@
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
     <IsPackable>false</IsPackable>
+    <!--
+      Directory.Build.props turns warnings into errors, and the SDK's NuGetAudit (on, mode "all": transitive packages too,
+      level "low") reports a known advisory as warning NU1901-NU1904. This probe deliberately restores the OLDEST
+      supported AWSSDK.S3/AWSSDK.Core and the newest published ones: an advisory published tomorrow against either would
+      turn a leg of s3-aot red for a reason that has nothing to do with what the probe checks (the provider consumed as a
+      package, under Native AOT). The audit is not lost: the solution's own restore (src/OKF4net.Providers.S3, which
+      pins the minimum) still runs it. Scoped to this probe, which is outside OKF4net.sln and ships nowhere.
+    -->
+    <NuGetAudit>false</NuGetAudit>
   </PropertyGroup>
 
   <ItemGroup>

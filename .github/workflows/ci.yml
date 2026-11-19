@@ -545,9 +545,13 @@ jobs:
           $minimum = (Select-String -Path src/OKF4net.Providers.S3/OKF4net.Providers.S3.csproj -Pattern 'Include="AWSSDK.S3" Version="([^"]*)"').Matches[0].Groups[1].Value
           if (-not $minimum) { throw "no AWSSDK.S3 version found in the provider's csproj" }
           function Latest($id) { (Invoke-RestMethod "https://api.nuget.org/v3-flatcontainer/$id/index.json").versions | Where-Object { $_ -notmatch '-' } | Select-Object -Last 1 }
+          # The minimum leg pins AWSSDK.Core to the same number as AWSSDK.S3: that holds only while the two minimums
+          # coincide (4.1.0 and 4.1.0 today). If AWSSDK.S3's own dependency floor on Core ever moves apart from its
+          # version, derive Core's minimum from the AWSSDK.S3 package's nuspec instead of reusing this number.
           if ('${{ matrix.sdk }}' -eq 'minimum') { $sdk = $minimum; $core = $minimum } else { $sdk = Latest 'awssdk.s3'; $core = Latest 'awssdk.core' }
           if (-not $sdk -or -not $core) { throw "could not determine the AWSSDK versions (S3 '$sdk', Core '$core')" }
           Write-Host "AWSSDK.S3 $sdk, AWSSDK.Core $core ($('${{ matrix.sdk }}'))"
+          echo "AWS_MIN_VERSION=$minimum" >> $env:GITHUB_ENV
           echo "AWS_SDK_VERSION=$sdk" >> $env:GITHUB_ENV
           echo "AWS_CORE_VERSION=$core" >> $env:GITHUB_ENV
 
@@ -568,7 +572,8 @@ jobs:
           $zip = [IO.Compression.ZipFile]::OpenRead((Get-ChildItem $env:PROBE_FEED -Filter "OKF4net.Providers.S3.$env:PROBE_VERSION.nupkg").FullName)
           $nuspec = [IO.StreamReader]::new(($zip.Entries | Where-Object Name -like '*.nuspec').Open()).ReadToEnd()
           $zip.Dispose()
-          if ($nuspec -notmatch 'id="AWSSDK.S3" version="4\.1\.0"') { throw "AWSSDK.S3 is not declared as the minimum 4.1.0: $nuspec" }
+          $declared = 'id="' + [regex]::Escape('AWSSDK.S3') + '" version="' + [regex]::Escape($env:AWS_MIN_VERSION) + '"'
+          if ($nuspec -notmatch $declared) { throw "AWSSDK.S3 is not declared as the minimum $env:AWS_MIN_VERSION: $nuspec" }
 
       # `dotnet publish` restores for itself (see embedded-aot): no separate restore.
       - name: Publish the probe Native AOT, then check the resolved versions
@@ -602,5 +607,8 @@ jobs:
         shell: pwsh
         run: |
           $exe = Join-Path (Resolve-Path probe-out) ('S3ProviderAotProbe' + $(if ('${{ matrix.rid }}'.StartsWith('win-')) { '.exe' } else { '' }))
-          & $exe (Resolve-Path bundles/acme_retail).Path
+          $lines = @(& $exe (Resolve-Path bundles/acme_retail).Path)
           if ($LASTEXITCODE -ne 0) { throw "probe exited $LASTEXITCODE" }
+          $lines | ForEach-Object { Write-Host $_ }
+          # A probe that loaded nothing would compare two empty summaries as equal: its first line is the S3 load's count.
+          if (-not ($lines[0] -match '^concepts=[1-9]')) { throw "no concept loaded through S3: $($lines[0])" }

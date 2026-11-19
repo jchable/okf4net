@@ -27,7 +27,14 @@ using (var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) })
 {
     var gets = Enumerable.Range(0, 8).Select(_ => http.GetAsync($"http://127.0.0.1:{main.Port}/okf/kb/{files.Keys.First()["kb/".Length..]}"));
     var answered = await Task.WhenAll(gets).WaitAsync(TimeSpan.FromSeconds(10));
-    if (answered.Any(r => r.StatusCode != HttpStatusCode.OK)) return 4;
+    try
+    {
+        if (answered.Any(r => r.StatusCode != HttpStatusCode.OK)) return 4;
+    }
+    finally
+    {
+        foreach (var r in answered) r.Dispose();
+    }
 }
 
 // 1. Summaries: S3 provider (public API) vs filesystem.
@@ -52,6 +59,9 @@ if (!a.SequenceEqual(b)) { Console.Error.WriteLine("S3 and filesystem summaries 
 //    Case A: another bucket's host. Case B: the other authority of the SAME bucket (virtual-hosted form of a
 //    path-style source). The SDK refuses to follow a Location whose host is no S3 endpoint (ArgumentException, gate G4:
 //    okf.127.0.0.1 measured so on 4.1.0), so case B names the buckets virtual-hosted AWS authority, which it follows.
+//    No name is resolved for it: the witness client below connects through ConnectCallback, which picks the loopback
+//    port from the requested host NAME and never asks a resolver, so the real-looking amazonaws.com names (the only shape
+//    the SDK follows; a *.invalid name would be refused by it and the counter-proof could not run) cause no DNS lookup.
 var cases = new[]
 {
     (Name: "other-host", Location: $"http://evil.s3.eu-west-1.amazonaws.com:{other.Port}/kb/a.md", Host: "evil.s3.eu-west-1.amazonaws.com"),

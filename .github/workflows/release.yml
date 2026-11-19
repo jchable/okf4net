@@ -105,6 +105,15 @@ jobs:
           -p:Version=$VERSION
           -p:ContinuousIntegrationBuild=true
 
+      # `dotnet nuget push "artifacts/*.nupkg"` pushes whatever is there: a pack step dropped or failing quietly
+      # would publish a release without that package. Every package this job packs must be in artifacts/ at VERSION.
+      - name: Every packed package is in artifacts/
+        run: |
+          for id in OKF4net OKF4net.Agents OKF4net.Catalog OKF4net.Providers.EmbeddedResources OKF4net.Providers.S3 \
+                    OKF4net.Attestation OKF4net.Catalog.Hosting OKF4net.Mcp OKF4net.Cli; do
+            test -f "artifacts/$id.$VERSION.nupkg" || { echo "::error::artifacts/ holds no $id.$VERSION.nupkg"; exit 1; }
+          done
+
       # Trusted Publishing: exchanges this job's OIDC token for a short-lived
       # (1 h, single-use) API key — no long-lived secret stored. Requires a
       # trusted publishing policy on nuget.org pointing at this repository and
