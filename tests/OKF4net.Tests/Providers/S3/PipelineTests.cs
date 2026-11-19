@@ -28,15 +28,11 @@ public class PipelineTests
         }
     }
 
-    /// <summary>
-    /// The S3 retry policies, one per retry mode. Measured on AWSSDK.S3 4.1.0 (IL call inventory, 2026-11-18): the
-    /// RetryForException[Async|Sync] of all three call AmazonS3RetryPolicy.SharedRetryForException[Async|Sync], whose
-    /// async form calls BucketRegionDetector.DetectMismatchWithHeadBucketFallbackAsync — the out-of-band HEAD of G1.
-    /// AmazonS3StandardRetryPolicy DERIVES from StandardRetryPolicy, hence the exact type comparisons below.
-    /// (RequestRetryMode has no Legacy member in AWSSDK.Core 4.x; AmazonS3RetryPolicy stays listed as the family's root.)
-    /// </summary>
-    private static readonly Type[] S3Policies = [typeof(AmazonS3RetryPolicy), typeof(AmazonS3StandardRetryPolicy), typeof(AmazonS3AdaptiveRetryPolicy)];
-
+    // The S3 retry policies, one per retry mode (AmazonS3RetryPolicy is the family's root; RequestRetryMode has no Legacy
+    // member in AWSSDK.Core 4.x). Measured on AWSSDK.S3 4.1.0 (IL call inventory, 2026-11-18): the
+    // RetryForException[Async|Sync] of all three call AmazonS3RetryPolicy.SharedRetryForException[Async|Sync], whose
+    // async form calls BucketRegionDetector.DetectMismatchWithHeadBucketFallbackAsync — the out-of-band HEAD of G1.
+    // AmazonS3StandardRetryPolicy DERIVES from StandardRetryPolicy, hence the exact type comparisons below.
     [Theory]
     [InlineData(RequestRetryMode.Standard, typeof(AmazonS3StandardRetryPolicy))] // the default mode (no RetryMode set: measured the same)
     [InlineData(RequestRetryMode.Adaptive, typeof(AmazonS3AdaptiveRetryPolicy))]
@@ -62,7 +58,6 @@ public class PipelineTests
         {
             // Read from the pipeline's own RetryHandler after customization, not from what the client meant to install.
             Assert.Equal([typeof(StandardRetryPolicy)], client.RetryPolicyTypes);
-            Assert.DoesNotContain(client.RetryPolicyTypes, S3Policies.Contains);
             Assert.Single(client.HandlerTypes, t => t == typeof(RetryHandler));
         }
     }

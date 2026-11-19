@@ -79,10 +79,11 @@ public class ConsumersTests
         var end = await observed.FirstEnded.Task.WaitAsync(TimeSpan.FromSeconds(60));
         Assert.IsAssignableFrom<OperationCanceledException>(end);
         Assert.Equal(1, observed.Started);
-        if (fake.Requests.Count > 0)
-        {
-            Assert.True(cancelled.Task.IsCompleted);
-        }
+        // Deterministic once the operation has ended, not a conditional that could skip its check: FakeS3Handler records a
+        // request and enters Respond in one synchronous step, and the operation awaits that very call, so it cannot have
+        // ended between the two. The fake never answers: it was entered if and only if it saw the cancellation. (The race
+        // above decides which of the two worlds a run is in, and both satisfy this equality.)
+        Assert.Equal(fake.Requests.Count > 0, cancelled.Task.IsCompleted);
     }
 
     /// <summary>Forwards to a provider and records how its first operation ended (with <see langword="null"/> for a success).</summary>
@@ -229,6 +230,9 @@ public class ConsumersTests
         Assert.All(bundle.Concepts, c => Assert.StartsWith("s3:", c.Path, StringComparison.Ordinal));
         var text = await new OkfBundleTools(handle).ValidateBundleAsync();
         Assert.DoesNotContain("127.0.0.1", text, StringComparison.Ordinal);
+        // Case-sensitive on purpose (measured: an ignore-case check fails on the tool's own "conformant with OKF v0.2"):
+        // the bucket is "okf", and an S3 bucket name is lowercase by rule, so a leak of it would be lowercase too, while
+        // the uppercase product name is legitimate output.
         Assert.DoesNotContain("okf", text, StringComparison.Ordinal);
 
         // Not vacuous: the notes draw warnings, each displayed under the provider's Location.
@@ -277,6 +281,12 @@ public class ConsumersTests
             Assert.DoesNotContain("127.0.0.1", d.Message, StringComparison.Ordinal);
             Assert.DoesNotContain("SlowDown", d.Message, StringComparison.Ordinal);
         });
+
+        // POSITIVE CONTROL of the "SlowDown" assertion above: the sentinel really reaches the exception the provider
+        // raises (as the server's error code on the SDK exception it keeps for the host's log), so its absence from the
+        // diagnostics is the catalog's doing, not a sentinel that never arrived.
+        var raised = await Assert.ThrowsAsync<S3RequestException>(async () => await p.GetVersionAsync(BundleLimits.Default, default));
+        Assert.Equal("SlowDown", Assert.IsAssignableFrom<Amazon.Runtime.AmazonServiceException>(raised.InnerException).ErrorCode);
     }
 }
 #pragma warning restore CS0618
