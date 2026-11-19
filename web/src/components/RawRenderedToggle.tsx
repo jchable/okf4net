@@ -62,7 +62,7 @@ export default function RawRenderedToggle() {
           <a className="btn primary" href="https://www.nuget.org/packages/OKF4net">dotnet add package OKF4net</a>
           <Link className="btn" to="/library">Read library.md</Link>
         </div>
-        <div className="conform">conformant with OKF v0.2 · <b>839/839</b> tests</div>
+        <div className="conform">conformant with OKF v0.2 · OKF4net <b>v{__OKF4NET_VERSION__}</b></div>
       </div>
     </div>
   )
