@@ -747,3 +747,111 @@ dans le plan ; aucune ne contredit une décision D1–D16) :
 6. **Test de 307 sur la même autorité** (G4) : il se fait sur une source
    `Region` ; sur un `ServiceUrl` IP, le SDK refuse la redirection par
    `ArgumentException`.
+
+## Annexe C — Écarts constatés à l'exécution (2026-11-18)
+
+Ajoutée à la fin de l'exécution (tâches 1 à 12), **sans réécrire le corps** : la
+révision 4 et l'annexe B restent le texte d'origine. Chaque entrée dit ce que le
+texte énonçait, ce qui a été mesuré ou décidé, le commit qui le porte et son
+statut. « Tranché par le contrôleur — à arbitrer par le mainteneur » désigne une
+décision prise pendant l'exécution, faute de pouvoir interroger le mainteneur ; elle
+reste à confirmer ou à renverser, et son coût est dit. Les mesures portent sur
+`AWSSDK.S3` 4.1.0 avec `AWSSDK.Core` 4.1.0 (et 4.1.0.1 pour la porte), RustFS 1.0.3,
+Windows 11.
+
+**C1 — §4.3, décodage d'une clé listée.**
+*Le texte* : chaque `%XX` devient un octet, « tout autre caractère ses octets UTF-8 » (un `+` brut reste `+`).
+*Constaté et décidé* : `S3KeyCodec.TryDecodeListed`, pour les seules valeurs **listées** : un `+` brut
+devient une espace (0x20), `%2B` un `+`, le reste est décodé strictement comme avant. Le décodage strict
+(`TryDecode`) des chemins et des requêtes du garde est inchangé, et le **garde refuse en plus un `+` brut**
+dans toute valeur de requête admise (un store le lit comme une espace, le garde comme un `+`). RustFS ne peut pas
+trancher (G12) : il rend l'espace en `%20` et le `+` en `%2B`, jamais un `+` brut. Amazon S3 et MinIO rendent
+l'espace en `+` et le `+` littéral en `%2B` (relecteur sûr à 80–85 %, non mesuré ici). Échec **fermé** dans
+les deux lectures possibles (ordre D9, ou 404 à la lecture) ; le coût d'une erreur est un nom avec espace ou
+`+` mal nommé sur un store qui rendrait un `+` brut pour un `+`. Gardé par les tests unitaires seuls
+(`CodecTests`, `ListPageParserTests`, `ListingWalkerTests`), pas par la passe RustFS.
+*Commit* : `dff3de21`. *Statut* : tranché par le contrôleur — à arbitrer par le mainteneur.
+
+**C2 — §4.4 et §5, redirection 307 entre les deux autorités d'un même bucket.**
+*Le texte* : « le chemin inchangé désigne un autre bucket », dans les deux sens.
+*Constaté* : vrai **dans le sens *virtual-hosted* → régional** seulement. Pour *path-style* → *virtual-hosted*,
+le SDK **retire le segment du bucket** et garde le chemin de la clé (`/kb/x`) ; il ignore le chemin du
+`Location`. La contre-épreuve de ce sens a été corrigée en conséquence ; le garde ferme les deux sens sans
+changement (il compare l'autorité et le chemin brut). La phrase de §4.4 se lit donc « dans le sens
+*virtual-hosted* → régional ».
+*Commits* : `68fac0b1` (mesure et contre-épreuve), `cac080e6` (garde durci). *Statut* : constat mesuré ;
+formulation du corps à corriger à la prochaine révision.
+
+**C3 — Annexe B, conséquence 4 : au plus 3 envois par appel du SDK.**
+*Le texte* : rien (constat hors des douze points de §9).
+*Constaté et décidé* : une 307 répondue indéfiniment vers une URL que le garde admet faisait boucler le SDK
+sans borne (3,6 Go en quelques minutes). `PinningHandler.MaxSendsPerOperation = 3` : au-delà,
+`InvalidResponse`. C'est une **addition explicite à la spec, pas encore reconnue par le mainteneur** ; coût
+d'une erreur : un cas de refus de plus (aucun chemin légitime n'a besoin de plus de 3 envois, `MaxErrorRetry = 2`).
+*Commits* : `9a595986` (annexe B), `68fac0b1` (garde). *Statut* : tranché par le contrôleur — à arbitrer par le mainteneur.
+
+**C4 — D15 (b), §4.7 : effet du changement sur tous les providers.**
+*Le texte* : `ResolveResourceKeyAsync` ne rend `Unsafe` que sur un refus ; toute autre défaillance remonte
+traduite par le cœur en `BundleLoadException`.
+*Constaté* : implémenté tel quel, avec deux conséquences à connaître. (1) Le relevé des ressources
+exécutables (`Bundle.SurveyResourceAsync`, qui passe par `ResolveResourceKeyAsync`) fait désormais **échouer le
+chargement** (image précédente conservée, périmée) là où il consignait l'état `Unsafe`, pour toute défaillance du
+provider autre qu'un refus, y compris une `IOException` ou une `UnauthorizedAccessException` brutes. (2) Le message est
+`provider failure resolving '<clé>' (<Type>)` : la clé et le **type** de l'exception, jamais son texte, l'original
+en cause. La lecture d'`index.md`/`log.md` par la validation reste `UnparseableIndex`/`UnparseableLog` (#247).
+Aucun golden n'a bougé.
+*Commit* : `42a83936`. *Statut* : D15 arbitrée le 2026-11-16 ; son extension au relevé et au filesystem est à confirmer.
+
+**C5 — §4.6, mesures de l'exécution** (toutes sur `AWSSDK.S3` 4.1.0).
+- a. Un ETag simple (MD5 hexadécimal) qui ne correspond pas aux octets est refusé par le SDK lui-même :
+  `Integrity` (ligne ajoutée au corps de §4.6).
+- b. Un 301 sans corps : le SDK nomme l'erreur `MovedPermanently` (jamais vide) : `BucketUnavailable` (corps de
+  §4.6 corrigé).
+- c. Un ETag simple **non hexadécimal** (`"same"`) fait lever `FormatException` au contrôle MD5 du SDK, rendue
+  `Transport` : un store compatible aux ETags simples opaques **échouerait sur toute lecture**. Non corrigé
+  (piste : `FormatException` → `InvalidResponse`), documenté au README. *Statut* : limite assumée par le
+  contrôleur — à arbitrer par le mainteneur.
+- d. Un corps plus court que son `Content-Length` n'est **pas** détecté par le SDK : le provider le refuse
+  lui-même (`Transport`).
+- e. Les identifiants sont résolus **avant** que l'`OperationContext` soit posé : `Task.Run` fait suivre le
+  `ExecutionContext`, et un contexte posé d'abord atteindrait le code de l'hôte.
+- f. Un provider libéré en cours d'opération échoue en `Disposed`, par un jeton de libération lié à chaque
+  opération (§4.2 ne le disait que des appels suivants).
+- g. Une annulation de l'appelant porte **son propre jeton** à toutes les sorties (`e.CancellationToken == ct`).
+- h. `Integrity` repose sur le **texte** du message du SDK : `AWSSDK.Core` 4.1.0 n'a pas d'exception typée
+  (§9 point 8 demandait « par quelle exception »). Le texte est cherché le long de la chaîne d'`InnerException`
+  (`AggregateException` comprise, profondeur 16). Un SDK plus récent peut donner `Transport` ; échec fermé, gardé
+  par deux tests sur le vrai pipeline.
+
+*Commits* : `47e781ca`, `54df499a`. *Statut* : mesures ; c et h assumées comme limites documentées.
+
+**C6 — §6, tableaux de tests.**
+- **T2 « Fraîcheur »** : le cas à triplet (nom, ETag, taille) constant y est dit « servi par un double scripté au-dessus
+  de RustFS ». C'est un test **T1** (faux S3 : `ReadTests.A_persistent_change_with_a_constant_triplet_is_not_reloaded_but_pinned_code_is_refused`),
+  que RustFS ne peut pas produire.
+- **T1 « D7 de #141 »** : `c:x.md` ne peut **jamais être un concept** (`:` interdit, spec OKF §2) ; le test
+  asserte la **clé exacte** sur le problème d'analyse et sur le problème de portabilité.
+- **T1 « Pont synchrone »** : une écriture synchrone rend `BundleReadOnlyException` (le contrôle `CanWrite`
+  précède `RequireSynchronousProvider`), non l'`InvalidOperationException` du pont ; la lecture synchrone
+  lève bien celle-ci, mesurée par une surcharge interne du cœur.
+- **T2 « Noms acceptés »** : le SDK **ne peut pas** `PUT` une clé à `/` initial vers RustFS (403) ; la fixture signe
+  elle-même cette requête (SigV4, `UNSIGNED-PAYLOAD`, horloge de l'hôte à moins de 15 minutes de celle du
+  moteur) ; RustFS la range sous la clé normalisée (M4).
+
+*Commits* : `079f1ca0`, `cef5d51d`. *Statut* : constats ; les lignes du corps n'ont pas été réécrites.
+
+**C7 — §4.3, D9 : espace de noms du XML de listing.**
+*Le texte* : non précisé.
+*Constaté* : l'analyseur de page n'accepte que l'espace de noms racine de S3
+(`http://s3.amazonaws.com/doc/2006-03-01/`) **ou aucun** ; un champ (`Contents`, `Key`, `ETag`, `Size`…) dans un
+autre espace de noms est refusé (`InvalidResponse`) plutôt que lu ou ignoré. Un store qui en emploie un autre est
+donc refusé, par exemple l'interopérabilité S3 de Google Cloud Storage (`http://doc.s3.amazonaws.com/2006-03-01`).
+Limite consignée au README.
+*Commit* : `f170fda3`. *Statut* : limite assumée, à rouvrir sur la demande d'un store réel.
+
+**C8 — D6, §4.4 : partitions hors `aws`.**
+*Le texte* : « les hôtes exacts pour chaque région (dont les partitions hors `aws`) sont relevés par la porte ».
+*Constaté* : une `Region` hors de la partition DNS `amazonaws.com` (Chine, `amazonaws.com.cn`) est **refusée à la
+construction** (`ArgumentException`) ; ce cas passe par un `ServiceUrl`. Les autorités des régions `amazonaws.com`
+sont celles de la table de §4.4.
+*Commit* : `e27a5db9`. *Statut* : décision d'implémentation, à confirmer par le mainteneur.

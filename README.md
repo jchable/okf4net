@@ -82,6 +82,7 @@ other project layers a specific integration on top and points back to it.
 | `OKF4net.Catalog`        | `OKF4net.Catalog`         | Catalog of OKF bundles (local or any provider): `catalog.json` + resolver. | [Local catalog](#local-catalog-okf4netcatalog) · [README](src/OKF4net.Catalog/README.md) |
 | `OKF4net.Catalog.Hosting`| `OKF4net.Catalog.Hosting` | `IServiceCollection` integration (`AddKnowledge`) for the catalog.         | [README](src/OKF4net.Catalog.Hosting/README.md)              |
 | `OKF4net.Providers.EmbeddedResources` | `OKF4net.Providers.EmbeddedResources` | A bundle shipped inside your assembly: the `OkfBundle` MSBuild item and a read-only provider; BCL only. | [README](src/OKF4net.Providers.EmbeddedResources/README.md) |
+| `OKF4net.Providers.S3` | `OKF4net.Providers.S3` | A bundle in Amazon S3 or an S3-compatible store (read-only, async; depends on `AWSSDK.S3`). | [README](src/OKF4net.Providers.S3/README.md) |
 | `OKF4net.Mcp`            | `OKF4net.Mcp`             | Local MCP server exposing an OKF bundle to Claude Desktop / Claude Code.    | [Use OKF in Claude (MCP)](#use-okf-in-claude-mcp) · [README](src/OKF4net.Mcp/README.md) |
 | `OKF4net.Attestation`    | `OKF4net.Attestation`    | Host-plugged §10 attested-computation orchestration (bind → execute → attest). | [Attested computation](#attested-computation-okf4netattestation) · [README](src/OKF4net.Attestation/README.md) |
 | `OKF4net.Attestation.Containers` | — (not packed by `release.yml`; needs a container engine on `PATH`) | Runs a bundle's sanctioned script/SQL and its attester in real containers (Docker/Podman/nerdctl), never reimplemented in C#. | [README](src/OKF4net.Attestation.Containers/README.md) |
@@ -282,10 +283,10 @@ on a thread of 512 KB or less should lower `MaxDepth`.
 Every rejected `.md` name is a `Bundle.ParseProblems` entry
 (`bundle.DisplayPath(problem)` gives the path to print; the obsolete
 `ParseErrors` projects the same list); other rejected names are skipped silently. The
-filesystem provider is writable (see "Writing through a provider" below).
-Beyond it, `OKF4net.Providers.EmbeddedResources` serves, read-only, a bundle
-embedded in an assembly at build time (see "A bundle inside your assembly"
-below, #141); an S3 provider is tracked in #142.
+filesystem provider is writable (see "Writing through a provider" below); no
+other provider is writable: `OKF4net.Providers.EmbeddedResources` (see "A bundle
+inside your assembly" below, #141) and `OKF4net.Providers.S3` (see "A bundle in
+S3" below, #142) serve a bundle read-only.
 
 The historical members `Bundle.TryResolveResource` and
 `Bundle.ReadResourceText(string)` still resolve through the OS filesystem, so
@@ -429,6 +430,17 @@ var bundle = await Bundle.LoadAsync(new EmbeddedResourceBundleProvider(typeof(Ap
 ```
 
 The bundle is read-only, one manifest resource per file (`okf:kb/<path>`); links under the directory, and names an assembly cannot hold, fail the build with a named `OKFEMB00x` error. See the [package README](src/OKF4net.Providers.EmbeddedResources/README.md).
+
+### A bundle in S3
+
+`OKF4net.Providers.S3` serves a bundle from Amazon S3 or an S3-compatible store, through a read-only, truly asynchronous `IBundleProvider` (synchronous entry points refuse it or never wait on it):
+
+```csharp
+using var provider = new S3BundleProvider(credentials, new S3BundleSource { Bucket = "my-knowledge", Prefix = "okf/prod", Region = RegionEndpoint.EUWest3 });
+var bundle = await Bundle.LoadAsync(provider);
+```
+
+It builds its own client behind a request guard (one authority, one path prefix), takes your credentials as any `AWSCredentials`, and versions objects by the SHA-256 of their bytes. Like `OKF4net.Agents`, `OKF4net.Catalog.Hosting` and `OKF4net.Mcp`, it carries a third-party dependency (`AWSSDK.S3`); the core and the other providers do not. Its tests against a real store are excluded from CI and run locally (`dotnet test tests/OKF4net.Tests --filter Category=S3Integration`). See the [package README](src/OKF4net.Providers.S3/README.md).
 
 ### One image per source: `BundleHandle`
 
@@ -827,8 +839,8 @@ host's own filtering either. The parameterless `GetTools()` keeps its
 historical ungated meaning so existing hosts are not changed under them.
 
 The core `OKF4net` library stays dependency-free (BCL only); only
-`OKF4net.Agents` references `Microsoft.Agents.AI` (see
-[Hard rules](CLAUDE.md) for the per-project dependency policy).
+`OKF4net.Agents` references `Microsoft.Agents.AI`, and `OKF4net.Providers.S3` references
+`AWSSDK.S3` (see [Hard rules](CLAUDE.md) for the per-project dependency policy).
 
 #### Automatic context & memory (OkfContextProvider)
 

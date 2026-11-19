@@ -323,6 +323,22 @@ and this project adheres to
   `EmbeddedResourceBundleProvider` serves it back read-only, synchronously,
   versioned by the assembly's MVID — Native AOT and single-file included.
 
+- **S3 bundle provider (#142).** New package `OKF4net.Providers.S3`:
+  `S3BundleProvider`, `S3BundleSource`, `S3RequestException` (`S3Operation`,
+  `S3FailureKind`) and `S3ChecksumMode`. Read-only and truly asynchronous
+  (`CompletesSynchronously` is `false`); the provider builds its own client
+  from host credentials (any `AWSCredentials`, never read from the
+  environment), guards every request (one authority, one path prefix, at most
+  three sends per operation) and versions objects by the SHA-256 of their bytes.
+  The bucket never reaches a model: `Location` is `s3:<DisplayName or 8
+  hex>/<prefix>` and every message is a closed vocabulary. It depends on
+  `AWSSDK.S3` ≥ 4.1.0 (a minimum), the one explicit dependency exception
+  besides `OKF4net.Catalog.Hosting`'s. The tests against a real store
+  (`Category=S3Integration`, RustFS 1.0.3 in Podman or Docker) are excluded from
+  CI by decision, like `Category=ContainerIntegration`, and run locally with 0
+  skipped; ci.yml's `S3 provider AOT smoke test` covers the minimum and the
+  latest `AWSSDK.S3`/`AWSSDK.Core`.
+
 ### Changed (breaking)
 
 - **The provider contract is asynchronous, before its first publication** (#152). The
@@ -435,6 +451,24 @@ and this project adheres to
   message now reads `must not contain control, bidirectional or invisible format
   characters`.
 - **One fold rule for every value an agent tool or the context provider prints** (#122). Every value `OkfBundleTools` interpolates into a line of a tool result, and every value `OkfContextProvider` injects, now goes through one rule: a line terminator (CR, LF, CRLF, NEL, VT, FF, U+2028, U+2029) becomes a space, any other C0/C1 control becomes U+FFFD, a bidirectional control (U+061C, U+200E, U+200F, U+202A–U+202E, U+2066–U+2069) is removed, and everything else, TAB included, prints unchanged. Observable only for a value carrying one of those characters: titles, frontmatter values, link targets, paths, receipt fields, verdict details and exception texts that only folded line breaks before now also lose bidi controls and show U+FFFD for ESC and the like; `okf_changes_since` removes a bidi control and shows U+FFFD for a control where it used to write `<U+XXXX>`. Values that were not folded at all are now: the `okf_search` excerpt (and `ConceptSearch.Excerpt`, so `OKF4net.Catalog`'s passages too: it split on LF only), the scoped context provider's passage title and excerpt, the error text `okf_write_concept` returns, and `okf_verify`'s detail for a target that could not be read or parsed. Exception texts still name host paths (#211). A value that BEGINS a Markdown block (first on its line, or right after a bullet, an ordered-list marker or a `>`) can no longer start block syntax of its own: its leading spaces and tabs are dropped and a leading `#` (heading), `-`/`+`/`*` (list item or thematic break), `_` (thematic break), a run of `=` or of `-` of any length (setext underline), `>`, three backticks or tildes (fence), `<` (HTML block), `[` (link reference definition), `|`, or the `.`/`)` of a leading `1.`-style marker, gets a backslash, which CommonMark renders as the plain character; a value that starts with a letter, a digit or a path prints unchanged. Every `|` a value brings, wherever it stands in the line, is escaped as well (`\|`, a backslash run before it doubled plus one), so no two lines can form a GFM table: a value containing a pipe now reads `a \| b`. So a frontmatter key `"## Backlinks"` reads `\## Backlinks: …` in `okf_read_concept`, and an excerpt that is a body heading reads `\## …`. Structural changes: `okf_read_concept` fences the concept body (info string `markdown`); every fence (`okf_read_concept`, `okf_get_computation`, `okf_browse`, the injected context) is a backtick run longer than any backtick OR tilde run in its content (three backticks, as before, for content with none), so no line of the content can close it; `okf_browse` returns a directory's `index.md` after the line `index.md of '<path>':` (or `index.md of the bundle root:`) inside a `markdown` fence, instead of the file's bare text; and each `<okf-context>` element of the injected context holds its content in such a fence, between blank lines (so that neither tag, which CommonMark reads as an HTML block running to the next blank line, swallows a fence line), with `&` written `&amp;` and then `<` written `&lt;` (in the content and in the id), so neither a literal `</okf-context>` nor a fence left open (an `index.md` ending in `~~~`, a truncated body) can reach past the element; a truncation that cuts a fenced body closes its fence before the `… (truncated)` marker. `LineSafeText`'s refusal now also refuses a bidirectional control, and the CLI uses it: `okf verify --by` or `--at` carrying one now exits 1 with `must not contain control or bidirectional characters`, since #249 `control, bidirectional or invisible format characters` (the message of every such refusal, CLI, writer and `okf_verify`, used to say "control characters"; everything it refused before it still refuses), and `okf verify` now quotes a stored `at`, id or actor carrying one in its `recorded …` line. No golden covers those cases, so none moved. Numbers in tool results are formatted under the invariant culture (the computation timeout's seconds used the current culture).
+
+- **The load reads the bundle token before listing** (#142, D15 a).
+  `Bundle.LoadAsync` asks the provider for its version, then lists the names:
+  a change that happens during a load now gives an image newer than its token,
+  reloaded at the next comparison, instead of an older one believed fresh.
+
+- **`Bundle.ResolveResourceKeyAsync`/`TryResolveResourceKey` throw
+  `BundleLoadException` for a provider failure other than a refusal** (#142,
+  D15 b). Only a `BundleAccessRefusedException` reads as `Unsafe`; any other
+  failure of the provider's `ExistsAsync` (a network error, a credential, an
+  `IOException`) was reported as `Unsafe` too and is now a `BundleLoadException`
+  naming the key and the exception type, never its text (the cause is the inner
+  exception). A validation of a store that is down now fails instead of
+  reporting "escapes the bundle", and the survey of a concept's executable
+  resources (`computation`, `attester.resource`) fails the load instead of
+  recording the state `Unsafe`. This affects every provider. The same
+  confusion while a validation reads `index.md`/`log.md` (reported as
+  `UnparseableIndex`/`UnparseableLog`) is unchanged and tracked in #247.
 
 - **`Bundle.TryResolveResource(…)` and `Bundle.ReadResourceText(string)`**
   (both `[Obsolete]`) now throw `NotSupportedException` when the bundle's
