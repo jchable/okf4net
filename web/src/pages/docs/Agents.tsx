@@ -77,7 +77,9 @@ export default function Agents() {
           <p>
             Each tool is a plain string in, string out <code>AIFunction</code>. On any failure — the tool
             returns a plain-text failure message (<code>Error: ...</code>, <code>Concept '...' not found</code>,
-            or <code>Usage: ...</code>) instead of throwing, so a single bad call never crashes the agent loop.
+            or <code>Usage: ...</code>) instead of throwing, so a single bad call never crashes the agent loop. Every value a
+            tool or the context provider prints goes through one fold rule, which also removes invisible format
+            characters such as tag characters.
           </p>
           <MapTable
             head={['Tool', 'Does']}
@@ -85,7 +87,7 @@ export default function Agents() {
               [
                 'okf_read_concept',
                 <>
-                  Read one concept's frontmatter, body, links, and backlinks; adds a{' '}
+                  Read one concept's frontmatter (a YAML block <code>okf_write_concept</code> accepts back as is), body, links, and backlinks; adds a{' '}
                   <code>status | trust | stale</code> line when any of those differ from the default.
                 </>,
               ],
@@ -118,7 +120,8 @@ export default function Agents() {
                 'okf_write_concept',
                 <>
                   Validate and write a concept atomically, under a per-bundle lock, auto-stamping{' '}
-                  <code>generated</code> (§5.2) when the caller didn't supply one.
+                  <code>generated</code> (§5.2) when the caller didn't supply one. Refused unless this session read the
+                  concept in full, or was shown it absent.
                 </>,
               ],
               [
@@ -154,7 +157,8 @@ export default function Agents() {
                 <>
                   Run a §10 attested computation end to end — bind → execute → attest → stale-gate — through a
                   host-wired <code>AttestationOrchestrator</code>. Only present in <code>GetTools()</code> when
-                  one was passed to the <code>OkfBundleTools</code> constructor.
+                  one was passed to the <code>OkfBundleTools</code> constructor. Runs only what this session was
+                  shown, pinned to that version.
                 </>,
               ],
             ]}

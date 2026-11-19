@@ -9,7 +9,7 @@ import { PageDoc, Chapter, MapTable, Next } from '../../components/doc'
 // would collapse the blank lines. Sourced verbatim from
 // website/docs/cli.html.
 const versionHtml = `$ okf --version
-okf 0.7.0 (OKF spec v0.2)`
+okf 0.8.0 (OKF spec v0.2)`
 
 const validateHtml = `$ okf validate tests/fixtures/appendix_a
 <span class="c">[warning] tests/fixtures/appendix_a/tables/users.md: missing recommended frontmatter field \`description\`</span>
@@ -300,7 +300,9 @@ export default function Cli() {
           <p>
             Loads the bundle, runs the §11 conformance check, and prints every diagnostic followed by a tally. Exits{' '}
             <code>0</code> when conformant, <code>1</code> otherwise. <strong>Warnings never break conformance</strong>{' '}
-            — only errors do — so recommended-but-missing fields are surfaced without failing the build.
+            — only errors do — so recommended-but-missing fields are surfaced without failing the build. A failure of the
+            storage while the bundle is read is not a diagnostic: <code>validate</code> prints <code>error: …</code> and
+            exits <code>1</code>.
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: validateHtml }} />
           <p>

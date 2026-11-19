@@ -50,15 +50,22 @@ export default function Contributing() {
         <Chapter id="roadmap" title="Roadmap" refText="now · next · later">
           <ul className="plain">
             <li>
-              <strong>Now:</strong> broader test coverage and tutorials, for library users and agent builders
-              alike.
+              <strong>Now:</strong> broader test coverage and worked examples (<a href="https://github.com/jchable/okf4net/issues/173">#173</a>).
+              The end-to-end tutorials, for library users and agent builders, have shipped under{' '}
+              <a href="https://github.com/jchable/okf4net/tree/main/docs/tutorials">docs/tutorials/</a>.
             </li>
             <li>
-              <strong>Next:</strong> more Agent Framework samples, performance baselines, and bundle search from a
+              <strong>Next:</strong> more Agent Framework samples, performance baselines, S3 follow-ups (a catalog factory,{' '}
+              <a href="https://github.com/jchable/okf4net/issues/239">#239</a>; <code>okf-mcp</code> over S3,{' '}
+              <a href="https://github.com/jchable/okf4net/issues/238">#238</a>), a JSONL passage export for RAG
+              pipelines (<a href="https://github.com/jchable/okf4net/issues/282">#282</a>), and bundle search from a
               VS Code extension (<a href="https://github.com/jchable/okf4net/issues/163">#163</a>) — the static{' '}
-              <Link to="/docs/viewer">bundle viewer</Link> has shipped, with no full-text search by design. The first{' '}
-              <a href="https://github.com/jchable/okf4net/tree/main/samples/catalog-explorer">Catalog sample</a>{' '}
-              has shipped.
+              <Link to="/docs/viewer">bundle viewer</Link> has shipped, with no full-text search by design. Samples have shipped:{' '}
+              <a href="https://github.com/jchable/okf4net/tree/main/samples/catalog-explorer">catalog-explorer</a>,{' '}
+              <a href="https://github.com/jchable/okf4net/tree/main/samples/agents-handoff">agents-handoff</a> (two
+              agents sharing one bundle, no model needed) and{' '}
+              <a href="https://github.com/jchable/okf4net/tree/main/samples/second-brain">second-brain</a> (a writable
+              bundle served to Claude Desktop through <code>okf-mcp</code>).
             </li>
             <li>
               <strong>Later:</strong> ecosystem integrations, tracking the spec past v0.2, and growing{' '}
