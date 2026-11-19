@@ -216,6 +216,14 @@ public class ListPageParserTests
     }
 
     [Fact]
+    public void A_lowercase_percent_escape_in_a_listed_key_decodes_like_an_uppercase_one()
+    {
+        // A store may send its hex digits in lowercase; "%2b" is a literal '+', not a space, and "%c3%a9" is 'é'.
+        var p = Parse(Page([("kb/a%2bb.md", "\"e\"", 1), ("kb/caf%c3%a9.md", "\"e\"", 1)], false, null));
+        Assert.Equal(["kb/a+b.md", "kb/café.md"], p.Entries.Select(e => e.S3Key));
+    }
+
+    [Fact]
     public void A_page_without_entries_that_is_complete_is_valid()
     {
         var p = Parse(Page([], false, null));

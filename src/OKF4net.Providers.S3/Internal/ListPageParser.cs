@@ -16,12 +16,15 @@ internal sealed record ListPage(IReadOnlyList<S3Entry> Entries, bool IsTruncated
 /// (a DOCTYPE fails the parse), no resolver, at most <see cref="BoundingHandler.ListBodyBytes"/> characters, no
 /// recursion — and strict: the root is <c>ListBucketResult</c> in the S3 namespace or none; <c>EncodingType</c> is
 /// exactly <c>url</c>; <c>IsTruncated</c> exactly <c>true</c> or <c>false</c>; each <c>Contents</c> has exactly one
-/// non-empty <c>Key</c>, decoded strictly as a listed value (a raw <c>+</c> is a space; the only url-encoded field read: the token is opaque, never encoded), one non-empty <c>ETag</c> and one decimal, unsigned <c>Size</c>; every
-/// field appears at most once in its parent, and a field's name in another namespace is refused rather than read or
-/// skipped; a truncated page carries a non-empty token of at most <see cref="BoundingHandler.TokenBytes"/> UTF-8
+/// non-empty <c>Key</c>, decoded strictly as a listed value (a raw <c>+</c> is a space), one non-empty <c>ETag</c> and
+/// one decimal, unsigned <c>Size</c>; every field appears at most once in its parent, and a field's name in
+/// another namespace is refused rather than read or skipped; a truncated page carries a non-empty token of at most <see cref="BoundingHandler.TokenBytes"/> UTF-8
 /// bytes; a page holding more than the requested number of entries is refused at the first one too many, before the
 /// rest is collected. Anything else is <see cref="S3FailureKind.InvalidResponse"/>. Other elements are skipped with
-/// their subtrees. The SDK's own model of the page is never trusted for keys.
+/// their subtrees. The SDK's own model of the page is never trusted for keys. The token is opaque and is never
+/// url-decoded. <c>Key</c> is the only url-encoded field this parser decodes: any other value a response sends in
+/// the same encoding (a <c>Prefix</c> or <c>CommonPrefixes</c> entry, say) is skipped here, and a later reader of one
+/// must decode it with <see cref="S3KeyCodec.TryDecodeListed(string, out string?)"/>, never with a raw <c>+</c> left alone.
 /// </summary>
 internal static class ListPageParser
 {

@@ -294,7 +294,9 @@ public sealed class GuardTests : IDisposable
         Assert.True(await Admitted(plus, root + "?list-type=2&prefix=k%2Bb%2F&encoding-type=url"));
         Assert.False(await Admitted(list, root + "?list-type=2&prefix=kb%2F&encoding-type=url&continuation-token=a+b"));
         Assert.True(await Admitted(list, root + "?list-type=2&prefix=kb%2F&encoding-type=url&continuation-token=a%2Bb"));
-        Assert.False(await Admitted(list, root + "?list-type=2&prefix=kb%2F&encoding-type=url&max-keys=+1000")); Assert.True(await Admitted(whole, root + "?list-type=2&encoding-type=url"));                    // the whole bucket: no prefix or an empty one
+        Assert.False(await Admitted(list, root + "?list-type=2&prefix=kb%2F&encoding-type=url&max-keys=+1000"));
+        // the whole bucket: no prefix or an empty one
+        Assert.True(await Admitted(whole, root + "?list-type=2&encoding-type=url"));
         Assert.True(await Admitted(whole, root + "?list-type=2&prefix=&encoding-type=url"));
         Assert.False(await Admitted(whole, root + "?list-type=2&prefix=x&encoding-type=url"));
     }

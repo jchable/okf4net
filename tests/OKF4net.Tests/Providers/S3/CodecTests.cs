@@ -46,6 +46,8 @@ public class CodecTests
     [InlineData("a%20b.md", "a b.md")]     // RustFS sends a space as %20
     [InlineData("++", "  ")]
     [InlineData("%2B%2B", "++")]
+    [InlineData("a%2bb.md", "a+b.md")]     // lowercase hex digits decode like uppercase ones
+    [InlineData("%2b%2B+", "++ ")]
     [InlineData("%2B+%20", "+  ")]
     [InlineData("%25FF", "%FF")]
     [InlineData("%2525", "%25")]

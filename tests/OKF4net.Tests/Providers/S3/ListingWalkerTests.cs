@@ -171,6 +171,40 @@ public class ListingWalkerTests
         await Assert.ThrowsAsync<S3RequestException>(async () => await p.GetVersionAsync(BundleLimits.Default, deadline.Token));
     }
 
+    [Theory]
+    [InlineData("kb/d.md", true)]  // counter-proof: the same three pages with an increasing last key are accepted
+    [InlineData("kb/b.md", false)] // a step back across the page boundary AND an empty truncated page: refused
+    [InlineData("kb/c.md", false)] // a repeat of the last key of the first page, across the empty page: refused
+    public async Task Key_order_holds_across_an_empty_truncated_page(string lastKey, bool accepted)
+    {
+        // Page 1: a, c (truncated). Page 2: no entry, truncated (accepted by itself, spec Annexe C10). Page 3: one more key.
+        // The order check must carry the last key of page 1 over the empty page.
+        var fake = new FakeS3Handler
+        {
+            Respond = (req, _) =>
+            {
+                var q = req.RequestUri!.Query;
+                var xml = q.Contains("continuation-token=t2", StringComparison.Ordinal) ? ListPageParserTests.Page([(lastKey, "\"e\"", 1)], false, null)
+                    : q.Contains("continuation-token=t1", StringComparison.Ordinal) ? ListPageParserTests.Page([], true, "t2")
+                    : ListPageParserTests.Page([("kb/a.md", "\"e\"", 1), ("kb/c.md", "\"e\"", 1)], true, "t1");
+                return Task.FromResult(FakeS3Handler.Xml(HttpStatusCode.OK, xml));
+            },
+        };
+        using var p = S3Test.Provider(fake);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        if (accepted)
+        {
+            Assert.Equal(["a.md", "c.md", lastKey["kb/".Length..]], await Names(p, ct: deadline.Token));
+        }
+        else
+        {
+            var e = await Assert.ThrowsAsync<S3RequestException>(async () => await Names(p, ct: deadline.Token));
+            Assert.Equal(S3FailureKind.InvalidResponse, e.Kind);
+        }
+
+        Assert.Equal(3, fake.Requests.Count); // the refusal comes from the page that shows it, no further page is fetched
+    }
+
     public static TheoryData<string, string> HostileXml => new()
     {
         { "not xml", "<not-xml" },

@@ -100,8 +100,10 @@ public sealed class S3BundleProvider : IBundleProvider, IDisposable
     /// <summary>
     /// Lists the bundle (or the keys under <paramref name="prefix"/>, at a segment boundary) one ListObjectsV2 page at a
     /// time; each raw name is the strictly decoded key without the bundle prefix, passed to the core unjudged (spec D9).
-    /// A page is one operation under the shorter of <see cref="S3BundleSource.RequestTimeout"/> and
-    /// <see cref="BundleLimits.RequestTimeout"/>; at most <see cref="BundleLimits.MaxEntries"/> + 1 pages are fetched.
+    /// Each page is one operation with its own deadline (not one deadline for the whole walk): <see cref="S3BundleSource.RequestTimeout"/>,
+    /// or <see cref="BundleLimits.RequestTimeout"/> when that is positive and shorter (an infinite, zero or negative
+    /// limit never wins), in either case capped at <see cref="MaxOperationTimeout"/> (see <see cref="OperationTimeout"/>);
+    /// at most <see cref="BundleLimits.MaxEntries"/> + 1 pages are fetched.
     /// </summary>
     /// <exception cref="S3RequestException">A request failed, or the listing is inconsistent (<see cref="S3FailureKind.InvalidResponse"/>).</exception>
     public async IAsyncEnumerable<BundleListing> EnumerateAsync(BundleKey? prefix, BundleLimits limits, [EnumeratorCancellation] CancellationToken ct)
