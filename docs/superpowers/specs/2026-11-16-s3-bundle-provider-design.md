@@ -760,7 +760,16 @@ reste à confirmer ou à renverser, et son coût est dit. Les mesures portent su
 `AWSSDK.S3` 4.1.0 avec `AWSSDK.Core` 4.1.0 (et 4.1.0.1 pour la porte), RustFS 1.0.3,
 Windows 11.
 
-**À arbitrer par le mainteneur : C1 (`+` brut), C3 (3 envois par opération), C5c (ETag simple non hexadécimal), C10 (page tronquée sans clé), C11 (région de signature d'une source `ServiceUrl`), C12 (3) (en-têtes ambiants restants : `x-amzn-trace-id`, `AWS_INTERNAL_ENV`). À confirmer : C4 — le changement du cœur D15 (b) s'étend au relevé des ressources exécutables, donc fait échouer le chargement pour *tous* les providers —, et C8. Les autres entrées (C2, C5 hors c, C6, C7, C9) sont des constats.**
+**Reste ouvert après les décisions du 2026-11-19 (ci-dessous) : C11 (région de signature d'une source `ServiceUrl`), reporté. À confirmer : C8. C1, C3, C4, C5c, C10 et C12 sont tranchés. Les autres entrées (C2, C5 hors c, C6, C7, C9) sont des constats.**
+
+**Décisions du mainteneur (2026-11-19).**
+- C1 : garder le décodage en formulaire des clés listées (`+` brut → espace) ; la mesure sur MinIO et Amazon S3 reste à faire (#292).
+- C3 : garder le plafond de 3 envois par opération ; à replier dans le corps de la spec (#287).
+- C4 : confirmé (l'extension de D15 (b) au relevé des ressources exécutables, pour tous les providers).
+- C5c : implémenté — une `FormatException` (contrôle MD5 du SDK sur un ETag simple non hexadécimal) est classée `InvalidResponse` ; le remède de fond (ne plus dépendre de ce contrôle) reste #286.
+- C10 : accepté et implémenté — une page tronquée sans clé est suivie et comptée dans le budget de pages.
+- C11 : reporté (#284).
+- C12 : corrigé — le garde retire `x-amzn-trace-id` et reconstruit le `User-Agent` à partir d'une liste fermée de formes de jetons.
 
 *Suivi (tickets GitHub, 2026-11-19)* : C1 et les mesures hors RustFS → #292 ; C5c → #286 ; C10 → #283 ; C11 → #284 ; C12 (3) → #285 ; repli de ces écarts dans le corps de la spec → #287 ; la ligne « premier run CI Linux/macOS, Trusted Publishing » → #293.
 
@@ -816,6 +825,12 @@ Aucun golden n'a bougé.
   `Transport` : un store compatible aux ETags simples opaques **échouerait sur toute lecture**. Non corrigé
   (piste : `FormatException` → `InvalidResponse`), documenté au README. *Statut* : limite assumée par le
   contrôleur — à arbitrer par le mainteneur.
+  *Décision (2026-11-19)* : implémentée. La `FormatException` sort nue de `GetObjectAsync`
+  (`AmazonS3ResponseHandler.ProcessResponseHandlers` → `AWSSDKUtils.HexStringToBytes` → `Convert.FromHexString`, mesuré) ;
+  `ErrorClassifier` la cherche le long de la chaîne d'`InnerException` (comme pour `Integrity`) et la classe
+  `InvalidResponse`, message fermé inchangé, l'exception brute en `InnerException`. Une défaillance de transport reste
+  `Transport`. Désactiver le contrôle du SDK reste #286. Tests : `ReadTests.A_single_part_ETag_that_is_not_hex_is_InvalidResponse`,
+  `ErrorTests.A_format_failure_is_InvalidResponse_wherever_it_sits_and_a_transport_failure_is_not`.
 - d. Un corps plus court que son `Content-Length` n'est **pas** détecté par le SDK : le provider le refuse
   lui-même (`Transport`).
 - e. Les identifiants sont résolus **avant** que l'`OperationContext` soit posé : `Task.Run` fait suivre le
@@ -880,6 +895,12 @@ jeton de continuation répété arrêtent déjà un store hostile. Alternative p
 comptée dans le budget de pages. Le README du paquet l'énonce comme précondition d'un store compatible. Un changement
 de code demande la passe locale `S3Integration` à 0 ignoré.
 *Commit* : celui de cette entrée (README et annexe). *Statut* : tranché par le contrôleur — à arbitrer par le mainteneur.
+*Décision (2026-11-19)* : acceptée et implémentée. Une page tronquée sans clé est suivie et comptée dans le budget de
+`MaxEntries + 1` pages d'un parcours ; `ExistsAsync` la suit aussi, sous un budget fixe de 1 000 pages
+(`S3BundleProvider.ExistsMaxPages`), chaque page étant une opération avec son échéance et son plafond d'envois ; au-delà,
+`InvalidResponse`, jamais `false`. Un jeton de continuation répété, ou une page tronquée sans jeton, restent refusés
+(`InvalidResponse`) ; la borne de 1 024 octets du jeton est inchangée. Le corps de la spec (D9, « progrès exigé de chaque
+page tronquée ») dit encore « refuser » : le repli dans le corps est #287. Passe `S3Integration` locale refaite à 0 ignoré.
 
 **C11 — §4.4, D2 : région de signature d'une source `ServiceUrl`.**
 *Le texte* : la région d'authentification est `us-east-1` pour `ServiceUrl` ; `Region` et `ServiceUrl` sont
@@ -915,3 +936,14 @@ CLAUDE.md les nomment au lieu de prétendre que tout réglage ambiant est neutra
 (SigV4 seul offert ; ARN, points d'accès multirégions et buckets de répertoire refusés à la construction).
 *Commits* : `fix(s3)` de cette passe (code et tests), `docs(s3)` (README, CLAUDE.md, annexe). *Statut* : (1), (2)
 corrigés ; (3) à arbitrer par le mainteneur.
+*Décision (2026-11-19)* : (3) corrigé dans `PinningHandler`. L'en-tête `x-amzn-trace-id` est retiré (quelle que soit sa
+casse). Le `User-Agent` est **reconstruit** à partir d'une liste fermée de formes de jetons, relevées sur `AWSSDK` 4.1.0
+(mesure en environnement propre, plus les chaînes de format du SDK pour `ft/aot` et `md/ClientSync`) :
+`aws-sdk-dotnet-coreclr/…`, `ua/…`, `os/<nom>#<version>`, `md/ARCH#…`, `lang/<nom>#<version>`,
+`md/aws-sdk-dotnet-core#…`, `ft/aot`, `api/S3#…`, `md/ClientAsync|ClientSync`, `cfg/init-coll#…`, `m/<codes>` — écrits dans
+cet ordre ; tout autre jeton est retiré (échec fermé), une forme vue deux fois avec des valeurs différentes (texte ambiant
+qui imite un jeton connu) est retirée entière, et sans aucun jeton reconnu aucun `User-Agent` n'est envoyé (un SDK plus
+récent perd de l'information, jamais une requête). Témoins positifs : `HostileEnvironmentTests`, cas
+`variables-lambda-internal-env` (le client ordinaire envoie l'en-tête et le marqueur ; le provider, des requêtes identiques
+à l'exécution propre) ; lignes unitaires : `GuardTests`. Reste vrai : la clé de profil `s3_us_east_1_regional_endpoint`
+n'a pas de test permanent (mesurée en processus frais seulement).
