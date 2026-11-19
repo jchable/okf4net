@@ -126,9 +126,9 @@ public class ListingWalkerTests
 
     public static TheoryData<string> Inconsistencies => new()
     {
-        "outside-prefix", "not-increasing", "duplicate", "repeated-token", "truncated-empty", "oversized-page",
+        "outside-prefix", "not-increasing", "duplicate", "repeated-token", "repeated-token-on-empty-pages", "oversized-page",
         "not-increasing-across-pages", "duplicate-across-pages", "utf16-order", "token-too-long", "token-empty",
-        "undecodable-key", "encoding-type-missing", "kb2-sibling",
+        "truncated-without-token", "truncated-empty-without-token", "undecodable-key", "encoding-type-missing", "kb2-sibling",
     };
 
     /// <summary>The page a scripted store answers; <paramref name="first"/>: the request carries no continuation token (each walk starts over).</summary>
@@ -139,7 +139,9 @@ public class ListingWalkerTests
         "not-increasing" => ListPageParserTests.Page([("kb/b.md", "\"e\"", 1), ("kb/a.md", "\"e\"", 1)], false, null),
         "duplicate" => ListPageParserTests.Page([("kb/a.md", "\"e\"", 1), ("kb/a.md", "\"e\"", 1)], false, null),
         "repeated-token" => ListPageParserTests.Page([("kb/a" + call + ".md", "\"e\"", 1)], true, "same"),
-        "truncated-empty" => ListPageParserTests.Page([], true, "t" + call),
+        "repeated-token-on-empty-pages" => ListPageParserTests.Page([], true, "same"), // an empty truncated page is accepted (spec C10), a repeated token never
+        "truncated-without-token" => ListPageParserTests.Page([("kb/a.md", "\"e\"", 1)], true, null),
+        "truncated-empty-without-token" => ListPageParserTests.Page([], true, null),
         "oversized-page" => ListPageParserTests.Page(Enumerable.Range(0, 1001).Select(i => ($"kb/n{i:D4}.md", "\"e\"", 1L)), false, null),
         "not-increasing-across-pages" => first ? ListPageParserTests.Page([("kb/b.md", "\"e\"", 1)], true, "t1") : ListPageParserTests.Page([("kb/a.md", "\"e\"", 1)], false, null),
         "duplicate-across-pages" => first ? ListPageParserTests.Page([("kb/a.md", "\"e\"", 1)], true, "t1") : ListPageParserTests.Page([("kb/a.md", "\"e\"", 1)], false, null),
@@ -210,6 +212,122 @@ public class ListingWalkerTests
         var e = await Assert.ThrowsAsync<S3RequestException>(async () => await Names(p, limits: BundleLimits.Default with { MaxEntries = 5 }, ct: deadline.Token));
         Assert.Equal(S3FailureKind.InvalidResponse, e.Kind);
         Assert.Equal(6, calls);
+    }
+
+    /// <summary>
+    /// A store that answers, for every walk, <paramref name="empty"/> truncated pages without a key (tokens e1, e2, …)
+    /// before one final page listing <paramref name="finalKeys"/> (the keys under the requested prefix); reads serve a note.
+    /// </summary>
+    private static FakeS3Handler EmptyPagesThen(int empty, params string[] finalKeys) => new()
+    {
+        Respond = (req, _) =>
+        {
+            var uri = req.RequestUri!;
+            if (!uri.Query.Contains("list-type=2", StringComparison.Ordinal))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(Note) });
+            }
+
+            S3KeyCodec.TryGetUniqueQueryValue(uri.Query, "prefix", out var prefix);
+            S3KeyCodec.TryGetUniqueQueryValue(uri.Query, "continuation-token", out var token);
+            var n = token is null ? 0 : int.Parse(token[1..], System.Globalization.CultureInfo.InvariantCulture);
+            var page = n < empty
+                ? ListPageParserTests.Page([], true, "e" + (n + 1))
+                : ListPageParserTests.Page(finalKeys.Where(k => k.StartsWith(prefix ?? "", StringComparison.Ordinal)).Select(k => (k, S3Test.ETag(System.Text.Encoding.UTF8.GetBytes(Note)), (long)System.Text.Encoding.UTF8.GetByteCount(Note))), false, null);
+            return Task.FromResult(FakeS3Handler.Xml(HttpStatusCode.OK, page));
+        },
+    };
+
+    [Fact]
+    public async Task Empty_truncated_pages_are_followed_and_a_later_page_with_keys_loads()
+    {
+        // Spec Annexe C10 (maintainer's decision 2026-11-19): a truncated page without a key — Amazon S3 may send one
+        // on a versioned bucket, under a long run of delete markers — is accepted and counted against the page budget.
+        var fake = EmptyPagesThen(40, "kb/a.md", "kb/b.md");
+        using var p = S3Test.Provider(fake);
+        Assert.Equal(["a.md", "b.md"], await Names(p));
+        Assert.Equal(41, fake.Requests.Count); // one operation per page: the guard's 3-send cap never spans pages
+        var bundle = await Bundle.LoadAsync(p);
+        Assert.Equal(["a", "b"], bundle.Concepts.Select(c => c.Id.ToString()).Order(StringComparer.Ordinal));
+        Assert.Equal(BundleTokenHasher.Hash(new[] { "a.md", "b.md" }.Select(k => (k, S3Test.ETag(System.Text.Encoding.UTF8.GetBytes(Note)), (long)System.Text.Encoding.UTF8.GetByteCount(Note)))), (await p.GetVersionAsync(BundleLimits.Default, default)).Token);
+    }
+
+    [Fact]
+    public async Task Empty_truncated_pages_count_against_the_page_budget()
+    {
+        // An endless run of empty truncated pages, each with a fresh token: exactly MaxEntries + 1 pages are fetched, then
+        // InvalidResponse. Past 10 000 calls the store ends the listing, so a walk without the budget fails the
+        // assertion instead of hanging.
+        var calls = 0;
+        var fake = new FakeS3Handler
+        {
+            Respond = (_, _) =>
+            {
+                var n = Interlocked.Increment(ref calls);
+                return Task.FromResult(FakeS3Handler.Xml(HttpStatusCode.OK, n > 10_000 ? ListPageParserTests.Page([], false, null) : ListPageParserTests.Page([], true, "t" + n)));
+            },
+        };
+        using var p = S3Test.Provider(fake);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60)); // a regression that walks on fails, never hangs
+        var e = await Assert.ThrowsAsync<S3RequestException>(async () => await Names(p, limits: BundleLimits.Default with { MaxEntries = 5 }, ct: deadline.Token));
+        Assert.Equal(S3FailureKind.InvalidResponse, e.Kind);
+        Assert.Equal("S3 list failed: InvalidResponse", e.Message);
+        Assert.Equal(6, calls);
+        Assert.Null(OperationContext.Current.Value);
+        Volatile.Write(ref calls, 0);
+        Assert.Equal(S3FailureKind.InvalidResponse, (await Assert.ThrowsAsync<S3RequestException>(async () => await p.GetVersionAsync(BundleLimits.Default with { MaxEntries = 5 }, deadline.Token))).Kind);
+        Assert.Equal(6, calls);
+    }
+
+    [Fact]
+    public async Task Exists_follows_empty_truncated_pages()
+    {
+        var fake = EmptyPagesThen(30, "kb/a.md", "kb/b.md.bak");
+        using var p = S3Test.Provider(fake);
+        Assert.True(await p.ExistsAsync(BundleKey.Parse("a.md"), default));
+        Assert.Equal(31, fake.Requests.Count);
+        Assert.False(await p.ExistsAsync(BundleKey.Parse("b.md"), default)); // the first key listed is another one
+        Assert.False(await p.ExistsAsync(BundleKey.Parse("c.md"), default)); // nothing listed
+        Assert.Equal(93, fake.Requests.Count);
+        Assert.All(fake.Requests, r => Assert.Equal("1", Query(r)["max-keys"]));
+    }
+
+    [Fact]
+    public async Task Exists_stops_an_endless_run_of_empty_pages_at_its_own_budget()
+    {
+        var calls = 0;
+        var fake = new FakeS3Handler
+        {
+            Respond = (_, _) =>
+            {
+                var n = Interlocked.Increment(ref calls);
+                return Task.FromResult(FakeS3Handler.Xml(HttpStatusCode.OK, n > 10_000 ? ListPageParserTests.Page([], false, null) : ListPageParserTests.Page([], true, "t" + n)));
+            },
+        };
+        using var p = S3Test.Provider(fake);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+        var e = await Assert.ThrowsAsync<S3RequestException>(async () => await p.ExistsAsync(BundleKey.Parse("a.md"), deadline.Token));
+        Assert.Equal(S3FailureKind.InvalidResponse, e.Kind); // never false: the store has not said the key is absent
+        Assert.Equal(S3Operation.Exists, e.Operation);
+        Assert.Equal(S3BundleProvider.ExistsMaxPages, calls);
+    }
+
+    [Fact]
+    public async Task Exists_refuses_a_repeated_token_among_empty_pages()
+    {
+        var calls = 0;
+        var fake = new FakeS3Handler
+        {
+            Respond = (_, _) =>
+            {
+                var n = Interlocked.Increment(ref calls);
+                return Task.FromResult(FakeS3Handler.Xml(HttpStatusCode.OK, ListPageParserTests.Page([], true, n == 3 ? "t1" : "t" + n)));
+            },
+        };
+        using var p = S3Test.Provider(fake);
+        var e = await Assert.ThrowsAsync<S3RequestException>(async () => await p.ExistsAsync(BundleKey.Parse("a.md"), default));
+        Assert.Equal(S3FailureKind.InvalidResponse, e.Kind);
+        Assert.Equal(3, calls);
     }
 
     [Fact]

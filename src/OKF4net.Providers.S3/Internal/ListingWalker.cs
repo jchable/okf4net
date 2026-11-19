@@ -16,9 +16,11 @@ namespace OKF4net.Providers.S3.Internal;
 /// <para>Every transport inconsistency of spec D9 is <see cref="S3FailureKind.InvalidResponse"/>, detected on the
 /// page that shows it: a key outside the listed prefix; keys not strictly increasing in UTF-8 (code point) order,
 /// across pages too (a duplicate, a step back, or a store sorting by UTF-16 — the order is a declared precondition
-/// of the s3v1 token); a repeated continuation token; a truncated page without an entry (no progress); and more than
-/// <c>maxPages</c> pages. The parser refuses the rest (an untrustworthy document, a page larger than its MaxKeys, an
-/// empty or oversized token). <c>parse</c> is a test seam (default <see cref="ListPageParser.Parse(byte[], int)"/>).</para>
+/// of the s3v1 token); a repeated continuation token; and more than <c>maxPages</c> pages, empty ones included. A
+/// truncated page without an entry is NOT one (spec Annexe C10, maintainer's decision 2026-11-19, superseding D9's
+/// "progress from every truncated page"): it is followed, and counted. The parser refuses the rest (an untrustworthy
+/// document, a page larger than its MaxKeys, a truncated page without a token, an empty or oversized token). <c>parse</c>
+/// is a test seam (default <see cref="ListPageParser.Parse(byte[], int)"/>).</para>
 /// </summary>
 internal sealed class ListingWalker(AmazonS3Client client, string bucket, OperationGate gate, CredentialResolver credentials, Func<byte[], int, ListPage>? parse = null)
 {
@@ -33,14 +35,15 @@ internal sealed class ListingWalker(AmazonS3Client client, string bucket, Operat
         {
             if (page >= maxPages)
             {
-                throw Inconsistent(operation, key); // each truncated page brings an entry: past the entry bound's pages, no honest store
+                // The budget counts every page, an empty truncated one too (spec Annexe C10): with the repeated-token
+                // refusal below, it is what stops a store that never ends, in pages fetched and in memory (one 32-byte
+                // digest per page).
+                throw Inconsistent(operation, key);
             }
 
+            // A truncated page without an entry is accepted (spec Annexe C10, maintainer's decision 2026-11-19): Amazon S3
+            // may send one on a versioned bucket, under a long run of delete markers. Its token must still be new.
             var parsed = await FetchAsync(listPrefix, maxKeys, token, timeout, operation, key, ct).ConfigureAwait(false);
-            if (parsed.IsTruncated && parsed.Entries.Count == 0)
-            {
-                throw Inconsistent(operation, key); // no progress
-            }
 
             foreach (var entry in parsed.Entries)
             {

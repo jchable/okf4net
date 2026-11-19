@@ -22,6 +22,16 @@ namespace OKF4net.Providers.S3;
 public sealed class S3BundleProvider : IBundleProvider, IDisposable
 {
     private const int PageKeys = 1000;
+
+    /// <summary>
+    /// The page budget of one <see cref="ExistsAsync"/> (spec Annexe C10, maintainer's decision 2026-11-19). The first page
+    /// that lists a key decides (an object's key sorts before every key it prefixes), so only truncated pages WITHOUT a key
+    /// are followed: a store that skips non-current entries — Amazon S3 under delete markers of a versioned bucket — may
+    /// send them before its answer. A thousand such pages is a generous, fixed bound (ExistsAsync has no
+    /// <see cref="BundleLimits"/> to derive one from): past it the answer is <see cref="S3FailureKind.InvalidResponse"/>,
+    /// never <see langword="false"/>. Each page is its own operation, under its own deadline and send cap.
+    /// </summary>
+    internal const int ExistsMaxPages = 1000;
     private readonly NormalizedSource _source;
     private readonly AddressingPlan _plan;
     private readonly AmazonS3Client _client;
@@ -121,16 +131,17 @@ public sealed class S3BundleProvider : IBundleProvider, IDisposable
     }
 
     /// <summary>
-    /// One ListObjectsV2 page of one key with the object's key as prefix (spec §4.3): <see langword="true"/> when the
-    /// first key listed is exactly it (a key sorts before every key it prefixes). A refusal or a failure is never
-    /// <see langword="false"/>.
+    /// ListObjectsV2 pages of one key with the object's key as prefix (spec §4.3): <see langword="true"/> when the
+    /// first key listed is exactly it (a key sorts before every key it prefixes). Truncated pages without a key are
+    /// followed, at most <see cref="ExistsMaxPages"/> pages in all, each one operation under the source's deadline (spec
+    /// Annexe C10). A refusal or a failure is never <see langword="false"/>.
     /// </summary>
-    /// <exception cref="S3RequestException">A request failed, or the page is inconsistent.</exception>
+    /// <exception cref="S3RequestException">A request failed, or a page is inconsistent, or the page budget is spent.</exception>
     public async ValueTask<bool> ExistsAsync(BundleKey key, CancellationToken ct)
     {
         ThrowIfDisposed(S3Operation.Exists);
         var s3Key = _plan.S3Key(key);
-        await foreach (var entry in _walker.WalkAsync(s3Key, 1, 1, OperationTimeout(_source.RequestTimeout, null), S3Operation.Exists, key, ct).ConfigureAwait(false))
+        await foreach (var entry in _walker.WalkAsync(s3Key, 1, ExistsMaxPages, OperationTimeout(_source.RequestTimeout, null), S3Operation.Exists, key, ct).ConfigureAwait(false))
         {
             return string.Equals(entry.S3Key, s3Key, StringComparison.Ordinal);
         }
