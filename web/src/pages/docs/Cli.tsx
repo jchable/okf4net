@@ -300,7 +300,9 @@ export default function Cli() {
           <p>
             Loads the bundle, runs the §11 conformance check, and prints every diagnostic followed by a tally. Exits{' '}
             <code>0</code> when conformant, <code>1</code> otherwise. <strong>Warnings never break conformance</strong>{' '}
-            — only errors do — so recommended-but-missing fields are surfaced without failing the build.
+            — only errors do — so recommended-but-missing fields are surfaced without failing the build. A failure of the
+            storage while the bundle is read is not a diagnostic: <code>validate</code> prints <code>error: …</code> and
+            exits <code>1</code>.
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: validateHtml }} />
           <p>

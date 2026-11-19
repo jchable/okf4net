@@ -136,8 +136,10 @@ export default function Catalog() {
             <code>IBundleProviderFactory</code> — <code>ProviderType</code>, <code>AcceptedSettings</code>,{' '}
             <code>Create(source)</code> — registered with <code>KnowledgeOptions.AddProviderFactory</code> (or{' '}
             <code>KnowledgeCatalogOptions.ProviderFactories</code>); a factory that throws is{' '}
-            <code>ProviderUnavailable</code>. Only the filesystem provider ships with this repository, and{' '}
-            <code>role: "memory"</code> sources must stay on it (<code>IllegalMemoryProvider</code>).
+            <code>ProviderUnavailable</code>. The repository registers no factory for the{' '}
+            <code>OKF4net.Providers.EmbeddedResources</code> or <code>OKF4net.Providers.S3</code> providers (an S3 one
+            is tracked as <a href="https://github.com/jchable/okf4net/issues/239">#239</a>): a host writes its own.{' '}
+            <code>role: "memory"</code> sources must stay on the filesystem (<code>IllegalMemoryProvider</code>).
           </p>
         </Chapter>
 

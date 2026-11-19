@@ -154,7 +154,7 @@ export default function Library() {
                 'Root · IndexFiles · LogFiles · ParseErrors · TryResolveResource · ReadResourceText(string)',
                 <>
                   <strong>Obsolete</strong> (a warning, not an error): the path-based forms of the members above, kept
-                  one version and removed with the asynchronous provider contract (#152). Replacements:{' '}
+                  one version and removed in the next release (#224). Replacements:{' '}
                   <code>Location</code>, <code>IndexKeys</code>/<code>LogKeys</code>, <code>ParseProblems</code>,{' '}
                   <code>TryResolveResourceKey</code>, <code>ReadResourceText(BundleKey)</code>.
                 </>,
@@ -167,8 +167,9 @@ export default function Library() {
           <p>
             A bundle is a key space of byte objects behind an <code>IBundleProvider</code> (
             <code>OKF4net.Providers</code>): keys are slash-separated names, there are no directories, and writing is a
-            capability the provider declares. The built-in provider is <code>FileSystemBundleProvider</code>; a host
-            plugs in any other storage by implementing the interface. Every key is validated as a tree before use.
+            capability the provider declares. The built-in provider is <code>FileSystemBundleProvider</code>; two
+            read-only ones ship as packages (below), and a host plugs in any other storage by implementing the
+            interface. Every key is validated as a tree before use.
           </p>
           <MapTable
             head={['Type', 'Description']}
@@ -187,6 +188,23 @@ export default function Library() {
                 <>
                   The default, writable provider over a directory; with a confinement boundary it re-checks the chain
                   to the root for symlinks and junctions before every access.
+                </>,
+              ],
+              [
+                'EmbeddedResourceBundleProvider(assembly, prefix)',
+                <>
+                  <code>OKF4net.Providers.EmbeddedResources</code> (BCL only): a bundle embedded in an assembly by the{' '}
+                  <code>OkfBundle</code> MSBuild item, one resource per file; read-only, Native AOT included. A link under
+                  the directory, or a name an assembly cannot hold, fails the build with an <code>OKFEMB00x</code> error.
+                </>,
+              ],
+              [
+                'S3BundleProvider(credentials, S3BundleSource)',
+                <>
+                  <code>OKF4net.Providers.S3</code>: a bundle in Amazon S3 or an S3-compatible store; read-only and truly
+                  asynchronous (<code>CompletesSynchronously</code> is <code>false</code>, so the synchronous entry points
+                  refuse it). Depends on <code>AWSSDK.S3</code> 4.1.0 or later — the one provider that brings a
+                  third-party dependency. Objects are versioned by the SHA-256 of their bytes.
                 </>,
               ],
               [
@@ -226,8 +244,8 @@ export default function Library() {
             ]}
           />
           <p>
-            Only the filesystem provider ships with this repository. <code>okf validate</code> and the other CLI verbs
-            load directories, as before.
+            Only the filesystem provider is writable; the two package providers are read-only. <code>okf validate</code>{' '}
+            and the other CLI verbs load directories, as before.
           </p>
         </Chapter>
 
