@@ -107,7 +107,7 @@ public sealed class S3BundleProvider : IBundleProvider, IDisposable
     public async IAsyncEnumerable<BundleListing> EnumerateAsync(BundleKey? prefix, BundleLimits limits, [EnumeratorCancellation] CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(limits);
-        ThrowIfDisposed(S3Operation.List);
+        ThrowIfDisposed(S3Operation.List, null, ct);
         var keyPrefix = _plan.KeyPrefix;
         await foreach (var entry in _walker.WalkAsync(_plan.ListPrefix(prefix), PageKeys, (long)limits.MaxEntries + 1, ListTimeout(limits), S3Operation.List, null, ct).ConfigureAwait(false))
         {
@@ -124,7 +124,7 @@ public sealed class S3BundleProvider : IBundleProvider, IDisposable
     public async ValueTask<BundleVersion> GetVersionAsync(BundleLimits limits, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(limits);
-        ThrowIfDisposed(S3Operation.List);
+        ThrowIfDisposed(S3Operation.List, null, ct);
         using var hasher = new BundleTokenHasher();
         var count = 0L;
         var keyPrefix = _plan.KeyPrefix;
@@ -157,7 +157,7 @@ public sealed class S3BundleProvider : IBundleProvider, IDisposable
     public async ValueTask<bool> ExistsAsync(BundleKey key, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(key); // as ReadAsync: a null key would ask about the prefix's own folder marker
-        ThrowIfDisposed(S3Operation.Exists);
+        ThrowIfDisposed(S3Operation.Exists, key, ct);
         var s3Key = _plan.S3Key(key);
         await foreach (var entry in _walker.WalkAsync(s3Key, 1, ExistsMaxPages, OperationTimeout(_source.RequestTimeout, null), S3Operation.Exists, key, ct).ConfigureAwait(false))
         {
@@ -186,7 +186,7 @@ public sealed class S3BundleProvider : IBundleProvider, IDisposable
     public async ValueTask<BundleObject> ReadAsync(BundleKey key, BundleObjectVersion? expected, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(key);
-        ThrowIfDisposed(S3Operation.Read);
+        ThrowIfDisposed(S3Operation.Read, key, ct);
         var s3Key = _plan.S3Key(key);
         ArraySegment<byte> bytes = default;
         var scope = await _gate.EnterAsync(S3Operation.Read, OperationTimeout(_source.RequestTimeout, null), ct, key).ConfigureAwait(false);
@@ -356,11 +356,18 @@ public sealed class S3BundleProvider : IBundleProvider, IDisposable
         return timeout > MaxOperationTimeout ? MaxOperationTimeout : timeout;
     }
 
-    private void ThrowIfDisposed(S3Operation operation)
+    /// <summary>
+    /// The up-front disposal check, in the failure order of <see cref="OperationScope.Fail"/> (spec §4.5): the caller's
+    /// cancellation, if already requested, first — carrying the caller's own token — then <see cref="S3FailureKind.Disposed"/>,
+    /// carrying the operation's key as the failure raised in the middle of the same operation does (minors A6).
+    /// </summary>
+    private void ThrowIfDisposed(S3Operation operation, BundleKey? key, CancellationToken ct)
     {
         if (Volatile.Read(ref _disposed) != 0)
         {
-            throw new S3RequestException(operation, S3FailureKind.Disposed, null, null);
+            throw ct.IsCancellationRequested
+                ? OperationScope.CallerCancellation(new OperationCanceledException(ct), ct)
+                : new S3RequestException(operation, S3FailureKind.Disposed, null, key);
         }
     }
 }

@@ -586,6 +586,51 @@ public class ListingWalkerTests
     }
 
     [Fact]
+    public async Task A_disposed_provider_failure_carries_the_key_as_the_mid_operation_one_does()
+    {
+        // Minors A6: the up-front Disposed failure had no key; the one raised in the middle of the same operation did.
+        var p = S3Test.Provider(S3Test.Serving(S3Test.Objects(("kb/a.md", "x"))));
+        p.Dispose();
+        var a = BundleKey.Parse("a.md");
+        Assert.Equal("S3 read failed: Disposed for 'a.md'", (await Assert.ThrowsAsync<S3RequestException>(async () => await p.ReadAsync(a, null, default))).Message);
+        Assert.Equal("S3 exists failed: Disposed for 'a.md'", (await Assert.ThrowsAsync<S3RequestException>(async () => await p.ExistsAsync(a, default))).Message);
+        Assert.Equal("S3 list failed: Disposed", (await Assert.ThrowsAsync<S3RequestException>(async () => await Names(p))).Message); // a listing has no key, mid-walk either
+        Assert.Equal("S3 list failed: Disposed", (await Assert.ThrowsAsync<S3RequestException>(async () => await p.GetVersionAsync(BundleLimits.Default, default))).Message);
+    }
+
+    [Fact]
+    public async Task An_already_cancelled_caller_is_honoured_before_the_disposal_as_OperationScope_Fail_orders_them()
+    {
+        // Minors A6: precedence cancellation, then disposal (OperationScope.Fail); the up-front check answered Disposed.
+        var p = S3Test.Provider(S3Test.Serving(S3Test.Objects(("kb/a.md", "x"))));
+        p.Dispose();
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+        var ct = cts.Token;
+        var a = BundleKey.Parse("a.md");
+        Func<Task>[] calls =
+        [
+            async () => await p.ReadAsync(a, null, ct),
+            async () => await p.ExistsAsync(a, ct),
+            async () => await Names(p, ct: ct),
+            async () => await p.GetVersionAsync(BundleLimits.Default, ct),
+        ];
+        foreach (var call in calls)
+        {
+            var e = await Assert.ThrowsAnyAsync<OperationCanceledException>(call);
+            Assert.Equal(ct, e.CancellationToken); // the caller's OWN token, as a host's `when (e.CancellationToken == ct)` expects
+        }
+
+        // Counter-proof: a live token on the same disposed provider is still Disposed.
+        Assert.Equal(S3FailureKind.Disposed, (await Assert.ThrowsAsync<S3RequestException>(async () => await p.ReadAsync(a, null, default))).Kind);
+
+        // And a cancelled token on a provider that is NOT disposed is a cancellation too (the operation's own path).
+        using var live = S3Test.Provider(S3Test.Serving(S3Test.Objects(("kb/a.md", "x"))));
+        var cancelled = await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await live.ReadAsync(a, null, ct));
+        Assert.Equal(ct, cancelled.CancellationToken);
+    }
+
+    [Fact]
     public async Task A_null_key_is_refused_by_ExistsAsync_as_by_ReadAsync_before_any_request()
     {
         // Minors A1: a null key used to ask, silently, about the bundle prefix's own folder marker (KeyPrefix + null).

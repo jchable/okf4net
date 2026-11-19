@@ -48,8 +48,8 @@ internal static class ErrorClassifier
             return e switch
             {
                 GuardException g => new S3RequestException(operation, g.Kind, null, key, g),
-                _ when IsIntegrity(e, 0) => new S3RequestException(operation, S3FailureKind.Integrity, null, key, e),
-                _ when Carries<FormatException>(e, 0) => new S3RequestException(operation, S3FailureKind.InvalidResponse, null, key, e),
+                _ when IsIntegrity(e) => new S3RequestException(operation, S3FailureKind.Integrity, null, key, e),
+                _ when Carries<FormatException>(e) => new S3RequestException(operation, S3FailureKind.InvalidResponse, null, key, e),
                 _ => new S3RequestException(operation, S3FailureKind.Transport, null, key, e),
             };
         }
@@ -77,33 +77,65 @@ internal static class ErrorClassifier
         return new S3RequestException(operation, kind, status, key, service);
     }
 
-    /// <summary>How deep <see cref="IsIntegrity"/> looks into a chain of wrappers: far past any real nesting, a bound all the same.</summary>
+    /// <summary>How deep <see cref="Find"/> looks into a chain of wrappers: far past any real nesting, a bound all the same.</summary>
     private const int MaxChainDepth = 16;
 
     /// <summary>
-    /// Whether <paramref name="e"/> is, or carries in its inner-exception chain, the SDK's hash-mismatch failure: a stream
-    /// wrapper (an IOException) or a task combinator (an AggregateException, every one of its inner exceptions) may carry
-    /// it rather than throw it bare.
+    /// How many exceptions <see cref="Find"/> examines in all, the root included, in depth-first order (minors A6): the
+    /// breadth bound the depth bound alone does not give — an AggregateException may hold any number of inner exceptions,
+    /// each a chain of its own. A task combinator over a handful of requests holds a handful; 64 is far past any real
+    /// one. A needle beyond the budget is NOT FOUND, and the failure is classified by the next rule (Transport).
     /// </summary>
-    private static bool IsIntegrity(Exception e, int depth)
+    internal const int MaxExceptionsVisited = 64;
+
+    /// <summary>
+    /// Whether <paramref name="match"/> holds for <paramref name="root"/> or an exception in its inner-exception chain
+    /// (an AggregateException contributing every one of its inner exceptions), within <see cref="MaxChainDepth"/> levels
+    /// and <see cref="MaxExceptionsVisited"/> exceptions in total. The one walk behind <see cref="IsIntegrity"/> and
+    /// <see cref="Carries{T}"/>: a stream wrapper (an IOException) or a task combinator may carry a failure rather than
+    /// throw it bare.
+    /// </summary>
+    private static bool Find(Exception root, Func<Exception, bool> match)
     {
-        if (depth > MaxChainDepth)
+        var budget = MaxExceptionsVisited;
+        return Visit(root, 0, match, ref budget);
+    }
+
+    private static bool Visit(Exception e, int depth, Func<Exception, bool> match, ref int budget)
+    {
+        if (depth > MaxChainDepth || budget <= 0)
         {
             return false;
         }
 
-        if (e is AmazonClientException c && c.Message.StartsWith(HashMismatchMessage, StringComparison.Ordinal))
+        budget--;
+        if (match(e))
         {
             return true;
         }
 
-        return e is AggregateException aggregate
-            ? aggregate.InnerExceptions.Any(inner => IsIntegrity(inner, depth + 1))
-            : e.InnerException is { } next && IsIntegrity(next, depth + 1);
+        if (e is AggregateException aggregate)
+        {
+            foreach (var inner in aggregate.InnerExceptions)
+            {
+                if (Visit(inner, depth + 1, match, ref budget))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        return e.InnerException is { } next && Visit(next, depth + 1, match, ref budget);
     }
 
+    /// <summary>Whether <paramref name="e"/> is, or carries (see <see cref="Find"/>), the SDK's hash-mismatch failure.</summary>
+    private static bool IsIntegrity(Exception e) =>
+        Find(e, x => x is AmazonClientException c && c.Message.StartsWith(HashMismatchMessage, StringComparison.Ordinal));
+
     /// <summary>
-    /// Whether <paramref name="e"/> is, or carries in its inner-exception chain (same walk and bound as
+    /// Whether <paramref name="e"/> is, or carries in its inner-exception chain (same walk and bounds as
     /// <see cref="IsIntegrity"/>), a <typeparamref name="T"/>. Used for <see cref="FormatException"/> (spec Annexe C5c,
     /// maintainer's decision 2026-11-19): measured on AWSSDK.S3 4.1.0, a single-part ETag that is not an MD5 hex digest
     /// makes the SDK's own MD5 check (AmazonS3ResponseHandler.ProcessResponseHandlers → AWSSDKUtils.HexStringToBytes →
@@ -113,21 +145,6 @@ internal static class ErrorClassifier
     /// a response. A request-side one (a <see cref="UriFormatException"/> is a FormatException) is not excluded by
     /// measurement: it would be labelled InvalidResponse instead of Transport, and both fail closed.
     /// </summary>
-    private static bool Carries<T>(Exception e, int depth)
-        where T : Exception
-    {
-        if (depth > MaxChainDepth)
-        {
-            return false;
-        }
-
-        if (e is T)
-        {
-            return true;
-        }
-
-        return e is AggregateException aggregate
-            ? aggregate.InnerExceptions.Any(inner => Carries<T>(inner, depth + 1))
-            : e.InnerException is { } next && Carries<T>(next, depth + 1);
-    }
+    private static bool Carries<T>(Exception e)
+        where T : Exception => Find(e, x => x is T);
 }

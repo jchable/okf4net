@@ -129,6 +129,49 @@ public class ErrorTests
         Assert.Equal(S3FailureKind.Transport, ((S3RequestException)OKF4net.Providers.S3.Internal.ErrorClassifier.Classify(S3Operation.Read, key, new IOException("x", other))).Kind);
     }
 
+    private static S3FailureKind KindOf(Exception e) =>
+        Assert.IsType<S3RequestException>(OKF4net.Providers.S3.Internal.ErrorClassifier.Classify(S3Operation.Read, BundleKey.Parse("a.md"), e)).Kind;
+
+    /// <summary>An AggregateException of <paramref name="width"/> failures, <paramref name="needle"/> at <paramref name="at"/> and a plain one elsewhere.</summary>
+    private static AggregateException Wide(int width, int at, Exception needle) =>
+        new(Enumerable.Range(0, width).Select(i => i == at ? needle : new InvalidOperationException($"filler {i}")));
+
+    /// <summary>
+    /// Minors A6: the walk over a chain of wrappers is bounded in depth AND in breadth. At most
+    /// <c>ErrorClassifier.MaxExceptionsVisited</c> exceptions are examined in all, the root included, in depth-first
+    /// order; a needle beyond that is DOCUMENTED as not found, and the failure is classified by the next rule.
+    /// </summary>
+    [Fact]
+    public void The_walk_over_an_AggregateException_is_bounded_in_breadth_and_its_edge_is_exact()
+    {
+        var max = OKF4net.Providers.S3.Internal.ErrorClassifier.MaxExceptionsVisited;
+        var mismatch = new Amazon.Runtime.AmazonClientException(OKF4net.Providers.S3.Internal.ErrorClassifier.HashMismatchMessage);
+        var format = new FormatException("not hex");
+
+        // Inside the cap: the root is visit 1, so the inner exception at index max - 2 is the last one examined.
+        Assert.Equal(S3FailureKind.Integrity, KindOf(Wide(max - 1, max - 2, mismatch)));
+        Assert.Equal(S3FailureKind.InvalidResponse, KindOf(Wide(max - 1, max - 2, format)));
+        Assert.Equal(S3FailureKind.Integrity, KindOf(Wide(12, 10, mismatch)));
+
+        // One past the edge, and far beyond it: not found, so classified by the next rule (Transport, here).
+        Assert.Equal(S3FailureKind.Transport, KindOf(Wide(max, max - 1, mismatch)));
+        Assert.Equal(S3FailureKind.Transport, KindOf(Wide(max, max - 1, format)));
+        Assert.Equal(S3FailureKind.Transport, KindOf(Wide(10_000, 9_000, mismatch)));
+
+        // A mismatch beyond the cap does not hide what the walk did see: a FormatException inside it is still found.
+        var both = new AggregateException(new[] { (Exception)format }.Concat(Enumerable.Range(0, max).Select(_ => (Exception)new InvalidOperationException())).Append(mismatch));
+        Assert.Equal(S3FailureKind.InvalidResponse, KindOf(both));
+    }
+
+    [Fact]
+    public void An_AggregateException_without_any_mismatch_is_not_Integrity()
+    {
+        // Counter-proof: the walk's answer is "no" for a chain that carries none, wide or deep, and Transport follows.
+        Assert.Equal(S3FailureKind.Transport, KindOf(Wide(20, -1, null!)));
+        Assert.Equal(S3FailureKind.Transport, KindOf(new AggregateException(new IOException("a"), new AggregateException(new IOException("b", new Amazon.Runtime.AmazonClientException("not the mismatch"))))));
+        Assert.Equal(S3FailureKind.Transport, KindOf(new AggregateException()));
+    }
+
     /// <summary>
     /// Spec Annexe C5c: a FormatException (the SDK's MD5 check on a non-hex single-part ETag) is InvalidResponse wherever
     /// it sits in the chain; a genuine transport failure stays Transport, and a hash mismatch stays Integrity.

@@ -71,7 +71,7 @@ public class ConsumersTests
         // source's 5 minutes never wins, so only the cancellation itself can end the operation in time.
         var options = new BundleLoadOptions { Limits = BundleLimits.Default with { RequestTimeout = TimeSpan.FromMinutes(10) } };
         var e = Assert.Throws<InvalidOperationException>(() => Bundle.Load(observed, options));
-        Assert.Equal("provider completed asynchronously; use the async overload", e.Message); // SyncBridge.IncompleteMessage (internal to the core)
+        Assert.Equal(SyncBridge.IncompleteMessage, e.Message); // the core's own constant (internal, visible to this assembly)
 
         // The bridge never waits, so where the abandoned operation stands when it is cancelled (permit, credentials,
         // request) is a race. Its END is not: the fake never answers, so the operation ends only by honouring the
