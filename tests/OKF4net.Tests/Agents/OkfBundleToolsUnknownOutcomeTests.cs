@@ -1,0 +1,107 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+#pragma warning disable CS0618 // the obsolete synchronous tool methods are the subject (#152): kept one version, bridged over a provider that completes synchronously
+using OKF4net.Agents;
+using OKF4net.Providers;
+
+namespace OKF4net.Tests.Agents;
+
+/// <summary>
+/// A write whose outcome is unknown (<see cref="BundleWriteOutcomeUnknownException"/>) is
+/// reported by the writer as an <c>Error:</c> text and never notified as committed, although
+/// its content may have landed. The tool set caches the loaded bundle, so each write tool
+/// drops that cache on an <c>Error:</c> result: the next read shows what the file holds.
+/// The cache is primed by a read before each write (a concept for the concept writes, the
+/// change log for <c>AppendLog</c>), so that a test goes red when the drop is removed.
+/// </summary>
+public class OkfBundleToolsUnknownOutcomeTests
+{
+    private const string Fm = "type: Metric\ntitle: DAU\ndescription: Daily active users.\n";
+
+    /// <summary>A filesystem provider whose every write commits and then fails with an unknown outcome, as a commit that took effect but whose success could not be established.</summary>
+    private sealed class CommitThenUnknown(FileSystemBundleProvider inner) : SyncTestProvider
+    {
+        public override string Id => inner.Id;
+
+        public override string Location => inner.Location;
+
+        public override BundleProviderCapabilities Capabilities => inner.Capabilities;
+
+        public override BundleKeyConstraints NativeConstraints => inner.NativeConstraints;
+
+        protected override BundleVersion GetVersionSync(BundleLimits limits) => inner.GetVersion(limits);
+
+        protected override IEnumerable<BundleListing> EnumerateSync(BundleKey? prefix, BundleLimits limits) => inner.Enumerate(prefix, limits);
+
+        protected override BundleObject ReadSync(BundleKey key, BundleObjectVersion? expected) => inner.Read(key, expected);
+
+        protected override bool ExistsSync(BundleKey key) => inner.Exists(key);
+
+        protected override BundleObjectVersion WriteSync(BundleKey key, ReadOnlyMemory<byte> content, BundleWriteCondition condition)
+        {
+            inner.Write(key, content, condition);
+            throw new BundleWriteOutcomeUnknownException(key, new IOException("simulated: the commit's outcome could not be read back"));
+        }
+
+        protected override void DeleteSync(BundleKey key, BundleWriteCondition condition) => inner.Delete(key, condition);
+    }
+
+    private static OkfBundleTools ToolsOver(TempDir tmp)
+    {
+        tmp.Write("metrics/dau.md", "---\n" + Fm + "---\n\nOLD BODY\n");
+        return new OkfBundleTools(tmp.Path, orchestrator: null, new CommitThenUnknown(new FileSystemBundleProvider(tmp.Path)));
+    }
+
+    [Fact]
+    public void WriteConcept_with_an_unknown_outcome_drops_the_cache()
+    {
+        using var tmp = new TempDir();
+        var tools = ToolsOver(tmp);
+        Assert.Contains("OLD BODY", tools.ReadConcept("metrics/dau"), StringComparison.Ordinal);
+
+        var result = tools.WriteConcept("metrics/dau", Fm, "NEW BODY\n");
+
+        Assert.StartsWith("Error: ", result, StringComparison.Ordinal);
+        Assert.Contains("unknown outcome", result, StringComparison.Ordinal);
+        Assert.Contains("NEW BODY", tools.ReadConcept("metrics/dau"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Verify_with_an_unknown_outcome_drops_the_cache()
+    {
+        using var tmp = new TempDir();
+        var tools = ToolsOver(tmp);
+        Assert.DoesNotContain("human:ada", tools.ReadConcept("metrics/dau"), StringComparison.Ordinal);
+
+        var result = tools.Verify("metrics/dau", "human:ada");
+
+        Assert.Contains("unknown outcome", result, StringComparison.Ordinal);
+        Assert.Contains("human:ada", tools.ReadConcept("metrics/dau"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AppendToConceptAtomic_with_an_unknown_outcome_drops_the_cache()
+    {
+        using var tmp = new TempDir();
+        var tools = ToolsOver(tmp);
+        Assert.DoesNotContain("APPENDED", tools.ReadConcept("metrics/dau"), StringComparison.Ordinal);
+
+        var result = tools.AppendToConceptAtomic("metrics/dau", Fm, body => (body ?? string.Empty) + "APPENDED\n");
+
+        Assert.StartsWith("Error: ", result, StringComparison.Ordinal);
+        Assert.Contains("APPENDED", tools.ReadConcept("metrics/dau"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AppendLog_with_an_unknown_outcome_drops_the_cache_so_that_the_entry_is_seen()
+    {
+        using var tmp = new TempDir();
+        var tools = ToolsOver(tmp);
+        Assert.StartsWith("No changes since 2000-01-01.", tools.ChangesSince("2000-01-01"), StringComparison.Ordinal); // primes the cache: no log.md yet
+
+        var result = tools.AppendLog("Update", "an entry");
+
+        Assert.StartsWith("Error: ", result, StringComparison.Ordinal);
+        Assert.Contains("unknown outcome", result, StringComparison.Ordinal);
+        Assert.Contains("an entry", tools.ChangesSince("2000-01-01"), StringComparison.Ordinal);
+    }
+}

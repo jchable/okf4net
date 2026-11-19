@@ -160,6 +160,45 @@ public class MachineOutputTests
     }
 
     [Fact]
+    public void Validate_json_projects_a_malformed_generated_completely()
+    {
+        // #271: a `generated` that is not a mapping (§5.2) is reported as
+        // Diagnostic(Severity.Warning, concept.Path, concept.Id, "generated must
+        // be a `{by, at}` mapping", DiagnosticCode.GeneratedMalformed, "generated"),
+        // the counterpart of VerifiedMalformed. The concept carries every
+        // recommended field, so it is the only diagnostic; a warning keeps the
+        // bundle conformant and the exit code 0.
+        using var tmp = new TempDir();
+        tmp.Write(
+            "a.md",
+            "---\ntype: Note\ntitle: A\ndescription: d\nresource: https://example.com/a\ntags: [x]\ngenerated: \"by: human:me at: 2026-07-27\"\n---\n\nBody.\n");
+
+        var r = Run("validate", tmp.Path, "--as-of", AsOf, "--json");
+        Assert.Equal(0, r.Code);
+        Assert.EndsWith("\n", r.Out, StringComparison.Ordinal);
+        AssertRawBundle(tmp.Path, r.Out);
+
+        var b = Fwd(tmp.Path);
+        var expected = $$"""
+        {
+          "bundle": "{{b}}",
+          "asOf": "2026-09-25",
+          "evaluatedAt": "2026-09-25T00:00:00Z",
+          "conformant": true,
+          "conceptCount": 1,
+          "errorCount": 0,
+          "warningCount": 1,
+          "infoCount": 0,
+          "diagnostics": [
+            { "severity": "warning", "code": "GeneratedMalformed", "path": "{{b}}/a.md", "conceptId": "a", "field": "generated", "message": "generated must be a `{by, at}` mapping" }
+          ]
+        }
+        """;
+
+        JsonShape.AssertEquivalent(expected, NormalizeJsonPaths(r.Out));
+    }
+
+    [Fact]
     public void Info_json_projects_appendix_a_completely()
     {
         var r = Run("info", AppendixA, "--json");
@@ -238,12 +277,12 @@ public class MachineOutputTests
           "asOf": "2099-06-01",
           "evaluatedAt": "2099-06-01T00:00:00Z",
           "conceptCount": 2,
-          "query": { "stale": true, "trust": null, "status": null, "type": null },
+          "query": { "stale": true, "trust": null, "status": null, "type": null, "reviewOutdated": false },
           "trust": { "unverified": 1, "machine-confirmed": 0, "human-reviewed": 1 },
           "status": { "draft": 0, "stable": 2, "deprecated": 0 },
           "staleCount": 1,
           "findings": [
-            { "conceptId": "metrics/dau", "path": "{{b}}/metrics/dau.md", "type": "Metric", "title": "Daily Active Users", "trust": "human-reviewed", "status": "stable", "staleAfter": "2099-01-01T00:00:00Z", "stale": true }
+            { "conceptId": "metrics/dau", "path": "{{b}}/metrics/dau.md", "type": "Metric", "title": "Daily Active Users", "trust": "human-reviewed", "status": "stable", "staleAfter": "2099-01-01T00:00:00Z", "stale": true, "lastVerifiedAt": "2026-07-03T00:00:00Z", "lastChangedAt": "2026-07-01T00:00:00Z", "reviewOutdated": false }
           ]
         }
         """;
@@ -266,7 +305,7 @@ public class MachineOutputTests
           "asOf": "2026-09-25",
           "evaluatedAt": "2026-09-25T00:00:00Z",
           "conceptCount": 2,
-          "query": { "stale": true, "trust": null, "status": null, "type": null },
+          "query": { "stale": true, "trust": null, "status": null, "type": null, "reviewOutdated": false },
           "trust": { "unverified": 1, "machine-confirmed": 0, "human-reviewed": 1 },
           "status": { "draft": 0, "stable": 2, "deprecated": 0 },
           "staleCount": 0,
@@ -294,12 +333,12 @@ public class MachineOutputTests
           "asOf": "2099-06-01",
           "evaluatedAt": "2099-06-01T00:00:00Z",
           "conceptCount": 2,
-          "query": { "stale": false, "trust": ["human-reviewed"], "status": "stable", "type": "Metric" },
+          "query": { "stale": false, "trust": ["human-reviewed"], "status": "stable", "type": "Metric", "reviewOutdated": false },
           "trust": { "unverified": 1, "machine-confirmed": 0, "human-reviewed": 1 },
           "status": { "draft": 0, "stable": 2, "deprecated": 0 },
           "staleCount": 1,
           "findings": [
-            { "conceptId": "metrics/dau", "path": "{{b}}/metrics/dau.md", "type": "Metric", "title": "Daily Active Users", "trust": "human-reviewed", "status": "stable", "staleAfter": "2099-01-01T00:00:00Z", "stale": true }
+            { "conceptId": "metrics/dau", "path": "{{b}}/metrics/dau.md", "type": "Metric", "title": "Daily Active Users", "trust": "human-reviewed", "status": "stable", "staleAfter": "2099-01-01T00:00:00Z", "stale": true, "lastVerifiedAt": "2026-07-03T00:00:00Z", "lastChangedAt": "2026-07-01T00:00:00Z", "reviewOutdated": false }
           ]
         }
         """;
@@ -331,13 +370,74 @@ public class MachineOutputTests
           "asOf": "2026-09-25",
           "evaluatedAt": "2026-09-25T00:00:00Z",
           "conceptCount": 3,
-          "query": { "stale": false, "trust": null, "status": "draft", "type": null },
+          "query": { "stale": false, "trust": null, "status": "draft", "type": null, "reviewOutdated": false },
           "trust": { "unverified": 1, "machine-confirmed": 2, "human-reviewed": 0 },
           "status": { "draft": 2, "stable": 0, "deprecated": 1 },
           "staleCount": 0,
           "findings": [
-            { "conceptId": "d1", "path": "{{b}}/d1.md", "type": "Note", "title": "D1", "trust": "machine-confirmed", "status": "draft", "staleAfter": null, "stale": false },
-            { "conceptId": "d2", "path": "{{b}}/d2.md", "type": "Note", "title": "D2", "trust": "machine-confirmed", "status": "draft", "staleAfter": null, "stale": false }
+            { "conceptId": "d1", "path": "{{b}}/d1.md", "type": "Note", "title": "D1", "trust": "machine-confirmed", "status": "draft", "staleAfter": null, "stale": false, "lastVerifiedAt": "2026-06-01T00:00:00Z", "lastChangedAt": null, "reviewOutdated": false },
+            { "conceptId": "d2", "path": "{{b}}/d2.md", "type": "Note", "title": "D2", "trust": "machine-confirmed", "status": "draft", "staleAfter": null, "stale": false, "lastVerifiedAt": "2026-06-01T00:00:00Z", "lastChangedAt": null, "reviewOutdated": false }
+          ]
+        }
+        """;
+
+        JsonShape.AssertEquivalent(expected, NormalizeJsonPaths(r.Out));
+    }
+
+    [Fact]
+    public void Audit_json_review_dates_keep_fractional_seconds_so_the_comparison_is_reproducible()
+    {
+        // #156: a review at 10:00:00.1Z and a change at 10:00:00.9Z are different instants and
+        // `reviewOutdated` is true; the two dates must not both print as 10:00:00Z. A whole-second
+        // stamp keeps its historical spelling, and a trailing zero of a fraction is dropped.
+        using var tmp = new TempDir();
+        tmp.Write("frac.md", "---\ntype: Note\ntitle: F\ngenerated: { by: okf4net/0.8.0, at: 2026-07-05T10:00:00.9Z }\nverified:\n  - { by: human:ada, at: 2026-07-05T10:00:00.1Z }\n---\n\nbody\n");
+        tmp.Write("whole.md", "---\ntype: Note\ntitle: W\ngenerated: { by: okf4net/0.8.0, at: 2026-07-05T10:00:00.50Z }\nverified:\n  - { by: human:ada, at: 2026-07-05T10:00:00Z }\n---\n\nbody\n");
+
+        var r = Run("audit", tmp.Path, "--as-of", AsOf, "--review-outdated", "--json");
+        Assert.Equal(0, r.Code);
+
+        var json = NormalizeJsonPaths(r.Out);
+        Assert.Contains("\"lastVerifiedAt\":\"2026-07-05T10:00:00.1Z\",\"lastChangedAt\":\"2026-07-05T10:00:00.9Z\",\"reviewOutdated\":true", json);
+        Assert.Contains("\"lastVerifiedAt\":\"2026-07-05T10:00:00Z\",\"lastChangedAt\":\"2026-07-05T10:00:00.5Z\",\"reviewOutdated\":true", json);
+    }
+
+    [Fact]
+    public void Audit_json_projects_a_review_outdated_query_completely()
+    {
+        // #156, hand-derived. `changed` was regenerated after its latest stamp (the human one at
+        // 10:00, not the earlier process one): outdated. `legacy` has no `generated` and falls back to
+        // the §13.1 `timestamp`, later than its review: outdated. `offset` changed at 12:00+02:00 =
+        // 10:00Z, the instant of its review: not strictly later, kept out. `unreadable` has one
+        // stamp whose `at` does not read and one that does (09:00Z), before its change: outdated, its
+        // latest readable stamp counting. `never` has no stamp: no review to be outdated.
+        using var tmp = new TempDir();
+        tmp.Write("changed.md", "---\ntype: Note\ntitle: C\ngenerated: { by: okf4net/0.8.0, at: 2026-07-05T11:00:00Z }\nverified:\n  - { by: human:ada, at: 2026-07-05T10:00:00Z }\n  - { by: process:bot, at: 2026-07-01T00:00:00Z }\n---\n\nbody\n");
+        tmp.Write("legacy.md", "---\ntype: Note\ntitle: L\ntimestamp: 2026-07-09T00:00:00Z\nverified:\n  - { by: human:ada, at: 2026-07-08T00:00:00Z }\n---\n\nbody\n");
+        tmp.Write("offset.md", "---\ntype: Note\ntitle: O\ngenerated: { by: okf4net/0.8.0, at: 2026-07-05T12:00:00+02:00 }\nverified:\n  - { by: human:ada, at: 2026-07-05T10:00:00Z }\n---\n\nbody\n");
+        tmp.Write("unreadable.md", "---\ntype: Note\ntitle: U\ngenerated: { by: okf4net/0.8.0, at: 2026-07-05T10:00:00Z }\nverified:\n  - { by: human:ada, at: last tuesday }\n  - { by: process:bot, at: 2026-07-05T09:00:00Z }\n---\n\nbody\n");
+        tmp.Write("never.md", "---\ntype: Note\ntitle: N\ngenerated: { by: okf4net/0.8.0, at: 2026-07-05T10:00:00Z }\n---\n\nbody\n");
+
+        var r = Run("audit", tmp.Path, "--as-of", AsOf, "--review-outdated", "--json");
+        Assert.Equal(0, r.Code);
+        Assert.EndsWith("\n", r.Out, StringComparison.Ordinal);
+        AssertRawBundle(tmp.Path, r.Out);
+
+        var b = Fwd(tmp.Path);
+        var expected = $$"""
+        {
+          "bundle": "{{b}}",
+          "asOf": "2026-09-25",
+          "evaluatedAt": "2026-09-25T00:00:00Z",
+          "conceptCount": 5,
+          "query": { "stale": false, "trust": null, "status": null, "type": null, "reviewOutdated": true },
+          "trust": { "unverified": 1, "machine-confirmed": 0, "human-reviewed": 4 },
+          "status": { "draft": 0, "stable": 5, "deprecated": 0 },
+          "staleCount": 0,
+          "findings": [
+            { "conceptId": "changed", "path": "{{b}}/changed.md", "type": "Note", "title": "C", "trust": "human-reviewed", "status": "stable", "staleAfter": null, "stale": false, "lastVerifiedAt": "2026-07-05T10:00:00Z", "lastChangedAt": "2026-07-05T11:00:00Z", "reviewOutdated": true },
+            { "conceptId": "legacy", "path": "{{b}}/legacy.md", "type": "Note", "title": "L", "trust": "human-reviewed", "status": "stable", "staleAfter": null, "stale": false, "lastVerifiedAt": "2026-07-08T00:00:00Z", "lastChangedAt": "2026-07-09T00:00:00Z", "reviewOutdated": true },
+            { "conceptId": "unreadable", "path": "{{b}}/unreadable.md", "type": "Note", "title": "U", "trust": "human-reviewed", "status": "stable", "staleAfter": null, "stale": false, "lastVerifiedAt": "2026-07-05T09:00:00Z", "lastChangedAt": "2026-07-05T10:00:00Z", "reviewOutdated": true }
           ]
         }
         """;

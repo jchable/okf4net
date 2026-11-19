@@ -8,7 +8,9 @@ namespace OKF4net.Catalog;
 /// <param name="Code">The specific condition.</param>
 /// <param name="SourceId">
 /// The <see cref="KnowledgeCatalogSource.Id"/> the diagnostic is about, for a
-/// per-source condition (<see cref="KnowledgeDiagnosticCode.SourceUnavailable"/>);
+/// per-source condition (<see cref="KnowledgeDiagnosticCode.SourceUnavailable"/>,
+/// <see cref="KnowledgeDiagnosticCode.SourceStale"/>,
+/// <see cref="KnowledgeDiagnosticCode.DuplicateDirectory"/>);
 /// <see langword="null"/> for a catalog-wide condition
 /// (<see cref="KnowledgeDiagnosticCode.NoEnabledSources"/>,
 /// <see cref="KnowledgeDiagnosticCode.NoMatches"/>).

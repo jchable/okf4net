@@ -42,7 +42,8 @@ $ dotnet tool restore
 $ dotnet okf validate ./knowledge`
 
 const toolInstallHtml = `$ dotnet tool install -g OKF4net.Cli        <span class="c"># global</span>
-$ dnx OKF4net.Cli --yes validate ./bundle   <span class="c"># once, nothing installed</span>`
+$ dnx OKF4net.Cli validate ./bundle         <span class="c"># once, nothing installed</span>
+$ dnx OKF4net.Cli --yes validate ./bundle   <span class="c"># same, no prompt (.NET 11 SDK)</span>`
 
 const curlInstallHtml = `$ curl -sSL https://raw.githubusercontent.com/jchable/okf4net/main/packaging/install.sh | sh`
 

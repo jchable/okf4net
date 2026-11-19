@@ -1,0 +1,25 @@
+<!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Child-process harness for the S3 provider's hostile-environment test (spec T1, D2, D3; see Program.cs).
+    In OKF4net.sln, like YamlHostileProbe: a solution build then gives it the solution's configuration (outside
+    the .sln, "dotnet build OKF4net.sln -c Release" built it in Debug only and the tests, run in Release,
+    did not find it). OKF4net.Tests runs it as a child process (dotnet S3HostileEnvProbe.dll ...), so
+    AWS_* variables, proxy variables and an AWS config file can be set per run without touching the test
+    host. It drives the provider through its PUBLIC constructor only (D10 grants internals to OKF4net.Tests
+    alone). The test project's ProjectReference to it, with ReferenceOutputAssembly="false", builds it first,
+    in the same configuration.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\OKF4net.Providers.S3\OKF4net.Providers.S3.csproj" />
+  </ItemGroup>
+
+</Project>

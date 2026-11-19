@@ -58,6 +58,9 @@ public class AgentIntegrationTests
 
         var scriptedClient = new ScriptedChatClient(
         [
+            // Read first (spec §5.4, D1): okf_write_concept creates only a concept this
+            // session has seen absent, and rewrites only one it has read in full.
+            ScriptStep.Call("okf_read_concept", new Dictionary<string, object?> { ["conceptId"] = "tables/refunds" }),
             ScriptStep.Call("okf_write_concept", new Dictionary<string, object?>
             {
                 ["conceptId"] = "tables/refunds",
@@ -102,17 +105,19 @@ public class AgentIntegrationTests
         Assert.Contains("refunds.md", tablesIndex);
         Assert.Contains("Refunds", tablesIndex);
 
-        // Four round-trips to the scripted "model": the three tool-call
-        // turns above, plus the final plain-text-answer turn.
-        Assert.Equal(4, scriptedClient.TurnsTaken);
+        // Five round-trips to the scripted "model": the four tool-call
+        // turns above (the read that precedes the write included), plus the
+        // final plain-text-answer turn.
+        Assert.Equal(5, scriptedClient.TurnsTaken);
 
         // The scripted client observed the real FunctionResultContent for
-        // each of the three tool calls, in order -- proof the framework's
+        // each of the four tool calls, in order -- proof the framework's
         // pipeline round-tripped genuine tool output back to the "model".
-        Assert.Equal(3, scriptedClient.ObservedFunctionResults.Count);
-        Assert.Contains("Written", scriptedClient.ObservedFunctionResults[0]);
+        Assert.Equal(4, scriptedClient.ObservedFunctionResults.Count);
+        Assert.Contains("not found", scriptedClient.ObservedFunctionResults[0]);
+        Assert.Contains("Written", scriptedClient.ObservedFunctionResults[1]);
 
-        // ObservedFunctionResults[1] (okf_regenerate_indexes's result) is
+        // ObservedFunctionResults[2] (okf_regenerate_indexes's result) is
         // not content-asserted here: its actual effect (tables/index.md
         // listing the new concept) is already verified above by reading the
         // regenerated index.md straight off disk, which is the stronger
@@ -123,8 +128,8 @@ public class AgentIntegrationTests
         // with OKF v0.1" and could never fail -- assert the success marker
         // (BundleValidator's verdict line, e.g. "✓ conformant with OKF
         // v0.1") and explicitly rule out the failure marker.
-        Assert.Contains("✓ conformant", scriptedClient.ObservedFunctionResults[2]);
-        Assert.DoesNotContain("✗", scriptedClient.ObservedFunctionResults[2]);
+        Assert.Contains("✓ conformant", scriptedClient.ObservedFunctionResults[3]);
+        Assert.DoesNotContain("✗", scriptedClient.ObservedFunctionResults[3]);
     }
 
     /// <summary>

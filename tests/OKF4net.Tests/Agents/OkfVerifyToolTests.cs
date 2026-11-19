@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+#pragma warning disable CS0618 // the obsolete synchronous tool methods are the subject (#152): kept one version, bridged over a provider that completes synchronously
 using Microsoft.Extensions.AI;
 using OKF4net.Agents;
 
@@ -74,7 +75,7 @@ public class OkfVerifyToolTests
             "metrics/dau",
             "human:ada\nrecorded secrets/master-key  human:ceo  2020-01-01T00:00:00Z");
 
-        Assert.Equal("Error: a §7 actor must not contain control characters.", text);
+        Assert.Equal("Error: a §7 actor must not contain control, bidirectional or invisible format characters.", text);
         Assert.DoesNotContain("recorded", text);
         Assert.Equal(before, File.ReadAllText(Path.Combine(tmp.Path, "metrics", "dau.md")));
     }
@@ -418,15 +419,11 @@ public class OkfVerifyToolTests
             // outcome.Message + "\n";`, and not reordered after the error
             // line. Note: unlike the CLI's own equivalent black-box test
             // (CliTests.Verify_prints_the_records_that_landed_before_a_later_write_failure),
-            // this deliberately does not assert on "already written: a" --
-            // WriteValidatedContentLocked does not itself catch
-            // UnauthorizedAccessException (only BundleConceptWriter's OUTER
-            // RunTool does, generically, with no knowledge of `records`), so
-            // a genuine I/O failure here never reaches the per-record
-            // "{writeResult} — already written: ..." branch at all; that
-            // branch is only reachable via the late reparse-point guard's
-            // returned (not thrown) error string. Confirmed empirically by
-            // running this exact scenario before writing this assertion.
+            // this assertion pins only the order of the lines, not the
+            // wording of the failure -- the message depends on the platform's
+            // I/O error. The write loop catches the provider's exception
+            // itself (Translate), so a genuine I/O failure does reach the
+            // per-record "{writeResult} — already written: ..." branch.
             Assert.StartsWith("recorded a  human:ada  2026-08-28T09:14:00Z\n", text);
             Assert.DoesNotContain("recorded b", text);
             Assert.Contains("Error:", text);

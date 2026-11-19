@@ -57,12 +57,12 @@ Narrate(
     "as a message, never as an exception.");
 
 Console.WriteLine();
-Console.WriteLine($"tools.Search(\"{SearchQuery}\")   // what okf_search runs");
-PrintIndented(tools.Search(SearchQuery), maxLines: 20);
+Console.WriteLine($"tools.SearchAsync(\"{SearchQuery}\")   // what okf_search runs");
+PrintIndented(await tools.SearchAsync(SearchQuery), maxLines: 20);
 
 Console.WriteLine();
-Console.WriteLine($"tools.ReadConcept(\"{ConceptId}\")   // what okf_read_concept runs");
-PrintIndented(tools.ReadConcept(ConceptId), maxLines: 16);
+Console.WriteLine($"tools.ReadConceptAsync(\"{ConceptId}\")   // what okf_read_concept runs");
+PrintIndented(await tools.ReadConceptAsync(ConceptId), maxLines: 16);
 
 // ---------------------------------------------------------------------------
 PrintHeader("3. The same tools behind a Microsoft Agent Framework agent");

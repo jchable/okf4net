@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+#pragma warning disable CS0618 // pins the obsolete path-based projections (lot D): the strings they always were, until their removal
 namespace OKF4net.Tests;
 
 /// <summary>
@@ -380,6 +381,33 @@ public class ValidateTests
         Assert.DoesNotContain(report.Diagnostics, d => d.Message.Contains("index.md"));
     }
 
+    /// <summary>
+    /// #258: a log that opens with a <c>---</c> thematic break (not frontmatter: the region
+    /// up to the next <c>---</c> is no YAML mapping) still has every date heading checked —
+    /// a heading inside that region included.
+    /// </summary>
+    [Fact]
+    public void A_log_opening_with_a_thematic_break_still_has_its_date_headings_checked()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("log.md", "---\n## 2026-13-45\n* a\n---\n## 2026-07-21\n* b\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        var diag = Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.LogDateInvalid);
+        Assert.Equal("log date heading is not ISO-8601 `YYYY-MM-DD`: \"2026-13-45\"", diag.Message);
+    }
+
+    /// <summary>#258: a real frontmatter block in a log is not log content: a block-scalar line in it that looks like a day heading is not checked as one.</summary>
+    [Fact]
+    public void A_log_frontmatter_line_is_not_checked_as_a_date_heading()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("log.md", "---\ntype: Log\nnotes: |\n  ## not-a-date\n---\n\n## 2026-07-21\n* b\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.LogDateInvalid);
+    }
+
     [Fact]
     public void Invalid_log_date_heading_is_an_error()
     {
@@ -522,6 +550,57 @@ public class ValidateTests
         var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\ngenerated: {at: '2026-07-27'}\n");
         Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("generated is missing required `by`") && d.Code == DiagnosticCode.GeneratedMissingBy && d.Field == "generated.by");
         Assert.True(r.IsConformant);
+    }
+
+    [Theory]
+    [InlineData("generated: \"by: human:me at: 2026-07-27\"\n")] // the #271 case: a quoted scalar
+    [InlineData("generated: human:me\n")]
+    [InlineData("generated: [human:me]\n")]
+    [InlineData("generated:\n  - by: human:me\n")]
+    [InlineData("generated: ''\n")]
+    public void Generated_not_a_mapping_warns_but_stays_conformant(string generated)
+    {
+        // #271: Trust.ParseGenerated reads only a mapping, so before this code a
+        // non-mapping `generated` (§5.2: "a { by, at } mapping") was dropped silently.
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\n" + generated);
+        var d = Assert.Single(r.Diagnostics, d => d.Code == DiagnosticCode.GeneratedMalformed);
+        Assert.Equal(Severity.Warning, d.Severity);
+        Assert.Equal("generated must be a `{by, at}` mapping", d.Message);
+        Assert.Equal("generated", d.Field);
+        Assert.DoesNotContain(r.Diagnostics, x => x.Code is DiagnosticCode.GeneratedMissingBy or DiagnosticCode.GeneratedInvalidActor);
+        Assert.True(r.IsConformant);
+    }
+
+    [Theory]
+    [InlineData("")]               // absent
+    [InlineData("generated:\n")]   // explicit null, like `verified:`
+    [InlineData("generated: {by: 'human:me', at: '2026-07-27T00:00:00Z'}\n")]
+    [InlineData("generated: {at: '2026-07-27T00:00:00Z'}\n")] // GeneratedMissingBy's case, not this one
+    public void Generated_absent_null_or_mapping_is_not_malformed(string generated)
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\n" + generated);
+        Assert.DoesNotContain(r.Diagnostics, d => d.Code == DiagnosticCode.GeneratedMalformed);
+    }
+
+    [Theory]
+    [InlineData("generated: {by: , at: '2026-07-27T00:00:00Z'}\n", DiagnosticCode.GeneratedMissingBy)]
+    [InlineData("generated: {by: [human:me], at: '2026-07-27T00:00:00Z'}\n", DiagnosticCode.GeneratedMissingBy)]
+    [InlineData("generated: {by: '', at: '2026-07-27T00:00:00Z'}\n", DiagnosticCode.GeneratedInvalidActor)]
+    public void Generated_mapping_without_a_usable_by_is_already_reported(string generated, DiagnosticCode expected)
+    {
+        // #271 (b): a mapping with no non-empty `by` was already covered by the existing
+        // codes; GeneratedMalformed is for the shape of `generated` itself only.
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\n" + generated);
+        Assert.Contains(r.Of(Severity.Warning), d => d.Code == expected && d.Field == "generated.by");
+        Assert.DoesNotContain(r.Diagnostics, d => d.Code == DiagnosticCode.GeneratedMalformed);
+    }
+
+    [Fact]
+    public void GeneratedMalformed_is_appended_after_every_existing_code()
+    {
+        // New members are appended, never inserted: a consumer compares codes by value.
+        Assert.Equal(DiagnosticCode.GeneratedMalformed, Enum.GetValues<DiagnosticCode>().Max());
+        Assert.Equal((int)DiagnosticCode.KeyNotPortable + 1, (int)DiagnosticCode.GeneratedMalformed);
     }
 
     [Fact]
@@ -734,21 +813,144 @@ public class ValidateTests
     /// <c>FrontmatterResourceClassifier.KindOf</c>), so suggesting the
     /// concept-relative <c>./</c> form would contradict what was written --
     /// even though a file happens to sit beside the concept under the bare
-    /// name. Covers both accepted root-relative spellings; the code handles
-    /// them symmetrically (<c>StartsWith('/') || StartsWith('\\')</c>).
+    /// name. The backslash spelling is refused outright, on every OS, and has its own test
+    /// (<c>A_backslash_rooted_path_is_unsafe_on_every_os_and_gets_no_hint</c>).
     /// </summary>
-    [Theory]
-    [InlineData("/query.sql")]
-    [InlineData("\\query.sql")]
-    public void A_rooted_bare_path_gets_no_concept_relative_hint_even_if_a_sibling_file_exists(string rootedRawPath)
+    [Fact]
+    public void A_rooted_bare_path_gets_no_concept_relative_hint_even_if_a_sibling_file_exists()
     {
         using var tmp = new TempDir();
-        tmp.Write("computations/rev.md", $"---\ntype: Attested Computation\ntitle: R\ndescription: D\nruntime: python\ncomputation: {rootedRawPath}\n---\n");
+        tmp.Write("computations/rev.md", "---\ntype: Attested Computation\ntitle: R\ndescription: D\nruntime: python\ncomputation: /query.sql\n---\n");
         tmp.Write("computations/query.sql", "SELECT 1");
         tmp.Write("index.md", "---\ntype: Index\ntitle: I\ndescription: D\n---\n");
         var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
         var d = Assert.Single(report.Diagnostics, x => x.Code == DiagnosticCode.FrontmatterPathMissing);
         Assert.DoesNotContain("a file exists at", d.Message);
+    }
+
+    /// <summary>
+    /// The backslash spelling of the same root-relative statement: a backslash is no
+    /// separator in a key, so the resolver refuses it on every OS (spec §2, point 7) and
+    /// the validator reports <see cref="DiagnosticCode.FrontmatterPathUnsafe"/> instead of
+    /// a missing file — still with no concept-relative hint.
+    /// </summary>
+    [Fact]
+    public void A_backslash_rooted_path_is_unsafe_on_every_os_and_gets_no_hint()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("computations/rev.md", "---\ntype: Attested Computation\ntitle: R\ndescription: D\nruntime: python\ncomputation: \\query.sql\n---\n");
+        tmp.Write("computations/query.sql", "SELECT 1");
+        tmp.Write("index.md", "---\ntype: Index\ntitle: I\ndescription: D\n---\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        var d = Assert.Single(report.Diagnostics, x => x.Code == DiagnosticCode.FrontmatterPathUnsafe);
+        Assert.DoesNotContain("a file exists at", d.Message);
+        Assert.DoesNotContain(report.Diagnostics, x => x.Code == DiagnosticCode.FrontmatterPathMissing);
+    }
+
+    /// <summary>
+    /// A value that resolves to the bundle root, or ends with <c>/</c>, names no object: the
+    /// validator reports it as <c>dev</c> did (its filesystem resolver asked <c>File.Exists</c>
+    /// of a directory, or of a path ending with a separator, and got <c>false</c>) — a
+    /// <see cref="DiagnosticCode.FrontmatterPathMissing"/> with no hint, even with a file
+    /// present under the same name. A value climbing above the root stays
+    /// <see cref="DiagnosticCode.FrontmatterPathUnsafe"/>.
+    /// </summary>
+    [Theory]
+    [InlineData("p.md", "/", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("p.md", "//", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("p.md", ".", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("p.md", "./", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("p.md", "sub/..", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("sub/q.md", "../", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("sub/q.md", "./", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("p.md", "references/", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("p.md", "references/a.sql/", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("p.md", "/references/a.sql/", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("sub/q.md", "../references/a.sql/", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("sub/q.md", "references/a.sql/", DiagnosticCode.FrontmatterPathMissing)]
+    [InlineData("p.md", "../", DiagnosticCode.FrontmatterPathUnsafe)]
+    [InlineData("p.md", "../references/a.sql/", DiagnosticCode.FrontmatterPathUnsafe)]
+    [InlineData("sub/q.md", "../../", DiagnosticCode.FrontmatterPathUnsafe)]
+    public void A_path_naming_the_root_or_a_prefix_is_missing_and_one_above_the_root_unsafe(string concept, string raw, DiagnosticCode expected)
+    {
+        using var tmp = new TempDir();
+        tmp.Write(concept, $"---\ntype: Note\ntitle: T\ndescription: D\nresource: '{raw}'\n---\n");
+        tmp.Write("references/a.sql", "SELECT 1");
+        tmp.Write("sub/references/a.sql", "SELECT 1"); // a concept-relative twin: still no hint
+        var bundle = Bundle.Load(tmp.Path);
+        var d = Assert.Single(BundleValidator.Validate(bundle).Diagnostics, x => x.Code is DiagnosticCode.FrontmatterPathMissing or DiagnosticCode.FrontmatterPathUnsafe);
+        Assert.Equal(expected, d.Code);
+        var verdict = expected == DiagnosticCode.FrontmatterPathMissing ? "not found" : "escapes the bundle";
+        Assert.Equal($"frontmatter path 'resource' → '{raw}' {verdict}", d.Message);
+
+        bundle.TryResolveResourceKey(bundle.Concepts.Single(), raw, out _, out var status);
+        Assert.Equal(expected == DiagnosticCode.FrontmatterPathMissing ? ResourceResolutionStatus.Missing : ResourceResolutionStatus.Unsafe, status);
+    }
+
+    /// <summary>
+    /// A value holding U+0000 is unsafe whatever follows it: <c>Path.GetFullPath</c> threw on it
+    /// on <c>dev</c>, even when a later <c>..</c> cancelled the segment. The YAML double-quoted
+    /// <c>\0</c> escape is what lets such a value through the frontmatter parser.
+    /// </summary>
+    [Theory]
+    [InlineData("\\0/..", "\0/..")]
+    [InlineData("/\\0/..", "/\0/..")]
+    [InlineData("\\0/../references/a.sql", "\0/../references/a.sql")]
+    public void A_value_holding_a_nul_is_unsafe_even_when_a_later_dotdot_cancels_it(string yamlEscaped, string raw)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("p.md", $"---\ntype: Note\ntitle: T\ndescription: D\nresource: \"{yamlEscaped}\"\n---\n");
+        tmp.Write("references/a.sql", "SELECT 1");
+        var bundle = Bundle.Load(tmp.Path);
+        var d = Assert.Single(BundleValidator.Validate(bundle).Diagnostics, x => x.Code is DiagnosticCode.FrontmatterPathMissing or DiagnosticCode.FrontmatterPathUnsafe);
+        Assert.Equal(DiagnosticCode.FrontmatterPathUnsafe, d.Code);
+        Assert.Equal($"frontmatter path 'resource' → '{raw}' escapes the bundle", d.Message);
+
+        bundle.TryResolveResourceKey(bundle.Concepts.Single(), raw, out var key, out var status);
+        Assert.Equal(ResourceResolutionStatus.Unsafe, status);
+        Assert.Null(key);
+    }
+
+    /// <summary>
+    /// The <c>h_comp</c> case of the differential run: a trailing <c>/</c> on an Attested
+    /// Computation's <c>computation</c> and <c>attester.resource</c> is
+    /// <see cref="DiagnosticCode.FrontmatterPathMissing"/> for each field, as on <c>dev</c>,
+    /// although both files exist.
+    /// </summary>
+    [Fact]
+    public void A_trailing_slash_on_a_computation_and_its_attester_is_missing()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("computations/trail.md", "---\ntype: Attested Computation\ntitle: T\ndescription: D\nruntime: python\ncomputation: 'references/q.sql/'\nattester:\n  resource: 'attesters/a.py/'\n---\n");
+        tmp.Write("references/q.sql", "SELECT 1");
+        tmp.Write("attesters/a.py", "pass\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        Assert.Equal(
+            [("attester.resource", "frontmatter path 'attester.resource' → 'attesters/a.py/' not found"), ("computation", "frontmatter path 'computation' → 'references/q.sql/' not found")],
+            report.Diagnostics.Where(x => x.Code == DiagnosticCode.FrontmatterPathMissing).Select(x => (x.Field!, x.Message)).Order());
+        Assert.DoesNotContain(report.Diagnostics, x => x.Code == DiagnosticCode.FrontmatterPathUnsafe);
+    }
+
+    /// <summary>
+    /// A trailing <c>/</c> does not lift the provider's guard: a prefix reached through a
+    /// junction is still refused, so the field stays
+    /// <see cref="DiagnosticCode.FrontmatterPathUnsafe"/> (on <c>dev</c> too, through its
+    /// reparse-point check), whether the junction is on the way or is the prefix itself.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("/linked/secret.sql/")]
+    [InlineData("/linked/")]
+    public void A_trailing_slash_through_a_junction_is_still_unsafe(string raw)
+    {
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        tmp.Write("p.md", $"---\ntype: Note\ntitle: T\ndescription: D\nresource: '{raw}'\n---\n");
+        external.Write("secret.sql", "SELECT 1\n");
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("linked", external.Path), "no junction/symlink privilege on this machine");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        var d = Assert.Single(report.Diagnostics, x => x.Code is DiagnosticCode.FrontmatterPathMissing or DiagnosticCode.FrontmatterPathUnsafe);
+        Assert.Equal(DiagnosticCode.FrontmatterPathUnsafe, d.Code);
     }
 
     /// <summary>

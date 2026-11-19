@@ -23,3 +23,12 @@ trim_trailing_whitespace = unset
 csharp_style_namespace_declarations = file_scoped:warning
 csharp_using_directive_placement = outside_namespace:warning
 dotnet_sort_system_directives_first = true
+
+# #152: every await in a library of src/ says ConfigureAwait(false), so a synchronous host's
+# non-blocking bridge and a single-threaded context can never meet. The executables own their
+# synchronization context and are exempt.
+[src/**.cs]
+dotnet_diagnostic.CA2007.severity = error
+
+[src/{OKF4net.Cli,OKF4net.Render,OKF4net.Mcp}/**.cs]
+dotnet_diagnostic.CA2007.severity = none

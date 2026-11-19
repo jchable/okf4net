@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+#pragma warning disable CS0618 // the obsolete synchronous tool methods are the subject (#152): kept one version, bridged over a provider that completes synchronously
 using OKF4net.Agents;
 using OKF4net.Attestation;
 
@@ -409,7 +410,9 @@ public class OkfWriteToolsTests
         var doc = OkfDocument.Parse(File.ReadAllText(Path.Combine(tmp.Path, "metrics", "dau.md")));
         var gen = doc.Frontmatter.Generated;
         Assert.NotNull(gen);
-        Assert.Equal("okf4net/0.2", gen!.Value.By!.Value.Raw);
+        Assert.Equal(BundleConceptWriter.DefaultProducerActor, gen!.Value.By!.Value.Raw);
+        Assert.StartsWith("okf4net/", gen.Value.By.Value.Raw, StringComparison.Ordinal);
+        Assert.NotEqual("okf4net/" + OkfSpec.Version, gen.Value.By.Value.Raw);
         Assert.Equal("2026-07-27T10:00:00Z", gen.Value.At);
     }
 
@@ -830,6 +833,48 @@ public class OkfWriteToolsTests
 
         Assert.Contains("Error", result);
         Assert.Equal("do not touch\n", File.ReadAllText(externalFile));
+    }
+
+    /// <summary>
+    /// <c>okf_append_log</c> reports a raw I/O failure as one line. Since lot B the log is
+    /// written by <c>BundleConceptWriter.AppendLog</c>, whose <c>Error: {message}</c> is
+    /// the exception's own text, and a .NET I/O message names the path: a bundle root whose
+    /// directory name carries a soft line terminator (NTFS and POSIX both accept them in a
+    /// name) would split the result in two lines, so the tool folds the writer's text, as
+    /// its own <c>RunTool</c> did before the delegation. Here <c>log.md</c> is held open
+    /// with <see cref="FileShare.None"/>, so the write fails with an I/O error that names
+    /// the root. The terminators are numeric
+    /// constants on purpose, like <see cref="LineSeparator"/>.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(0x2028)]
+    [InlineData(0x2029)]
+    [InlineData(0x0085)]
+    public void AppendLog_reports_an_io_failure_naming_a_path_with_a_soft_terminator_as_one_line(int separator)
+    {
+        using var tmp = new TempDir();
+        var root = Path.Combine(tmp.Path, "a" + (char)separator + "b");
+        FileStream? held = null;
+        try
+        {
+            Directory.CreateDirectory(root);
+            File.WriteAllText(Path.Combine(root, "log.md"), "# Log");
+            held = new FileStream(Path.Combine(root, "log.md"), FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        }
+        catch (Exception ex) when (ex is IOException or ArgumentException or UnauthorizedAccessException or NotSupportedException)
+        {
+            Skip.If(true, "this file system refuses the terminator in a directory name");
+        }
+
+        string result;
+        using (held)
+        {
+            result = new OkfBundleTools(root).AppendLog("Update", "entry");
+        }
+
+        Assert.StartsWith("Error: ", result, StringComparison.Ordinal);
+        Assert.Contains("a b", result, StringComparison.Ordinal);
+        Assert.Empty(result.Split(EveryLineTerminator).Skip(1));
     }
 
     // Mirrors WriteConcept_late_reparse_recheck_catches_a_substitution_planted_after_the_early_check

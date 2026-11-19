@@ -102,7 +102,7 @@ foreach (var diagnostic in readResult.Diagnostics)
 }
 
 var deleteResult = await memoryStore.DeleteScopeAsync(employeeScope);
-Console.WriteLine($"  cleanup: tiersDeleted={deleteResult.TiersDeleted} error={deleteResult.Error}");
+Console.WriteLine($"  cleanup: tiersDeleted={deleteResult.Tiers.Count(t => t.Report.Succeeded)} objectsDeleted={deleteResult.Tiers.Sum(t => t.Report.Deleted.Count)} error={deleteResult.Error}");
 
 return 0;
 

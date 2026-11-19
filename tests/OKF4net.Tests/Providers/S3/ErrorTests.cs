@@ -1,0 +1,317 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Net;
+using OKF4net.Providers;
+using OKF4net.Providers.S3;
+
+namespace OKF4net.Tests.Providers.S3;
+
+/// <summary>Spec §4.6: the closed table, by the real SDK pipeline; closed-vocabulary messages.</summary>
+public class ErrorTests
+{
+    private const string Sentinel = "SENTINEL-bucket.s3.example-REQ123";
+
+    public static TheoryData<HttpStatusCode, string, Type, S3FailureKind?> Table => new()
+    {
+        { HttpStatusCode.NotFound, "NoSuchKey", typeof(BundleObjectNotFoundException), null },
+        { HttpStatusCode.Forbidden, "AccessDenied", typeof(BundleAccessRefusedException), null },
+        { HttpStatusCode.Forbidden, "InvalidAccessKeyId", typeof(S3RequestException), S3FailureKind.Credentials },
+        { HttpStatusCode.Forbidden, "SignatureDoesNotMatch", typeof(S3RequestException), S3FailureKind.Credentials },
+        { HttpStatusCode.Forbidden, "ExpiredToken", typeof(S3RequestException), S3FailureKind.Credentials },
+        { HttpStatusCode.BadRequest, "ExpiredToken", typeof(S3RequestException), S3FailureKind.Credentials },
+        { HttpStatusCode.BadRequest, "InvalidToken", typeof(S3RequestException), S3FailureKind.Credentials },
+        { HttpStatusCode.BadRequest, "TokenRefreshRequired", typeof(S3RequestException), S3FailureKind.Credentials },
+        { HttpStatusCode.NotFound, "NoSuchBucket", typeof(S3RequestException), S3FailureKind.BucketUnavailable },
+        { HttpStatusCode.MovedPermanently, "PermanentRedirect", typeof(S3RequestException), S3FailureKind.BucketUnavailable },
+        { HttpStatusCode.BadRequest, "AuthorizationHeaderMalformed", typeof(S3RequestException), S3FailureKind.BucketUnavailable },
+        { HttpStatusCode.BadRequest, "IllegalLocationConstraintException", typeof(S3RequestException), S3FailureKind.BucketUnavailable },
+        { HttpStatusCode.ServiceUnavailable, "SlowDown", typeof(S3RequestException), S3FailureKind.Throttled },
+        { (HttpStatusCode)429, "TooManyRequests", typeof(S3RequestException), S3FailureKind.Throttled },
+        { HttpStatusCode.InternalServerError, "InternalError", typeof(S3RequestException), S3FailureKind.ServerError },
+        { HttpStatusCode.ServiceUnavailable, "ServiceUnavailable", typeof(S3RequestException), S3FailureKind.ServerError }, // 503 with another code: its status range
+        { HttpStatusCode.Conflict, "Whatever", typeof(S3RequestException), S3FailureKind.ClientError },
+        { HttpStatusCode.Forbidden, "Unknown" + Sentinel, typeof(S3RequestException), S3FailureKind.ClientError },
+        { HttpStatusCode.NotFound, "NoSuchUpload", typeof(S3RequestException), S3FailureKind.ClientError }, // a 404 with an unrecognized code
+        { HttpStatusCode.Found, "Moved", typeof(S3RequestException), S3FailureKind.InvalidResponse },
+        { HttpStatusCode.PermanentRedirect, "Moved", typeof(S3RequestException), S3FailureKind.InvalidResponse },
+        { (HttpStatusCode)599, "Odd", typeof(S3RequestException), S3FailureKind.ServerError },
+        { HttpStatusCode.NotFound, "SignatureDoesNotMatch", typeof(S3RequestException), S3FailureKind.ClientError }, // an incoherent pair: its status range, not its code
+        { HttpStatusCode.Forbidden, "NoSuchKey", typeof(S3RequestException), S3FailureKind.ClientError },            // nor a NoSuchKey under 403
+        { HttpStatusCode.NotFound, "AccessDenied", typeof(S3RequestException), S3FailureKind.ClientError },          // nor an AccessDenied under 404
+        { HttpStatusCode.ServiceUnavailable, "NoSuchBucket", typeof(S3RequestException), S3FailureKind.ServerError },
+        { (HttpStatusCode)600, "Odd", typeof(S3RequestException), S3FailureKind.InvalidResponse },
+    };
+
+    [Theory]
+    [MemberData(nameof(Table))]
+    public async Task Each_row_of_the_table(HttpStatusCode status, string code, Type expected, S3FailureKind? kind)
+    {
+        var fake = new FakeS3Handler
+        {
+            Respond = (_, _) => Task.FromResult(FakeS3Handler.Xml(status,
+                $"<?xml version=\"1.0\"?><Error><Code>{code}</Code><Message>{Sentinel}\n https://{Sentinel}/x\u2028</Message><RequestId>{Sentinel}</RequestId><HostId>{Sentinel}</HostId><Endpoint>{Sentinel}</Endpoint><Region>{Sentinel}</Region></Error>",
+                r =>
+                {
+                    r.Headers.TryAddWithoutValidation("x-amz-request-id", Sentinel);
+                    r.Headers.TryAddWithoutValidation("x-amz-id-2", Sentinel);
+                    r.Headers.TryAddWithoutValidation("x-amz-bucket-region", Sentinel);
+                })),
+        };
+        using var p = S3Test.Provider(fake);
+        var e = await Record.ExceptionAsync(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
+        Assert.IsType(expected, e);
+        if (kind is { } k)
+        {
+            var s3 = (S3RequestException)e!;
+            Assert.Equal(k, s3.Kind);
+            Assert.Equal(S3Operation.Read, s3.Operation);
+            Assert.Equal((int)status, s3.StatusCode);
+            Assert.Equal($"S3 read failed: {k} (HTTP {(int)status}) for 'a.md'", s3.Message); // the closed vocabulary, exactly
+        }
+
+        Assert.DoesNotContain(Sentinel, e!.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("okf", e.Message, StringComparison.Ordinal); // the bucket
+        Assert.DoesNotContain("127.0.0.1", e.Message, StringComparison.Ordinal); // the endpoint
+        Assert.DoesNotContain(code, e.Message, StringComparison.Ordinal);
+        Assert.InRange(fake.Requests.Count, 1, 3); // retries included, never past the guard's cap
+    }
+
+    /// <summary>
+    /// A response without a body: the SDK names the error after the status (measured on AWSSDK.S3 4.1.0:
+    /// <c>MovedPermanently</c>, <c>Forbidden</c>, <c>NotFound</c>, <c>RedirectKeepVerb</c>), never a code S3 sent.
+    /// </summary>
+    [Theory]
+    [InlineData(HttpStatusCode.MovedPermanently, S3FailureKind.BucketUnavailable)] // S3's region answer without a body
+    [InlineData(HttpStatusCode.Forbidden, S3FailureKind.ClientError)]
+    [InlineData(HttpStatusCode.NotFound, S3FailureKind.ClientError)]
+    [InlineData(HttpStatusCode.TemporaryRedirect, S3FailureKind.InvalidResponse)] // a 307 without Location
+    [InlineData(HttpStatusCode.Found, S3FailureKind.InvalidResponse)]
+    public async Task A_bodiless_error_is_classified_by_its_status(HttpStatusCode status, S3FailureKind kind)
+    {
+        using var p = S3Test.Provider(new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(status)) });
+        var e = await Assert.ThrowsAsync<S3RequestException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
+        Assert.Equal(kind, e.Kind);
+        Assert.Equal((int)status, e.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_307_without_Location_is_InvalidResponse()
+    {
+        using var p = S3Test.Provider(new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.TemporaryRedirect)) });
+        Assert.Equal(S3FailureKind.InvalidResponse, (await Assert.ThrowsAsync<S3RequestException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default))).Kind);
+    }
+
+    /// <summary>
+    /// The response-integrity failure is recognized wherever it sits in the failure's inner-exception chain: a stream
+    /// wrapper (an IOException), a task combinator (an AggregateException) may carry it rather than throw it bare.
+    /// </summary>
+    [Fact]
+    public void A_hash_mismatch_wrapped_by_another_failure_is_still_Integrity()
+    {
+        var key = BundleKey.Parse("a.md");
+        var mismatch = new Amazon.Runtime.AmazonClientException(OKF4net.Providers.S3.Internal.ErrorClassifier.HashMismatchMessage);
+        Exception[] wrapped =
+        [
+            mismatch,
+            new IOException("read failed", mismatch),
+            new AggregateException(mismatch),
+            new AggregateException(new InvalidOperationException("first"), mismatch),
+            new IOException("outer", new AggregateException(new IOException("inner", mismatch))),
+        ];
+        foreach (var e in wrapped)
+        {
+            var classified = Assert.IsType<S3RequestException>(OKF4net.Providers.S3.Internal.ErrorClassifier.Classify(S3Operation.Read, key, e));
+            Assert.Equal(S3FailureKind.Integrity, classified.Kind);
+            Assert.Same(e, classified.InnerException); // the whole chain, for the host's log
+        }
+
+        // Counter-proof: another client failure, wrapped or not, stays Transport.
+        var other = new Amazon.Runtime.AmazonClientException("something else");
+        Assert.Equal(S3FailureKind.Transport, ((S3RequestException)OKF4net.Providers.S3.Internal.ErrorClassifier.Classify(S3Operation.Read, key, new IOException("x", other))).Kind);
+    }
+
+    private static S3FailureKind KindOf(Exception e) =>
+        Assert.IsType<S3RequestException>(OKF4net.Providers.S3.Internal.ErrorClassifier.Classify(S3Operation.Read, BundleKey.Parse("a.md"), e)).Kind;
+
+    /// <summary>An AggregateException of <paramref name="width"/> failures, <paramref name="needle"/> at <paramref name="at"/> and a plain one elsewhere.</summary>
+    private static AggregateException Wide(int width, int at, Exception needle) =>
+        new(Enumerable.Range(0, width).Select(i => i == at ? needle : new InvalidOperationException($"filler {i}")));
+
+    /// <summary>
+    /// Minors A6: the walk over a chain of wrappers is bounded in depth AND in breadth. At most
+    /// <c>ErrorClassifier.MaxExceptionsVisited</c> exceptions are examined in all, the root included, in depth-first
+    /// order; a needle beyond that is DOCUMENTED as not found, and the failure is classified by the next rule.
+    /// </summary>
+    [Fact]
+    public void The_walk_over_an_AggregateException_is_bounded_in_breadth_and_its_edge_is_exact()
+    {
+        var max = OKF4net.Providers.S3.Internal.ErrorClassifier.MaxExceptionsVisited;
+        var mismatch = new Amazon.Runtime.AmazonClientException(OKF4net.Providers.S3.Internal.ErrorClassifier.HashMismatchMessage);
+        var format = new FormatException("not hex");
+
+        // Inside the cap: the root is visit 1, so the inner exception at index max - 2 is the last one examined.
+        Assert.Equal(S3FailureKind.Integrity, KindOf(Wide(max - 1, max - 2, mismatch)));
+        Assert.Equal(S3FailureKind.InvalidResponse, KindOf(Wide(max - 1, max - 2, format)));
+        Assert.Equal(S3FailureKind.Integrity, KindOf(Wide(12, 10, mismatch)));
+
+        // One past the edge, and far beyond it: not found, so classified by the next rule (Transport, here).
+        Assert.Equal(S3FailureKind.Transport, KindOf(Wide(max, max - 1, mismatch)));
+        Assert.Equal(S3FailureKind.Transport, KindOf(Wide(max, max - 1, format)));
+        Assert.Equal(S3FailureKind.Transport, KindOf(Wide(10_000, 9_000, mismatch)));
+
+        // A mismatch beyond the cap does not hide what the walk did see: a FormatException inside it is still found.
+        var both = new AggregateException(new[] { (Exception)format }.Concat(Enumerable.Range(0, max).Select(_ => (Exception)new InvalidOperationException())).Append(mismatch));
+        Assert.Equal(S3FailureKind.InvalidResponse, KindOf(both));
+    }
+
+    [Fact]
+    public void An_AggregateException_without_any_mismatch_is_not_Integrity()
+    {
+        // Counter-proof: the walk's answer is "no" for a chain that carries none, wide or deep, and Transport follows.
+        Assert.Equal(S3FailureKind.Transport, KindOf(Wide(20, -1, null!)));
+        Assert.Equal(S3FailureKind.Transport, KindOf(new AggregateException(new IOException("a"), new AggregateException(new IOException("b", new Amazon.Runtime.AmazonClientException("not the mismatch"))))));
+        Assert.Equal(S3FailureKind.Transport, KindOf(new AggregateException()));
+    }
+
+    /// <summary>
+    /// Spec Annexe C5c: a FormatException (the SDK's MD5 check on a non-hex single-part ETag) is InvalidResponse wherever
+    /// it sits in the chain; a genuine transport failure stays Transport, and a hash mismatch stays Integrity.
+    /// </summary>
+    [Fact]
+    public void A_format_failure_is_InvalidResponse_wherever_it_sits_and_a_transport_failure_is_not()
+    {
+        var key = BundleKey.Parse("a.md");
+        var format = new FormatException("not hex");
+        Exception[] wrapped =
+        [
+            format,
+            new Amazon.Runtime.AmazonClientException("wrapped", format),
+            new IOException("read failed", format),
+            new AggregateException(new InvalidOperationException("first"), format),
+            new IOException("outer", new AggregateException(new IOException("inner", format))),
+        ];
+        foreach (var e in wrapped)
+        {
+            var classified = Assert.IsType<S3RequestException>(OKF4net.Providers.S3.Internal.ErrorClassifier.Classify(S3Operation.Read, key, e));
+            Assert.Equal(S3FailureKind.InvalidResponse, classified.Kind);
+            Assert.Equal("S3 read failed: InvalidResponse for 'a.md'", classified.Message);
+            Assert.Same(e, classified.InnerException);
+        }
+
+        Exception[] transport = [new IOException("reset"), new HttpRequestException("refused"), new IOException("x", new System.Net.Sockets.SocketException())];
+        foreach (var e in transport)
+        {
+            Assert.Equal(S3FailureKind.Transport, ((S3RequestException)OKF4net.Providers.S3.Internal.ErrorClassifier.Classify(S3Operation.Read, key, e)).Kind);
+        }
+
+        var mismatch = new Amazon.Runtime.AmazonClientException(OKF4net.Providers.S3.Internal.ErrorClassifier.HashMismatchMessage);
+        Assert.Equal(S3FailureKind.Integrity, ((S3RequestException)OKF4net.Providers.S3.Internal.ErrorClassifier.Classify(S3Operation.Read, key, new AggregateException(mismatch, format))).Kind);
+    }
+
+    [Fact]
+    public async Task A_transport_failure_after_the_headers_is_Transport()
+    {
+        var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new ThrowingStream()) }) };
+        using var p = S3Test.Provider(fake);
+        Assert.Equal(S3FailureKind.Transport, (await Assert.ThrowsAsync<S3RequestException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default))).Kind);
+    }
+
+    [Fact]
+    public async Task A_transport_failure_before_the_headers_is_Transport()
+    {
+        var fake = new FakeS3Handler { Respond = (_, _) => throw new HttpRequestException("connection refused " + Sentinel) };
+        using var p = S3Test.Provider(fake);
+        var e = await Assert.ThrowsAsync<S3RequestException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
+        Assert.Equal(S3FailureKind.Transport, e.Kind);
+        Assert.Null(e.StatusCode);
+        Assert.Equal("S3 read failed: Transport for 'a.md'", e.Message);
+    }
+
+    [Fact]
+    public async Task A_failure_at_the_release_alone_is_classified_like_any_other()
+    {
+        // The body reads whole, then its release fails: that failure, alone, is the outcome (spec §4.5).
+        var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new FailsAtDispose(new IOException("reset " + Sentinel))) }) };
+        using var p = S3Test.Provider(fake);
+        var e = await Assert.ThrowsAsync<S3RequestException>(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
+        Assert.Equal(S3FailureKind.Transport, e.Kind);
+        Assert.DoesNotContain(Sentinel, e.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(64 * 1024, typeof(BundleObjectNotFoundException))]
+    [InlineData(64 * 1024 + 1, typeof(S3RequestException))]
+    public async Task An_error_body_is_bounded_before_the_sdk_reads_it(int size, Type expected)
+    {
+        var head = "<?xml version=\"1.0\"?><Error><Code>NoSuchKey</Code><Message>";
+        var tail = "</Message></Error>";
+        var xml = head + new string('m', size - head.Length - tail.Length) + tail;
+        var fake = new FakeS3Handler { Respond = (_, _) => Task.FromResult(FakeS3Handler.Xml(HttpStatusCode.NotFound, xml)) };
+        using var p = S3Test.Provider(fake);
+        var e = await Record.ExceptionAsync(async () => await p.ReadAsync(BundleKey.Parse("a.md"), null, default));
+        Assert.IsType(expected, e);
+        if (e is S3RequestException s3)
+        {
+            Assert.Equal(S3FailureKind.InvalidResponse, s3.Kind);
+        }
+    }
+
+    [Fact]
+    public async Task A_credentials_failure_during_the_survey_fails_the_load()
+    {
+        const string computation = "---\ntype: Attested Computation\ntitle: C\ndescription: D.\nruntime: python\ncomputation: ./c.py\nattester:\n  resource: ./att.py\n---\n\nBody\n";
+        var forbidden = false;
+        var objects = S3Test.Objects(("kb/c.md", computation), ("kb/c.py", "print(1)\n"), ("kb/att.py", "def attest(r): return True\n"));
+        var serving = S3Test.Serving(objects);
+        var fake = new FakeS3Handler
+        {
+            Respond = (req, ct) =>
+            {
+                if (req.RequestUri!.AbsolutePath.EndsWith("c.md", StringComparison.Ordinal))
+                {
+                    forbidden = true; // credentials expire right after the concepts are read
+                }
+                else if (forbidden && !req.RequestUri.Query.Contains("list-type", StringComparison.Ordinal))
+                {
+                    return Task.FromResult(FakeS3Handler.Xml(HttpStatusCode.Forbidden, FakeS3Handler.Error("ExpiredToken")));
+                }
+
+                return serving.Respond(req, ct);
+            },
+        };
+        using var p = S3Test.Provider(fake);
+        var e = await Assert.ThrowsAsync<BundleLoadException>(async () => await Bundle.LoadAsync(p));
+        Assert.IsType<S3RequestException>(e.InnerException);
+        Assert.Equal(S3FailureKind.Credentials, ((S3RequestException)e.InnerException!).Kind);
+    }
+
+    [Fact]
+    public async Task The_same_bundle_loads_when_the_survey_reads_succeed()
+    {
+        // Counter-proof of the test above: the concept shape is one the core surveys, and both resources are Pinned.
+        const string computation = "---\ntype: Attested Computation\ntitle: C\ndescription: D.\nruntime: python\ncomputation: ./c.py\nattester:\n  resource: ./att.py\n---\n\nBody\n";
+        var objects = S3Test.Objects(("kb/c.md", computation), ("kb/c.py", "print(1)\n"), ("kb/att.py", "def attest(r): return True\n"));
+        using var p = S3Test.Provider(S3Test.Serving(objects));
+        var bundle = await Bundle.LoadAsync(p);
+        var survey = Assert.Single(bundle.ExecutableResources).Value;
+        Assert.Equal(ExecutableResourceState.Pinned, survey.Computation.State);
+        Assert.Equal(ExecutableResourceState.Pinned, survey.Attester.State);
+    }
+
+    private sealed class ThrowingStream : MemoryStream
+    {
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default) => ValueTask.FromException<int>(new IOException("reset " + Sentinel));
+        public override int Read(byte[] buffer, int offset, int count) => throw new IOException("reset " + Sentinel);
+    }
+
+    private sealed class FailsAtDispose(Exception onDispose) : MemoryStream("abc"u8.ToArray())
+    {
+        protected override void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+            if (disposing)
+            {
+                throw onDispose;
+            }
+        }
+    }
+}

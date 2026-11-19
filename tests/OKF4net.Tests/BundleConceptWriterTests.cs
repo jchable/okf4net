@@ -44,6 +44,34 @@ public class BundleConceptWriterTests
         Assert.False(File.Exists(Path.Combine(tmp.Path, "tables", "refunds.md")));
     }
 
+    /// <summary>
+    /// A first write into a bundle whose root does not exist yet creates the root, as the
+    /// writer's <c>Directory.CreateDirectory</c> of the target's parent did before the provider
+    /// seam (nested and top-level concept alike), and the bytes are those of a write over a
+    /// root that was created beforehand.
+    /// </summary>
+    [Theory]
+    [InlineData("tables/refunds")]
+    [InlineData("refunds")]
+    public void WriteConcept_over_an_absent_bundle_root_creates_the_root_and_writes_the_same_bytes(string id)
+    {
+        using var tmp = new TempDir();
+        var absentRoot = Path.Combine(tmp.Path, "new", "bundle");
+        var existingRoot = Path.Combine(tmp.Path, "old");
+        Directory.CreateDirectory(existingRoot);
+        Assert.False(Directory.Exists(absentRoot));
+
+        var result = new BundleConceptWriter(absentRoot).WriteConcept(id, ValidFrontmatter, "# Refunds\n\nBody.\n");
+        var reference = new BundleConceptWriter(existingRoot).WriteConcept(id, ValidFrontmatter, "# Refunds\n\nBody.\n");
+
+        Assert.StartsWith("Written", result);
+        Assert.Equal(reference, result);
+        Assert.True(Directory.Exists(absentRoot));
+        var relative = id.Replace('/', Path.DirectorySeparatorChar) + ".md";
+        Assert.Equal(File.ReadAllBytes(Path.Combine(existingRoot, relative)), File.ReadAllBytes(Path.Combine(absentRoot, relative)));
+        Assert.Equal(Directory.GetFiles(existingRoot, "*", SearchOption.AllDirectories).Length, Directory.GetFiles(absentRoot, "*", SearchOption.AllDirectories).Length);
+    }
+
     [Fact]
     public void AppendToConceptAtomic_creates_then_appends()
     {
@@ -194,6 +222,44 @@ public class BundleConceptWriterTests
         Assert.NotNull(written.Frontmatter.Generated);
     }
 
+    /// <summary>
+    /// §7: a tool's actor is <c>&lt;producer&gt;/&lt;version&gt;</c>, the
+    /// producer's own version — not the version of the spec it implements
+    /// (#257: the default used to be <c>okf4net/0.2</c>). The expected value
+    /// is read from Directory.Build.props, the single source of the version,
+    /// so a stamp falling back to the spec version, or keeping the
+    /// <c>+&lt;commit&gt;</c> build metadata of the informational version,
+    /// fails here.
+    /// </summary>
+    [Fact]
+    public void DefaultProducerActor_is_okf4net_slash_the_library_version()
+    {
+        var props = File.ReadAllText(Path.Combine(TestPaths.RepoRoot(), "Directory.Build.props"));
+        var declared = System.Text.RegularExpressions.Regex.Match(props, @"<Version>\s*([^<\s]+)\s*</Version>");
+        Assert.True(declared.Success, "no <Version> element in Directory.Build.props");
+
+        Assert.Equal("okf4net/" + declared.Groups[1].Value, BundleConceptWriter.DefaultProducerActor);
+        Assert.DoesNotContain("+", BundleConceptWriter.DefaultProducerActor, StringComparison.Ordinal);
+        Assert.True(Actor.Parse(BundleConceptWriter.DefaultProducerActor).IsWellFormed);
+    }
+
+    [Fact]
+    public void WriteConcept_auto_stamp_records_the_library_version_as_the_actor()
+    {
+        using var tmp = new TempDir();
+        var writer = new BundleConceptWriter(tmp.Path)
+        {
+            AutoStampGenerated = true,
+            UtcNow = () => new DateTime(2026, 7, 31, 0, 0, 0, DateTimeKind.Utc),
+        };
+
+        writer.WriteConcept("tables/refunds", "type: BigQuery Table\ntitle: Refunds\ndescription: One row per refund.", "# Refunds\n");
+
+        var written = OkfDocument.Parse(File.ReadAllText(Path.Combine(tmp.Path, "tables", "refunds.md")));
+        Assert.Equal(BundleConceptWriter.DefaultProducerActor, written.Frontmatter.Generated?.By?.Raw);
+        Assert.NotEqual("okf4net/" + OkfSpec.Version, written.Frontmatter.Generated?.By?.Raw);
+    }
+
     [Fact]
     public void WriteConcept_accepts_a_document_built_by_OkfDocumentBuilder()
     {
@@ -300,9 +366,15 @@ public class BundleConceptWriterTests
         // H1 fix round (M1): "x/refunds.md" is a junction named like the
         // concept file, whose attributes cannot be read ("x" denies listing).
         // Only the early check on the target FILE node can refuse it -- "x"
-        // itself is readable -- so its message pins that check. (Not an escape:
-        // with it removed, the late strict guard, or the OS writing into a
-        // directory, still refuses.)
+        // itself is readable. (Not an escape: with it removed, the late strict
+        // guard, or the OS writing into a directory, still refuses.) Since the
+        // write moved behind the provider (lot B), that early check is the
+        // provider's STRICT check of the whole path before anything is listed;
+        // the provider reports every refused path, the object's own entry
+        // included, as one BundleAccessRefusedException, which the writer
+        // translates into its one reparse-point message (decision B15) -- the
+        // former "is a reparse point ... refusing to overwrite it" wording,
+        // which only the writer's own target-node check produced, is gone.
         using var tmp = new TempDir();
         using var external = new TempDir();
         Directory.CreateDirectory(Path.Combine(tmp.Path, "x"));
@@ -312,7 +384,7 @@ public class BundleConceptWriterTests
 
         var result = writer.WriteConcept("x/refunds", ValidFrontmatter, "# Refunds\n");
 
-        Assert.Equal("Error: 'x/refunds' is a reparse point (symlink/junction) or could not be inspected, not a regular file -- refusing to overwrite it.", result);
+        Assert.Equal("Error: 'x/refunds' resolves through a reparse point (symlink/junction), or an entry that could not be inspected, inside the bundle, which is not allowed.", result);
         Assert.Empty(Directory.EnumerateFileSystemEntries(external.Path));
     }
 

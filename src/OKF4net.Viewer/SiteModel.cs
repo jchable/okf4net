@@ -79,14 +79,16 @@ public static class SiteModel
                 Description: concept.Document.Frontmatter.Description ?? string.Empty));
         }
 
+        // The location and the §8 display path of each problem (spec §9, Viewer row): the
+        // same strings the path-based members projected, so the generated HTML does not change.
         return new ViewerSite(
-            bundle.Root,
+            bundle.Location,
             pages,
             IndexGenerator.BuildIndexText(entries),
-            bundle.ParseErrors.Select(e => new ViewerParseError(e.Path, e.Error)).ToList())
+            bundle.ParseProblems.Select(p => new ViewerParseError(bundle.DisplayPath(p), p.Error)).ToList())
         {
             Index = index,
-            BundleName = BundleNameOf(bundle.Root),
+            BundleName = BundleNameOf(bundle.Location),
             GraphPagePath = FreeGraphPagePath(pages),
         };
     }

@@ -297,7 +297,7 @@ public class RecordVerificationTests
         var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau"], by);
 
         Assert.False(outcome.Recorded);
-        Assert.Equal("Error: a §7 actor must not contain control characters.", outcome.Message);
+        Assert.Equal("Error: a §7 actor must not contain control, bidirectional or invisible format characters.", outcome.Message);
         // The message must not carry the refused value: echoing it would forge
         // a line in the caller's error output instead of the success output.
         Assert.DoesNotContain("recorded", outcome.Message);
@@ -329,7 +329,7 @@ public class RecordVerificationTests
         var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau"], "human:ada", at);
 
         Assert.False(outcome.Recorded);
-        Assert.Equal("Error: a timestamp must not contain control characters.", outcome.Message);
+        Assert.Equal("Error: a timestamp must not contain control, bidirectional or invisible format characters.", outcome.Message);
         // The point of the fix: the refused value is not repeated back.
         Assert.DoesNotContain("recorded", outcome.Message);
         Assert.Empty(outcome.Records);
@@ -636,9 +636,12 @@ public class RecordVerificationTests
                 }
 
                 File.WriteAllText(path, before);
-                var first = writer.RecordVerifications(["metrics/dau"], "human:ada");
-                Assert.True(first.Recorded, first.Message);
             }
+
+            // Not under the lease: it is not re-entrant (#152). The worker, released with the
+            // lease, and this call serialize on the bundle's lock in either order.
+            var first = writer.RecordVerifications(["metrics/dau"], "human:ada");
+            Assert.True(first.Recorded, first.Message);
         }
         finally
         {

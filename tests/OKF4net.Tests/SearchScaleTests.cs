@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+#pragma warning disable CS0618 // the obsolete synchronous tool methods are the subject (#152): kept one version, bridged over a provider that completes synchronously
 using System.Text.RegularExpressions;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;

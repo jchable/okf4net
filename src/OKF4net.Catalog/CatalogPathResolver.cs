@@ -192,8 +192,8 @@ public static class CatalogPathResolver
     /// <paramref name="root"/> itself is deliberately exempt from this walk: a
     /// symlinked/mounted catalog root is a legitimate, explicit operator choice (symlinked
     /// project directories, container/WSL bind mounts, macOS's <c>/var</c>) -- exactly the
-    /// same reasoning that keeps <c>IndexGenerator</c>'s own <c>HasReparsePointOrUninspectableAncestor</c>
-    /// wrapper, and the shared <see cref="ReparsePoints.HasReparsePointAncestor(string, string)"/>
+    /// same reasoning that keeps <c>FileSystemBundleProvider</c>'s per-key guards (behind which
+    /// <c>IndexGenerator</c> writes), and the shared <see cref="ReparsePoints.HasReparsePointAncestor(string, string)"/>
     /// convenience overload other callers use, from ever inspecting the root they walk up to.
     /// <paramref name="root"/> is expected to already be the result of
     /// <see cref="ReparsePoints.CanonicalizeRoot"/> (see its remarks for why a bare

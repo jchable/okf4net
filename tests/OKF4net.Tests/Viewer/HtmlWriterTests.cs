@@ -481,8 +481,17 @@ public class HtmlWriterTests
         using var src = new TempDir();
         var site = SiteModel.Build(SampleBundle(src));
 
-        var ex = Assert.ThrowsAny<IOException>(() => HtmlWriter.Write(site, outDir!));
-        Assert.DoesNotContain("refusing to render", ex.Message, StringComparison.Ordinal);
+        // The OS's own answer, never the guard's ArgumentException. A drive with no volume
+        // (an empty optical drive, say) answers the directory creation with ERROR_NOT_READY
+        // on an IOException most of the time, and with access denied at others: both were
+        // seen on the same machine, minutes apart, after the probe above had passed, so
+        // either is the I/O error this test wants. The probe cannot settle it, since the
+        // drive's answer can change between the probe and the write.
+        var ex = Record.Exception(() => HtmlWriter.Write(site, outDir!));
+        Assert.True(
+            ex is IOException or UnauthorizedAccessException,
+            $"expected the OS's I/O error for {outDir}, got {ex?.GetType().Name ?? "no exception"}: {ex?.Message}");
+        Assert.DoesNotContain("refusing to render", ex!.Message, StringComparison.Ordinal);
     }
 
     [SkippableFact]

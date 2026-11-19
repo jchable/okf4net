@@ -30,14 +30,27 @@ public class CliContainerEngineArgumentsTests
     }
 
     [Fact]
-    public void Includes_run_rm_and_a_unique_name()
+    public void Includes_create_rm_and_a_unique_name()
     {
         var args = CliContainerEngine.BuildRunArguments(Spec(), "okf-xyz");
-        Assert.Equal("run", args[0]);
+        Assert.Equal("create", args[0]);
+        Assert.Contains("-i", args);
         Assert.Contains("--rm", args);
         var nameIndex = args.ToList().IndexOf("--name");
         Assert.True(nameIndex >= 0);
         Assert.Equal("okf-xyz", args[nameIndex + 1]);
+    }
+
+    /// <summary>
+    /// The second command of a run attaches stdin, stdout and stderr to the container
+    /// <c>create</c> made, by exactly that name: <c>-i</c> because the container reads
+    /// the sanctioned payload on stdin, and nothing else (every isolation flag was fixed
+    /// at <c>create</c>).
+    /// </summary>
+    [Fact]
+    public void The_start_command_attaches_to_the_created_container_by_name()
+    {
+        Assert.Equal(["start", "-a", "-i", "okf-xyz"], CliContainerEngine.BuildStartArguments("okf-xyz"));
     }
 
     [Fact]

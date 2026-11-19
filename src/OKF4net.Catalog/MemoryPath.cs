@@ -72,12 +72,21 @@ public static class MemoryPath
 
         return tier switch
         {
-            MemoryTier.Tenant => $"memory-tenant/{tenant}",
-            MemoryTier.User => $"memory-user/{tenant}/{user}",
-            MemoryTier.Session => $"memory-session/{tenant}/{user}/{session}",
+            MemoryTier.Tenant => $"{TierDirectory(tier)}/{tenant}",
+            MemoryTier.User => $"{TierDirectory(tier)}/{tenant}/{user}",
+            MemoryTier.Session => $"{TierDirectory(tier)}/{tenant}/{user}/{session}",
             _ => throw new ArgumentOutOfRangeException(nameof(tier), tier, "Unknown memory tier."),
         };
     }
+
+    /// <summary>The fixed first segment of every prefix of <paramref name="tier"/> (<c>memory-user</c>, ...), never an object's name.</summary>
+    internal static string TierDirectory(MemoryTier tier) => tier switch
+    {
+        MemoryTier.Tenant => "memory-tenant",
+        MemoryTier.User => "memory-user",
+        MemoryTier.Session => "memory-session",
+        _ => throw new ArgumentOutOfRangeException(nameof(tier), tier, "Unknown memory tier."),
+    };
 
     /// <summary>
     /// Encodes a validated scope segment as <c>{lowercased-raw}-{hash}</c>,
@@ -85,11 +94,27 @@ public static class MemoryPath
     /// hex chars) truncation of the SHA-256 of the <b>case-sensitive</b> raw
     /// bytes, so two case-variant segments produce case-insensitively distinct
     /// results. See the type remarks for why (case-insensitive-FS isolation).
+    /// <para>
+    /// <b>Reserved names</b> (spec §9, D4): the encoded segment must be a key the portable
+    /// profile accepts, and the one rule it could break is a Windows reserved device name as
+    /// its base — an identifier whose part before its first <c>.</c> is one (<c>con.foo</c>
+    /// gives <c>con.foo-{hash}</c>, whose base is <c>con</c>; the extension does not lift the
+    /// reservation). Such a segment is prefixed with <c>_</c> (<c>_con.foo-{hash}</c>); the
+    /// hash, computed on the raw identifier, is unchanged and still makes the segment unique.
+    /// No other identifier changes.
+    /// </para>
+    /// <para>
+    /// <b>Migration</b>: a scope stored before D4 under the unprefixed reserved-base name
+    /// (possible on POSIX only; Windows could not create it) is no longer found. Reads,
+    /// enumeration and <c>DeleteScopeAsync</c> address the prefixed name, and the old
+    /// directory is neither read, migrated nor deleted (see the CHANGELOG's migration note).
+    /// </para>
     /// </summary>
     private static string Encode(string raw)
     {
         var readable = raw.ToLowerInvariant();
         var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(raw)))[..16];
-        return $"{readable}-{hash}";
+        var segment = $"{readable}-{hash}";
+        return OKF4net.Providers.BundleKeyValidator.HasWindowsReservedBase(segment) ? "_" + segment : segment;
     }
 }

@@ -26,6 +26,36 @@ AIAgent agent = chatClient.AsAIAgent(
 var response = await agent.RunAsync("Summarize the concepts in this bundle.");
 ```
 
+## Sharing a `BundleHandle`, and what can write
+
+`new OkfBundleTools(string root)` builds its own `BundleHandle` over a
+`FileSystemBundleProvider`. To serve a bundle from another `IBundleProvider`, or
+to share one in-memory image between consumers, build the handle yourself and
+pass it to `new OkfBundleTools(handle)`; the tool set exposes it as `Handle`.
+Hand the **same** handle to the `OkfContextProvider` built over the tools and to
+anything else that reads the source: they then see one image, and a committed
+write by any of them (`BundleConceptWriter` over the handle) invalidates it for
+all. A consumer built from a root string makes its own handle, hence its own
+image.
+
+Whether the write tools are offered combines the provider and the mode:
+effective write = `provider.Capabilities.CanWrite && mode != OkfToolMode.ReadOnly`.
+`GetTools(OkfToolMode.ReadOnly)` omits the write tools, and so does any mode over
+a provider whose `CanWrite` is false (it is treated as `ReadOnly`);
+`RequireApprovalForWrites` wraps them in an approval gate. A direct call to a
+public write method over a read-only provider (`WriteConceptAsync`,
+`AppendLogAsync`, `RegenerateIndexesAsync`, `VerifyAsync`, and their obsolete
+`string` spellings) throws `BundleReadOnlyException` before any argument is
+checked and before anything is written. The obsolete `string` spellings also
+refuse a provider that does not complete synchronously, with
+`InvalidOperationException`; which exception a provider that is *both*
+read-only and asynchronous gets depends on the method, because each checks in
+its own order. `WriteConcept` and `AppendLog` check writability first and throw
+`BundleReadOnlyException`; `RegenerateIndexes` and `Verify` check synchronous
+completion first and throw `InvalidOperationException`. A host should not rely
+on that order: the spellings are obsolete, and the asynchronous methods throw
+`BundleReadOnlyException` whatever the provider's completion.
+
 ## The twelve tools
 
 `okf_read_concept`, `okf_browse`, `okf_graph`, `okf_search`, `okf_audit`,
@@ -66,8 +96,10 @@ round-trip — and only happens once a caller explicitly opts in via
 `OkfContextProviderOptions.MemoryCapture = MemoryCaptureMode.Enabled`,
 which writes captured exchanges into the same bundle the agent reads from.
 Note: the token budget is a soft chars/4 estimate
-(can be exceeded slightly), its `<okf-context>` fences are readability
-markers rather than a security boundary, and same-day memory capture is safe
+(can be exceeded slightly), its `<okf-context>` elements keep their
+structure (`&` and `<` inside are escaped and the content is fenced, so bundle
+content can neither close one nor leave a fence open into the next) but are not
+a security boundary, and same-day memory capture is safe
 across concurrent sessions **within one process** — `OkfBundleTools` shares
 its write lock, via a process-wide registry, across every instance whose
 bundle root resolves to the same directory when the lock is taken (a junction

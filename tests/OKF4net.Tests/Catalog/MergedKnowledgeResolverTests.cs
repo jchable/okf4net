@@ -282,10 +282,12 @@ public class MergedKnowledgeResolverTests
             """);
         var resolver = new MergedKnowledgeResolver(catalog);
 
-        // The catalog already validated both source paths at construction
-        // (generation 1); delete one afterward so the engine's own
-        // re-resolution (not the catalog's load-time validation) is what
-        // observes the failure -- mirroring
+        // The catalog validated both source paths at construction
+        // (generation 1) and built a handle for each, which loads lazily at its
+        // first search; delete one directory before that search so the FIRST
+        // load of its handle fails: a source that never loaded has no image to
+        // serve, hence SourceUnavailable (a source that loaded once and then
+        // vanished is SourceStale, see CatalogResolverHandleTests) -- mirroring
         // GroupedKnowledgeResolverTests.SearchAsync_reports_SourceUnavailable_for_a_deleted_source_but_still_returns_the_other.
         Directory.Delete(Path.Combine(root.Path, "gone"), recursive: true);
 

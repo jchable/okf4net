@@ -1,26 +1,24 @@
 ---
-title: "A folder of markdown you can actually browse: the interactive okf-render"
+title: "A folder of markdown you can actually browse: OKF4net 0.7 and the interactive okf-render"
 published: false
-description: "okf-render, the site generator of OKF4net, now turns an Open Knowledge Format bundle into an interactive viewer: explorer, Jump to palette, local and global link graphs, keyboard paths and text equivalents. Still static files, opened from disk, with no server and nothing to install."
+description: "OKF4net 0.7.0 turns okf-render, its Open Knowledge Format site generator, into an interactive viewer: explorer, Jump to palette, local and global link graphs, keyboard paths and text equivalents, still static files opened from disk. The same release makes okf a dotnet tool for CI and hardens the library."
 tags: dotnet, opensource, showdev, ai
-# cover_image: https://raw.githubusercontent.com/jchable/okf4net/<BRANCH>/docs/outreach/articles/okf-viewer/img/graph-synthetic.png
+# cover_image: https://raw.githubusercontent.com/jchable/okf4net/<TAG>/docs/outreach/articles/okf-viewer/img/graph-synthetic.png
 # canonical_url: <the personal-site URL of this article, once it is published there>
 ---
 
 <!--
 OWNER NOTES (delete this comment before publishing; see NOTES.md for the checklist):
 - Images use relative paths (img/...) so the article renders in the repository.
-  dev.to needs absolute URLs: run the sed line in NOTES.md, which rewrites
-  "](img/" to "](https://raw.githubusercontent.com/jchable/okf4net/<BRANCH>/docs/outreach/articles/okf-viewer/img/".
-  <BRANCH> must be a branch or tag that holds these files (main once merged).
-- The docs page https://jchable.github.io/okf4net/docs/viewer/ only goes live
-  once the website is deployed from main (pages.yml). Check it loads before publishing.
-- "On the dev branch today" is true only once PR #176 is merged into dev.
+  dev.to needs absolute URLs: run the sed line in NOTES.md with TAG=v0.7.0, which rewrites
+  "](img/" to "](https://raw.githubusercontent.com/jchable/okf4net/v0.7.0/docs/outreach/articles/okf-viewer/img/".
+  A tag never moves, which is why NOTES.md prefers it to a branch.
+- Every claim about "the release" was checked against v0.7.0 (see NOTES.md, "State at publication").
 -->
 
 An [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) bundle is a directory of markdown files with YAML frontmatter. That is what makes it good for agents and for code review: an agent reads it with `cat`, a reviewer reads a change as a plain diff, and git does the rest. It is also what makes it tedious for a person to browse. Open the folder and you see file names; open a file and you see one concept, with no idea what links to it.
 
-[OKF4net](https://github.com/jchable/okf4net), our independent .NET implementation of the OKF spec, ships a site generator, `okf-render`, for that person. Until now it wrote a plain static site. On the dev branch today, it writes an interactive viewer. Here is a tour, then how it is built and tested.
+[OKF4net](https://github.com/jchable/okf4net), our independent .NET implementation of the OKF spec, ships a site generator, `okf-render`, for that person. Up to 0.6.0 it wrote a plain static site. Since OKF4net 0.7.0 it writes an interactive viewer. Here is a tour, then how it is built and tested, then what else changed in the release.
 
 **TL;DR**
 
@@ -29,6 +27,7 @@ An [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-cata
 - Each concept page draws its **Neighbourhood**, the concepts it links to and that link to it, and a separate page draws the **whole bundle's link graph** with facets, a detail drawer and shareable `graph.html#<concept id>` addresses.
 - Every drawing has a text equivalent and a keyboard path. The graph is one tab stop; the arrow keys walk from a node to its neighbours.
 - Under the hood: no new runtime dependency, a graph layout that gives the same positions in Chromium, Firefox and WebKit, a DOM sanitizer as the whole defence against hostile markdown, and a test harness that runs the real scripts.
+- Also in 0.7.0: `okf` is now a dotnet tool you can pin in a repository's tool manifest for CI, a hardening wave closes a few ways to crash or fool the library, and four changes are worth checking when you upgrade ([the list](#also-in-070)).
 
 ## The problem: easy to diff, hard to browse
 
@@ -57,19 +56,15 @@ What it writes is still a folder of plain files: `index.html`, one page per conc
 
 It is deliberately a separate binary from `okf`, the small validator that runs in CI, so that `okf` does not carry what only a website needs: a vendored copy of [marked](https://github.com/markedjs/marked) to render markdown in the browser, and three embedded font families.
 
-**Getting it today.** The interactive viewer is not in a release yet. Until the next release of `okf-render`, build it from a checkout of the dev branch (it needs the .NET SDK 10.0 or later):
+**Getting it.** The [0.7.0 release](https://github.com/jchable/okf4net/releases/tag/v0.7.0) carries a prebuilt `okf-render` archive for each of Windows, Linux and macOS, on x64 and arm64, next to a `checksums.txt`. On Linux and macOS the install script fetches the right one, checks its SHA-256 and puts it on your `PATH`:
 
 ```sh
-git clone https://github.com/jchable/okf4net && cd okf4net
-git switch dev
-dotnet publish src/OKF4net.Render -c Release   # self-contained Native AOT binary
+curl -sSL https://raw.githubusercontent.com/jchable/okf4net/main/packaging/install.sh | sh -s -- --bin okf-render
 ```
 
-Native AOT also needs the platform's native toolchain; if you only want to try it, the `dotnet run` command at the end of this post skips that step.
+On Windows, download the `okf-render-0.7.0-win-x64.zip` (or `win-arm64`) asset from the release page and unzip it. The `okf-render` winget package has been submitted and is waiting in the winget-pkgs moderation queue, so `winget install Coderise.OKF4net.Render` does not resolve yet. If you would rather build it, the `dotnet run` command at the end of this post needs only the .NET SDK 10.0 or later.
 
-Once that release is out, each [GitHub Release](https://github.com/jchable/okf4net/releases) carries prebuilt `okf-render` archives for Windows, Linux and macOS, and on Linux and macOS the install script fetches and checks the right one when you pass `--bin okf-render`. Its winget package has not been submitted yet, so do not look for it there.
-
-> **In short:** one command, one folder, `index.html` opened from disk. Build it from the dev branch today; prebuilt archives come with the next release.
+> **In short:** one command, one folder, `index.html` opened from disk. Prebuilt archives are on the 0.7.0 release; the install script covers Linux and macOS.
 
 ## A guided tour
 
@@ -250,13 +245,50 @@ Those browser checks earned their place, because jsdom does no layout. Labels ov
 
 > **In short:** a written spec, small slices, and a browser in the loop for every slice.
 
+## Also in 0.7.0
+
+The viewer is the headline, but the release has more.
+
+### `okf` as a dotnet tool
+
+`okf` has been a Native AOT binary so far (winget, an install script, release archives). That still works, and still needs no .NET runtime. New in 0.7.0: a repository that already builds with the .NET SDK can pin `okf` the way it pins any other tool, which suits CI better than downloading a binary:
+
+```sh
+dotnet new tool-manifest          # once, in the repository; commit the dotnet-tools.json it creates
+dotnet tool install OKF4net.Cli   # records the version in the manifest
+dotnet tool restore               # what CI runs
+dotnet okf validate ./knowledge
+```
+
+`dotnet tool install -g OKF4net.Cli` installs it for your own shell, and `dnx OKF4net.Cli --yes validate ./knowledge` runs it once with nothing installed. `okf validate` exits 1 on a non-conformant bundle, so the step fails the build; warnings are reported and never fail it. The package is portable IL and needs the .NET 10 runtime or a later one. A new CI job packs it, restores it from a manifest in a fresh directory and asserts `okf validate`'s exit code on a conformant and on a non-conformant bundle, because the in-process tests never see the package itself.
+
+### A hardening wave
+
+Four fixes in 0.7.0 close ways to crash, hang or fool the library:
+
+- **`okf verify` could be made to print a forged line.** The `(replaces …)` suffix echoed the timestamp already stored in a concept without escaping it, so a line break in that value printed a fake `recorded …` line. That mattered because `okf verify` and the `okf_verify` agent tool feed lines to people and to models. Every value on those lines is now made line-safe by the renderer itself (#123).
+- **A value built in code could crash or hang the library.** A YAML mapping can hold itself, or hold the same sub-mapping at every one of 60 levels. Hashing such a value, comparing two of them or printing one used to overflow the stack, run out of memory or never finish. They now answer, or refuse with a normal exception (#158, #189). Nothing the parser returns is affected.
+- **Loading a bundle with a very popular concept was quadratic.** A concept cited by 100,000 others took about 170 seconds to build its backlinks; it now takes under one second, and the order of the results is unchanged (#148).
+- **A junction or symlink to a bundle now shares the bundle's write lock**, so two writers in one process reaching the same bundle by two paths can no longer interleave and lose an update (#86). The lock is still in-process only: a second process writing the same bundle is not serialized against.
+
+### What to check when you upgrade
+
+- `Frontmatter.RequiredKeys` and `Frontmatter.RecommendedFields` are read-only `IReadOnlyList<string>` properties instead of mutable arrays (#113): compiled references to the old fields break, and so do `.Length` and element assignment.
+- The YAML subset has one nesting rule, at most 1000 nested collections, for block and flow alike. Block documents nested 501 to 1000 deep now load. Documents that mix block and flow past 1000 in total, which used to load, are now rejected. Real frontmatter is a handful of levels deep.
+- A bare `okf` or `okf-render` prints its usage on stdout and exits 0, like `--help`; it used to use stderr and exit 1. A verb missing a required argument still fails.
+- The YAML emitter refuses, with a `YamlEmitException`, a value built in code that reuses collections or long strings past a 16 MiB budget, or whose text would pass 256 MiB. Everything the parser returns is unaffected.
+
+The full list is in the [changelog](https://github.com/jchable/okf4net/blob/main/CHANGELOG.md#070---2026-10-14).
+
 ## Try it, and where to help
 
 ```sh
-git clone https://github.com/jchable/okf4net && cd okf4net && git switch dev
+git clone --branch v0.7.0 --depth 1 https://github.com/jchable/okf4net && cd okf4net
 dotnet run -c Release --project src/OKF4net.Render -- bundles/acme_retail --out ./acme-site
 # open ./acme-site/index.html
 ```
+
+That needs only the .NET SDK 10.0 or later. With the prebuilt `okf-render` from the section above, the second line becomes `okf-render bundles/acme_retail --out ./acme-site`.
 
 Then point it at your own bundle. If you do not have one, `okf` can validate one you write by hand, and the [getting-started guide](https://jchable.github.io/okf4net/docs/getting-started/) walks through it.
 
@@ -281,7 +313,8 @@ The full viewer guide is on the [project site](https://jchable.github.io/okf4net
 | Global graph: deterministic layout, facets, drawer, list, keyboard, `#<concept id>` addresses | `graph.html` |
 | Resizable side column, light and dark themes, phone layout | everywhere |
 
-- **Try it:** build `src/OKF4net.Render` from the dev branch today; prebuilt archives and `install.sh --bin okf-render` come with the next release.
+- **Try it:** prebuilt archives are on the [0.7.0 release](https://github.com/jchable/okf4net/releases/tag/v0.7.0), `install.sh --bin okf-render` installs one on Linux and macOS, and `dotnet run --project src/OKF4net.Render` builds it from the tag.
+- **Also in 0.7.0:** `okf` as the `OKF4net.Cli` dotnet tool for CI; fixes for a forged `okf verify` line, crashes and hangs on values built in code, and a quadratic backlink build; four changes to check when you upgrade.
 - **Limits and next:** no full-text search in the site (search is planned in the VS Code extension, #163); IME, screen-reader and Safari checks to do (#177 for the first two); a list instead of a drawing above 1,500 nodes.
 - **Contribute:** [good first issues](https://github.com/jchable/okf4net/labels/good%20first%20issue), [Discussions](https://github.com/jchable/okf4net/discussions), the [repository](https://github.com/jchable/okf4net).
 

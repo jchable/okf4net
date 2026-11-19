@@ -34,11 +34,14 @@ okf validate ./knowledge
 Once, without installing anything (.NET 10 SDK or later):
 
 ```sh
-dnx OKF4net.Cli --yes validate ./knowledge
+dnx OKF4net.Cli validate ./knowledge
 ```
 
-`--yes` confirms the package download. Without it, the first run asks, and a
-non-interactive run fails instead of asking.
+The first run asks before it downloads the package, and a non-interactive run
+fails instead of asking. `--yes` (`dnx OKF4net.Cli --yes validate ./knowledge`)
+answers in advance, but only the .NET 11 SDK and later have it: on the .NET 10
+SDK it is an unknown option, so a CI job there installs the tool instead
+(`dotnet tool install -g OKF4net.Cli`, or a tool manifest).
 
 The tool runs on the .NET 10 runtime or any later one. If `okf` is also
 installed through winget or the install script, whichever comes first on your

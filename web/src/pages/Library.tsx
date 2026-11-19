@@ -65,16 +65,21 @@ export default function Library() {
         <Chapter id="install" title="Install" refText="nuget.org/packages/OKF4net">
           <pre className="block">$ dotnet add package OKF4net</pre>
           <p>One package, no transitive dependency tree. Targets modern .NET; every public API carries XML documentation.</p>
+          <p>
+            Two optional packages read a bundle that is not a directory: <code>OKF4net.Providers.EmbeddedResources</code>{' '}
+            (embedded in an assembly, BCL only) and <code>OKF4net.Providers.S3</code> (Amazon S3 or a compatible store;
+            it depends on <code>AWSSDK.S3</code>).
+          </p>
         </Chapter>
 
         <Chapter id="bundles" title="Load a bundle, walk the graph" refText="§3, §6 — Bundle · LinkScanner">
           <p>
-            <code>Bundle.Load</code> walks the directory tree, parses every concept, and builds the cross-link graph
+            <code>Bundle.Load</code> walks the directory tree (or any <code>IBundleProvider</code>), parses every concept, and builds the cross-link graph
             with backlinks. It is <strong>permissive by design</strong>: a bad file never aborts the load.
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: bundleWalkHtml }} />
           <p>
-            Parse failures are collected in <code>ParseErrors</code>; broken cross-links are retained as graph edges
+            Parse failures are collected in <code>ParseProblems</code>; broken cross-links are retained as graph edges
             to non-existent concepts, so <code>link.Exists</code> tells you exactly where the holes are.
           </p>
         </Chapter>
@@ -132,6 +137,10 @@ export default function Library() {
               [<code key="cid">ConceptId</code>, 'Id ↔ path conversion and segment validation (§2)'],
               [<code key="ls">LinkScanner</code>, 'Markdown link extraction, classification, citations (§6, §13.1)'],
               [<code key="bundle">Bundle</code>, 'Walk a tree, build the concept graph + backlinks (§3, §6)'],
+              [
+                <code key="prov">IBundleProvider</code>,
+                'The storage seam under a bundle: a key space of byte objects, asynchronous (directory by default; embedded-resource and S3 providers as packages; any host storage); BundleHandle holds one image with a refresh policy (§1, §5.2)',
+              ],
               [<code key="ig">IndexGenerator</code>, 'Generate index.md directory listings (§8)'],
               [<code key="cl">ChangeLog</code>, 'Parse / build log.md update histories (§9)'],
               [<code key="bv">BundleValidator</code>, '§11 conformance with severity-tagged diagnostics'],
@@ -144,7 +153,7 @@ export default function Library() {
                 <code key="bcw">BundleConceptWriter</code>,
                 'Atomic, per-path-locked, reparse-guarded concept writes, incl. RecordVerifications (§5.2) — shared by Agents & Catalog',
               ],
-              [<code key="csrch">ConceptSearch</code>, 'The full-text scorer shared by okf_search and the local catalog'],
+              [<code key="csrch">ConceptSearch</code>, 'The full-text scorer shared by okf_search and the catalog'],
               [
                 <code key="caud">ConceptAudit</code>,
                 'The corpus-level trust/freshness/lifecycle query shared by okf audit and okf_audit',

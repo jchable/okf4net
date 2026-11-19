@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -8,8 +8,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="coverlet.collector" Version="10.1.0" />
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
+    <PackageReference Include="coverlet.collector" Version="10.1.1" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.12.0" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="4.0.1" />
     <PackageReference Include="Xunit.SkippableFact" Version="1.5.85" />
@@ -30,6 +30,8 @@
     <ProjectReference Include="..\..\src\OKF4net.Attestation\OKF4net.Attestation.csproj" />
     <ProjectReference Include="..\..\src\OKF4net.Attestation.Containers\OKF4net.Attestation.Containers.csproj" />
     <ProjectReference Include="..\..\src\OKF4net.Viewer\OKF4net.Viewer.csproj" />
+    <ProjectReference Include="..\..\src\OKF4net.Providers.EmbeddedResources\OKF4net.Providers.EmbeddedResources.csproj" />
+    <ProjectReference Include="..\..\src\OKF4net.Providers.S3\OKF4net.Providers.S3.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -40,6 +42,37 @@
       every build of the tests build the probe first, in the same configuration.
     -->
     <ProjectReference Include="..\YamlHostileProbe\YamlHostileProbe.csproj" ReferenceOutputAssembly="false" />
+    <!--
+      Built, never referenced, for the same reason: Providers/S3/HostileEnvironmentTests.cs runs it as a child process
+      (dotnet S3HostileEnvProbe.dll ...) under environments the test host must not take on (spec T1), and
+      TestProcessTests.cs uses its "sleep" mode as a process tree that never ends by itself.
+    -->
+    <ProjectReference Include="..\S3HostileEnvProbe\S3HostileEnvProbe.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
+
+  <!--
+    Embedded test bundles (spec §6.1-§6.3). The .targets is imported at the END
+    of the body, after these items (the bundles are detached from the default items by a target, wherever they are declared) —
+    the names/ bundle holds a deliberately invalid x.cs and r.resx, and this
+    project still builds only because they are neither compiled nor passed to
+    ResGen. NuGet's own import order is covered by TargetsBuildTests and the
+    AOT CI job.
+  -->
+  <ItemGroup>
+    <OkfBundle Include="Providers\EmbeddedResources\Assets\contract\" Prefix="contract" />
+    <OkfBundle Include="Providers\EmbeddedResources\Assets\contract2\" Prefix="contract2" />
+    <OkfBundle Include="Providers\EmbeddedResources\Assets\names\" Prefix="names" />
+    <!-- Parity (spec §6.3): embedded, never edited. -->
+    <OkfBundle Include="..\fixtures\okf_v02\" Prefix="fixture-okf_v02" />
+    <OkfBundle Include="..\fixtures\okf_v02_computation\" Prefix="fixture-okf_v02_computation" />
+    <OkfBundle Include="..\fixtures\okf_v02_reserved\" Prefix="fixture-okf_v02_reserved" />
+    <OkfBundle Include="..\fixtures\appendix_a\" Prefix="fixture-appendix_a" />
+    <OkfBundle Include="..\..\bundles\acme_retail\" Prefix="acme_retail" />
+    <!-- Not under the convention: GetBundlePrefixes must ignore them. Two files: one item per file (NETSDK1022 refuses a duplicate EmbeddedResource). -->
+    <EmbeddedResource Include="Providers\EmbeddedResources\Assets\stray1.txt" LogicalName="okf:/stray.md" WithCulture="false" Type="Non-Resx" />
+    <EmbeddedResource Include="Providers\EmbeddedResources\Assets\stray2.txt" LogicalName="okf:noslash" WithCulture="false" Type="Non-Resx" />
+  </ItemGroup>
+
+  <Import Project="..\..\src\OKF4net.Providers.EmbeddedResources\build\OKF4net.Providers.EmbeddedResources.targets" />
 
 </Project>

@@ -87,7 +87,7 @@ export default function Mcp() {
           <MapTable
             head={['Tool', 'Does']}
             rows={[
-              ['okf_read_concept', 'One concept — frontmatter, body, outgoing links, backlinks'],
+              ['okf_read_concept', 'One concept — frontmatter (YAML that okf_write_concept accepts back), body, outgoing links, backlinks'],
               ['okf_browse', 'Progressive-disclosure listing of a directory (§8)'],
               ['okf_search', 'Ranked full-text search over titles, tags, and bodies'],
               ['okf_graph', "Link stats, or one concept's links, backlinks, broken links (§6)"],
@@ -129,6 +129,9 @@ export default function Mcp() {
               ],
             ]}
           />
+          <p>
+            Results come back as plain text, not as JSON string literals.
+          </p>
           <p>
             <code>okf-mcp</code> doesn't wire an attestation runtime, so the thirteenth, execution-capable{' '}
             <code>okf_run_computation</code> tool (see <Link to="/docs/agents">docs/agents.md</Link>) isn't

@@ -1,13 +1,34 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Collections.ObjectModel;
+using System.Runtime.ExceptionServices;
 using OKF4net.Internal;
+using OKF4net.Providers;
 
 namespace OKF4net;
 
 /// <summary>
-/// Error raised when loading or operating on a bundle on disk, restricted to
-/// the conditions <see cref="Bundle.Load"/> itself can raise: I/O failures and
-/// a non-directory root. Per-file parse failures are recorded in
-/// <see cref="Bundle.ParseErrors"/> instead (loading is permissive, §11).
+/// The GLOBAL failure of reading a bundle through its provider: the bundle as a whole (or its
+/// provider) failed, as opposed to a problem of one object, which is a local state or a
+/// finding (the error-priority rule of #139: global failures abort, per-resource states are
+/// local). The message is library-authored (spec §7); the raw cause, when there is one, is
+/// the inner exception.
+/// <para>
+/// A load (<see cref="Bundle.Load(string)"/>, <see cref="Bundle.Load(IBundleProvider, BundleLoadOptions?)"/>)
+/// raises it for a root that is not a directory (the <see cref="string"/> overload); an I/O
+/// error while listing the bundle, taking its version or reading a concept; a concept that is
+/// not valid UTF-8; a provider failure or refusal (a path through a reparse point or an entry
+/// that cannot be inspected, a root outside its confinement boundary, an object gone or changed
+/// while it was read); or a global bound exceeded (entries, depth). Per-file problems — a
+/// rejected name, an oversized or unparseable concept — are recorded in
+/// <see cref="Bundle.ParseProblems"/> instead (loading is permissive, §11).
+/// </para>
+/// <para>
+/// A read made on a loaded image raises it too (#247): <see cref="Bundle.ReadResourceTextAsync"/>
+/// and its synchronous spellings, for a typed provider failure or a raw storage error raised
+/// while reading the object, and so do the readers built on it —
+/// <see cref="BundleValidator.ValidateAsync"/> reading <c>index.md</c> and <c>log.md</c>, and
+/// <c>AttestationOrchestrator.CaptureAsync</c> — instead of reporting the object as unreadable.
+/// </para>
 /// </summary>
 public sealed class BundleLoadException : OkfException
 {
@@ -16,12 +37,54 @@ public sealed class BundleLoadException : OkfException
         : base(message)
     {
     }
+
+    /// <summary>Creates the exception with the raw provider failure as <see cref="Exception.InnerException"/> (the host-log channel, spec §7).</summary>
+    public BundleLoadException(string message, Exception inner)
+        : base(message, inner)
+    {
+    }
 }
 
 /// <summary>
 /// A single concept within a bundle (one markdown document).
 /// </summary>
-public sealed record Concept(ConceptId Id, string Path, OkfDocument Document);
+/// <remarks>
+/// Equality, hashing and <see cref="object.ToString"/> cover the three positional members
+/// only, as they did before <see cref="Key"/> existed: a loaded concept equals a hand-built
+/// one with the same id, path and document. <c>with</c> still copies <see cref="Key"/>.
+/// </remarks>
+public sealed record Concept(ConceptId Id, string Path, OkfDocument Document)
+{
+    /// <summary>The concept's key in its provider; set by <see cref="Bundle.Load(IBundleProvider, BundleLoadOptions?)"/>, <see langword="null"/> for a hand-built instance.</summary>
+    public BundleKey? Key { get; init; }
+
+    /// <summary>Compares the three positional members (<see cref="Id"/>, <see cref="Path"/>, <see cref="Document"/>), never <see cref="Key"/>.</summary>
+    public bool Equals(Concept? other) =>
+        ReferenceEquals(this, other)
+        || (other is not null
+            && EqualityContract == other.EqualityContract
+            && EqualityComparer<ConceptId>.Default.Equals(Id, other.Id)
+            && EqualityComparer<string>.Default.Equals(Path, other.Path)
+            && EqualityComparer<OkfDocument>.Default.Equals(Document, other.Document));
+
+    /// <summary>Hashes the three positional members, as the compiler-synthesised hash did before <see cref="Key"/> existed.</summary>
+    public override int GetHashCode() => unchecked(
+        (((EqualityComparer<Type>.Default.GetHashCode(EqualityContract) * -1521134295)
+            + EqualityComparer<ConceptId>.Default.GetHashCode(Id)) * -1521134295
+            + EqualityComparer<string>.Default.GetHashCode(Path)) * -1521134295
+            + EqualityComparer<OkfDocument>.Default.GetHashCode(Document));
+
+    private bool PrintMembers(System.Text.StringBuilder builder)
+    {
+        builder.Append("Id = ");
+        builder.Append(Id);
+        builder.Append(", Path = ");
+        builder.Append(Path);
+        builder.Append(", Document = ");
+        builder.Append(Document);
+        return true;
+    }
+}
 
 /// <summary>
 /// A cross-link from one concept to another, after resolution (§6.1).
@@ -32,11 +95,11 @@ public sealed record ResolvedLink(ConceptId Target, bool Exists, string Text, st
 /// Loading and traversing an OKF *bundle*: a directory tree of markdown
 /// files (§3).
 ///
-/// <see cref="Load"/> walks a directory, parses every non-reserved
+/// <see cref="Load(string)"/> walks a directory, parses every non-reserved
 /// <c>.md</c> file into a <see cref="Concept"/>, records the reserved
 /// <c>index.md</c> / <c>log.md</c> files, and builds the cross-link graph
 /// (§6). Loading is **permissive** by design (§11): files whose frontmatter
-/// cannot be parsed are collected into <see cref="ParseErrors"/> rather than
+/// cannot be parsed are collected into <see cref="ParseProblems"/> rather than
 /// aborting the load, and broken links are retained as edges to
 /// non-existent concepts.
 /// </summary>
@@ -72,37 +135,91 @@ public sealed class Bundle
     private readonly string? _okfVersion;
 
     private Bundle(
-        string root,
+        IBundleProvider provider,
+        BundleLoadOptions options,
+        BundleKeyValidator validator,
+        BundleVersion version,
+        string? okfVersion,
         List<Concept> concepts,
         Dictionary<ConceptId, int> index,
-        List<string> indexFiles,
-        List<string> logFiles,
-        List<(string Path, string Error)> parseErrors,
+        List<BundleKey> indexKeys,
+        List<BundleKey> logKeys,
+        List<BundleParseError> parseProblems,
+        HashSet<BundleKey> rejectedKeys,
+        List<BundleKey> rejectedPrefixes,
+        List<BundlePortabilityIssue> portabilityIssues,
+        Dictionary<BundleKey, BundleObjectVersion> objectVersions,
         Dictionary<ConceptId, List<ResolvedLink>> outbound,
         Dictionary<ConceptId, List<ConceptId>> backlinks)
     {
-        Root = root;
+        Provider = provider;
+        Options = options;
+        _validator = validator;
+        Version = version;
+        _okfVersion = okfVersion;
         Concepts = concepts;
         _index = index;
-        IndexFiles = indexFiles;
-        LogFiles = logFiles;
-        ParseErrors = parseErrors;
+        IndexKeys = indexKeys;
+        LogKeys = logKeys;
+        ParseProblems = parseProblems;
+#pragma warning disable CS0618 // the display-path projections are kept, obsolete, until their removal (spec §10)
+        IndexFiles = indexKeys.Select(k => BundleDisplayPath.Compose(provider.Location, k)).ToList();
+        LogFiles = logKeys.Select(k => BundleDisplayPath.Compose(provider.Location, k)).ToList();
+        ParseErrors = parseProblems.Select(p => (DisplayPathOf(provider.Location, p), p.Error)).ToList();
+#pragma warning restore CS0618
+        RejectedKeys = rejectedKeys;
+        RejectedPrefixes = rejectedPrefixes;
+        _rejectedPrefixFolds = rejectedPrefixes.Select(validator.FoldKeyText).ToHashSet(StringComparer.Ordinal);
+        PortabilityIssues = portabilityIssues;
+        ObjectVersions = objectVersions;
         _outbound = outbound;
         _backlinks = backlinks;
-        // Computed eagerly here (not deferred) so OkfVersion reflects the same
-        // load-time snapshot as the rest of the bundle: a later change to the
-        // root index.md on disk cannot alter an already-loaded instance. Root
-        // is set above and is the only field ComputeOkfVersion reads.
-        _okfVersion = ComputeOkfVersion();
     }
 
     /// <summary>
-    /// Loads a bundle from a directory tree.
-    ///
-    /// Throws only for I/O failures or a non-directory root. Per-file parse
-    /// failures are recorded in <see cref="ParseErrors"/>.
+    /// The display path of a load problem (spec §8): the key's path when the name is a key,
+    /// otherwise the raw name as listed, unquoted, with <c>/</c> turned into the OS separator —
+    /// the same <c>Path.Combine(root, …)</c> string the loader printed before the provider
+    /// seam, whatever the reason the name was rejected. Escaping, when an output needs it,
+    /// is that output's own (the JSON writer, the site's HTML encoding), never a second layer here.
     /// </summary>
-    /// <exception cref="BundleLoadException"><paramref name="root"/> does not exist or is not a directory, or an I/O error occurred.</exception>
+    private static string DisplayPathOf(string location, BundleParseError problem)
+    {
+        if ((problem.Key ?? (BundleKey.TryParse(problem.RawName, out var parsed, out _) ? parsed : null)) is { } key)
+        {
+            return BundleDisplayPath.Compose(location, key);
+        }
+
+        return System.IO.Path.Combine(location, problem.RawName.Replace('/', System.IO.Path.DirectorySeparatorChar));
+    }
+
+    /// <summary>
+    /// The display path of one of this bundle's <see cref="ParseProblems"/> (spec §8): the
+    /// <see cref="Location"/>, then the key's segments joined by the OS separator when the name
+    /// is a key, else the raw name as listed with <c>/</c> turned into the OS separator — the
+    /// same string the loader printed for an unparseable file before the provider seam. The one
+    /// text every output (the CLI, its JSON, the viewer's index page) prints for a problem; it
+    /// escapes nothing, that is each output's own job.
+    /// </summary>
+    /// <param name="problem">One of <see cref="ParseProblems"/> (or any problem to display under this bundle's location).</param>
+    public string DisplayPath(BundleParseError problem)
+    {
+        ArgumentNullException.ThrowIfNull(problem);
+        return DisplayPathOf(Location, problem);
+    }
+
+    /// <summary>
+    /// Loads a bundle from a directory tree through the default
+    /// <see cref="FileSystemBundleProvider"/> (spec §8).
+    ///
+    /// Throws for a non-directory root, an I/O failure, a concept that is not valid UTF-8, a
+    /// global bound exceeded (<see cref="BundleLimits.Default"/>: entries, depth) and a refusal
+    /// by the provider's STRICT guards — a directory under the root whose link status cannot be
+    /// inspected aborts the load before it is listed. A symlink or junction under the root is
+    /// skipped, never followed. Per-file problems — a rejected name, an oversized or
+    /// unparseable concept — are recorded in <see cref="ParseProblems"/>.
+    /// </summary>
+    /// <exception cref="BundleLoadException"><paramref name="root"/> does not exist or is not a directory, an I/O error occurred, a concept is not valid UTF-8, a global bound was exceeded, or the provider refused an access.</exception>
     public static Bundle Load(string root)
     {
         if (!Directory.Exists(root))
@@ -110,60 +227,219 @@ public sealed class Bundle
             throw new BundleLoadException($"bundle root is not a directory: {root}");
         }
 
-        List<string> mdFiles;
+        return Load(new FileSystemBundleProvider(root), null);
+    }
+
+    /// <summary>
+    /// Loads a bundle through <paramref name="provider"/> (spec §1, §2, §6): consumes the
+    /// listing under the core's own entry, depth and key-length bounds, validates the names
+    /// as a tree under <paramref name="options"/>' policy, reads every <c>.md</c> object within
+    /// the byte bound, parses the concepts and builds the link graph. Permissive (§11): a
+    /// rejected name, an oversized or unparseable concept goes to <see cref="ParseProblems"/>;
+    /// only a provider failure or a global bound (entries, depth) throws.
+    /// </summary>
+    /// <param name="provider">Where the bundle is read.</param>
+    /// <param name="options">The key policy, extra validators and bounds, or <see langword="null"/> for <see cref="BundleLoadOptions.Default"/>.</param>
+    /// <param name="ct">Cancels the load: it ends with an <see cref="OperationCanceledException"/>, never a <see cref="BundleLoadException"/>.</param>
+    /// <exception cref="BundleLoadException">The provider failed, refused the access, or a global bound was exceeded. The raw cause is the inner exception.</exception>
+    public static ValueTask<Bundle> LoadAsync(IBundleProvider provider, BundleLoadOptions? options = null, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        return LoadCoreAsync(provider, options, ct, (options ?? BundleLoadOptions.Default).Limits.MaxConcurrentRequests);
+    }
+
+    /// <summary>
+    /// The load, reading the concepts with at most <paramref name="readDegree"/> reads in flight (the
+    /// asynchronous spelling uses <see cref="BundleLimits.MaxConcurrentRequests"/>; the synchronous one,
+    /// 1: its path is the sequential one, so what the CLI prints never depends on a scheduler).
+    /// Whatever the degree, the outcome is the same: concepts in key order, and a failure
+    /// that ends the load names the failing key of the smallest rank.
+    /// </summary>
+    private static async ValueTask<Bundle> LoadCoreAsync(IBundleProvider provider, BundleLoadOptions? options, CancellationToken ct, int readDegree)
+    {
+        options ??= BundleLoadOptions.Default;
+        var limits = options.Limits;
+        var validator = new BundleKeyValidator(provider.NativeConstraints, options.KeyPolicy, options.ExtraKeyValidators);
+
+        // One provider scope for the whole load: a provider that supports it lists each
+        // directory once for the listing, the version and every read, and keeps nothing past
+        // this call (FileSystemBundleProvider's BeginScope says what is and is not reused).
+        using var scope = ProviderScopes.Begin(provider);
+
+        // The token is read BEFORE the listing (spec of 2026-11-16 §4.7 a): a change between the two
+        // then gives an image newer than its token, which the next comparison reloads; the opposite
+        // order gave an image older than its token, believed fresh until the storage changed again.
+        BundleVersion version;
         try
         {
-            mdFiles = new List<string>();
-            CollectMarkdown(root, mdFiles);
+            version = await provider.GetVersionAsync(limits, ct).ConfigureAwait(false);
         }
-        catch (IOException e)
+        catch (BundleProviderException e)
         {
-            throw new BundleLoadException($"I/O error: {e.Message}");
+            throw Translate(e, null);
         }
-        catch (UnauthorizedAccessException e)
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            throw new BundleLoadException($"I/O error: {e.Message}");
+            throw new BundleLoadException($"I/O error while reading the bundle version ({e.GetType().Name})", e);
         }
 
-        mdFiles.Sort(PathOrdering.CompareComponentWise);
+        List<string> treeInput;
+        List<string> overLength;
+        var ceiling = options.MemoryCeilingBytes;
+        var declaredLengths = ceiling is null ? null : new Dictionary<string, long>(StringComparer.Ordinal);
+        try
+        {
+            (treeInput, overLength) = await ListNamesAsync(provider, limits, ct, declaredLengths: declaredLengths).ConfigureAwait(false);
+        }
+        catch (BundleProviderException e)
+        {
+            throw Translate(e, null);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            throw new BundleLoadException($"I/O error while listing the bundle ({e.GetType().Name})", e);
+        }
+
+        var parseProblems = new List<BundleParseError>();
+        var rejectedKeys = new HashSet<BundleKey>();
+        foreach (var raw in overLength)
+        {
+            BundleKey.TryParse(raw, out var longKey, out _);
+            if (longKey is not null)
+            {
+                rejectedKeys.Add(longKey);
+            }
+
+            if (MarkdownPaths.HasMarkdownExtension(raw))
+            {
+                parseProblems.Add(new BundleParseError(raw, longKey, $"key is longer than the {KeyByteBound(provider, limits)}-byte bound"));
+            }
+        }
+
+        var tree = validator.ValidateTree(treeInput, overLength);
+        foreach (var rejection in tree.Rejected)
+        {
+            if (BundleKey.TryParse(rejection.RawName, out var rejectedKey, out _))
+            {
+                rejectedKeys.Add(rejectedKey);
+            }
+
+            // Only a .md name is diagnosed (spec §2, enumeration scope); other names were never examined.
+            if (MarkdownPaths.HasMarkdownExtension(rejection.RawName))
+            {
+                parseProblems.Add(new BundleParseError(rejection.RawName, null, rejection.Reason));
+            }
+        }
+
+        var mdKeys = tree.Accepted.Where(k => k.IsMarkdown).ToList();
+        mdKeys.Sort((a, b) => PathOrdering.CompareComponentWise(a.ToString(), b.ToString()));
+        var portabilityIssues = FindPortabilityIssues(provider, options, treeInput, overLength, mdKeys);
+
+        var conceptKeys = mdKeys.Where(k => k.Name is not (IndexFilename or LogFilename)).ToList();
+
+        // The memory ceiling (#151), first from the sizes the listing declared: their estimate is what the
+        // reads would add up to at least, so a bundle already over the ceiling is refused before any read.
+        if (ceiling is { } before && declaredLengths is not null)
+        {
+            var declared = 0L;
+            foreach (var key in conceptKeys)
+            {
+                // An object over the byte bound is skipped by the reads as a parse problem and never enters the
+                // estimate, so it is not charged here either: the preflight stays a lower bound of what the load adds.
+                if (declaredLengths.TryGetValue(key.ToString(), out var length) && length <= limits.MaxObjectBytes)
+                {
+                    declared += SnapshotMemory.OfObject(length);
+                }
+            }
+
+            if (declared > before)
+            {
+                throw Translate(new BundleMemoryCeilingExceededException(before, declared), null);
+            }
+        }
 
         var concepts = new List<Concept>();
-        var indexFiles = new List<string>();
-        var logFiles = new List<string>();
-        var parseErrors = new List<(string Path, string Error)>();
+        var indexKeys = new List<BundleKey>();
+        var logKeys = new List<BundleKey>();
+        var objectVersions = new Dictionary<BundleKey, BundleObjectVersion>();
+        var chunk = new byte[ReadChunkBytes]; // one copy buffer for every object of this load
 
-        foreach (var path in mdFiles)
+        // Without a ceiling every concept is read ahead, up to the degree. With one, the reads go a window of `readDegree`
+        // keys at a time, each window started when the loop reaches its first key: a concept's links, which count toward
+        // the ceiling, are known only once it is parsed, so reading everything first would download a bundle the first
+        // concepts' links already refuse. A window is still read in parallel, and the loop still meets the keys in order.
+        var prefetched = ceiling is null
+            ? await PrefetchConceptsAsync(provider, conceptKeys, limits, readDegree, null, ct).ConfigureAwait(false)
+            : new Dictionary<BundleKey, PrefetchedRead>();
+        var conceptRank = 0;
+        var estimate = 0L;
+        var scannedLinks = new List<IReadOnlyList<ConceptLink>>();
+
+        foreach (var key in mdKeys)
         {
-            var filename = System.IO.Path.GetFileName(path);
-            switch (filename)
+            switch (key.Name)
             {
                 case IndexFilename:
-                    indexFiles.Add(path);
+                    indexKeys.Add(key);
                     break;
                 case LogFilename:
-                    logFiles.Add(path);
+                    logKeys.Add(key);
                     break;
                 default:
                     {
+                        if (ceiling is { } remaining && readDegree > 1 && !prefetched.ContainsKey(key))
+                        {
+                            // The next window, bounded by what the ceiling still allows after what was parsed so far.
+                            var window = await PrefetchConceptsAsync(provider, conceptKeys.GetRange(conceptRank, Math.Min(readDegree, conceptKeys.Count - conceptRank)), limits, readDegree, remaining - estimate, ct).ConfigureAwait(false);
+                            foreach (var (windowKey, windowRead) in window)
+                            {
+                                prefetched[windowKey] = windowRead;
+                            }
+                        }
+
+                        conceptRank++;
                         string text;
                         try
                         {
-                            text = OkfEncodings.Strict.GetString(File.ReadAllBytes(path));
+                            ct.ThrowIfCancellationRequested();
+                            (string Text, BundleObjectVersion Version) read;
+                            if (prefetched.TryGetValue(key, out var ahead))
+                            {
+                                ahead.Failure?.Throw(); // the failure of this object, at its own rank: the loop meets the lowest first
+                                read = (ahead.Text!, ahead.Version);
+                            }
+                            else
+                            {
+                                read = await ReadTextAtAsync(provider, key, limits, chunk, null, ct).ConfigureAwait(false);
+                            }
+
+                            text = read.Text;
+                            objectVersions[key] = read.Version;
                         }
-                        catch (IOException e)
+                        catch (BundleObjectTooLargeException e)
                         {
-                            throw new BundleLoadException($"I/O error: {e.Message}");
+                            parseProblems.Add(new BundleParseError(key.ToString(), key, e.Message));
+                            break;
                         }
-                        catch (UnauthorizedAccessException e)
+                        catch (BundleProviderException e)
                         {
-                            throw new BundleLoadException($"I/O error: {e.Message}");
+                            throw Translate(e, key);
+                        }
+                        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                        {
+                            throw new BundleLoadException($"I/O error reading '{key}' ({e.GetType().Name})", e);
                         }
                         catch (System.Text.DecoderFallbackException)
                         {
-                            // Non-UTF-8 content is treated as an I/O failure and
-                            // aborts the whole load, like any other error during
-                            // the walk (bundle files must be valid UTF-8, §3).
                             throw new BundleLoadException("I/O error: stream did not contain valid UTF-8");
+                        }
+
+                        // Then as the reads go, in key order: the load stops at the first object that takes the
+                        // running estimate over the ceiling, never after reading everything.
+                        estimate += SnapshotMemory.OfText(text);
+                        if (ceiling is { } during && estimate > during)
+                        {
+                            throw Translate(new BundleMemoryCeilingExceededException(during, estimate), null);
                         }
 
                         OkfDocument document;
@@ -173,18 +449,27 @@ public sealed class Bundle
                         }
                         catch (DocumentParseException e)
                         {
-                            parseErrors.Add((path, e.Message));
+                            parseProblems.Add(new BundleParseError(key.ToString(), key, e.Message));
                             break;
                         }
 
                         try
                         {
-                            var id = ConceptId.FromPath(root, path);
-                            concepts.Add(new Concept(id, path, document));
+                            var id = ConceptId.FromKey(key);
+                            concepts.Add(new Concept(id, BundleDisplayPath.Compose(provider.Location, key), document) { Key = key });
+
+                            // The links are scanned once, here, for the estimate and for the graph built below.
+                            var links = document.Links();
+                            scannedLinks.Add(links);
+                            estimate += SnapshotMemory.OfLinks(links.Count);
+                            if (ceiling is { } linked && estimate > linked)
+                            {
+                                throw Translate(new BundleMemoryCeilingExceededException(linked, estimate), null);
+                            }
                         }
                         catch (ConceptIdException e)
                         {
-                            parseErrors.Add((path, $"Missing required frontmatter keys: {e.Message}"));
+                            parseProblems.Add(new BundleParseError(key.ToString(), key, $"Missing required frontmatter keys: {e.Message}"));
                         }
 
                         break;
@@ -198,13 +483,537 @@ public sealed class Bundle
             index[concepts[i].Id] = i;
         }
 
-        var (outbound, backlinks) = BuildGraph(concepts, index);
+        var (outbound, backlinks) = BuildGraph(concepts, index, scannedLinks);
+        var okfVersion = await ComputeOkfVersionAsync(provider, limits, indexKeys, chunk, ct).ConfigureAwait(false);
 
-        return new Bundle(root, concepts, index, indexFiles, logFiles, parseErrors, outbound, backlinks);
+        // One path order for every problem, whatever stage found it (a bound, the tree
+        // validation, the read, the parse): the order the loader before the seam reported its
+        // errors in — every `.md` path sorted component-wise, `/` and `\` both separating —
+        // so a rejected name sits among the others instead of ahead of them. Stable: two
+        // names that compare equal (`a\b.md` and `a/b.md`) keep the order they were found in.
+        parseProblems = [.. parseProblems.OrderBy(p => p.RawName, Comparer<string>.Create(PathOrdering.CompareComponentWise))];
+
+        var bundle = new Bundle(provider, options, validator, version, okfVersion, concepts, index, indexKeys, logKeys, parseProblems, rejectedKeys, tree.RejectedPrefixes.ToList(), portabilityIssues, objectVersions, outbound, backlinks)
+        {
+            EstimatedMemoryBytes = estimate,
+        };
+
+        // The executable resources of every §10 concept are read and hashed now (spec §5.1),
+        // inside the load's scope, so that an execution can later be pinned to the version
+        // this image was loaded with. A resource's own problem is a state, never a load failure.
+        await bundle.SurveyExecutableResourcesAsync(chunk, ct).ConfigureAwait(false);
+        return bundle;
     }
 
-    /// <summary>The bundle's root directory.</summary>
-    public string Root { get; }
+    /// <summary>
+    /// The synchronous load over a provider: <see cref="LoadAsync"/> through the non-blocking
+    /// bridge (#152), for the code that has not become asynchronous. It never waits: a load that
+    /// is still pending when it returns is cancelled and abandoned, and the call throws
+    /// <see cref="InvalidOperationException"/> naming the async overload. Not public API: a host
+    /// loads through <see cref="LoadAsync"/>, or <see cref="Load(string)"/> for a directory.
+    /// </summary>
+    internal static Bundle Load(IBundleProvider provider, BundleLoadOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        return SyncBridge.RunCancellable(ct => LoadCoreAsync(provider, options, ct, readDegree: 1));
+    }
+
+    /// <summary>What reading one concept object gave: its text and version, or the failure the loop will meet at its rank.</summary>
+    private readonly record struct PrefetchedRead(string? Text, BundleObjectVersion Version, ExceptionDispatchInfo? Failure);
+
+    /// <summary>
+    /// Reads the concept objects with at most <paramref name="degree"/> reads in flight, each into the
+    /// slot of its own key (#152). Empty — the loop reads inline, as the synchronous load always did —
+    /// when the degree is 1 or there is nothing to overlap. Reads START in key order and none is
+    /// started once a lower-ranked one has failed with a failure that ends the load, so the loop, which
+    /// meets the slots in key order, finds the smallest rank first: the error text never depends on
+    /// which read finished first. A per-object failure that is only a parse problem (an object over the
+    /// byte bound) does not stop the starting. A cancellation of the caller's token propagates once every
+    /// started read has ended.
+    /// </summary>
+    private static async ValueTask<Dictionary<BundleKey, PrefetchedRead>> PrefetchConceptsAsync(IBundleProvider provider, List<BundleKey> keys, BundleLimits limits, int degree, long? ceiling, CancellationToken ct)
+    {
+        var outcomes = new Dictionary<BundleKey, PrefetchedRead>();
+        if (degree <= 1 || keys.Count <= 1)
+        {
+            return outcomes;
+        }
+
+        using var slots = new SemaphoreSlim(Math.Min(degree, keys.Count));
+        var lowestFailed = int.MaxValue;
+        var readEstimate = 0L; // the memory estimate (#151) of the reads that have ended
+        var started = new List<(BundleKey Key, Task<PrefetchedRead> Read)>(keys.Count);
+        ExceptionDispatchInfo? cancelled = null;
+        try
+        {
+            for (var rank = 0; rank < keys.Count; rank++)
+            {
+                await slots.WaitAsync(ct).ConfigureAwait(false);
+
+                // No read starts once a lower rank has failed, nor once the reads that ended are over the memory
+                // ceiling: reads start in key order, so what was started is a prefix whose estimate is already over,
+                // and the loop, summing the same reads in key order, refuses inside it.
+                if (Volatile.Read(ref lowestFailed) < rank || (ceiling is { } over && Interlocked.Read(ref readEstimate) > over))
+                {
+                    slots.Release();
+                    break;
+                }
+
+                started.Add((keys[rank], ReadOneAsync(keys[rank], rank)));
+            }
+        }
+        catch (OperationCanceledException e) when (ct.IsCancellationRequested)
+        {
+            cancelled = ExceptionDispatchInfo.Capture(e);
+        }
+
+        // Every started read ends before this method returns or throws: the provider scope and the
+        // semaphore outlive them, and the caller never sees the load come back while the host's reads still run.
+        foreach (var (key, read) in started)
+        {
+            try
+            {
+                outcomes[key] = await read.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException e) when (ct.IsCancellationRequested)
+            {
+                cancelled ??= ExceptionDispatchInfo.Capture(e);
+            }
+        }
+
+        cancelled?.Throw();
+        return outcomes;
+
+        async Task<PrefetchedRead> ReadOneAsync(BundleKey key, int rank)
+        {
+            var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(ReadChunkBytes);
+            try
+            {
+                var read = await ReadTextAtAsync(provider, key, limits, buffer, null, ct).ConfigureAwait(false);
+                if (ceiling is not null)
+                {
+                    Interlocked.Add(ref readEstimate, SnapshotMemory.OfText(read.Text));
+                }
+
+                return new PrefetchedRead(read.Text, read.Version, null);
+            }
+            catch (Exception e) when (e is not OperationCanceledException && e is not OutOfMemoryException)
+            {
+                if (e is not BundleObjectTooLargeException)
+                {
+                    int seen;
+                    while (rank < (seen = Volatile.Read(ref lowestFailed)) && Interlocked.CompareExchange(ref lowestFailed, rank, seen) != seen)
+                    {
+                    }
+                }
+
+                return new PrefetchedRead(null, default, ExceptionDispatchInfo.Capture(e));
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+                slots.Release();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Surveys the <c>computation</c> file and the <c>attester.resource</c> of every Attested
+    /// Computation concept (spec §5.1): each is resolved like any §6.2 value
+    /// (<see cref="TryResolveResourceKey"/>) and, when it resolves, read through the one bounded
+    /// reader so that its version is known. The rule is local: a missing, unreadable, oversized
+    /// or refused resource is a state of that resource; a global failure (a bound of spec §6, a
+    /// provider refusal that is not the resource's own path) still fails the load, as it would
+    /// without the survey (spec §5.1, revision 6).
+    /// </summary>
+    private async ValueTask SurveyExecutableResourcesAsync(byte[] chunk, CancellationToken ct)
+    {
+        // One read per KEY per load (design decision 17): N concepts sharing one file cost one read.
+        var readKeys = new Dictionary<BundleKey, (ExecutableResourceState State, BundleObjectVersion? Version)>();
+        foreach (var concept in Concepts)
+        {
+            var frontmatter = concept.Document.Frontmatter;
+            if (!frontmatter.IsAttestedComputation)
+            {
+                continue;
+            }
+
+            var contract = frontmatter.ComputationContract;
+            _executableResources[concept.Id] = new ExecutableResourceSurvey(
+                await SurveyResourceAsync(concept, "computation", contract.ComputationPath, chunk, readKeys, ct).ConfigureAwait(false),
+                await SurveyResourceAsync(concept, "attester.resource", contract.Attester?.Resource, chunk, readKeys, ct).ConfigureAwait(false));
+        }
+
+        ExecutableResources = new ReadOnlyDictionary<ConceptId, ExecutableResourceSurvey>(_executableResources);
+    }
+
+    private async ValueTask<ExecutableResource> SurveyResourceAsync(Concept concept, string field, string? rawPath, byte[] chunk, Dictionary<BundleKey, (ExecutableResourceState State, BundleObjectVersion? Version)> readKeys, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(rawPath))
+        {
+            return new ExecutableResource(field, null, ExecutableResourceState.Undeclared, null, null);
+        }
+
+        var (key, status) = await ResolveResourceKeyAsync(concept, rawPath, ct).ConfigureAwait(false);
+        switch (status)
+        {
+            case ResourceResolutionStatus.Url:
+                return new ExecutableResource(field, rawPath, ExecutableResourceState.Url, null, null);
+            case ResourceResolutionStatus.Unsafe:
+                return new ExecutableResource(field, rawPath, ExecutableResourceState.Unsafe, null, null);
+            case ResourceResolutionStatus.Missing:
+                return new ExecutableResource(field, rawPath, ExecutableResourceState.Missing, null, null);
+        }
+
+        if (readKeys.TryGetValue(key!, out var known))
+        {
+            return new ExecutableResource(field, rawPath, known.State, key, known.Version);
+        }
+
+        var result = await ReadForSurveyAsync(key!, chunk, ct).ConfigureAwait(false);
+        readKeys[key!] = (result.State, result.Version);
+        return new ExecutableResource(field, rawPath, result.State, key, result.Version);
+    }
+
+    private async ValueTask<(ExecutableResourceState State, BundleObjectVersion? Version)> ReadForSurveyAsync(BundleKey key, byte[] chunk, CancellationToken ct)
+    {
+        try
+        {
+            var read = await ReadTextAtAsync(Provider, key, Options.Limits, chunk, null, ct).ConfigureAwait(false);
+            return (ExecutableResourceState.Pinned, read.Version);
+        }
+        catch (BundleObjectTooLargeException)
+        {
+            return (ExecutableResourceState.TooLarge, null);
+        }
+        catch (BundleObjectNotFoundException)
+        {
+            return (ExecutableResourceState.Missing, null);
+        }
+        catch (BundleAccessRefusedException)
+        {
+            return (ExecutableResourceState.Unsafe, null);
+        }
+        catch (BundleProviderException e)
+        {
+            throw Translate(e, key); // a bound or a global refusal: the load fails, as without the survey
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
+        {
+            // Every raw I/O failure stays the resource's state here, StorageFailure's codes
+            // included (#247): a code such as EIO can be one bad file, and one entry must
+            // never make the whole bundle unloadable. Only post-load reads classify them.
+            return (ExecutableResourceState.Unreadable, null);
+        }
+    }
+
+    /// <summary>
+    /// The second, portability pass of a load under a policy other than
+    /// <see cref="BundleKeyPolicy.Strict"/> (spec §2, layer 3): the same raw names — the
+    /// unadmitted ones included — through a <see cref="BundleKeyPolicy.Strict"/> validator with
+    /// the same provider constraints and extra validators. Every accepted <c>.md</c> key in
+    /// <paramref name="acceptedMarkdown"/> that it refuses, by <see cref="BundleKeyValidator.CheckKey"/>
+    /// or by a tree rejection, gives one issue with its reason, in the order of
+    /// <paramref name="acceptedMarkdown"/>. One more linear tree validation over names already
+    /// in memory: no provider I/O. Empty under <see cref="BundleKeyPolicy.Strict"/>.
+    /// </summary>
+    private static List<BundlePortabilityIssue> FindPortabilityIssues(IBundleProvider provider, BundleLoadOptions options, List<string> treeInput, List<string> overLength, List<BundleKey> acceptedMarkdown)
+    {
+        var issues = new List<BundlePortabilityIssue>();
+        if (options.KeyPolicy == BundleKeyPolicy.Strict || acceptedMarkdown.Count == 0)
+        {
+            return issues;
+        }
+
+        var strict = new BundleKeyValidator(provider.NativeConstraints, BundleKeyPolicy.Strict, options.ExtraKeyValidators);
+        var reasons = new Dictionary<BundleKey, string>();
+        foreach (var rejection in strict.ValidateTree(treeInput, overLength).Rejected)
+        {
+            if (BundleKey.TryParse(rejection.RawName, out var key, out _))
+            {
+                reasons.TryAdd(key, rejection.Reason);
+            }
+        }
+
+        foreach (var key in acceptedMarkdown)
+        {
+            if (reasons.TryGetValue(key, out var reason))
+            {
+                issues.Add(new BundlePortabilityIssue(key, reason));
+            }
+        }
+
+        return issues;
+    }
+
+    /// <summary>
+    /// Builds the public message of a provider failure from the exception's type and fields
+    /// only (spec §7): a provider may have put storage internals in its message, which stays
+    /// on the inner exception for the host's log.
+    /// </summary>
+    private static BundleLoadException Translate(BundleProviderException e, BundleKey? key) => e switch
+    {
+        BundleLimitExceededException l => new BundleLoadException($"the bundle exceeds the {BundleLimitExceededException.Describe(l.Bound)} bound ({l.Limit})", e),
+        BundleAccessRefusedException r => new BundleLoadException(
+            (r.Key ?? key) is { } k ? $"access to '{k}' was refused by the provider" : "access to the bundle was refused by its provider", e),
+        BundleObjectNotFoundException n => new BundleLoadException($"no object under '{n.Key}'", e),
+        BundleVersionMismatchException m => new BundleLoadException($"'{m.Key}' changed while it was being read", e),
+        BundleReadOnlyException => new BundleLoadException("the provider refused a write", e),
+        _ => new BundleLoadException(key is null ? $"provider failure ({e.GetType().Name})" : $"provider failure reading '{key}' ({e.GetType().Name})", e),
+    };
+
+    /// <summary>
+    /// Consumes <paramref name="provider"/>'s listing of the whole bundle under the core's own
+    /// bounds, whatever the provider does (spec §6): entries while consuming; depth and key
+    /// length on every RAW name, before any parsing, so a name that also breaks a base rule
+    /// cannot bypass a global bound (the third review slipped <c>bad\name/a/b.md</c> past
+    /// <c>MaxDepth = 1</c> that way). Returns the names to validate as a tree and, apart, the
+    /// names refused for their length — still physically there: the tree validation counts their
+    /// ancestors as prefixes, so <c>x.md</c> beside an over-long <c>x.md/…</c> is a conflict.
+    /// Provider exceptions and the bounds' <see cref="BundleLimitExceededException"/> propagate.
+    /// The one listing of the whole bundle that applies every bound (entries, depth, key length) for a load or a regeneration: <see cref="Load(IBundleProvider, BundleLoadOptions?)"/>
+    /// and <see cref="IndexGenerator"/> both list through it.
+    /// <para>With <paramref name="under"/>, it is the listing of that prefix of the provider's key
+    /// space as a bundle of its own (how the catalog's memory store lists one scope of a tier
+    /// provider): only the names strictly under <c>under/</c> are kept (a name a provider listed
+    /// outside it is dropped, never returned), the depth is counted below the prefix, and the
+    /// names are returned in full, as keys of the provider.</para>
+    /// <para>A name is over-long past <see cref="KeyByteBound"/>: the limits' bound, lowered for a
+    /// provider whose keys are stored under a longer name (<see cref="IReservedKeyBytes"/>).</para>
+    /// </summary>
+    internal static async ValueTask<(List<string> TreeInput, List<string> OverLength)> ListNamesAsync(IBundleProvider provider, BundleLimits limits, CancellationToken ct, BundleKey? under = null, Dictionary<string, long>? declaredLengths = null)
+    {
+        var treeInput = new List<string>();
+        var overLength = new List<string>();
+        var count = 0;
+        var keyByteBound = KeyByteBound(provider, limits);
+        var strip = under is null ? null : under + "/";
+        var prefixDepth = under?.Segments.Count ?? 0;
+        await foreach (var listing in provider.EnumerateAsync(under, limits, ct).WithCancellation(ct).ConfigureAwait(false))
+        {
+            if (++count > limits.MaxEntries)
+            {
+                throw new BundleLimitExceededException(BundleBound.Entries, limits.MaxEntries);
+            }
+
+            var raw = listing.RawName;
+            if (strip is not null && !(raw.Length > strip.Length && raw.StartsWith(strip, StringComparison.Ordinal)))
+            {
+                continue;
+            }
+
+            if (raw.Split('/').Length - prefixDepth > limits.MaxDepth)
+            {
+                throw new BundleLimitExceededException(BundleBound.Depth, limits.MaxDepth);
+            }
+
+            if (System.Text.Encoding.UTF8.GetByteCount(raw) > keyByteBound)
+            {
+                overLength.Add(raw);
+                continue;
+            }
+
+            treeInput.Add(raw);
+            if (declaredLengths is not null && listing.Length is { } length and >= 0)
+            {
+                declaredLengths[raw] = length;
+            }
+        }
+
+        return (treeInput, overLength);
+    }
+
+    /// <summary>
+    /// The longest name, in UTF-8 bytes, that a listing of <paramref name="provider"/> admits as a
+    /// key: <see cref="BundleLimits.MaxKeyBytes"/>, and, for a provider that stores its keys under a
+    /// longer name (<see cref="IReservedKeyBytes"/>), no more than what is left of
+    /// <see cref="BundleKey.MaxUtf8Bytes"/> once that name's extra bytes are counted.
+    /// </summary>
+    internal static int KeyByteBound(IBundleProvider provider, BundleLimits limits) =>
+        provider is IReservedKeyBytes reserved
+            ? Math.Min(limits.MaxKeyBytes, BundleKey.MaxUtf8Bytes - reserved.ReservedKeyBytes)
+            : limits.MaxKeyBytes;
+
+    /// <summary>
+    /// <see cref="ListNamesAsync"/> through the non-blocking bridge (#152), for the writer and the
+    /// index generator until they have their own asynchronous form.
+    /// </summary>
+    internal static (List<string> TreeInput, List<string> OverLength) ListNames(IBundleProvider provider, BundleLimits limits) =>
+        SyncBridge.RunCancellable(ct => ListNamesAsync(provider, limits, ct));
+
+    /// <summary>The size of the copy buffer <see cref="ReadText"/> reads through.</summary>
+    internal const int ReadChunkBytes = 81920;
+
+    /// <summary>
+    /// Reads one object as strict UTF-8, counting bytes against the bound (spec §6) whatever the
+    /// provider says. <paramref name="chunk"/> is the caller's copy buffer, reused across the
+    /// objects of one load. The destination is pre-sized from <see cref="BundleObject.Length"/>
+    /// when the provider declares one within the bound — a hint only: the bytes are still
+    /// counted and an overrun still throws, whatever the declared length. The one bounded reader
+    /// of the core: <see cref="BundleConceptWriter"/> reads the objects it rewrites through it.
+    /// </summary>
+    internal static string ReadText(IBundleProvider provider, BundleKey key, BundleLimits limits, byte[] chunk, out BundleObjectVersion version) =>
+        ReadTextAt(provider, key, limits, chunk, null, out version);
+
+    /// <summary>As <see cref="ReadText"/>, pinned: with <paramref name="expected"/>, the provider reads only the object at that version (spec §5.4) and throws <see cref="BundleVersionMismatchException"/> otherwise.</summary>
+    internal static string ReadTextAt(IBundleProvider provider, BundleKey key, BundleLimits limits, byte[] chunk, BundleObjectVersion? expected, out BundleObjectVersion version)
+    {
+        var read = SyncBridge.RunCancellable(ct => ReadTextAtAsync(provider, key, limits, chunk, expected, ct));
+        version = read.Version;
+        return read.Text;
+    }
+
+    /// <summary>
+    /// The asynchronous bounded reader (#152): the same reading as <see cref="ReadText"/> — strict
+    /// UTF-8, bytes counted against the bound whatever the provider says, destination pre-sized from
+    /// a declared length within the bound — and, with <paramref name="expected"/>, pinned (spec §5.4).
+    /// Returns the text with the version of the object read. The one bounded reader of the core.
+    /// </summary>
+    internal static async ValueTask<(string Text, BundleObjectVersion Version)> ReadTextAtAsync(IBundleProvider provider, BundleKey key, BundleLimits limits, byte[] chunk, BundleObjectVersion? expected, CancellationToken ct)
+    {
+        var obj = await provider.ReadAsync(key, expected, ct).ConfigureAwait(false);
+        try
+        {
+            using var buffer = obj.Length is { } declared && declared >= 0 && declared <= limits.MaxObjectBytes && declared <= Array.MaxLength
+                ? new MemoryStream((int)declared)
+                : new MemoryStream();
+            long total = 0;
+            int read;
+            while ((read = await obj.Content.ReadAsync(chunk.AsMemory(), ct).ConfigureAwait(false)) > 0)
+            {
+                total += read;
+                if (total > limits.MaxObjectBytes)
+                {
+                    throw new BundleObjectTooLargeException(key, total, limits.MaxObjectBytes);
+                }
+
+                buffer.Write(chunk, 0, read);
+            }
+
+            return (OkfEncodings.Strict.GetString(buffer.GetBuffer(), 0, (int)buffer.Length), obj.Version);
+        }
+        finally
+        {
+            await obj.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>The bundle's root: the provider's displayable location (the root directory for the filesystem). Obsolete: the same string as <see cref="Location"/>.</summary>
+    [Obsolete("Bundle.Root is the provider's displayable location: use Bundle.Location (or Bundle.Provider). The path-based members are removed with the asynchronous provider contract (#152).")]
+    public string Root => Provider.Location;
+
+    /// <summary>The provider this bundle was loaded from (spec §1).</summary>
+    public IBundleProvider Provider { get; }
+
+    /// <summary>The provider's displayable location; the obsolete <c>Root</c> is the same string.</summary>
+    public string Location => Provider.Location;
+
+    /// <summary>The options the bundle was loaded with.</summary>
+    public BundleLoadOptions Options { get; }
+
+    /// <summary>The provider's bundle token at load time (spec §5.1).</summary>
+    public BundleVersion Version { get; }
+
+    /// <summary>
+    /// The memory this image takes, estimated (#151): a linear model over the size of every concept object the
+    /// load read — approximate, not a measurement of the managed heap (a calibration test pins it within its
+    /// tolerance against retained bytes on reference bundles). The figure <see cref="BundleLoadOptions.MemoryCeilingBytes"/>
+    /// is enforced against. Index files, <c>log.md</c> and the executable resources surveyed at the load are not
+    /// held by the image and are not counted.
+    /// </summary>
+    public long EstimatedMemoryBytes { get; private init; }
+
+    /// <summary>The keys of every <c>index.md</c>, in load order; <see cref="BundleDisplayPath.Compose"/> with <see cref="Location"/> gives their display paths (the obsolete <c>IndexFiles</c>).</summary>
+    public IReadOnlyList<BundleKey> IndexKeys { get; }
+
+    /// <summary>The keys of every <c>log.md</c>, in load order; <see cref="BundleDisplayPath.Compose"/> with <see cref="Location"/> gives their display paths (the obsolete <c>LogFiles</c>).</summary>
+    public IReadOnlyList<BundleKey> LogKeys { get; }
+
+    /// <summary>Every problem met while loading (spec §2): rejected <c>.md</c> names, oversized or unparseable concepts. <see cref="DisplayPath"/> gives each one's display path (the obsolete <c>ParseErrors</c> is that projection).</summary>
+    public IReadOnlyList<BundleParseError> ParseProblems { get; }
+
+    /// <summary>Keys the tree validation or a bound rejected (spec §2), whatever their extension: they stay rejected for <see cref="IsKeyAllowed"/> even though the provider may still hold them.</summary>
+    public IReadOnlySet<BundleKey> RejectedKeys { get; }
+
+    /// <summary>The colliding or conflicting keys the tree validation condemned (spec §2), as listed. <see cref="IsKeyAllowed"/> matches them in their <b>folded</b> form, so every spelling of a condemned prefix is refused, even for an object created after the load.</summary>
+    public IReadOnlyList<BundleKey> RejectedPrefixes { get; }
+
+    /// <summary>
+    /// The accepted <c>.md</c> keys whose names the portable profile
+    /// (<see cref="BundleKeyPolicy.Strict"/>) would have refused (spec §2, layer 3), in path
+    /// order: they loaded, but would not survive every filesystem.
+    /// <see cref="BundleValidator.Validate"/> reports each as a
+    /// <see cref="DiagnosticCode.KeyNotPortable"/> warning. Always empty when the bundle was
+    /// loaded under <see cref="BundleKeyPolicy.Strict"/>.
+    /// </summary>
+    public IReadOnlyList<BundlePortabilityIssue> PortabilityIssues { get; }
+
+    /// <summary>The version of every concept object read at load time (spec §5.1).</summary>
+    public IReadOnlyDictionary<BundleKey, BundleObjectVersion> ObjectVersions { get; }
+
+    private readonly Dictionary<ConceptId, ExecutableResourceSurvey> _executableResources = [];
+
+    /// <summary>
+    /// The executable resources of every Attested Computation concept of this image — its
+    /// <c>computation</c> file and its <c>attester.resource</c> — with the state each was found
+    /// in at the load (spec §5.1): <see cref="ExecutableResourceState.Pinned"/> with its version,
+    /// or why it cannot be executed. One entry per concept whose frontmatter
+    /// <see cref="Frontmatter.IsAttestedComputation"/>; a concept with a problem is still in
+    /// <see cref="Concepts"/>, readable, validated and audited.
+    /// </summary>
+    public IReadOnlyDictionary<ConceptId, ExecutableResourceSurvey> ExecutableResources { get; private set; } = new ReadOnlyDictionary<ConceptId, ExecutableResourceSurvey>(new Dictionary<ConceptId, ExecutableResourceSurvey>());
+
+    private readonly BundleKeyValidator _validator;
+    private readonly HashSet<string> _rejectedPrefixFolds;
+
+    /// <summary>
+    /// The one guard in front of every late access to a key (spec §2, decision 11): the key
+    /// policy, the keys and prefixes the tree validation rejected, and the depth and
+    /// key-length bounds this bundle was loaded with. <paramref name="reason"/> says which.
+    /// </summary>
+    public bool IsKeyAllowed(BundleKey key, out string? reason)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        if (key.Segments.Count > Options.Limits.MaxDepth)
+        {
+            reason = $"'{key}' exceeds the depth bound ({Options.Limits.MaxDepth})";
+            return false;
+        }
+
+        if (key.Utf8ByteCount > Options.Limits.MaxKeyBytes)
+        {
+            reason = $"'{key}' exceeds the key-length bound ({Options.Limits.MaxKeyBytes} bytes)";
+            return false;
+        }
+
+        if (_validator.CheckKey(key) is { } policyReason)
+        {
+            reason = policyReason;
+            return false;
+        }
+
+        if (RejectedKeys.Contains(key))
+        {
+            reason = $"'{key}' was rejected when the bundle was loaded";
+            return false;
+        }
+
+        // Prefixes are compared in their folded form (decision 11): a prefix condemned for a
+        // case collision condemns every spelling of itself, not only the ones that were listed
+        // (the third review re-entered `Ab`/`aB` through `AB`).
+        for (var depth = 1; depth <= key.Segments.Count; depth++)
+        {
+            var prefix = BundleKey.FromSegments(key.Segments.Take(depth).ToList());
+            if (_rejectedPrefixFolds.Contains(_validator.FoldKeyText(prefix)))
+            {
+                reason = $"'{key}' is under '{prefix}', which was rejected when the bundle was loaded";
+                return false;
+            }
+        }
+
+        reason = null;
+        return true;
+    }
 
     /// <summary>All successfully parsed concepts, in path order.</summary>
     public IReadOnlyList<Concept> Concepts { get; }
@@ -221,13 +1030,16 @@ public sealed class Bundle
     /// <summary><c>true</c> if a concept with this id exists.</summary>
     public bool Contains(ConceptId id) => _index.ContainsKey(id);
 
-    /// <summary>Paths of all <c>index.md</c> files found (§8).</summary>
+    /// <summary>Paths of all <c>index.md</c> files found (§8). Obsolete: the display paths of <see cref="IndexKeys"/>.</summary>
+    [Obsolete("Bundle.IndexFiles projects Bundle.IndexKeys through the display rule: use IndexKeys, and BundleDisplayPath.Compose(bundle.Location, key) for a path to print. The path-based members are removed with the asynchronous provider contract (#152).")]
     public IReadOnlyList<string> IndexFiles { get; }
 
-    /// <summary>Paths of all <c>log.md</c> files found (§9).</summary>
+    /// <summary>Paths of all <c>log.md</c> files found (§9). Obsolete: the display paths of <see cref="LogKeys"/>.</summary>
+    [Obsolete("Bundle.LogFiles projects Bundle.LogKeys through the display rule: use LogKeys, and BundleDisplayPath.Compose(bundle.Location, key) for a path to print. The path-based members are removed with the asynchronous provider contract (#152).")]
     public IReadOnlyList<string> LogFiles { get; }
 
-    /// <summary>Files whose frontmatter could not be parsed during loading, as (path, error message) pairs.</summary>
+    /// <summary>Files whose frontmatter could not be parsed during loading, as (path, error message) pairs. Obsolete: <see cref="ParseProblems"/> with <see cref="DisplayPath"/>.</summary>
+    [Obsolete("Bundle.ParseErrors projects Bundle.ParseProblems through the display rule: use ParseProblems (the raw name, the key when the name is one, the error), and bundle.DisplayPath(problem) for a path to print. The path-based members are removed with the asynchronous provider contract (#152).")]
     public IReadOnlyList<(string Path, string Error)> ParseErrors { get; }
 
     /// <summary>The resolved outbound cross-links from a concept.</summary>
@@ -265,41 +1077,45 @@ public sealed class Bundle
     /// frontmatter, if present (<c>okf_version</c>, §12). This is the only
     /// place frontmatter is permitted in an <c>index.md</c>.
     ///
-    /// Computed once while <see cref="Load"/> builds the bundle and stored, so
-    /// it reflects the same load-time snapshot as the rest of this
-    /// <see cref="Bundle"/>: a later change to the root <c>index.md</c> on disk
+    /// Computed once while <see cref="Load(IBundleProvider, BundleLoadOptions?)"/> builds the
+    /// bundle and stored, so it reflects the same load-time snapshot as the rest of this
+    /// <see cref="Bundle"/>: a later change to the root <c>index.md</c> in storage
     /// does not affect an already-loaded instance. A legitimate <c>null</c> (no
-    /// root <c>index.md</c>, no <c>okf_version</c> key, or an unreadable file) is
-    /// a stored value like any other. The backing field is <c>readonly</c> and
+    /// root <c>index.md</c>, no <c>okf_version</c> key, unparseable frontmatter, or a
+    /// root <c>index.md</c> that is gone, over the byte bound, unreadable or not valid
+    /// UTF-8 when it is read) is a stored value like any other. Any other provider failure
+    /// while reading it — a refusal by the provider's STRICT guards, for instance — is not a
+    /// <c>null</c>: the load throws <see cref="BundleLoadException"/>. The backing field is <c>readonly</c> and
     /// set in the constructor before the instance is published, so
     /// <see cref="Bundle"/> instances shared and read concurrently (e.g. across
     /// tool invocations in <c>OkfBundleTools</c>) need no lock.
     /// </summary>
     public string? OkfVersion => _okfVersion;
 
-    private string? ComputeOkfVersion()
+    private static async ValueTask<string?> ComputeOkfVersionAsync(IBundleProvider provider, BundleLimits limits, List<BundleKey> indexKeys, byte[] chunk, CancellationToken ct)
     {
-        var rootIndex = System.IO.Path.Combine(Root, IndexFilename);
+        var key = BundleKey.Parse(IndexFilename);
+        if (!indexKeys.Contains(key))
+        {
+            return null;
+        }
+
         string text;
         try
         {
-            text = OkfEncodings.Strict.GetString(File.ReadAllBytes(rootIndex));
+            text = (await ReadTextAtAsync(provider, key, limits, chunk, null, ct).ConfigureAwait(false)).Text;
         }
-        catch (IOException)
+        catch (Exception e) when (e is BundleObjectNotFoundException or BundleObjectTooLargeException or IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
         {
+            // Only the LOCAL failures mean "no declared version": a missing, oversized,
+            // unreadable or non-UTF-8 root index. (BundleObjectTooLargeException derives from
+            // IOException, so the IOException filter already covers it; it is named for the reader.)
             return null;
         }
-        catch (UnauthorizedAccessException)
+        catch (BundleProviderException e)
         {
-            return null;
-        }
-        catch (System.Text.DecoderFallbackException)
-        {
-            // Any read failure here -- including non-UTF-8 content -- is
-            // swallowed and yields null, unlike the concept-file read above
-            // where the same failure aborts the whole Load. A missing or
-            // unreadable root index.md simply means "no declared version".
-            return null;
+            // A global failure (a bound, a refusal) is a load failure, not an absent version.
+            throw Translate(e, key);
         }
 
         OkfDocument doc;
@@ -348,9 +1164,15 @@ public sealed class Bundle
     ///
     /// Always returns <c>true</c>: resolution never fails outright (§11,
     /// permissive), it only reports which of the above statuses applies.
+    /// Obsolete: it resolves through the OS filesystem, outside the provider
+    /// seam, so it applies neither the key policy nor the exact-name rules
+    /// <see cref="TryResolveResourceKey"/> applies; no library code calls it.
     /// </summary>
+    /// <exception cref="NotSupportedException">The bundle's provider is not a <see cref="FileSystemBundleProvider"/>.</exception>
+    [Obsolete("Bundle.TryResolveResource resolves a §6.2 path on the OS filesystem, outside the provider seam: use Bundle.TryResolveResourceKey, which resolves on keys under the key policy, then Bundle.ReadResourceText(BundleKey). The path-based members are removed with the asynchronous provider contract (#152).")]
     public bool TryResolveResource(Concept concept, string rawPath, out string? absolutePath, out ResourceResolutionStatus status)
     {
+        RequireFileSystemForPathMembers();
         var kind = FrontmatterResourceClassifier.KindOf(rawPath);
         if (kind == FrontmatterResourceKind.Url)
         {
@@ -452,6 +1274,7 @@ public sealed class Bundle
     /// arbitrary file, which is a breaking change for any caller that used it
     /// that way, outside its documented contract.
     /// </remarks>
+    /// <exception cref="NotSupportedException">The bundle's provider is not a <see cref="FileSystemBundleProvider"/>.</exception>
     /// <exception cref="UnauthorizedAccessException">
     /// <paramref name="absolutePath"/> is outside <see cref="Root"/>, or it or a
     /// directory between it and <see cref="Root"/> is a reparse point or could
@@ -459,8 +1282,10 @@ public sealed class Bundle
     /// </exception>
     /// <exception cref="IOException">The file cannot be read.</exception>
     /// <exception cref="System.Text.DecoderFallbackException">The content is not valid UTF-8.</exception>
+    [Obsolete("Bundle.ReadResourceText(string) reads a host path, outside the provider seam: use Bundle.ReadResourceText(BundleKey) on the key Bundle.TryResolveResourceKey resolved. The path-based members are removed with the asynchronous provider contract (#152).")]
     public string ReadResourceText(string absolutePath)
     {
+        RequireFileSystemForPathMembers();
         var fullRoot = ReparsePoints.CanonicalizeRoot(Root);
         var fullPath = System.IO.Path.GetFullPath(absolutePath);
         if (!ReparsePoints.IsWithin(fullRoot, fullPath, PathComparison)
@@ -474,49 +1299,219 @@ public sealed class Bundle
         return OkfEncodings.Strict.GetString(File.ReadAllBytes(fullPath));
     }
 
-    /// <summary>
-    /// Recursively collects <c>*.md</c> file paths under <paramref name="dir"/>,
-    /// in deterministic order (directory entries sorted by name, ordinal).
-    /// </summary>
-    private static void CollectMarkdown(string dir, List<string> output)
+    /// <summary>D7: the path-based members have no meaning over a provider other than the filesystem (its Root is a display string).</summary>
+    private void RequireFileSystemForPathMembers()
     {
-        var entries = Directory.GetFileSystemEntries(dir)
-            .Select(System.IO.Path.GetFileName)
-            .Where(name => name is not null)
-            .Select(name => name!)
-            .OrderBy(name => name, StringComparer.Ordinal)
-            .ToList();
-
-        foreach (var name in entries)
+        if (Provider is not FileSystemBundleProvider)
         {
-            var path = System.IO.Path.Combine(dir, name);
-
-            // lstat-based semantics: a symlink or junction is neither a
-            // directory nor a file, so it matches neither arm below and is
-            // skipped outright -- never recursed into, never collected even
-            // if it has a `.md` name. Directory.Exists/File.Exists would
-            // instead follow the link, so reparse points are excluded
-            // explicitly here to keep bundle walks from crossing them.
-            if (ReparsePoints.IsReparsePoint(path))
-            {
-                continue;
-            }
-
-            if (Directory.Exists(path))
-            {
-                CollectMarkdown(path, output);
-            }
-            else if (File.Exists(path) && MarkdownPaths.HasMarkdownExtension(path))
-            {
-                output.Add(path);
-            }
+            throw new NotSupportedException(
+                "This bundle is not served by a FileSystemBundleProvider, so its Root is a display string, not a path: use Bundle.TryResolveResourceKey, then Bundle.ReadResourceText(BundleKey).");
         }
     }
 
     /// <summary>
+    /// Resolves a §6.2 path-valued field to a key (spec §2): lexically, through
+    /// <see cref="ResourceKeyResolver"/>, then <see cref="IsKeyAllowed"/>, then the provider's
+    /// <see cref="IBundleProvider.ExistsAsync"/>. Never throws (§11, permissive): a provider refusal
+    /// reads as <see cref="ResourceResolutionStatus.Unsafe"/>. Always returns <see langword="true"/>:
+    /// resolution never fails outright, only its status varies.
+    /// <para>
+    /// A value that names no object is <see cref="ResourceResolutionStatus.Missing"/>, as it was
+    /// when the validator resolved it on the filesystem: one that resolves to the bundle root
+    /// itself (<c>/</c>, <c>.</c> from a top-level concept, <c>sub/..</c>; <paramref name="key"/>
+    /// is <see langword="null"/>), and one ending with <c>/</c> (<c>references/a.sql/</c>), which
+    /// names a prefix — its key goes through the policy and the provider's guards like any
+    /// candidate, so a refused path stays <see cref="ResourceResolutionStatus.Unsafe"/>, and is
+    /// then missing whatever object the provider holds under it. A value climbing above the root
+    /// stays <see cref="ResourceResolutionStatus.Unsafe"/>.
+    /// </para>
+    /// <para>
+    /// <paramref name="key"/> is non-<see langword="null"/> only when the status is
+    /// <see cref="ResourceResolutionStatus.Resolved"/>; for every other status it is
+    /// <see langword="null"/>, so a prefix key is never handed out as an object to read.
+    /// </para>
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The provider answers later (it does not complete synchronously): this synchronous spelling never waits, so it throws; use <see cref="ResolveResourceKeyAsync"/>.</exception>
+    public bool TryResolveResourceKey(Concept concept, string rawPath, out BundleKey? key, out ResourceResolutionStatus status)
+    {
+        (key, status) = SyncBridge.RunCancellable(ct => ResolveResourceKeyAsync(concept, rawPath, ct));
+        return true;
+    }
+
+    /// <summary>
+    /// <see cref="TryResolveResourceKey"/> without the blocking: the same resolution, the provider
+    /// asked asynchronously (#152). A provider's refusal of the path reads as
+    /// <see cref="ResourceResolutionStatus.Unsafe"/> (§11, permissive); any other provider failure throws
+    /// <see cref="BundleLoadException"/> naming the exception type only, and a cancellation propagates.
+    /// </summary>
+    /// <returns>The key (non-<see langword="null"/> only for <see cref="ResourceResolutionStatus.Resolved"/>) and the status.</returns>
+    /// <exception cref="BundleLoadException">The provider failed for another reason than a refusal.</exception>
+    public async ValueTask<(BundleKey? Key, ResourceResolutionStatus Status)> ResolveResourceKeyAsync(Concept concept, string rawPath, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(concept);
+        ArgumentNullException.ThrowIfNull(rawPath);
+        var conceptKey = concept.Key ?? concept.Id.ToKey();
+        var outcome = ResourceKeyResolver.Resolve(conceptKey, rawPath, out var candidate);
+        switch (outcome)
+        {
+            case ResourceKeyOutcome.Url:
+                return (null, ResourceResolutionStatus.Url);
+            case ResourceKeyOutcome.Unsafe:
+                return (null, ResourceResolutionStatus.Unsafe);
+            case ResourceKeyOutcome.Root:
+                return (null, ResourceResolutionStatus.Missing);
+        }
+
+        if (!IsKeyAllowed(candidate!, out _))
+        {
+            return (null, ResourceResolutionStatus.Unsafe);
+        }
+
+        try
+        {
+            // A prefix is asked about too, for the provider's refusal only: a path through a
+            // reparse point is Unsafe whether or not it ends with '/'.
+            var exists = await Provider.ExistsAsync(candidate!, ct).ConfigureAwait(false);
+            return exists && outcome == ResourceKeyOutcome.Candidate
+                ? (candidate, ResourceResolutionStatus.Resolved)
+                : (null, ResourceResolutionStatus.Missing);
+        }
+        catch (BundleAccessRefusedException)
+        {
+            return (null, ResourceResolutionStatus.Unsafe);
+        }
+        catch (Exception e) when (e is BundleProviderException or IOException or UnauthorizedAccessException)
+        {
+            // Only a refusal of the key's path is Unsafe (§11, permissive). Anything else is the provider
+            // failing (a network, a credential, a timeout): it surfaces, translated, so a validation never
+            // reports "escapes the bundle" for a store that is down, and no provider text reaches a tool
+            // result (spec of 2026-11-16 §4.7 b). The raw failure is the inner exception (host log).
+            throw new BundleLoadException($"provider failure resolving '{candidate}' ({e.GetType().Name})", e);
+        }
+    }
+
+    /// <summary>
+    /// Reads a resolved resource as strict UTF-8 through the provider, after
+    /// <see cref="IsKeyAllowed"/> (spec §2) and the provider's own STRICT guards and
+    /// confinement boundary (spec §8). Messages are library-authored (§7); the raw cause is
+    /// the inner exception. A refusal — by this bundle's guard or by the provider — surfaces
+    /// as <see cref="UnauthorizedAccessException"/> and a missing object as
+    /// <see cref="FileNotFoundException"/>, so existing callers classify both as before.
+    /// <para>
+    /// The exceptions keep the error-priority rule of #139 (global failures abort, per-resource
+    /// states are local): <see cref="UnauthorizedAccessException"/>, <see cref="IOException"/>
+    /// (<see cref="BundleObjectTooLargeException"/> and <see cref="FileNotFoundException"/>
+    /// included) and <see cref="System.Text.DecoderFallbackException"/> are problems of THIS
+    /// object, which a caller may report as a finding about it; a failure of the provider itself
+    /// — a typed provider failure, or a raw storage error raised while reading the object — is a
+    /// <see cref="BundleLoadException"/>, which is none of those, so a caller that absorbs the
+    /// local ones lets it through (#247).
+    /// </para>
+    /// <para>
+    /// Known limit: a provider can only be classified by what it raises. The filesystem
+    /// provider resolves the exact name by listing directories and still reads a listing that
+    /// fails — a share lost after the load, before the read — as an absent object, so that case
+    /// is a <see cref="FileNotFoundException"/>, not a <see cref="BundleLoadException"/>; it is
+    /// tracked separately.
+    /// </para>
+    /// </summary>
+    /// <exception cref="UnauthorizedAccessException">The key is not allowed, or the provider refused the access.</exception>
+    /// <exception cref="IOException">The object is missing, too large, or cannot be read (a failure of that object, never of the storage).</exception>
+    /// <exception cref="BundleLoadException">The provider failed rather than the object (#247): a typed provider failure other than a refusal, a missing object, an oversized object or a version mismatch — a bound, a network, a credential, a timeout — or a raw storage error raised while reading the object (a device not ready, a network path or host unreachable, a timeout, <c>EIO</c>). Global, like a load failure: the message names the key and the exception type only; the cause is the inner exception. A provider reports only what it raises: the filesystem provider still reports a share lost BEFORE the read (while it matches the object's name) as a missing object, <see cref="FileNotFoundException"/>.</exception>
+    /// <exception cref="System.Text.DecoderFallbackException">The content is not valid UTF-8.</exception>
+    public string ReadResourceText(BundleKey key) => ReadResourceText(key, null, out _);
+
+    /// <summary>
+    /// As <see cref="ReadResourceText(BundleKey)"/>, reporting the object's
+    /// <paramref name="version"/> and, with <paramref name="expected"/>, pinned to it (spec §5.4):
+    /// the provider reads only the object at that version, so sanctioned code that changed since
+    /// it was observed or surveyed is never handed to a runtime.
+    /// </summary>
+    /// <param name="key">The resolved key.</param>
+    /// <param name="expected">The version the read is pinned to, or <see langword="null"/> for the current object.</param>
+    /// <param name="version">The version of the object read.</param>
+    /// <exception cref="BundleVersionMismatchException">The object's version is not <paramref name="expected"/>; nothing is returned.</exception>
+    /// <exception cref="UnauthorizedAccessException">The key is not allowed, or the provider refused the access.</exception>
+    /// <exception cref="IOException">The object is missing, too large, or cannot be read (a failure of that object, never of the storage).</exception>
+    /// <exception cref="BundleLoadException">The provider failed rather than the object (#247): a typed provider failure other than a refusal, a missing object, an oversized object or a version mismatch — a bound, a network, a credential, a timeout — or a raw storage error raised while reading the object (a device not ready, a network path or host unreachable, a timeout, <c>EIO</c>). Global, like a load failure: the message names the key and the exception type only; the cause is the inner exception. A provider reports only what it raises: the filesystem provider still reports a share lost BEFORE the read (while it matches the object's name) as a missing object, <see cref="FileNotFoundException"/>.</exception>
+    /// <exception cref="System.Text.DecoderFallbackException">The content is not valid UTF-8.</exception>
+    /// <exception cref="InvalidOperationException">The provider answers later (it does not complete synchronously): this synchronous spelling never waits, so it throws; use <see cref="ReadResourceTextAsync"/>.</exception>
+    public string ReadResourceText(BundleKey key, BundleObjectVersion? expected, out BundleObjectVersion version)
+    {
+        var read = SyncBridge.RunCancellable(ct => ReadResourceTextAsync(key, expected, ct));
+        version = read.Version;
+        return read.Text;
+    }
+
+    /// <summary>
+    /// <see cref="ReadResourceText(BundleKey, BundleObjectVersion?, out BundleObjectVersion)"/>
+    /// without the blocking (#152): the same bounds, pinning and exception mapping, the provider
+    /// read asynchronously. Returns the text and the version of the object read.
+    /// </summary>
+    /// <exception cref="BundleVersionMismatchException">The object's version is not <paramref name="expected"/>; nothing is returned.</exception>
+    /// <exception cref="UnauthorizedAccessException">The key is not allowed, or the provider refused the access.</exception>
+    /// <exception cref="IOException">The object is missing, too large, or cannot be read (a failure of that object, never of the storage).</exception>
+    /// <exception cref="BundleLoadException">The provider failed rather than the object (#247): a typed provider failure other than a refusal, a missing object, an oversized object or a version mismatch — a bound, a network, a credential, a timeout — or a raw storage error raised while reading the object (a device not ready, a network path or host unreachable, a timeout, <c>EIO</c>). Global, like a load failure: the message names the key and the exception type only; the cause is the inner exception. A provider reports only what it raises: the filesystem provider still reports a share lost BEFORE the read (while it matches the object's name) as a missing object, <see cref="FileNotFoundException"/>.</exception>
+    /// <exception cref="System.Text.DecoderFallbackException">The content is not valid UTF-8.</exception>
+    public async ValueTask<(string Text, BundleObjectVersion Version)> ReadResourceTextAsync(BundleKey key, BundleObjectVersion? expected = null, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        if (!IsKeyAllowed(key, out var reason))
+        {
+            throw new UnauthorizedAccessException(reason);
+        }
+
+        try
+        {
+            return await ReadTextAtAsync(Provider, key, Options.Limits, new byte[ReadChunkBytes], expected, ct).ConfigureAwait(false);
+        }
+        catch (BundleVersionMismatchException)
+        {
+            throw;
+        }
+        catch (BundleAccessRefusedException e)
+        {
+            throw new UnauthorizedAccessException($"access to '{key}' was refused by the provider", e);
+        }
+        catch (BundleObjectNotFoundException e)
+        {
+            throw new FileNotFoundException($"no object under '{key}'", key.ToString(), e);
+        }
+        catch (BundleObjectTooLargeException)
+        {
+            throw;
+        }
+        catch (BundleProviderException e)
+        {
+            // The provider failed, not the object (#247): a global failure, as for the load.
+            throw Translate(e, key);
+        }
+        catch (UnauthorizedAccessException e)
+        {
+            throw new UnauthorizedAccessException($"access to '{key}' was denied ({e.GetType().Name})", e);
+        }
+        catch (IOException e) when (StorageFailure.IsStorageFailure(e))
+        {
+            throw StorageFailed(e, key);
+        }
+        catch (IOException e)
+        {
+            throw new IOException($"I/O error reading '{key}' ({e.GetType().Name})", e);
+        }
+    }
+
+    /// <summary>
+    /// A raw I/O failure of the storage itself (<see cref="StorageFailure"/>, #247) as a global
+    /// failure: the message names the key and the exception type only (spec §7), the cause is
+    /// the inner exception.
+    /// </summary>
+    private static BundleLoadException StorageFailed(IOException e, BundleKey key) =>
+        new($"provider failure reading '{key}' ({e.GetType().Name})", e);
+
+    /// <summary>
     /// Builds the outbound link and backlink maps for all concepts.
     /// <para>
-    /// Called by <see cref="Load"/>. It is internal rather than private so that
+    /// Called by <see cref="Load(IBundleProvider, BundleLoadOptions?)"/>. It is internal rather than private so that
     /// <c>BundleBacklinksScaleTests</c> can run it on in-memory concepts at a scale
     /// no test should write to disk. Being internal also makes it callable from
     /// every assembly this one grants <c>InternalsVisibleTo</c> (<c>okf</c>,
@@ -526,14 +1521,15 @@ public sealed class Bundle
     /// <para>
     /// Precondition, not checked: <paramref name="concepts"/> and <paramref name="index"/>
     /// come from the same snapshot, with <paramref name="index"/> mapping every id in
-    /// <paramref name="concepts"/>, as <see cref="Load"/> builds them. The index decides
+    /// <paramref name="concepts"/>, as <see cref="Load(IBundleProvider, BundleLoadOptions?)"/> builds them. The index decides
     /// whether a link target exists; a mismatched pair gives wrong existence flags and
     /// backlinks, with no error.
     /// </para>
     /// </summary>
     internal static (Dictionary<ConceptId, List<ResolvedLink>> Outbound, Dictionary<ConceptId, List<ConceptId>> Backlinks) BuildGraph(
         List<Concept> concepts,
-        Dictionary<ConceptId, int> index)
+        Dictionary<ConceptId, int> index,
+        List<IReadOnlyList<ConceptLink>>? scannedLinks = null)
     {
         var outbound = new Dictionary<ConceptId, List<ResolvedLink>>();
         var backlinks = new Dictionary<ConceptId, List<ConceptId>>();
@@ -548,10 +1544,13 @@ public sealed class Bundle
         // concepts share an id, which Load does not prevent.
         var credited = new HashSet<(ConceptId Target, ConceptId Source)>();
 
-        foreach (var c in concepts)
+        for (var i = 0; i < concepts.Count; i++)
         {
+            var c = concepts[i];
             var resolved = new List<ResolvedLink>();
-            foreach (var link in c.Document.Links())
+
+            // The load scanned each concept's links already (one per concept, in the same order); anything else scans here.
+            foreach (var link in scannedLinks?[i] ?? c.Document.Links())
             {
                 var target = link.Resolve(c.Id);
                 if (target is null)

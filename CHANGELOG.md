@@ -8,6 +8,1620 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-19
+
+The headline is bundle providers: the storage seam under `Bundle`, an
+asynchronous `IBundleProvider`, a shared `BundleHandle`, and two new packages
+that read a bundle from an assembly or from S3. This release is large: 99
+entries below. What follows is the short version: what breaks, and what is new.
+The detail for every line is in the sections after it.
+
+### Breaking changes at a glance
+
+Everything here is a 0.x minor break, stated in full further down.
+`IBundleProvider` and the rest of the provider seam were never published (0.7.0
+has no `OKF4net.Providers`), so replacing them is not a break for a 0.7.0
+caller; what a 0.7.0 caller sees is listed below.
+
+**`OKF4net` (library)**
+
+- A failure of the provider while a loaded bundle is read throws
+  `BundleLoadException` instead of passing for a problem of the file (#247).
+  `Bundle.ReadResourceText(BundleKey)`, `ReadResourceText(BundleKey, expected,
+  out version)` and `ReadResourceTextAsync` used to turn it into an
+  `IOException`; `BundleValidator.Validate`/`ValidateAsync` used to report
+  `UnparseableIndex`/`UnparseableLog`. A caller that caught `IOException` as
+  "unreadable" now lets a provider failure through; `okf validate` prints
+  `error: …` and exits 1 for it.
+- The synchronous entry points that serve a filesystem path (`Bundle.Load(string)`,
+  the `string` overloads of the writer and the index generator,
+  `BundleValidator.Validate`) stay, but never wait on an asynchronous provider:
+  a read still pending throws `InvalidOperationException`, and a synchronous
+  write over a provider without `CompletesSynchronously` is refused before any
+  I/O (#152). `Bundle.Load(IBundleProvider, …)` and the blocking
+  `BundleHandle.Current`/`Refresh()` are not public; use `Bundle.LoadAsync`
+  and `GetCurrentAsync`/`RefreshAsync`. A host implementing `IBundleProvider`
+  implements the asynchronous form, with a required `CancellationToken`.
+- The `onWriteCommitted` callback of `BundleConceptWriter` runs after the write
+  lock is released, so a host that relied on exclusion while it ran loses it
+  (#152). `RecordVerifications` finishes its batch before notifying, so a
+  notification that throws no longer stops it half-way. `BundleHandle` runs one
+  shared operation per handle: concurrent `OnAccess` callers share one token
+  comparison, and a caller that cancels stops waiting without cancelling the
+  load.
+- `Diagnostic` and `AuditFinding` equality now includes the new `Key` property.
+  A finding compared with a hand-built `new Diagnostic(…)` or `new
+  AuditFinding(…)` is `false` unless that sets `Key` too; compare `Path`, `Code`
+  and `Message` instead.
+- Obsolete, kept one version with a warning (not an error): the
+  path-based `Bundle.Root`, `IndexFiles`, `LogFiles`, `ParseErrors`,
+  `TryResolveResource` and `ReadResourceText(string)`, `OkfBundleTools.BundleRoot`
+  and `BundleConceptWriter.BundleRoot`. Each warning names its replacement
+  (`Location`, `IndexKeys`/`LogKeys`, `ParseProblems` with
+  `Bundle.DisplayPath`, `TryResolveResourceKey`, `ReadResourceText(BundleKey)`).
+  Over a provider that is not the filesystem one, `TryResolveResource` and
+  `ReadResourceText(string)` throw `NotSupportedException`.
+- `Bundle.ResolveResourceKeyAsync`/`TryResolveResourceKey` throw
+  `BundleLoadException` for a provider failure other than a refusal; it used to
+  read as `Unsafe` (#142). A validation of a store that is down fails instead of
+  reporting "escapes the bundle".
+
+**`OKF4net.Agents`**
+
+- `OkfBundleTools` has public `…Async` methods (`ReadConceptAsync`,
+  `WriteConceptAsync`, `VerifyAsync`, `AuditAsync`, and the others) and its
+  `string` methods from 0.7.0 are `[Obsolete]` bridges, removed in the release
+  after this one (#152, #224). They throw on a provider that does not complete
+  synchronously. The synchronous `RunComputation`, obsolete since 0.7.0, is
+  removed. The tool names and schemas the model sees are unchanged.
+- The tools `okf_browse`, `okf_get_computation`, `okf_changes_since` and
+  `okf_run_computation` return `Error: provider failure reading '…' (…)`;
+  `okf_validate_bundle` returns `Error: …` instead of a report (#247).
+
+**`OKF4net.Attestation`**
+
+- `AttestationOrchestrator.Capture`, `CaptureAsync` and `RunAsync` throw
+  (`RunAsync`: a faulted task) on a provider failure instead of refusing with
+  `ImageOutdated` (#247).
+
+**`OKF4net.Catalog`**
+
+- `MemoryDeleteResult` is `(IReadOnlyList<MemoryTierDeletion> Tiers, string?
+  Error)`; `TiersDeleted` is gone and `IMemoryStore.DeleteScopeAsync` changes
+  signature, so a host's own `IMemoryStore` must build the new result
+  (`result.TiersDeleted` becomes `result.Tiers.Count(t => t.Report.Succeeded)`,
+  not an exact equivalent).
+- A memory scope segment whose base is a Windows reserved device name is
+  prefixed with `_` (`con.foo` encodes as `_con.foo-<hash>`). On Linux and macOS
+  an existing directory under the old name is no longer found, read, migrated
+  or deleted; copy it by hand with the `_` prefix (#139).
+
+**`okf` and `okf-render` (binaries)**
+
+- The `okf` Native AOT binary grows by about 383 KiB (+8.1 %) with the
+  asynchronous core (linux-x64: 4,842,784 to 5,234,736 bytes).
+
+**Listed under Changed, but a caller can notice them**
+
+- Loading: the `Native` key policy refuses a `.md` name the storage cannot hold
+  or would alias (a trailing dot or space, for instance) as a `ParseErrors`
+  entry, so `okf validate` exits 1 for a bundle that holds one; a concept over
+  256 MiB and a name with a backslash are `ParseErrors` entries, and a listing over 10 000 000 entries aborts the load.
+  Resource paths resolve by exact case, and a backslash, a control character or
+  a climb out and back into the root is `Unsafe`.
+- `okf_write_concept` writes only a concept the session read in full (or was
+  shown absent), and `okf_run_computation` runs only what the session was
+  shown, pinned to that version. A write or a run without that read is refused
+  with a message that says what to read first (#139).
+- A computation without a file `attester.resource`, or with a URL, is no longer
+  run: `AttestationOrchestrator.RunAsync` refuses it before any runtime stage,
+  and a host's `IAttester` never receives a null `AttesterSourceText`. Sanctioned
+  code is read through the provider and only if pinned to the loaded version.
+- `new OkfBundleKnowledgeSource(id, directory)` and `FileMemoryStore` over an
+  empty tier root throw `ArgumentException` at construction. `okf index` no longer references a directory with no file
+  under it, and on a case-folding volume a root `Index.md` ends the run with a
+  conflict instead of being overwritten. Writes need the right to create files
+  in the target's directory.
+
+### What is new
+
+- **Bundle providers (#139, #152).** `IBundleProvider` is the storage seam under
+  `Bundle`: a key space of byte objects, asynchronous with a required
+  `CancellationToken`, with `BundleKey` validation, finite `BundleLimits`, and
+  `BundleKeyPolicy` (`Native` by default, `Strict` opt-in; `KeyNotPortable`
+  warnings in `okf validate`). `FileSystemBundleProvider` is the default, and
+  writable: each write is atomic and conditional (`IfMatch`, `MustNotExist`),
+  and `BundleConceptWriter` and `IndexGenerator` write through any writable
+  provider.
+- **`BundleHandle` (spec §5.2).** One image of a source, meant to be shared by
+  every consumer, with the `Manual`, `OnAccess`, `Every` and `Notify` refresh
+  policies. A reload that fails keeps serving the previous image, flagged stale.
+  A catalog source no longer reloads its bundle at every request.
+- **Two new packages for a bundle that is not a directory.**
+  `OKF4net.Providers.EmbeddedResources` embeds a bundle in an assembly with the
+  `OkfBundle` MSBuild item and serves it read-only, Native AOT included (#141).
+  `OKF4net.Providers.S3` reads a bundle from Amazon S3 or an S3-compatible
+  store, read-only and truly asynchronous; it depends on `AWSSDK.S3` 4.1.0 or
+  later (#142).
+- **Catalog provider factories.** A `catalog.json` source can name its
+  `provider` and `settings`; a host registers one `IBundleProviderFactory` per
+  type, which declares the settings it accepts, so no credential enters through
+  the manifest. The catalog snapshot owns the handles; a source answered from
+  its last good image is reported `SourceStale`.
+  `FileMemoryStore` also accepts one provider per tier (#140).
+- **Safer text for a model.** Every value an agent tool or the context provider
+  prints goes through one fold rule, which also removes invisible format
+  characters such as tag characters (#122, #249). `okf_read_concept` shows
+  frontmatter as YAML that round-trips into `okf_write_concept` (#256), and
+  `okf-mcp` returns tool results as plain text instead of JSON string literals
+  (#255).
+- **Trust and audit.** `AttestationOrchestratorOptions.AllowedCodeDigests`
+  refuses sanctioned code whose SHA-256 is not on the list (#154).
+  `okf audit --review-outdated` and `AuditFinding.LastVerifiedAt`/
+  `LastChangedAt`/`IsReviewOutdated` show a concept changed after its last
+  verification (#156). `Bundle.EstimatedMemoryBytes` and
+  `BundleLoadOptions.MemoryCeilingBytes` bound what a load may hold (#151).
+- **Validator and writer.** `okf validate` warns on a `generated` that is not a
+  `{by, at}` mapping (`GeneratedMalformed`, #271). Appending to `log.md` keeps
+  its leading frontmatter block (#258). The auto-stamped `generated.by` names
+  the library version, `okf4net/<version>`, not the spec version (#257).
+- **Samples and tutorials.** `samples/second-brain` serves a writable bundle
+  to Claude Desktop through `okf-mcp` (#160), `samples/agents-handoff` has two
+  agents share one bundle with no LLM endpoint (#159), and two end-to-end
+  tutorials live under `docs/tutorials/` (#174).
+- **Faster.** A load through `FileSystemBundleProvider` is about three times
+  faster on Windows (2,001 concepts: 1,350 ms to 427 ms), and a `YamlMapping`
+  of n keys is built in O(n) (#198).
+
+### Known limits
+
+- The filesystem provider still reports a share lost after the load as a missing
+  object, so that case is a `FileNotFoundException` and an `UnparseableIndex`
+  finding in a validation instead of a `BundleLoadException` (#278).
+- A write's condition is atomic with the replacement within one process only:
+  there is no cross-process lock, and two processes writing the same objects of
+  one bundle can lose a write that was reported committed (#178).
+- Raw I/O errors can still name a host path in an exception text (#211), and a
+  write over a filesystem provider has no in-place fallback: a bundle in a
+  directory the process cannot create files in is not a supported deployment
+  for writes.
+- `okf index` is slower on a large bundle (#208).
+- The filesystem bundle token is weak: two edits of the same size within one
+  modification-time tick can be missed until the next change.
+- `Bundle.EstimatedMemoryBytes` is an estimate, not a heap measurement, and a
+  refresh holds the previous image too, so the peak can reach twice the ceiling.
+- Deleting a memory scope removes its objects and emptied directories but not
+  the ids carried by its parent directories.
+- The tests of the S3 provider against a real store are excluded from CI by
+  decision and run locally, with 0 skipped.
+
+The detail of every entry is in the sections after this digest.
+
+### Added
+
+- **Two end-to-end tutorials under `docs/tutorials/`** (#174).
+  [`library-users.md`](docs/tutorials/library-users.md) writes, indexes, loads
+  and validates a bundle through the asynchronous provider API
+  (`FileSystemBundleProvider`, `BundleConceptWriter`, `IndexGenerator`,
+  `Bundle.LoadAsync`, `BundleValidator`, `ChangeLog`) and checks it with
+  `okf validate`/`info`/`graph`/`verify`/`audit`;
+  [`agent-builders.md`](docs/tutorials/agent-builders.md) exposes a bundle
+  through `OKF4net.Agents` (a shared `BundleHandle`, `OkfToolMode`,
+  `OkfContextProvider`, a write behind host approval) with a scripted
+  `IChatClient`, and through `okf-mcp`, with a Node script that checks
+  `initialize`, `tools/list` and `tools/call` over stdio. Every snippet and
+  command was run to produce the output shown; the steps that need a model
+  say so. Linked from the README.
+
+- **`samples/second-brain`, a read-write `okf-mcp` sample (#160).** A starter
+  personal-notes bundle served writable in Claude Desktop, with the
+  `claude_desktop_config.json` for Windows and macOS (installed tool or from
+  the repository), example prompts, and `smoke.cs`, a .NET 10 file-based app
+  that drives `okf-mcp` over stdio on a copy of the bundle and checks the
+  disk. It documents that `okf_write_concept` updates neither `index.md` nor
+  `log.md`, which change only through `okf_regenerate_indexes` and
+  `okf_append_log`.
+
+- **`samples/agents-handoff`**, an `OKF4net.Agents` sample of two agents
+  sharing one bundle, with no LLM endpoint, API key or network access (#159).
+  Over a temporary copy of `bundles/ga4`, a curator agent with the read-write
+  tools writes a note (meeting `okf_write_concept`'s read-before-write gate on
+  the way) and a reader agent with the read-only tools and an
+  `OkfContextProvider` finds it in its injected context, because both tool sets
+  share one `BundleHandle`; a consumer with its own `OnAccess` handle sees the
+  change by itself, one with its own `Manual` handle only after
+  `RefreshAsync`. Standalone solution, not part of `OKF4net.sln` or CI.
+
+- **Allowlist of sanctioned-code digests for attested computations (#154).**
+  `AttestationOrchestratorOptions` (`Clock`, `DefaultPolicy`,
+  `AllowedCodeDigests`) and a new `AttestationOrchestrator.Create(runtimes,
+  options)` factory; the existing constructor is unchanged, and
+  `new AttestationOrchestrator(runtimes, null)` still compiles (a constructor
+  overload taking the options would have made it ambiguous).
+  - `AllowedCodeDigests` is `null` by default, which means no allowlist and no
+    change. When set, a run whose computation (inline or file) or attester source
+    is not in it is refused before any runtime stage.
+  - The digest is `AttestationCodeDigest.Of`: SHA-256 of the UTF-8 encoding of
+    the exact text the runtime receives, 64 lowercase hex digits, no
+    normalisation.
+  - The refused roles appear in `Reasons` without their digests; the digests go
+    to the host on the new `AttestationOutcome.UnapprovedCode` (`UnapprovedCode`:
+    `SanctionedCodeRole` + `Digest`).
+  - A malformed entry is refused at construction (`ArgumentException`).
+  - `okf_run_computation` shows the refusal without the digest.
+
+- **Snapshot memory estimate and per-source ceiling (#151).** `Bundle.EstimatedMemoryBytes`
+  reports what an image takes in memory, as an estimate. It is a linear model over
+  the size of the concept objects read and the links they hold, calibrated against
+  retained bytes on four bundle shapes (`SnapshotMemoryCalibrationTests`, within a
+  factor of 1.25; skipped on macOS, where the CI heap reading is unreliable).
+  It is approximate, not a heap measurement.
+  `BundleLoadOptions.MemoryCeilingBytes` (`null`, no ceiling, by default: loading
+  is unchanged) refuses a load that would exceed it with the new
+  `BundleMemoryCeilingExceededException` (`CeilingBytes`, `EstimatedBytes`),
+  inside the `BundleLoadException` (`the bundle exceeds the memory bound (N)`).
+  The refusal comes before any read when the sizes the listing declares already
+  exceed the ceiling (an object over `MaxObjectBytes`, which the load skips, is
+  not counted), otherwise as soon as the running estimate crosses it. With a
+  ceiling a parallel load reads one window of `MaxConcurrentRequests` objects
+  at a time, each started when the parse reaches it, since a concept's links
+  count toward the ceiling only once parsed; it stops starting reads once the
+  window's finished reads are over, and refuses at the same object. The ceiling bounds one image: during a refresh the
+  previous one is still held, so the peak can reach twice the ceiling. A
+  `BundleHandle` whose reload is refused keeps serving its previous image,
+  flagged stale. Catalog: `KnowledgeCatalogOptions.MemoryCeilingFor` sets a
+  source's ceiling from the host, never from `catalog.json`. A source over it is
+  `SourceUnavailable` on a first load and `SourceStale` on a refresh. New
+  `BundleBound.Memory`. `BundleLimitExceededException` is no longer `sealed`, so
+  the new exception can derive from it: a host catching it still catches the
+  memory refusal.
+
+- **Review dates in the audit (#156, spec §5.2).** `AuditFinding` gains
+  `LastVerifiedAt` (the latest `verified[].at` that reads as a §5 timestamp),
+  `LastChangedAt` (`generated.at`, falling back to the legacy `timestamp`,
+  §13.1) and `IsReviewOutdated` (both known, and the change strictly later).
+  `AuditQuery` gains `ReviewOutdatedOnly`, exposed as `okf audit
+  --review-outdated` and as the `reviewOutdated` parameter of `okf_audit`
+  (`AuditAsync`). The signal leaves the trust tier and every count alone. Only
+  the frontmatter is read: for a file's git history, pair `lastVerifiedAt` with
+  `git log -1 --format=%cI -- <path>`. **`okf audit --json` changes**: `query`
+  gains `reviewOutdated`, each finding gains `lastVerifiedAt`, `lastChangedAt`
+  and `reviewOutdated`. The two review dates keep their fractional seconds
+  (`2026-07-05T10:00:00.9Z`; a whole second is spelled as before), so a
+  consumer can reproduce the comparison. The text lines are unchanged.
+  Binary-breaking for a compiled caller of `AuditQuery`'s constructor (a new
+  optional parameter); source-compatible, including the four-value
+  `Deconstruct`, which stays beside the generated five-value one with the
+  generated parameter names (`StaleOnly`, `Trust`, `Status`, `Type`), so a
+  call with named arguments still compiles.
+
+- **Bundle provider seam (#139, lot A).** `OKF4net.Providers`: `IBundleProvider`
+  and its value types, `BundleKey` with three-layer validation
+  (`BundleKeyConstraints`, `BundleKeyPolicy`, `BundleKeyValidator`),
+  `FileSystemBundleProvider` (writable, see Changed),
+  `ResourceKeyResolver`, `BundleLoadOptions`, `Bundle.Load(IBundleProvider,
+  BundleLoadOptions?)`, and on `Bundle`: `Provider`, `Location`, `Version`,
+  `ParseProblems`, `IndexKeys`/`LogKeys`, `ObjectVersions`, `RejectedKeys`,
+  `TryResolveResourceKey`, `ReadResourceText(BundleKey)`,
+  `PortabilityIssues` (`BundlePortabilityIssue`); `Concept.Key`
+  (init-only; the three-parameter constructor is unchanged);
+  `ConceptId.ToKey`/`FromKey`. Display paths and concept ids are unchanged.
+- **`KeyNotPortable` warnings** (spec §2, layer 3): a `.md` name the load
+  accepts but the portable profile (`BundleKeyPolicy.Strict`) would refuse —
+  `con.md` (a Windows reserved device name) on any OS, `Orders.md` beside
+  `orders.md` on any volume that holds both, a decomposed `café.md` — is listed in `Bundle.PortabilityIssues` and reported by
+  `okf validate` (and `--json`) as one warning, `the name is not portable:
+  {reason}`, under the file's display path. A warning never changes the exit
+  code: OKF §11 imposes no naming constraint.
+- **Write side of the provider contract (#139, lot B).** `BundleWriteReport`
+  and `BundleWriteFailure` (what an operation over several objects wrote,
+  deleted and failed, with why); `BundleWriteConflictException.Reason`
+  (`BundleWriteConflictReason`: the condition did not hold, or the storage
+  cannot hold that exact name); `BundleWriteOutcomeUnknownException` (the
+  commit itself failed and what the storage holds could not be established).
+  `IBundleProvider.Write` and `Delete` now document their conditions,
+  atomicity and implicit prefixes.
+- **`BundleConceptWriter` over a provider.** `new BundleConceptWriter(provider,
+  onWriteCommitted, options)` writes through any writable `IBundleProvider`,
+  under the key policy and bounds of the `BundleLoadOptions` it is given
+  (the defaults of a load otherwise); the string constructor is unchanged and
+  builds a `FileSystemBundleProvider`. `BundleRoot` throws
+  `NotSupportedException` for a writer over any other provider.
+- **Conditional concept writes.** `BundleConceptWriter.WriteConcept(…,
+  BundleWriteCondition)` (both the YAML and the `Frontmatter` forms):
+  `IfMatch(version)` replaces a concept only if it has not changed since that
+  version was read, `MustNotExist` creates it only if it does not exist yet.
+  A condition that does not hold writes nothing and returns an `Error:` that
+  tells the caller to read the concept (again); it is never retried. The
+  three-argument overloads are unchanged and unconditional.
+- **`VerificationOutcome.Report`** (a `BundleWriteReport`): the keys of the
+  concepts a `RecordVerifications` batch wrote, in order — a concept whose
+  write notification failed after its commit included — and the one whose
+  write failed, with the reason: for a typed provider refusal a library
+  sentence naming keys and types, for a raw I/O failure the runtime's own
+  message, which can name a host path (path-free texts are tracked by #211).
+  `Recorded`, `Message` and `Records` are unchanged, and a partial failure's
+  message still ends with `— already written: …`.
+- **`BundleConceptWriter.AppendLog(kind, text, date?)`**: appends one entry
+  to the bundle root's `log.md` (spec §9), with the field guards and result
+  strings of `OkfBundleTools.AppendLog`, which now delegates to it.
+- **`IndexGenerator` over a provider.** `IndexGenerator.RegenerateIndexes(provider,
+  options)` and `RegenerateIndexesWith(provider, synthesize, options)`
+  regenerate the `index.md` files of any writable `IBundleProvider` and return
+  a `BundleWriteReport`: the `index.md` keys written, in order, and those that
+  were not, with why (a key the run's key policy refuses — such an `index.md`
+  is neither read nor written — a path the provider refuses, a creation the
+  tree check refuses, a write that kept conflicting, an I/O error, a root
+  `index.md` that cannot be read). `synthesize` receives the directory's key prefix (`a/b`).
+  The `string` overloads keep their return values, their order and
+  `relativeDir` with the OS separator.
+- **`BundleWriteNotCommittedException`**: a write the storage kept refusing
+  without any effect, on every attempt; the object is unchanged (see Changed,
+  "A failed commit says what happened").
+- **`BundleHandle` (#139, lot C; spec §5.2, §5.3).** The holder of one
+  bundle's image: `new BundleHandle(provider, options, refreshPolicy, time)`,
+  `Current` (the image, loaded on first use), `Refresh()`, `Invalidate()`,
+  `IsStale`, `LastLoadError`. One load at a time (concurrent callers wait for
+  the load in progress), the image replaced as a whole, a failed reload keeps
+  the previous image served and marks it stale. `BundleRefreshPolicy`:
+  `Manual` (the default: the host calls `Refresh()`), `OnAccess` (the
+  provider's version token is compared before every use), `Every(interval)`
+  (compared at most once per interval, at an access) and `Notify` (a signal
+  from a provider implementing the new `IBundleChangeNotifier` makes the next
+  access compare the token; a signal is a hint, never a reload by itself). No
+  policy runs a timer or a thread. `Every(interval)` retries a failed reload
+  only when the interval has elapsed again (the stale image is served until
+  then), where `Notify` re-arms its signal. A raw exception from a host
+  provider (neither a provider, an I/O nor an access exception), at the token
+  comparison or in a load, is a load failure like any other: wrapped in a
+  `BundleLoadException` that names its type only, the previous image is served
+  stale and the next access after the provider recovers reloads; a first load
+  throws that `BundleLoadException`; only `OutOfMemoryException` propagates.
+  `Invalidate()` obliges the next use to
+  reload whatever the policy, and the obligation is acknowledged only by a
+  successful load started after it (spec §5.1). `new BundleConceptWriter(handle,
+  onWriteCommitted)` writes through the handle's provider under its options
+  and invalidates the handle after each committed write.
+- **Executable resources surveyed at the load (#139, lot C; spec §5.1).**
+  `Bundle.ExecutableResources` gives, for every Attested Computation concept,
+  the state of its `computation` file and of its `attester.resource`
+  (`ExecutableResourceSurvey`, `ExecutableResource`,
+  `ExecutableResourceState`): `Pinned` with the object's version when it was
+  read and hashed, or `Undeclared`, `Url`, `Unsafe`, `Missing`, `Unreadable`
+  or `TooLarge`. A resource's own problem is a state: the concept is still
+  loaded, validated and audited; a global failure (a bound, a refusal that is
+  not the resource's own path) still fails the load. `Bundle.ReadResourceText(key,
+  expected, out version)` reads a resource pinned to a version: an object that
+  changed since throws `BundleVersionMismatchException` and nothing is returned.
+- **`AttestationOrchestrator.Capture` and `RunCapturedAsync`** (#139, lot C;
+  spec §5.4). `Capture(bundle, concept, expectedComputationFileVersion?)`
+  reads, once and before any runtime is called, everything a run executes —
+  the computation (inline, or the file through the provider) and the attester's
+  source, both pinned to the version the image was loaded with (a version the
+  caller observed for the file must equal it) — as an
+  `AttestationCapture` bound to its `ConceptId` and to the `Bundle` image it was
+  taken on (`RunCapturedAsync` refuses a capture taken for another concept, or on
+  another image than the one it is run on: the code it holds was pinned to that
+  image, while the contract is read from the image given to the run), or a
+  non-displayable outcome with `ImageOutdated`
+  saying whether the image may be behind. `RunCapturedAsync` runs §10.5 from
+  step 3 on a capture; `RunAsync` captures and calls it, and reads nothing
+  from the bundle afterwards.
+- **`Bundle.DisplayPath(BundleParseError)`** (#139, lot D; spec §8): the one
+  display path of a load problem — the location, then the key's segments with
+  the OS separator, or the raw name with `/` turned into the OS separator when
+  the name is no key — the string the obsolete `ParseErrors` projected and the
+  CLI, its JSON and the viewer print.
+- **`Diagnostic.Key` and `AuditFinding.Key`** (#139, lot D; spec §9): the key
+  of the object a finding is about — the concept's, the `index.md`'s or
+  `log.md`'s, the unparseable document's when the load gave its name a key (an
+  over-length `.md` name does) — beside the display path `Path` still carries.
+  `Key` is `null` for a hand-built finding, for a name the load refused (by the
+  key policy or by a collision) and for a name that is no key. It is set where
+  each finding is built, never recovered from the display path, which two
+  distinct names can share. `Path` is unchanged, so the `validate` and
+  `audit --json` outputs are too (equality changed: see Changed (breaking)).
+- **`OkfBundleKnowledgeSource(string id, BundleHandle handle)`** and
+  `OkfBundleKnowledgeSource.Handle` (#139, lot D; spec §5.2, §9): a catalog
+  source served from a handle it shares with every other consumer of that
+  handle, which it never disposes (the caller owns it). The directory
+  constructor builds a handle of its own (see Changed).
+- **A `catalog.json` source names its provider** (#139, lot D; spec §9):
+  `"provider": "<type>"` (`filesystem` when absent) and `"settings": { … }`
+  (string values), on `KnowledgeCatalogSource.ProviderType` and `.Settings`
+  (`ProviderSettings`, compared by value; its `ToString` prints the setting
+  names only, never a value). A host registers one `IBundleProviderFactory`
+  per type (`KnowledgeCatalogOptions.ProviderFactories`,
+  `KnowledgeOptions.AddProviderFactory`), each declaring the settings it
+  accepts, so no credential can enter through the manifest. A misregistered
+  factory (an empty type, `filesystem`, two for one type) is refused when the
+  host registers it (`AddKnowledge` throws `ArgumentException`; so does the
+  `FileKnowledgeCatalog` constructor). Seven new `CatalogDiagnosticCode`
+  members, **appended** (values 19 to 25: the shipped 0 to 18 keep theirs, so
+  this is not a break, and the diagnostics of a manifest without `provider` or
+  `settings` are the same, in the same order): `MalformedProvider`,
+  `MalformedSettings` (a `settings` that is not an object of strings, a name
+  given twice, an empty name), `IllegalSetting` (any setting for `filesystem`, or one
+  the factory does not list; a disabled source's setting names are checked
+  too when a factory exists for its type), `IllegalPath` (a `path` on another
+  provider type, whose storage is its settings), `IllegalMemoryProvider`
+  (memory stays on the filesystem), `UnknownProvider` (an enabled source whose
+  type has no factory; a disabled one stays accepted) and `ProviderUnavailable`
+  (the factory, the per-source `RefreshPolicyFor`, or the handle over the
+  provider threw, or the provider reports an empty id: the diagnostic names the
+  exception type, never its text).
+- **The catalog snapshot owns the handles** (#139, lot D; spec §5.2, §9):
+  `KnowledgeCatalogSnapshot.Handles` holds one `BundleHandle` per enabled
+  knowledge source (empty for a snapshot the parser or a test built by hand),
+  built by `FileKnowledgeCatalog` under `KnowledgeCatalogOptions.LoadOptions`
+  and the source's refresh policy (`RefreshPolicy`, `OnAccess` by default;
+  `RefreshPolicyFor` per source; `KnowledgeOptions.RefreshPolicy` for a host),
+  the filesystem provider confined to the catalog root. A reload reuses a
+  source's handle only when its effective configuration (provider type,
+  resolved directory, settings, policy, load options) is identical; otherwise
+  it builds a new one and disposes the old one when the new snapshot is
+  published (a disposal only ends its change subscription) — a request still holding the old snapshot
+  keeps reading its image. A rejected reload keeps every current handle and
+  disposes the ones it built; a handle whose `Dispose` throws strands no other,
+  and a host exception thrown inside the debounced reload (the watcher's
+  timer) is swallowed without a trace — call `ReloadAsync` for a reload whose
+  outcome you must see.
+- **`KnowledgeDiagnosticCode.SourceStale`** (#139, lot D; spec §5.2, §7),
+  appended (value 4): a source whose last reload failed and that was answered
+  from its last good image — its passages are returned, and the message names
+  the type of the failure's cause only (`BundleAccessRefusedException`,
+  `DirectoryNotFoundException`, …), never its message.
+- **`MemoryTierDeletion`** (#139, lot D; spec §1, §9): what deleting one tier's
+  scope did, as a `BundleWriteReport` (see Changed (breaking)).
+- **`FileMemoryStore(IReadOnlyDictionary<MemoryTier, IBundleProvider>)`**
+  (#140; spec §3, §9): a host can give the store one provider per tier instead
+  of a tier root (one provider can back several tiers: the keys are the same
+  `memory-<tier>/…` as under a root). A scope is the view of its key prefix in
+  the tier's provider, read, enumerated, written and deleted through that
+  provider on the full key. A write the provider refuses is a failed
+  `MemoryWriteResult`, never an exception — over a provider that cannot write
+  (`AsReadOnly()`), `Error: Memory tier '<tier>' could not be written: the
+  provider is read-only; …`, nothing written — and a deletion reports each key
+  it could not delete in its tier's `MemoryTierDeletion`. **Limit**: a deletion
+  through a given provider deletes keys only, even when the provider is a
+  `FileSystemBundleProvider`; removing a scope's emptied directories, whose
+  names carry the lowercased ids, stays the directory constructor's alone.
+  The directory constructor is unchanged. The store awaits its provider
+  throughout (probe, read, enumeration, write, deletion), so a provider that
+  completes asynchronously serves it like any other; a scope's listing is
+  consumed under the core's own bounds, so a provider that ignores
+  `MaxEntries` makes the scope unavailable instead of growing a list; any
+  exception a host provider raises that the library did not author (a storage
+  timeout surfacing as a `TaskCanceledException`, an `IOException`, its own
+  `BundleProviderException` subclass) is reported as data by its type only,
+  never by its text, on every operation including the writer's own reads and
+  writes, while a cancellation of the caller's own token still propagates (a
+  `FileSystemBundleProvider` is not wrapped: its I/O texts are #211's); a
+  scope's view has a version token of its own, built from its listing and its
+  objects' versions, so reading one scope never walks the rest of the tier (an
+  unlistable directory of another tenant no longer makes it unavailable); and a
+  name that is a key of the view but too long once the scope's prefix is added
+  is over-long there, as past the bound in any bundle: never read, a parse
+  problem for a concept, its ancestors still checked by the tree validation.
+
+- **Embedded-resource bundle provider (#141).** New package
+  `OKF4net.Providers.EmbeddedResources`: the `OkfBundle` MSBuild item (a
+  pure-MSBuild `.targets` shipped in the package) embeds a bundle directory one
+  manifest resource per file, `okf:<prefix>/<path>`, refusing links and names an
+  assembly cannot hold (`OKFEMB001`–`OKFEMB010`), and
+  `EmbeddedResourceBundleProvider` serves it back read-only, synchronously,
+  versioned by the assembly's MVID — Native AOT and single-file included.
+
+- **S3 bundle provider (#142).** New package `OKF4net.Providers.S3`:
+  `S3BundleProvider`, `S3BundleSource`, `S3RequestException` (`S3Operation`,
+  `S3FailureKind`) and `S3ChecksumMode`. Read-only and truly asynchronous
+  (`CompletesSynchronously` is `false`); the provider builds its own client
+  from host credentials (any `AWSCredentials`, never read from the
+  environment), guards every request (one authority, one path prefix, at most
+  three sends per operation) and versions objects by the SHA-256 of their bytes.
+  The bucket never reaches a model: `Location` is `s3:<DisplayName or 8
+  hex>`, plus `/<prefix>` when the prefix is not empty, and every message is a
+  closed vocabulary. It depends on `AWSSDK.S3` ≥ 4.1.0 (a minimum); like
+  `OKF4net.Agents`, `OKF4net.Catalog.Hosting` and `OKF4net.Mcp`, it carries a
+  third-party dependency, which the core and the other providers do not. The tests against a real store
+  (`Category=S3Integration`, RustFS 1.0.3 in Podman or Docker) are excluded from
+  CI by decision, like `Category=ContainerIntegration`, and run locally with 0
+  skipped; ci.yml's `S3 provider AOT smoke test` covers the minimum and the
+  latest `AWSSDK.S3`/`AWSSDK.Core`.
+
+### Changed (breaking)
+
+- **A failure of the provider while a loaded bundle is read throws
+  `BundleLoadException` instead of passing for a problem of the file (#247).**
+  The error-priority rule of #139 (global failures abort, per-resource states
+  are local) now holds after the load. The message names the key and the
+  exception type only; the cause is in `InnerException`. Documented exceptions
+  change for:
+  - **`Bundle.ReadResourceText(BundleKey)`, `ReadResourceText(BundleKey,
+    expected, out version)` and `ReadResourceTextAsync`.** They used to turn
+    every provider failure into an `IOException`. They now throw
+    `BundleLoadException` for:
+    - a typed provider failure other than a refusal, a missing object, an
+      oversized object or a version mismatch (a bound, a network, a
+      credential, a timeout);
+    - a raw storage error raised while reading the object: a device not ready
+      or gone, a network path or host unreachable, a timeout, a reset
+      connection, a stale NFS handle, a device I/O error (`EIO`).
+
+    Any other raw `IOException` (a locked file, for instance) stays the
+    object's. The object's own problems keep their exceptions:
+    `UnauthorizedAccessException` (refused), `FileNotFoundException`
+    (missing), `BundleObjectTooLargeException`, `IOException` and
+    `DecoderFallbackException` (not UTF-8). A caller that catches those as
+    "unreadable" now lets a provider failure through.
+  - **`BundleValidator.Validate`/`ValidateAsync`** throw `BundleLoadException`
+    where they reported `UnparseableIndex`/`UnparseableLog`. `okf validate`
+    prints `error: …` and exits 1, as for a load failure, and the
+    `okf_validate_bundle` tool returns `Error: …` instead of a report.
+  - **`AttestationOrchestrator.Capture`/`CaptureAsync`/`RunAsync`** throw
+    (`RunAsync`: a faulted task) instead of refusing with `ImageOutdated`.
+  - **The tools.** `okf_browse`, `okf_get_computation`, `okf_changes_since` and
+    `okf_run_computation` return `Error: provider failure reading '…' (…)`.
+    `okf_changes_since` used to print a skip note.
+
+  The load itself is unchanged: its survey of executable resources and its read
+  of the root `index.md` still treat every raw `IOException` as the resource's
+  state, since one bad file must not make the bundle unloadable. **Known
+  limit:** a provider is judged by what it raises, and the filesystem provider
+  still reports a share lost after the load as a missing object (its exact-name
+  lookup reads a failed directory listing as an absence). So that case is still
+  `FileNotFoundException`, and an `UnparseableIndex` finding in a validation.
+  It is tracked separately. No fixture provider fails, so no snapshot moves.
+
+- **The provider contract is asynchronous, before its first publication** (#152). The
+  provider seam of #139 was never published (0.7.0 has no `OKF4net.Providers`), so
+  `IBundleProvider` is **replaced** by its asynchronous form with no shim: `GetVersionAsync`,
+  `EnumerateAsync` (an `IAsyncEnumerable`), `ReadAsync`, `ExistsAsync`, `WriteAsync`,
+  `DeleteAsync`, each returning a `ValueTask` and taking a **required** `CancellationToken`,
+  failures delivered through the task. `BundleProviderCapabilities` gains
+  `CompletesSynchronously` (default `false`; the filesystem provider declares it), and
+  `BundleObject` is `IAsyncDisposable` too. Asynchronous at the I/O edges only:
+  `Bundle.LoadAsync`, `BundleHandle.GetCurrentAsync`/`RefreshAsync`,
+  `BundleValidator.ValidateAsync`, `Bundle.ResolveResourceKeyAsync`/`ReadResourceTextAsync`,
+  `AttestationOrchestrator.CaptureAsync`, `BundleConceptWriter.WriteConceptAsync`/
+  `AppendToConceptAtomicAsync`/`AppendLogAsync`/`RecordVerificationsAsync`,
+  `IndexGenerator.RegenerateIndexes(With)Async`; the queries on a loaded image stay
+  synchronous. The synchronous entry points that serve a filesystem path
+  (`Bundle.Load(string)`, the writer and index generator `string` overloads,
+  `BundleValidator.Validate`, `AttestationOrchestrator.Capture`) stay, as the same
+  implementation behind a bridge that **never waits**: a read still pending when it returns
+  is cancelled and the call throws `InvalidOperationException` ("provider completed
+  asynchronously; use the async overload"), and a synchronous **write** over a provider that
+  does not declare `CompletesSynchronously` is refused before any I/O starts. `Bundle.Load(IBundleProvider, …)`
+  and the blocking `BundleHandle.Current`/`Refresh()` are no longer public (internal, for
+  the code that has not become asynchronous). The asynchronous load reads concepts with at most
+  `BundleLimits.MaxConcurrentRequests` reads in flight (the synchronous one keeps degree 1, so
+  the CLI's output and goldens are unchanged) and reports the smallest failing key.
+  `CA2007` is enforced for the libraries (`ConfigureAwait(false)` everywhere).
+- **`OkfBundleTools`: `…Async` public methods, the `string` ones obsolete** (#152, decision Q3):
+  `ReadConceptAsync`, `BrowseAsync`, `GraphAsync`, `SearchAsync`, `AuditAsync`,
+  `WriteConceptAsync`, `VerifyAsync`, `AppendLogAsync`, `RegenerateIndexesAsync`,
+  `ValidateBundleAsync`, `ChangesSinceAsync`, `GetComputationAsync` (`Task<string>`). The `string`
+  methods published in 0.7.0 are `[Obsolete]` bridges, removed in the release after 0.8.0 (#224); they
+  throw on a provider that does not complete synchronously. `GetTools` is unchanged for the
+  model (same names, same schemas) and stays bound to the observation-checking wrappers, which are
+  asynchronous now; the public `…Async` methods record and require no observation. The synchronous
+  `RunComputation`, obsolete since 0.7.0, is **removed**.
+- **Two behaviours moved with the asynchronous write path** (#152): (1) the `onWriteCommitted`
+  callback of `BundleConceptWriter` (and the `OkfBundleTools` cache invalidation) now runs **after**
+  the bundle's write lock is released, so it may call back into the same bundle; a host that relied
+  on exclusion while the callback ran loses it. `RecordVerifications` completes its batch before
+  notifying, once per committed write, so a notification that throws (a cancellation, say) no longer
+  stops a batch half-way. (2) `BundleHandle` runs one shared operation per handle: N concurrent
+  `OnAccess` callers share one token comparison, and a caller that cancels stops waiting without
+  cancelling the load the others wait for. `BundleHandle.Dispose` still only ends the subscription.
+  A cancellation is honoured before a commit and between objects only: after a first commit a batch
+  (`RecordVerifications`, an index regeneration) stops and returns what landed, the rest reported as
+  `not attempted (cancelled)`.
+- **The `okf` Native AOT binary grows by about 383 KiB (+8.1 %) with the asynchronous core**
+  (design R7). On linux-x64, built with SDK 10.0.404 in `mcr.microsoft.com/dotnet/sdk:10.0`
+  (`dotnet publish src/OKF4net.Cli -c Release -r linux-x64`), it was 4,842,784 bytes before #152
+  (3216bbe) and 5,234,736 bytes after it (3a83070). On `dev` after the rest of this release
+  (32862e3) it is 5,259,808 bytes. Each build was run twice and gave the same digest.
+- **`MemoryDeleteResult` is `(IReadOnlyList<MemoryTierDeletion> Tiers,
+  string? Error)`** (#139, lot D; spec §1, §9, §10): `TiersDeleted` counted
+  directories removed by `Directory.Delete`; a scope is now a prefix whose
+  objects are deleted one by one, so each tier reports the keys deleted and
+  those that failed, with why. `IMemoryStore.DeleteScopeAsync` changes
+  signature with it, so a host's own `IMemoryStore` must build the new result.
+  A tier whose scope held no key is absent from `Tiers`, unless the empty
+  directories left in it could not be removed (a failure under the scope's
+  prefix). Migration: `result.TiersDeleted` becomes
+  `result.Tiers.Count(t => t.Report.Succeeded)` — not an exact equivalent: a
+  scope directory that held no key, which `TiersDeleted` counted once it was
+  removed, is now absent from `Tiers` (its empty directories are still
+  removed);
+  `result.Error` is `null` when nothing failed, as before, but its text changed
+  (see Changed).
+- **`Diagnostic` and `AuditFinding` equality includes `Key`** (#139, lot D;
+  spec §9): `Key` is an `init` property outside the positional list, and the
+  record's synthesised `Equals`, `GetHashCode` and `ToString` (`AuditFinding`'s
+  ends with `Key = …`) now take it into account. A host that compared a
+  finding of `BundleValidator.Validate` or `ConceptAudit` with a hand-built
+  `new Diagnostic(…)` or `new AuditFinding(…)` now gets `false` unless it sets
+  `Key` to the key the load gave (`bundle.Concepts[…].Key`, an index's or a
+  log's key) or compares the fields it cares about (`Path`, `Code`, `Message`)
+  instead. `Diagnostic.ToString` is its own rendering and does not change.
+- **A memory scope segment whose base is a Windows reserved device name is
+  prefixed with `_`** (#139, lot D; spec §9, D4): `con.foo` encodes as
+  `_con.foo-<hash>` where it encoded as `con.foo-<hash>`, a name Windows maps
+  to a device (the extension does not lift the reservation); the hash is that
+  of the raw identifier and is unchanged, and no other identifier changes
+  (`con` alone, `console.x`, `com10.x` are not reserved). Such scopes never
+  worked on Windows. **Migration (Linux, macOS), a manual copy:** a tenant,
+  user or session identifier whose part before its first `.` is `CON`, `PRN`,
+  `AUX`, `NUL`, `COM1`–`COM9` or `LPT1`–`LPT9` (any case) has its existing
+  directory under the old name, which is no longer found: reads, enumeration
+  and `DeleteScopeAsync` address the prefixed name, and the old directory is
+  neither read, migrated nor deleted. Copy it by hand by prefixing `_`
+  (`mv memory-tenant/con.foo-0123… memory-tenant/_con.foo-0123…`, and the same
+  for every such segment, at any level, under `memory-user/` and
+  `memory-session/`).
+
+### Changed
+
+- **`FileSystemBundleProvider` asks the file system far less per file, so a load is about three times faster on Windows** (measured on a 2,001-concept bundle: `Bundle.Load` 1,350 ms → 427 ms; nothing measured on Unix, where only the walk changes). Four redundant questions are gone: on Windows an entry is a reparse point exactly when its attributes say so, so the two `LinkTarget` probes after `GetAttributes` are no longer made (Unix keeps them); a walk examines each entry once (link, directory or file, then length and last-write time) instead of four separate calls; inside a scope (a load or a validation) the version walk reuses what the listing walk read of each file and link, and re-examines only the directories; `ReadAsync` and `ExistsAsync` take "is it a directory" from the leaf inspection they already make. Results, refusals, the STRICT guards and the bundle token are unchanged. One window is widened and documented (`IProviderScope.BeginScope`): a file another process rewrites in place during a load keeps the length and last-write time first read in that scope's later listings and bundle token, until the scope ends; reads still return the real bytes, and a write through the provider drops what was kept for its directory. Pinned by counting file-system calls, never by timing (`FileSystemBundleProviderScopeTests`, `BundleLoadPerformanceTests`).
+
+- **The fold also removes invisible format characters** (#249). A model reads
+  them and a reviewer does not see them, so they can carry a hidden instruction
+  ("ASCII smuggling" through tag characters) or spoof an identifier. Removed
+  from every value a tool or the context provider prints:
+  - the tag characters U+E0000–U+E007F, each removed whole, both halves of its
+    surrogate pair;
+  - the zero-width space U+200B;
+  - U+2060–U+2064;
+  - U+FEFF inside a value;
+  - the interlinear annotation characters U+FFF9–U+FFFB.
+
+  ZWNJ and ZWJ (U+200C, U+200D) are kept: emoji sequences and scripts such as
+  Persian need them. So are the variation selectors, U+E0100 and above included.
+  `LineSafeText` refuses the same characters, so `okf verify --by` / `--at`, the
+  writer's actor and timestamp gate, and `okf_verify` refuse them too. Their
+  message now reads `must not contain control, bidirectional or invisible format
+  characters`.
+- **One fold rule for every value an agent tool or the context provider prints** (#122). Every value `OkfBundleTools` interpolates into a line of a tool result, and every value `OkfContextProvider` injects, now goes through one rule: a line terminator (CR, LF, CRLF, NEL, VT, FF, U+2028, U+2029) becomes a space, any other C0/C1 control becomes U+FFFD, a bidirectional control (U+061C, U+200E, U+200F, U+202A–U+202E, U+2066–U+2069) is removed, and everything else, TAB included, prints unchanged. Observable only for a value carrying one of those characters: titles, frontmatter values, link targets, paths, receipt fields, verdict details and exception texts that only folded line breaks before now also lose bidi controls and show U+FFFD for ESC and the like; `okf_changes_since` removes a bidi control and shows U+FFFD for a control where it used to write `<U+XXXX>`. Values that were not folded at all are now: the `okf_search` excerpt (and `ConceptSearch.Excerpt`, so `OKF4net.Catalog`'s passages too: it split on LF only), the scoped context provider's passage title and excerpt, the error text `okf_write_concept` returns, and `okf_verify`'s detail for a target that could not be read or parsed. Exception texts still name host paths (#211). A value that BEGINS a Markdown block (first on its line, or right after a bullet, an ordered-list marker or a `>`) can no longer start block syntax of its own: its leading spaces and tabs are dropped and a leading `#` (heading), `-`/`+`/`*` (list item or thematic break), `_` (thematic break), a run of `=` or of `-` of any length (setext underline), `>`, three backticks or tildes (fence), `<` (HTML block), `[` (link reference definition), `|`, or the `.`/`)` of a leading `1.`-style marker, gets a backslash, which CommonMark renders as the plain character; a value that starts with a letter, a digit or a path prints unchanged. Every `|` a value brings, wherever it stands in the line, is escaped as well (`\|`, a backslash run before it doubled plus one), so no two lines can form a GFM table: a value containing a pipe now reads `a \| b`. So a frontmatter key `"## Backlinks"` reads `\## Backlinks: …` in `okf_read_concept`, and an excerpt that is a body heading reads `\## …`. Structural changes: `okf_read_concept` fences the concept body (info string `markdown`); every fence (`okf_read_concept`, `okf_get_computation`, `okf_browse`, the injected context) is a backtick run longer than any backtick OR tilde run in its content (three backticks, as before, for content with none), so no line of the content can close it; `okf_browse` returns a directory's `index.md` after the line `index.md of '<path>':` (or `index.md of the bundle root:`) inside a `markdown` fence, instead of the file's bare text; and each `<okf-context>` element of the injected context holds its content in such a fence, between blank lines (so that neither tag, which CommonMark reads as an HTML block running to the next blank line, swallows a fence line), with `&` written `&amp;` and then `<` written `&lt;` (in the content and in the id), so neither a literal `</okf-context>` nor a fence left open (an `index.md` ending in `~~~`, a truncated body) can reach past the element; a truncation that cuts a fenced body closes its fence before the `… (truncated)` marker. `LineSafeText`'s refusal now also refuses a bidirectional control, and the CLI uses it: `okf verify --by` or `--at` carrying one now exits 1 with `must not contain control or bidirectional characters`, since #249 `control, bidirectional or invisible format characters` (the message of every such refusal, CLI, writer and `okf_verify`, used to say "control characters"; everything it refused before it still refuses), and `okf verify` now quotes a stored `at`, id or actor carrying one in its `recorded …` line. No golden covers those cases, so none moved. Numbers in tool results are formatted under the invariant culture (the computation timeout's seconds used the current culture).
+
+- **The load reads the bundle token before listing** (#142, D15 a).
+  `Bundle.LoadAsync` asks the provider for its version, then lists the names:
+  a change that happens during a load now gives an image newer than its token,
+  reloaded at the next comparison, instead of an older one believed fresh.
+
+- **`Bundle.ResolveResourceKeyAsync`/`TryResolveResourceKey` throw
+  `BundleLoadException` for a provider failure other than a refusal** (#142,
+  D15 b). Only a `BundleAccessRefusedException` reads as `Unsafe`; any other
+  failure of the provider's `ExistsAsync` (a network error, a credential, an
+  `IOException`) was reported as `Unsafe` too and is now a `BundleLoadException`
+  naming the key and the exception type, never its text (the cause is the inner
+  exception). A validation of a store that is down now fails instead of
+  reporting "escapes the bundle", and the survey of a concept's executable
+  resources (`computation`, `attester.resource`) fails the load instead of
+  recording the state `Unsafe`. This affects every provider. The same
+  confusion while a validation reads `index.md`/`log.md` (reported as
+  `UnparseableIndex`/`UnparseableLog`) is unchanged and tracked in #247.
+
+- **`Bundle.TryResolveResource(…)` and `Bundle.ReadResourceText(string)`**
+  (both `[Obsolete]`) now throw `NotSupportedException` when the bundle's
+  provider is not a `FileSystemBundleProvider`: its `Root` is then a display
+  string, which on Linux could resolve under the current directory. Use
+  `TryResolveResourceKey` and `ReadResourceText(BundleKey)`.
+
+- **The write lock is an explicit lease, and the `onWriteCommitted` callback runs after it is released** (#152, step 1). `BundleConceptWriter`'s thread-bound `Monitor` pair (lexical gate + resolved bundle lock) became `SemaphoreSlim`s behind an internal `WriteLease`, so the lock can be held across an `await` once the writer is asynchronous. It is no longer re-entrant: code under a lease receives it instead of acquiring again. The two guarantees that mattered are kept: aliases of one directory share the lock (#86), and a contended resolved lock is waited for without the gate. Observable: the callback (`onWriteCommitted`, the `OkfBundleTools` cache invalidation) is now invoked after the lock is released, so it may call back into the same bundle; a host that relied on exclusion while the callback ran loses it. `RecordVerifications` completes its whole batch before notifying (once per committed write), so a notification that throws (a cancellation, say) no longer stops a batch half-way: the exception still propagates, with every stamp on disk.
+
+- **The path-based members are obsolete** (#139, lot D; spec §9, §10), kept
+  one version with a warning (never an error, so not a break) whose message
+  names the replacement: `Bundle.Root` → `Bundle.Location`;
+  `Bundle.IndexFiles` / `LogFiles` → `IndexKeys` / `LogKeys` with
+  `BundleDisplayPath.Compose(bundle.Location, key)` for a path to print;
+  `Bundle.ParseErrors` → `ParseProblems` with `bundle.DisplayPath(problem)`;
+  `Bundle.TryResolveResource` → `TryResolveResourceKey`;
+  `Bundle.ReadResourceText(string)` → `ReadResourceText(BundleKey)`;
+  `OkfBundleTools.BundleRoot` → `Location`, or `Handle.Provider` as a
+  `FileSystemBundleProvider` for its `Root`; `BundleConceptWriter.BundleRoot`
+  (the writer exposes neither a provider nor a location) → keep the root path
+  you constructed it with, or construct it over a `FileSystemBundleProvider`
+  you hold and use that provider's `Root`. They are removed with the
+  asynchronous provider contract (#152). No code of this repository reads them
+  any more (the tests that pin their strings suppress the warning); a host
+  that does keeps their historical behaviour, warned. `Concept.Path`,
+  `Diagnostic.Path` and `AuditFinding.Path` are not obsolete: they are the §8
+  display projection every output prints, beside `Key`.
+- **A catalog source no longer reloads its bundle at every request** (#139,
+  lot D; spec §5.3, §9, §10): `GroupedKnowledgeResolver`,
+  `MergedKnowledgeResolver` and `PriorityWeightedKnowledgeResolver` search
+  through the handles the snapshot keeps, so two requests over an unchanged
+  source load it once, and a change in storage is seen at the next request
+  under the default `OnAccess` policy (the bundle's token — a listing with
+  sizes and modification times for the filesystem, a weak token: two edits of
+  the same size within one modification-time tick can be missed until the next
+  change — is compared before each use; `Handle.Refresh()` or `Invalidate()`
+  forces a re-read). A reload that fails keeps the previous image served
+  (`Handle.IsStale`) and the search reports `KnowledgeDiagnosticCode.SourceStale`
+  with the passages; only a source whose first load fails is reported
+  `SourceUnavailable`, as a vanished source used to be at every search (its
+  message is now `bundle at '<location>' could not be loaded: …`). The fused
+  resolvers deduplicate by the provider's id, the canonical root for the
+  filesystem: two sources naming one directory are still collapsed and
+  reported under the resolved directory, and so now are two spellings that
+  differ by a trailing separator (case and 8.3 variants are still not merged).
+  In the fused path the load-failure diagnostics now come from the search loop,
+  after the open and deduplication loop. A snapshot that carries no handle for a
+  source (built by hand, or by `CatalogManifestParser.TryParse`) is served as
+  before: the path re-resolved and the bundle loaded at each request. The
+  catalog root's confinement is re-checked by the provider before every
+  access: a source directory replaced by a junction after the handle was
+  created makes the next token read fail and the previous image is served
+  stale, nothing under the junction ever read. A host provider that throws, during
+  any load or token read, an exception that is neither a `BundleProviderException`
+  nor an `IOException` nor an `UnauthorizedAccessException` is a load failure
+  like those: `BundleHandle` wraps it in a `BundleLoadException` (message naming
+  its type only, never its text), so a source that had loaded is served from its
+  last image and reported `SourceStale`, and one whose first load fails is
+  `SourceUnavailable`, always by the exception's type name only, and the other
+  sources are still searched; a cancellation of the caller's token still
+  propagates (one a provider raises itself, an `HttpClient` timeout for
+  instance, is that source's problem and is reported the same way, by type
+  name). A
+  provider's `Id` and `Location` are read at every search (`IBundleProvider`
+  now documents them as stable and non-throwing): a getter that starts throwing
+  costs its own source only, `SourceUnavailable` by type name. The fused
+  resolvers compare the ids exactly (ordinal), on every platform.
+- **`new OkfBundleKnowledgeSource(id, directory)` builds its own `OnAccess`
+  handle** (#139, lot D; spec §5.2): it used to load the bundle at every
+  search; it now loads once and compares the token at each search, so an
+  external change is still seen at the next one (with the weak filesystem
+  token above). Two sources built that way over one directory have two images.
+  It now throws `ArgumentException` at construction for a null id, for a null or
+  empty directory (an empty directory used to surface as `SourceUnavailable` at
+  the first search) and for a directory string `Path.GetFullPath` rejects (one
+  with an embedded NUL character),
+  and a directory that does not exist is reported, for a direct caller, as
+  `I/O error while listing the bundle (DirectoryNotFoundException)` instead of
+  `bundle root is not a directory`.
+- **`FileMemoryStore` reads, enumerates and deletes through the provider**
+  (#139, lot D; spec §3, §8, §9): one `FileSystemBundleProvider` per tier
+  root, built once at construction (an empty tier root now throws
+  `ArgumentException` there, where it used to fail at first use), and, for a
+  scope, one rooted at the scope's directory and confined to the tier root, so
+  the chain from the tier root to the scope is re-checked STRICTly before every
+  access (the old `IsReparseEscaped` walk, now the provider's; its refusal
+  texts are unchanged). A scope exists while it holds a key (spec §9, decision
+  14): an empty or absent scope directory is read and enumerated as nothing.
+  Deleting a scope deletes each object under its prefix on its own,
+  unconditionally; an object the storage holds under a name that is no key
+  (any file under the scope, not only a `.md`) cannot be deleted through the
+  provider and is reported as a failure under the scope's prefix. An object that cannot be deleted (held open on Windows, say)
+  is reported by the exception's type and the key, never by the runtime's
+  message, which can name a host path (#211). When every object is gone, the
+  scope's now-empty directories are removed too, bottom-up with a
+  non-recursive `Directory.Delete`, the STRICT reparse-point guard run on each
+  directory and its ancestors right before every listing and every removal, and
+  at most 64 levels below the scope's own directory: a directory that cannot be
+  removed (a link, a file the provider did not list, a deeper tree) is a failure
+  under the scope's prefix and the tier is not `Succeeded`. That is the one
+  direct filesystem deletion left in `OKF4net.Catalog`, kept because the
+  directory names carry the lowercased tenant, user and session ids and
+  `DeleteScopeAsync` is the erasure path (the provider seam has no directory
+  deletion). **It does not erase an id completely**: the parents of a deleted
+  scope are kept and still carry the ids above it
+  (`memory-session/<tenant>-<hash>/<user>-<hash>/` after that user's
+  sessions are deleted, `memory-user/<tenant>-<hash>/` after the last user). A scope that
+  cannot be listed (a subdirectory that denies listing, a bound exceeded) is
+  reported as data and never thrown: a diagnostic on a read
+  (`could not be loaded: <exception type>`), nothing on an enumeration, a
+  failure on a deletion with nothing deleted. A scope id (bounded only by its
+  character class) that makes the scope's key longer than 1 024 UTF-8 bytes is
+  reported the same way (`could not be loaded: key is longer than 1024 UTF-8
+  bytes` on a read, nothing on an enumeration, a failure on a deletion, a
+  failed write), never thrown; an id longer than the operating system's
+  file-name component limit (255 on NTFS, ext4 and APFS) is still absent while
+  the tier's own directory does not exist, but once it exists (any earlier
+  write, even a failed one, creates it) a read and a deletion now report the
+  guard's refusal text (`path is a reparse point or could not be inspected;
+  refusing to read`) where they used to skip it silently. In a `Tiers` report, a tier's
+  failures are joined by a comma and tiers by a semicolon in `Error`. Writes already
+  went through the provider (lot B); they now share the tier's provider
+  instance.
+- **`okf info`, `okf info --json`, `okf validate` and the viewer read the keys
+  and the display path** (#139, lot D; spec §8, §9) instead of the obsolete
+  path-based members (`Location`, `IndexKeys`/`LogKeys`, `ParseProblems` with
+  `Bundle.DisplayPath`, `ConceptId.FromKey` for an index's concept id): the same
+  strings by construction, so no byte of `okf` or `okf-render` output changes.
+  One validator behaviour does: the §8 index-entry description check derives
+  the index's id from its key, so it now also runs for an index whose display
+  path the old path-based derivation could not place under the location (an
+  empty `Location`, a first segment that is drive-rooted); it is still skipped
+  for an index whose key is no valid concept id (a directory named `my docs`,
+  say).
+- **`okf-mcp`'s bundle discovery reads a candidate's root `index.md` under a
+  16 MiB bound** (#139, lot C; spec §6, §9): `OkfBundleDiscovery.ReadRootIndexOrNull`
+  answers `null` — "no declared version", as for any unreadable index — for
+  a larger file without reading it (`OkfBundleDiscovery.MaxRootIndexBytes`),
+  where it read the whole file before; a file that grows while it is read is
+  bounded too, and an `index.md` that cannot report its length (a FIFO) is
+  unmarked. The 16 MiB is fixed, independent of `BundleLimits.MaxObjectBytes`
+  (256 MiB by default): a root index of that size is not a real one. A
+  directory whose `index.md` is over the bound is therefore not discovered as
+  a marked bundle; name it on the command line or in `OKF_BUNDLE_ROOT` instead.
+- **`okf_run_computation` runs only what the session was shown, pinned**
+  (#139, lot C; spec §5.1, §5.4; D1). The exposed tool captures, once and
+  before any runtime is called, everything the run executes: the concept
+  must have been shown — in full by `okf_read_concept`, or as code by
+  `okf_get_computation` — at the version the current image holds (a changed
+  contract or runtime is refused: `Error: 'x' changed since it was shown to
+  this session; read it again with okf_get_computation before running it.`,
+  and the image is refreshed); a file computation must also have been shown
+  by `okf_get_computation`, and the file is read pinned to that version (a
+  file changed since is refused at the read: `computation file 'q.sql'
+  changed since it was shown; read it again …`); the attester is read pinned
+  to the version the image was loaded with. A computation never shown is
+  refused with `Error: 'x' has not been shown to this session; read it first
+  with okf_get_computation, then run it.` and no stage runs — unless the
+  image already says the run cannot be captured at all (an undeclared, URL,
+  missing or unreadable computation file or attester, no computation), in
+  which case the capture's own reason comes first, since reading the
+  computation could not help; a context injection does not count (D5). A
+  file `okf_get_computation` cannot resolve or read (a URL excepted)
+  obliges the same reload. The observation of a concept (in full or as code,
+  either at the current version) and that of a computation file are separate
+  purposes. **Recovery after a refusal** (spec §5.1): a
+  refusal for a changed version or a negative resource state (`Missing`,
+  `Unreadable`, `TooLarge`, `Unsafe`) obliges the handle to reload, so the
+  next attempt — with no host `Refresh()`, under every policy — runs on the
+  new state; an undeclared or URL attester does not (only a change of the
+  concept can alter it). The public `RunComputationAsync` a host calls
+  needs no observation and is otherwise unchanged (it captures the same way,
+  with the attester pinned, and reloads after such a refusal too); the
+  session's observations survive every refresh. The tool's name, description
+  and schema are unchanged.
+- **`okf_write_concept` writes only what the session has read** (#139,
+  lot C; spec §4, §5.4; decisions D1, D5). Each `OkfBundleTools` keeps an
+  observation registry of what its session was shown and to what end:
+  `okf_read_concept` records the whole concept at its version (or the id
+  shown absent), `okf_get_computation` records the concept's contract and
+  code, and the computation file, at their versions. `okf_write_concept`
+  rewrites a concept read in full with `IfMatch(version)` and creates one
+  shown absent with `MustNotExist`; otherwise it refuses with no write —
+  `Error: 'x' has not been read by this session; read it first with
+  okf_read_concept (a context block injected for you, or okf_get_computation,
+  does not count), then write it.` — whether the concept exists or not. A
+  concept that changed, or vanished, since it was read is the writer's
+  conflict (`Error: 'x' changed since it was read, or no longer exists; the
+  write was refused. Read it again before writing it.`) and the image is
+  refreshed; reading it again (`not found` included) re-authorises the write.
+  A committed write drops the observation, so a second rewrite reads first.
+  The registry is per tool set (never shared through the handle, nor with
+  another tool set or a context provider), survives every refresh, and holds
+  10 000 keys, the least recently used evicted first; an evicted entry
+  authorises nothing until a new read. Only the functions exposed to the
+  model record: the public `ReadConcept` and `GetComputation` a host calls
+  record nothing, and a concept `OkfContextProvider` injects, whole or
+  truncated, is not an observation (D5). An agent that wrote without reading
+  first now makes one more call; the refusal says which. Build one tool set
+  per conversation: observations are per instance. A file that exists but is
+  no concept (an unterminated frontmatter fence, invalid YAML, a bundle index
+  or log) is no longer reported `not found` by the `okf_read_concept` tool
+  (the public `ReadConcept` is unchanged and still says `not found`): the tool
+  says `Concept 'x' exists but could not be read as a
+  concept: <the loader's reason> It can be rewritten with okf_write_concept.`
+  (an index or log file: `'x' is not a concept: …`), and the read authorises
+  the repair — an `IfMatch` rewrite at the version shown, as before the task
+  the tool could overwrite a broken file; an object too large to load has no
+  version to condition on and says `It cannot be rewritten through this
+  tool.` (the host's public `WriteConcept` still can). The tool names,
+  descriptions and schemas are unchanged.
+- **`OkfBundleTools` serves its image from a `BundleHandle` and makes no
+  direct I/O** (#139, lot C; spec §5.2, §9). `new OkfBundleTools(handle,
+  orchestrator)` shares the handle's image with every consumer the host gives
+  the same handle to (an `OkfContextProvider` built over the tool set uses it);
+  `Handle` and `Location` are new; the root-based constructors build a handle
+  of their own (`Manual` refresh, as the cache was) and `BundleRoot` throws
+  `NotSupportedException` for a tool set over any other provider. What moved
+  onto the provider, and what changed with it: `okf_browse` answers through
+  the provider's listing and reads a directory's `index.md` through it as
+  strict UTF-8 — an empty directory is now `not found` (a prefix exists while
+  an object lies under it, spec §2, D2), an `index.md` that is not valid UTF-8
+  is an `Error:` where it was read with replacement characters, and one
+  reached through a symlink or junction is refused where it was read;
+  `okf_changes_since` reads every `log.md` through the provider (the skip
+  notes are unchanged); `okf_regenerate_indexes` regenerates through the
+  handle's provider and options under the `string` overload's contract (same
+  output, same skips and failures), so a confinement boundary the host gave
+  the provider applies to it; `okf_get_computation` resolves and reads the
+  computation file on keys (its `could not be read:` text now carries the
+  library's message, `I/O error reading 'references/q.sql' (IOException)`,
+  never a host path, and a file whose directory can no longer be listed is
+  `could not be resolved (Missing)`). The write tools are offered only when
+  the handle's provider can write (`provider.CanWrite && mode != ReadOnly`,
+  spec §3): over a read-only provider `GetTools` filters them out whatever the
+  mode, and a direct call throws `BundleReadOnlyException` (`okf_verify`
+  included, see Fixed, #218). **A reload that fails after a successful load
+  keeps the previous image served** (spec §5.2): `okf_validate_bundle` and
+  the context provider used to answer `bundle unavailable` once the bundle
+  root vanished after a load; they now serve the last image, `Handle.IsStale`
+  is `true` and `Handle.LastLoadError` carries the failure (the raw cause,
+  path included, as its inner exception); the first load failing still
+  reports `bundle unavailable`. `OkfContextProviderOptions.OnInternalError`
+  still hears of an unreachable bundle: a first load that fails is reported
+  once per assembly, as before (the model reads `bundle unavailable`), and a
+  reload that fails after a load is now reported on every assembly while the
+  handle holds the failure, while the model reads the context of the image it
+  was served. What the callback receives is still a `BundleLoadException`, but
+  its message no longer names the host path: the path moves to its inner
+  exception, the raw cause, so a host that logs only `.Message` loses it.
+  `okf_browse` also differs in what it resolves, on volumes that fold case or
+  accept `.` segments: a path is now exactly the key's spelling
+  (`Browse("Tables")` used to find `tables/` on NTFS and default macOS, and
+  an `Index.md` was taken for the directory's `index.md`: now not found, and
+  the generated listing), and a `.` segment (`Browse("./tables")`) used to
+  resolve and now names no directory. A directory's `index.md` that starts
+  with a UTF-8 byte-order mark is still returned without it (one is dropped);
+  a UTF-16 `index.md` that was decoded by its mark is now an `Error:`.
+- **A computation without a file attester is no longer run (D6; spec §5.1,
+  §10; docs/spec-conformance S10.5-1).** `AttestationOrchestrator.RunAsync`
+  refuses, before any runtime stage is called, a concept that declares no
+  `attester.resource` or declares a URL: there is nothing to pin, so nothing
+  the host or the model could hold for the attestation code that ran. The
+  host's `IAttester` used to be called with `AttesterSourceText = null` in
+  both cases; it never is now. Every bundle of this repository declares a
+  file attester; an external host that attested without one sees those
+  computations refused (`displayable: no`, reason `no attester.resource is
+  declared, so the computation cannot be attested and is not run`) until its
+  bundle declares a file attester.
+- **Sanctioned code is read through the provider and pinned** (spec §5.4,
+  §9). The orchestrator resolves the `computation` file and the
+  `attester.resource` on keys (`Bundle.TryResolveResourceKey`,
+  `Bundle.ReadResourceText(BundleKey, …)`) instead of the historical
+  path-based members: the key policy, the rejected-key guard, the exact-case
+  and backslash rules now apply to what a run reads, which closes, for
+  `okf_run_computation`, the gap listed below as temporary (it could read a
+  resource `okf validate` reported `Unsafe` or `Missing`). Only a `Pinned`
+  resource is run, and at the version the image was loaded with, for the
+  `computation` file as for the attester: a file replaced after the
+  load — same length, same second, which the filesystem's bundle token cannot
+  see — is refused (`attester resource 'x' changed since the bundle was
+  loaded`; a `computation` file says `changed since the bundle was loaded`,
+  or `changed since it was shown` when the caller observed another version
+  than the image's), as is one whose surveyed state is not `Pinned` (`could
+  not be resolved (Missing)`, `could not be read (TooLarge)`, `could not be
+  read (Unreadable)`: a computation file that is not valid UTF-8 is now
+  refused by its state, not by the decoder exception's name). A refusal's wording
+  for a resource that could not be opened after the load names the exception
+  type as before; a resource whose directory can no longer be listed (a
+  junction that denies listing) is now refused at the resolution (`could not
+  be resolved (Missing)`) rather than at the read. `AttestationOrchestrator.RunAsync`
+  is no longer `async`: a `null` bundle (`ArgumentNullException`) and an
+  unexpected exception from `Capture` (anything but the I/O and decoding
+  failures it turns into a refusal) are now thrown at the call instead of
+  faulting the returned `ValueTask`; a refusal and a stage failure stay
+  outcomes.
+- **`Load` reads the executable resources.** Every `computation` and
+  `attester.resource` file of an Attested Computation concept is now read and
+  hashed once per load (a file shared by several concepts is read once), which
+  costs those reads at every load and every handle reload, and adds a failure
+  mode: a provider exception other than the per-resource states above fails
+  the load.
+- **Finite default bounds on loading** (spec §6), out of reach of real
+  bundles: a concept over 256 MiB is a `ParseErrors` entry instead of being
+  loaded; a listing over 10 000 000 entries or holding a name deeper than
+  1 024 segments (every entry counted, `.git`/`node_modules` and non-`.md`
+  files included) aborts the load with `BundleLoadException`. No `.md` key can
+  be deeper than 512 segments (the 1 024-byte key limit below), so the depth
+  bound stays out of reach of any real tree. The bounds exist so that a
+  hostile or runaway provider cannot exhaust memory; hosts reading untrusted
+  storage should lower them (`BundleLimits`). A `.md` whose key (its path
+  under the root) exceeds 1 024 UTF-8 bytes is a `ParseErrors` entry too;
+  that is the key's own limit (`BundleKey.MaxUtf8Bytes`), which a larger
+  `BundleLimits.MaxKeyBytes` does not lift.
+- **Key policy `Native` by default, `Strict` opt-in** (spec §2): the loader
+  refuses only a `.md` name the provider's storage itself cannot hold or would
+  alias, into `ParseErrors`; a referenced resource with such a name resolves
+  `Unsafe`. Other files were never examined and still are not. On Windows that
+  is a trailing dot or space (Win32 strips it, so the name opens another
+  name's object), a character Windows forbids (`:` also opens an NTFS stream),
+  and a file that is also a directory; on macOS and Linux, a file that is
+  also a directory. A Windows reserved device name (`con.md`, `COM1.md`,
+  `aux.txt.md`, a directory `con`) is not refused on any OS: Windows 11
+  creates and opens such names through ordinary APIs (no `\\?\` path is
+  needed), `dev` loaded them, and the default still does, with a
+  `KeyNotPortable` warning (`git` refuses them on Windows).
+  `BundleKeyPolicy.Strict` refuses them. No
+  `.md` file name ends with a dot or a space. A lone directory that does
+  (`dir.`, or `dir` and a space, created through `\\?\`) is skipped by the
+  walk, as it was before: Win32 cannot list it. Beside a twin without the dot
+  or space (`dir.` next to `dir`) it is an alias: Win32 strips the dot, so the
+  walk enters `dir.` and lists `dir`, and `dev` loaded `dir./y.md` as a concept,
+  a second copy of `dir/y.md`. That is a change: such a name is now a
+  `ParseErrors` entry (`segment "dir." ends with '.' or a space`), and
+  `okf validate` exits 1 for a bundle that holds one. Siblings differing only by
+  case or Unicode form are not a native rule on any OS: `FileSystemBundleProvider` matches stored names exactly, so
+  no key opens another key's object, and on a volume that holds both names
+  (Linux, case-sensitive APFS, a case-sensitive Windows directory) they are
+  two files. The macOS set does not require NFC either: HFS+ stores names
+  decomposed and APFS keeps the form written. Everything else loads as it
+  did, with a `KeyNotPortable` warning when the portable profile would refuse
+  it. `BundleKeyPolicy.Strict` is the opt-in profile for hosts that must
+  produce or consume bundles that survive any filesystem: the union of every
+  native set plus the Windows reserved device names, sibling collisions by case
+  and by Unicode form and an NFC requirement. Case collisions are detected with a per-code-point upper-case
+  fold, a **conservative over-approximation** of NTFS's table: siblings NTFS
+  keeps distinct but the fold merges (`σ.sql` and `ς.sql`) are flagged too —
+  refused under `Strict`, reported as not portable by default. Unicode-form
+  collisions (`café.sql` beside `cafe` + U+0301 `.sql`, one file on APFS) are
+  detected by comparing canonical decompositions from tables derived from
+  ICU, so the answer is the same under the AOT binaries, where
+  `string.Normalize` is a no-op; under `Strict`, NFC itself is checked the
+  same way, canonical ordering included. A host that wants colliding siblings
+  refused at load adds `CaseInsensitiveCollisions` or `UnicodeFormCollisions`
+  to `FileSystemBundleProvider`'s `additionalConstraints`. `ParseErrors` lists
+  every problem in component-wise path order, rejected names included, as
+  before the seam. On Windows, and under
+  `Strict`, a resource path containing `::$DATA` (an NTFS stream suffix, which
+  resolved on Windows) or `?` (which was `Missing` on Windows) resolves
+  `Unsafe`.
+  A name containing an unpaired surrogate (possible on NTFS, which stores
+  UTF-16) is rejected under `Strict` and under the native Linux and macOS
+  sets: a UTF-8 store would write it, and any other lone surrogate in its
+  place, as U+FFFD (`BundleKeyConstraints.WellFormedUnicode`).
+- **A file or a directory literally named with a backslash** (`a\b.md`, or
+  `c.md` in a directory `a\b`, possible where a name can hold one: Linux,
+  macOS) was mis-identified: `a\b.md` was loaded as concept `a/b`, and the
+  `c.md` as concept `a/b/c`. A backslash is never part of a key, so each such
+  `.md` is now a `ParseErrors` entry.
+- **`OkfVersion` is read from the root `index.md` under its exact name only**:
+  an `Index.md` or `INDEX.md` standing in for a missing `index.md` on a
+  case-folding volume, or a root `index.md` that is a symlink (which the walk
+  already skipped from `IndexFiles`), now gives `null`.
+- **Exact-case resource resolution** on case-folding volumes (Windows, macOS):
+  `references/a.sql` no longer resolves `References/A.sql`; it is `Missing`.
+  Nor does a Windows 8.3 short name (`/REFERE~1/a.sql`), which is `Missing`
+  too. `FileSystemBundleProvider` always matches the stored name, on every OS
+  and every volume (a case-insensitive mount under Linux included); a Linux host on
+  such a mount adds `additionalConstraints:
+  BundleKeyConstraints.CaseInsensitiveCollisions` so that the loader also
+  rejects siblings that collide there. Exact matching lists the directory of each path segment; within
+  one `Bundle.Load` or one `BundleValidator.Validate`, each directory is listed
+  once and its entry names are reused by every later lookup of that call (up to
+  the provider's `BundleLimits.MaxEntries` names in all, past which it lists
+  again), and nothing is kept after it returns. A case-only rename made by
+  another process while a load or a validation runs can therefore be read under
+  the former name until it returns, and a file created or renamed by another
+  process during that time may not be seen until it ends (a deletion is seen,
+  through the final existence check); the reparse-point and confinement checks
+  still run at every access.
+- **A directory whose listing is denied or fails is "no such entry" on every
+  OS**, as it already was on Windows and macOS: a key under it is `Missing`,
+  never read (a direct provider `Read`/`Exists` through it, or after a
+  permission change following a load; a load itself aborts on such a
+  directory). Under Linux, an execute-only directory (`--x`) is the one input
+  whose answer changes: a file in it was read by its joined path before.
+- **A directory the walk is about to list whose link status cannot be
+  determined now aborts the load** with `BundleLoadException`: the provider's
+  walk inspects every directory STRICTly (it and each directory between it and
+  the root) before listing it, instead of taking it for a plain directory and
+  listing it; an entry it cannot identify as a directory is not entered. Each
+  directory is inspected once per walk, when the walk enters it, so the
+  walk's cost is linear in the depth of the tree; reading a concept
+  re-inspects each directory on its key's path. A
+  symlink or junction seen as one is still skipped, never followed.
+- **A backslash in a §6.2 path-valued field is `Unsafe`** on every OS;
+  `references\a.sql` resolved on Windows before.
+- **A §6.2 path whose resolved key contains a control character** (U+0001 to
+  U+001F, U+007F to U+009F; U+0000 was already refused) **or is longer than
+  1 024 UTF-8 bytes is `Unsafe`** on every OS: these are base key rules
+  (layer 1). It resolved before when the file existed (a real file with a TAB
+  in its name, a deep path to an existing file), and was `Missing` otherwise.
+- **The `ParseErrors` text changed for `.md` names that were already
+  errors**: a name with a control character, one longer than 1 024 UTF-8
+  bytes were reported as an invalid concept id; the message now names the key
+  rule (`key contains the control character U+0001`, `key is longer than the
+  1024-byte bound`). Verdicts and exit codes are unchanged.
+- **A §6.2 path that climbs out of the bundle root and re-enters it**
+  (`../<bundle>/references/a.sql`) resolved through the OS path normalisation
+  before; it is now `Unsafe`, like any climb above the root.
+- **When the bundle root is itself a symlink or junction**, a path naming the
+  root (`/`, `.`, `./`, `/./`, `sub/..`, or `../` from `sub/`) was reported
+  `Unsafe` ("escapes the bundle") by the old check on the root's own link
+  status; it is now `Missing` ("not found"), as it is under a plain root.
+- **NFC is decided by a quick check, never by `string.Normalize`** (a silent
+  no-op in the Native AOT `okf`/`okf-render` binaries): under `Strict`, a name
+  containing a character that is never NFC (e.g. U+212B) or a combining mark
+  that could compose (a decomposed `é`) is rejected with the code point named;
+  precomposed names (`café.sql`) pass everywhere, library and binaries alike.
+  Marks out of canonical order are rejected too.
+- **Provider I/O failures are translated**: a `BundleLoadException` or an
+  `IOException` leaving `Bundle` for a read names the key and the exception
+  type (`I/O error reading 'a.md' (UnauthorizedAccessException)`); a listing
+  or version failure names the operation and the exception type, not a key
+  (`I/O error while listing the bundle (UnauthorizedAccessException)`). Never
+  the raw OS text, which is kept as `InnerException` for the host's log.
+- **`FileSystemBundleProvider.Exists` refuses instead of answering `false`**
+  when the key's path is refused — a reparse point, an uninspectable entry, the
+  confinement boundary — and throws `BundleAccessRefusedException`, as `Read`
+  does. A resource reached through a symlink or junction is therefore still
+  reported as escaping the bundle (`FrontmatterPathUnsafe`), as before.
+- **The path-based members are left unchanged, and no longer read anything in
+  this repository (obsolete since lot D: see Changed):** `Bundle.TryResolveResource` and
+  `Bundle.ReadResourceText(string)` apply neither the key policy, nor the
+  rejected-key guard, nor the exact-case and backslash rules above (they still
+  resolve through the OS filesystem, so `references\a.sql` resolves on Windows
+  and a case-folded name on Windows and macOS). They remain public, as
+  obsolete members (a warning, lot D), but no code in `src/` calls them any more: `AttestationOrchestrator` and
+  `okf_get_computation` (`OkfBundleTools`) resolve on keys
+  (`TryResolveResourceKey`, `ReadResourceText(BundleKey, …)`), as `okf validate`
+  does, so what the tool shows is what `okf validate` accepts. A host that
+  still calls the path-based members keeps their historical, looser behaviour.
+- **`FileSystemBundleProvider` is writable** (`Capabilities.CanWrite` is
+  `true`; `provider.AsReadOnly()` gives a read-only view). `Write` commits each
+  object atomically (issue #157): the bytes go to a temporary
+  `.okf-write-<32 hex>.tmp` beside the target, are flushed to stable storage,
+  and replace the target with `File.Replace` (or appear with `File.Move`
+  without overwrite) only after the boundary, the path and the condition
+  (`None`, `MustNotExist`, `IfMatch` on the SHA-256 of the stored bytes) are
+  checked again under a per-object lock (in-process: see the entry on
+  concurrent processes below). On Unix a replacement's temporary is
+  owner-only (0600) until it takes the target's mode. A name the volume would
+  confuse with a stored entry (a case or Unicode-form twin on a folding
+  volume, a Windows trailing dot or space, a directory) is refused before
+  anything is created; a read-only target is refused as before. `Delete`
+  removes one object and leaves its directories in place. Replacing an object
+  by rename gives it, on Unix, a new inode: its mode is preserved, but its owner and
+  group become the writer's (outside a setgid directory), and its extended ACLs
+  and hard links are not kept (the old in-place `File.WriteAllText` kept them;
+  the BCL has no `fchown`); this is inherent to the atomic write of #157. On
+  Windows, `File.Replace` keeps the replaced object's own DACL (measured).
+- **A failed commit says what happened.** A failure before the commit leaves
+  the target untouched and no temporary, unless a link has entered its path
+  meanwhile or its removal fails (it is then left as an orphan). A replacement that Windows
+  `ReplaceFile` refuses without any effect — error 1175, seen twice in 1 500
+  commits while readers held the object open, or a sharing violation — is made
+  again, at most three times in all, each time from the re-check of its condition;
+  after that it is `BundleWriteNotCommittedException` (new), the object
+  unchanged and, unless a link has entered its path or its removal fails, no
+  temporary left. Any other failure of the commit call is
+  classified from the disk once the boundary and the path guards have been
+  checked again: nothing happened (the raw error), another writer landed
+  (`BundleWriteConflictException`; so is a directory under the key, reason
+  `NameUnavailable`, and an entry under it that cannot be shown to be the
+  version read — for instance one this process cannot read — so that the
+  verdict does not depend on the caller's read rights; this applies to a
+  conditional write or a creation while the temporary is still in place, an
+  unconditional replacement still gets the raw error), or it took effect
+  (success); otherwise, and
+  always for Windows `ReplaceFile` error 1176/1177, it is
+  `BundleWriteOutcomeUnknownException` and the temporary — possibly the only
+  copy of the new content — is kept. `okf validate` ignores it (not `.md`).
+- **Reads no longer block writes (B8).** `FileSystemBundleProvider.Read`
+  opens with `FileShare.ReadWrite | FileShare.Delete`, so on Windows a read
+  never denies a replacement or a delete the sharing it needs. Readers never
+  see a torn object any more. On Windows, while `ReplaceFile` runs, a
+  concurrent reader can for a moment find no object under the name or meet a
+  sharing violation (measured on plain opens: 2.07 % and 1.78 % of 192 649);
+  `Read` retries both — only when the name had just been listed — at most
+  three attempts in all, 5 to 20 ms apart, which narrows that window without closing it.
+  A key that does not exist is answered at once.
+- **Durability of a filesystem write, stated** (README, "Writing through a
+  provider"): after `Write` returns, the bytes were flushed to stable storage
+  before the rename; a crash or an I/O error never leaves a part of either
+  content: the whole old content, the whole new content, or (Windows,
+  `ReplaceFile` error 1176 or 1177) no object under the key with the new
+  content kept in the temporary; a power loss can also lose a just-created
+  object, since the directory entry is not flushed. A write or a delete made
+  while a provider scope is open resolves against the directory as it is; once
+  it has succeeded on the flow of that open scope, it drops that scope's
+  listings on its path (a write on another thread, which did not inherit the
+  scope, does not).
+- **`BundleConceptWriter` writes through its provider** (spec §3, §4, §9).
+  Every concept write is one atomic `IBundleProvider.Write`: a crash or an
+  I/O error no longer leaves a truncated concept file. Every write method
+  first checks `Capabilities.CanWrite` and throws `BundleReadOnlyException`,
+  with no effect, on a read-only provider. Keys are checked by the core under
+  the load's policy before anything is written: on Windows a concept id
+  whose segment ends with `.` (`a./b`), which used to land in `a/b`, is
+  refused. A creation that would make the tree invalid under that policy — a
+  concept file on its path, objects under it, or a case or Unicode-form twin
+  under a folding policy — is refused with a message naming the conflicting
+  name. `AppendToConceptAtomic` and `RecordVerifications` write
+  conditioned on the version they read. The path guards are the provider's:
+  a concept file that is itself a link or cannot be inspected is now refused
+  with the same message as a path through one (`… resolves through a reparse
+  point (symlink/junction), or an entry that could not be inspected, inside
+  the bundle, which is not allowed.`), and any write failure in the middle of
+  a `RecordVerifications` batch now ends with `— already written: …`. A
+  name the storage cannot hold under that exact spelling is refused too: on
+  Windows and macOS, `WriteConcept("A/x")` beside an existing `a/x.md` used to
+  overwrite it and report "updated"; it is now a creation that the provider
+  refuses, with a message saying the name cannot be stored under that name.
+  An I/O failure's .NET message, host path included, is reported unchanged, as
+  before (and some failures name a `.okf-write-*.tmp` path in the target's
+  directory); path-free texts are tracked by #211.
+- **A write notification that fails no longer hides the write.** When
+  `onWriteCommitted` throws once the provider has committed, `WriteConcept`
+  and `AppendToConceptAtomic` still return `Error: {message}`, as before, but
+  the write is on disk and was made once; a `RecordVerifications` batch
+  records that concept in `Records`, goes on, keeps `Recorded` true when every
+  stamp is on disk, and ends its message with `; the write notification
+  failed: …`. The notification runs once per write, once the write is final,
+  and never makes it retried or refused, whatever it throws (a conflict
+  included); an exception the writer does not convert, such as
+  `OperationCanceledException`, propagates unchanged, the write committed.
+- **Read-modify-writes retry a conflict, and `buildBody` runs once per
+  attempt** (spec §4). When another writer — a writer over another provider
+  instance, or another process whose write lands before the provider's last
+  check (see the entry on concurrent processes below) — commits between the
+  read and the write,
+  `AppendToConceptAtomic` and `RecordVerifications` read again and retry, at
+  most 3 attempts, waiting 10–40 ms then 30–120 ms (`Thread.Sleep` on the
+  caller's thread); after the third the conflict is an `Error: … kept
+  changing while it was being written; the write was refused after 3
+  attempts.` Only a refused write is retried: the write notification
+  (`onWriteCommitted`) runs once, after the attempt that committed, and
+  nothing it throws is retried. **Contract change:**
+  `AppendToConceptAtomic`'s `buildBody`,
+  documented as invoked exactly once, is now invoked once per attempt (at
+  most 3), always on the freshly re-read body, and must be a pure function of
+  the body it receives. The repository's own caller (memory capture in
+  `OkfContextProvider`, `FileMemoryStore`) already is.
+- **`log.md` is written by `BundleConceptWriter`** (spec §3): `okf_append_log`
+  (`OkfBundleTools.AppendLog`) delegates to `BundleConceptWriter.AppendLog`,
+  so the log is written through the provider, atomically, conditioned on the
+  version read and retried on a conflict like every other read-modify-write.
+  The guard and success messages are unchanged; an I/O failure's text now
+  comes from the provider's atomic steps (temporary, replace/move) rather
+  than from a plain write, and the tool still folds it onto one line. A
+  `log.md` which is itself a link or cannot be inspected is refused with the
+  message for a path through one
+  (`Error: log.md resolves through a reparse point (symlink/junction), or an
+  entry that could not be inspected, inside the bundle, which is not
+  allowed.`).
+- **`okf index` and `okf_regenerate_indexes` read and write through the
+  provider** (spec §8, §9): the bundle is listed and validated as a load lists
+  and validates it, and each `index.md` is written atomically, conditioned on
+  the version read (or on its absence), a conflict retried, at most 3 attempts in all.
+  An `index.md` the provider refuses (a symlink or junction on its path, an
+  entry that cannot be inspected) is still skipped silently. The output does
+  not change, except in the cases this bullet lists (and those of the entries
+  below on the permission a write needs): **a directory with no
+  file under it, at any depth, is no longer referenced by its parent's
+  index** (spec §2, D2); a directory holding only non-`.md` files still is.
+  As in a load, a name that is no key
+  (a backslash, a control character, over 1 024 bytes) is not listed, a
+  directory whose only entries are symlinks or junctions is not referenced
+  (no listing follows a link), and the load's bounds apply. A directory
+  named `index.md` with files under it now ends the run with
+  `BundleWriteConflictException` where the write threw
+  `UnauthorizedAccessException`. **On a volume that folds case (NTFS, the
+  default macOS volume), a file whose name differs from `index.md` only in
+  case (a root `Index.md`, or `sub/Index.md`) now ends the run the same
+  way**: the storage refuses the name `index.md` there
+  (`BundleWriteConflictException`, reason `NameUnavailable`; `okf index`
+  exits 1 with `error: 'sub/index.md' cannot be stored under that name: the
+  storage holds an entry it would confuse with it (a directory, or a name
+  differing only in case or Unicode form), or cannot hold the name`), the
+  directories processed before it keep their new indexes, and the case
+  variant is never written through: it keeps its bytes and its name. Before,
+  the run succeeded on such a volume by overwriting that file, after listing
+  it as a document in its own `index.md`, which replaced its text (the file may
+  be a concept). The failure is deliberate: it fails closed, where
+  skipping the directory silently would leave its `index.md` unwritten and
+  the run reporting success. On a volume that does not fold case, `Index.md`
+  and `index.md` are two objects and that name is no obstacle. A non-root `index.md` that exists but cannot
+  be read (mode 0200, an ACL denying ReadData, or larger than `MaxObjectBytes`)
+  now ends the run too, with the raw `UnauthorizedAccessException` or
+  `BundleObjectTooLargeException` and the same exit code, since its version is
+  read before it is replaced; the old write replaced it without reading it.
+  **A directory the process may not create files in** (mode 0555) now ends the
+  run with exit 1 and `error: Access to the path '…/.okf-write-<hex>.tmp' is
+  denied.` (see "A write needs the right to create files in the target's
+  directory"). **A directory at mode 0644** (readable, not searchable; Linux,
+  unprivileged) is no longer referenced by its parent's index and gets no
+  `index.md`: it cannot be inspected.
+- **`okf index` is slower on a large bundle.** Regenerating the indexes now
+  lists, validates and reads the bundle through the provider, as a load does,
+  and commits every `index.md` atomically. On 3 000 flat concepts (medians of
+  7 runs, the two builds alternating), eighteen series for this change
+  (fifteen recorded in its plan during its drafting and its external reviews,
+  quoted here and not reproduced; three measured at its final check) put it
+  at +13.6 % to +37.5 % longer than
+  before, with a median of +23.4 %. Over the twelve of those series that also
+  timed `okf validate`, it varied between -1.3 % and +9.5 % (median +2.4 %),
+  with overlapping ranges, so no stable change is established. The series
+  used the Debug builds through `dotnet okf.dll` (the plan's benchmark script);
+  the cost of the Native AOT (Release) `okf` binary that users run was not
+  measured. In the three final series both builds wrote the same bytes.
+  Measurements on one machine are not a general guarantee. Bringing `okf index`
+  back down is tracked in #208. On Windows, every `.md` that another process
+  holds locked (a sharing violation) costs `Read`'s retry before it is skipped
+  or ends the run: three opens in all, with up to two pauses of 5 to 20 ms
+  between them.
+- **A write needs the right to create files in the target's directory.**
+  Every write of `FileSystemBundleProvider`, hence of `BundleConceptWriter`,
+  `okf verify`, `okf index` and the `okf_*` write tools, creates its
+  `.okf-write-*.tmp` beside the target and commits by rename (the atomic
+  replacement of #157), so the process needs the right to create files in, and
+  to rename within, the target's directory; the old in-place
+  `File.WriteAllText` needed only the right to write the target. Measured on
+  Linux as an unprivileged user, base against this change: `okf verify B
+  t/orders` with `t` at mode 0555 and `orders.md` writable exited 0 and now
+  exits 1 with `error: Access to the path '…/t/.okf-write-<hex>.tmp' is
+  denied.`, the file unchanged; `okf index`, `WriteConcept`,
+  `AppendToConceptAtomic` and `AppendLog` behave the same, and on Windows so
+  does a directory whose ACL denies the user the creation of files. On Unix,
+  in a sticky directory shared between users (like `/tmp`), a file owned by
+  another user cannot be replaced either. The message is the raw access error
+  and names the temporary under the host path (path-free texts are tracked by
+  #211). There is no in-place fallback, which would reopen the torn writes of
+  #157: a bundle in a non-writable or sticky-shared directory is not a
+  supported deployment for writes.
+- **A condition is atomic with the replacement within one process only.** The
+  per-object lock that makes the check of a write's condition and the
+  replacement one step is an in-process lock. Another process can write the
+  same object between the provider's last check and its commit, and is then
+  overwritten although the condition held when it was checked and its caller
+  was told it was committed; there is no cross-process lock, and none is
+  promised here (#178 is the tracked follow-up). Measured during the review of
+  this change, with two processes each making 150 `AppendLog` /
+  `AppendToConceptAtomic` appends to one bundle: on Linux, up to 100 of 297
+  appends reported committed were lost; on Windows, 17 reported-committed
+  entries were lost, `ReplaceFile` errors 1176/1177 were reported as
+  `BundleWriteOutcomeUnknownException`, a log was momentarily absent, and
+  `.okf-write-*.tmp` files were left behind by ordinary contention, not only
+  by a crash or an unknown outcome. The old in-place writer lost more entries
+  in the same Windows log test (127 + 136 appends reported committed, 83 + 89
+  present) but never left a temporary. Measurements on one machine are not a
+  general guarantee. Two processes should not write the same objects of one
+  bundle where a lost append matters.
+- **A few write behaviours changed, each checked against the code.**
+  `okf_append_log` (and `BundleConceptWriter.AppendLog`) now creates a bundle
+  root that vanished after the writer was built; before, it returned `Error:
+  Could not find a part of the path`. (A missing root was created by concept
+  writes already; the provider creates it for any write that creates, never for
+  an `IfMatch` write.) On a volume that folds case, a `Log.md` is refused when
+  the log is appended (`Error: log.md cannot be stored under that name: …`),
+  like a case-variant concept id or `Index.md`; it was appended to. On
+  Windows, a reader holding an object open with `FileShare.ReadWrite` but
+  without `FileShare.Delete` now blocks a replacement of it: after the three
+  bounded attempts the write ends with `BundleWriteNotCommittedException` and
+  the object is unchanged, where the former write succeeded; a reader that
+  shares `ReadWrite | Delete` (what `Read` itself does, and
+  `Get-Content -Wait`) blocks nothing. The `Error:` texts of the writer and
+  the CLI that changed: a `log.md` or a concept path that is a directory
+  (`Access to the path … is denied` became `… cannot be stored under that name:
+  …`); a parent segment that is a file (a `Cannot create …` or `The file …
+  already exists` error became `"f/y.md" cannot be created: "f" is an object,
+  so it cannot also be a prefix of other keys.`); a root that has become a
+  file, for the log append (`Could not find a part of the path '…/log.md'`
+  became `The file '<root>' already exists.` on Linux and `Cannot create
+  '<root>' because a file or directory with the same name already exists.` on
+  Windows; concept writes are unchanged); `new BundleConceptWriter("")`
+  (the `ArgumentException` now names the parameter `root`: `The value cannot
+  be an empty string. (Parameter 'root')`); and `okf index` in a directory the
+  process may not create files in, which names the `.okf-write` temporary (see
+  above).
+- **A refused or raced write leaves nothing behind and no raw not-found for a removed object.** An
+  `IfMatch` write whose root or parent directory does not exist is refused as a
+  conflict before any directory is created (it used to create the root and
+  every parent, then refuse, against "nothing was changed"). An object removed
+  by another writer between a write's resolution and its commit is, under
+  `IfMatch` (a delete included), a `BundleWriteConflictException` (the object
+  no longer exists),
+  and under `None` a new preparation (at most three in all, then the
+  conflict) or, once it is gone for good, a creation (a creation under
+  `MustNotExist` too, whenever it is gone at the check under the lock; on Unix an
+  object created because its predecessor vanished after its mode was read
+  carries that predecessor's mode, where a new file gets the directory's
+  default) — it used to be a raw `FileNotFoundException` (the first window on
+  Unix only) that the writer's retry did not cover. An unconditional
+  replacement whose target is removed between the writability probe and the
+  commit call prepares again and creates the object too (it ended in a raw
+  `FileNotFoundException`, where the former in-place write recreated the file);
+  under `IfMatch` that window is a conflict. A parent directory removed in those
+  windows stays a raw `DirectoryNotFoundException` naming a host path, under
+  every condition, as before (#211). A
+  commit that failed while its temporary was still in place and a directory, or
+  an entry that cannot be shown to be the version read (one this process cannot
+  read, say), sits under the key is, for a conditional write or a creation, a
+  conflict with its temporary removed, not an unknown outcome that keeps an
+  orphan (an unconditional replacement still gets the raw error). `Delete` under a bundle root that does not
+  exist is a no-op where the condition holds (`Exists` already answered false),
+  where it was a raw `DirectoryNotFoundException`. The `OkfBundleTools` write
+  tools (`okf_write_concept`, `okf_verify`, `okf_append_log`,
+  `okf_regenerate_indexes`) drop their cached bundle whenever the write ends in
+  an `Error:` text, so that a write whose outcome was unknown, which the
+  writer never reports as committed, no longer leaves a read tool serving
+  content the file no longer holds.
+
+### Fixed
+
+- **A provider failure while reading a loaded bundle is no longer reported as a
+  problem of the file (#247).** A validation against an unreachable store
+  reported `index.md could not be read` (`UnparseableIndex`, `UnparseableLog`)
+  instead of failing. The fix changes documented exceptions: see the #247 entry
+  under *Changed (breaking)*.
+
+- **Model-facing text: four review follow-ups on #122 and #249 (#248, #251).**
+  - The fold could assemble a tag character out of two lone surrogate halves
+    separated by characters it removes (`U+DB40`, `U+200B`, `U+DC41` came out
+    as `U+E0041`, and a second fold removed it). Such a pair is now removed
+    too, so the output never holds a tag character and the fold stays
+    idempotent.
+  - A value beginning a Markdown block with `|` was escaped twice and showed a
+    literal backslash (`\\\|name`); it now reads `\|name`, like any other pipe.
+  - `okf_audit` and `okf_verify` lines start with a concept id, and a valid id
+    can be block syntax (`1.`, file `1..md`, read as an ordered-list item).
+    In the tool result only, such a line is now neutralised after its
+    indentation (`  1\.  …`), and its pipes escaped; the CLI's output is
+    unchanged.
+  - The scoped and V1 context providers sized an element's fence from its
+    whole content, even when truncation dropped the part that needed a long
+    fence: a passage whose excerpt was 1,000 backticks could not fit a
+    200-token budget even with its title alone. The fence is now sized from
+    the part kept.
+
+- **A `generated` that is not a mapping is now reported (#271).** §5.2 makes
+  `generated` a `{ by, at }` mapping; a scalar (e.g. `generated: "by: human:me
+  at: …"`) or a list was read as no provenance at all and `okf validate` said
+  nothing. It is now the Warning `generated must be a \`{by, at}\` mapping`,
+  with the new `DiagnosticCode.GeneratedMalformed` (appended to the enum, field
+  `generated`), the counterpart of `VerifiedMalformed`; the bundle stays
+  conformant. An explicit null (`generated:`) is not reported, like `verified:`.
+  A mapping without a usable `by` was already reported (`GeneratedMissingBy`,
+  or `GeneratedInvalidActor` for an empty one) and is unchanged.
+
+- **`okf_read_concept` shows frontmatter as YAML that round-trips (#256).**
+  It used to print one folded `key: value` line per entry, flattening nested
+  values (`generated: { by: human:me, at: … }` came out as
+  `generated: by: human:me at: …`), so a model copying it back into
+  `okf_write_concept` stored `generated`, `verified`, `sources`, `attester`…
+  as plain strings and silently lost §5.2 provenance. The frontmatter is now
+  one fenced `yaml` block written by `YamlEmitter`, which parses back to the
+  stored mapping and can be passed to `okf_write_concept` as is. The
+  `OkfContextProvider` injection, which embeds the same rendering, changes
+  with it, but its element content is HTML-escaped (`&amp;`, `&lt;`), so YAML
+  copied from injected context is not a round-trippable source: re-read the
+  concept with `okf_read_concept` before writing it. Frontmatter values are
+  shown with invisible, bidi, separator and control characters escaped as
+  `\uXXXX` inside quoted scalars (C0 and C1 controls, NEL, soft hyphen, bidi
+  controls, zero-width characters, U+FEFF, U+2028/U+2029), which round-trips
+  exactly; astral tag characters (U+E0000 block) are the exception and stay
+  raw, since the YAML subset cannot escape them. Model-facing text only: what
+  is written to disk and every CLI output (golden) are unchanged.
+
+- **Appending to `log.md` keeps the frontmatter block the file opens with
+  (#258).** `BundleConceptWriter.AppendLog` / `AppendLogAsync` (and so
+  `okf_append_log`) re-render the log through the §9 model and used to drop a
+  leading frontmatter block, such as upstream `acme_retail`'s `type: Log`. The
+  block (a `---` fence at column 0 closed by the next one, around what
+  `OkfDocument.Parse` reads as a non-empty YAML mapping) is now written back
+  byte for byte, fences and line ends included, then a blank line and the log.
+  A log without one, and a log created by the append, are written exactly as
+  before. `ChangeLog.Parse` now skips that block, so a YAML comment in it is no
+  longer read as the log's title nor a `## ` line in it as a day (which the
+  validator reported as `LogDateInvalid`). A `---` thematic break around
+  anything else (invalid YAML, comments only, nothing) is not a block: the days
+  inside it are still read, validated and appended to.
+
+- **Auto-stamped `generated.by` names the library version, not the spec version
+  (#257, §7).** The actor this library writes when it stamps `generated` itself
+  (`okf_write_concept`'s opt-in auto-stamp, `OkfContextProvider`'s memory
+  concepts) was `okf4net/0.2`, the OKF spec version. §7 spells a tool's actor
+  `<producer>/<version>`, the producer's own version, so it is now
+  `okf4net/<library version>` (e.g. `okf4net/0.8.0`): the `OKF4net` assembly's
+  informational version without its `+<commit>` build metadata. Content written
+  before keeps its `okf4net/0.2` stamp; both are well-formed §7 actors. The
+  `okf` and `okf-render` `--version` read their version through the same
+  internal reader (output unchanged).
+
+- **`okf-mcp` returns tool results as plain text (#255).** Every
+  `tools/call` result used to arrive as a JSON string literal — surrounding
+  quotes, `\n` and `\"` escapes — because `AIFunctionFactory` marshals a
+  `string` return value to a `JsonElement`, which the MCP SDK serialises as
+  JSON instead of emitting as text. `OkfMcpToolset` now hands the SDK the
+  string itself, so `content[0].text` is exactly what the tool returned
+  (an `Error: …` result included, still as text). The tools bound are
+  unchanged: the observation-checking wrappers of `GetTools(mode)` still run.
+
+- **`okf_verify` over a read-only provider throws `BundleReadOnlyException`
+  like the other write tools (#218).** `OkfBundleTools.Verify` / `VerifyAsync`
+  used to return `Error: the provider is read-only; …` as text; a direct call
+  now throws, before any argument check. Not reachable through `GetTools`
+  (write tools are not offered on a read-only provider), so only a host
+  calling the method itself sees the change.
+- `YamlMapping` looks keys up through a lazily built key-to-position index
+  instead of scanning the entries (#198), so building or editing a mapping of
+  n keys through `Insert`/`Get`/`Remove`/`ContainsKey` is O(n) rather than
+  O(n²) (50,000 inserts and reads: about 100,000 key operations instead of
+  2.5 billion comparisons). Order, duplicate keys from the parser, in-place
+  replacement and first-occurrence semantics are unchanged; parsing never
+  builds the index. The type is still not thread-safe against mutation.
+- `samples/acme-retail-agent` builds again (NU1605: its explicit
+  `Microsoft.Agents.AI` 1.20.0 pin was below the 1.24.0 that `OKF4net.Agents`
+  requires). The redundant `PackageReference` is removed; the version now
+  flows from the `OKF4net.Agents` project reference.
+- `OKF4net.Attestation.Containers`: a container run cancelled or timed out
+  between the engine creating its container and starting it no longer leaves
+  that container behind in `Created` state (#110) in the cases measured below,
+  but this is a reduction, not a guarantee. Teardown now issues `kill` once,
+  kills and waits for the local engine client, and only then repeats
+  `rm -f <name>` followed by `inspect <name>` until `inspect` reports the name
+  unknown (a non-zero exit with "no such container" or "no such object" on
+  stderr; any other failure, such as a daemon that is down, a missing daemon
+  socket's "no such file or directory" or a permission error, is no evidence
+  of absence and is retried within the budget) in two consecutive rounds 250 ms apart —
+  and, as long as the engine
+  has not once confirmed the container exists, for 1.5 s in all. It does not
+  take an exit code of `rm -f` as proof, because Docker (29.4.1) exits 0 for a
+  name it does not know yet. All of it stays inside the existing 3 s teardown
+  budget (an early cancellation takes about 2 s on a quiet daemon, one on a
+  running container about 1–1.6 s). Measured on Docker 29.4.1 on Windows, cancelling 0–100 ms
+  after the run starts (50 runs per integration-test execution): the first
+  version of this fix, which stopped at the first `rm -f`, leaked a container
+  in 8 of 250 runs; this version in none of about 2,900 runs on a quiet
+  daemon. During one period of heavy load from other sessions on the shared
+  daemon it still leaked 12 of 700 runs (18 of 400 with two rounds and no
+  1.5 s hold). Not traced to a cause in those runs; in one later harness run
+  during such a period, 4 of 16 runs leaked while teardown took 2.8–3.4 s
+  against 1.6–2.1 s when quiet, i.e. a slow daemon used up the 3 s budget
+  before absence was confirmed. A `create` the daemon commits after the last
+  check, or after the budget is spent, is not seen. Podman and nerdctl
+  have not been run; their `rm -f` exit code for an unknown name is
+  unverified, and the design assumes only that `inspect` of an unknown name
+  exits non-zero and says "no such container" or "no such object"
+  (case-insensitively) on stderr — Docker
+  29.4.1 does; Podman's and nerdctl's wording is unverified, and an engine
+  that words it otherwise makes teardown run to the end of its budget instead
+  of returning early. The engine commands' output reads share that budget
+  too, so a descendant holding a pipe open cannot hold teardown past it. The
+  measurements above were taken before that not-found rule and the live
+  `docker events` check in the early-cancellation test.
+- `OKF4net.Attestation.Containers`: `CliContainerEngine` now runs a container as
+  `create` followed by `start -a -i`, not as one `run` (#110). A client killed
+  while it was mid-`create` left the daemon free to commit that create afterwards,
+  unseen, and no count of absent rounds could rule it out. A run cancelled during
+  `create` now waits for that client to exit (within two thirds of the teardown
+  budget) instead of killing it, so the daemon's outcome is known before the
+  removal and absence needs only the two rounds, not the 1.5 s hold. Only a
+  `create` slower than that (a cold image pull, a daemon that has stopped
+  answering) is killed, and a create the daemon commits after that is still not
+  seen — that residual remains, now limited to that case. A refused `create`
+  (image not found, bad flag) is reported as the failed result `run` gave, with
+  the engine's exit code and message. The change costs one more engine process
+  per run. Isolation flags are unchanged (they now go to `create`; `start`
+  carries only `-a -i`). Measured on Docker 29.4.1 on Windows: `start -a -i`
+  propagates the container's exit code and carries stdin, stdout and stderr, and
+  15 containers that exit at once showed no attach race under `--rm`; three
+  50-run early-cancellation sweeps left no container behind. Podman and nerdctl
+  have not been run; that their `create`/`start -a -i` behave alike is assumed.
+  The leak figures in the previous entry describe the old single-`run` client.
+- `OKF4net.Attestation.Containers`: a timed-out run no longer waits without
+  bound for the output of the client it cancelled. A descendant of that client
+  (of `create`, say) that still held its stdout or stderr kept the run going
+  past both its timeout and the teardown budget, until the descendant exited.
+  Those reads now get 1 s after teardown; one that has not finished by then is
+  reported as empty output in the timeout's `ContainerExecutionException`. The
+  output of a client that has exited (a refused `create`, a `start` that ended
+  on its own) is read to its end within the run's own deadline: a descendant
+  holding it past the timeout used to keep the run going with no bound at all,
+  and now makes it the timeout failure (or the caller's cancellation). Whichever
+  way a run ends, a read it no longer waits for (that one, or `create`'s once
+  `start` runs) is then cancelled and both pipes of each client closed:
+  disposing a `Process` whose output was read leaves its readers open, so the
+  pipe and its buffer used to stay allocated until the descendant exited. The
+  teardown's own engine commands (`kill`, `rm -f`, `inspect`) release theirs the
+  same way when their bound runs out.
+- `OKF4net.Attestation.Containers`: a `start -a -i` that exits non-zero is now
+  followed by the same teardown as a cancelled run (`kill`, then `rm -f` and
+  `inspect` until the name is unknown, within the 3 s budget). A `start` that
+  failed before the container ran left it in `Created` state, which `--rm`
+  never removes; that cannot be told apart from the container's own non-zero
+  exit, so every non-zero `start` pays the teardown (a few engine calls; with
+  the default budget, at most 3 s). The result returned — exit code, stdout,
+  stderr, and the output-ceiling and invalid-UTF-8 failures — is unchanged.
+
 ## [0.7.0] - 2026-10-14
 
 The headline is the interactive `okf-render` viewer, and `okf` is now also a
@@ -60,7 +1674,9 @@ All of these are 0.x minor breaks, stated in full further down.
 - **`okf` as a dotnet tool: `OKF4net.Cli` on nuget.org.** A repository with
   the .NET SDK can now pin `okf` in its tool manifest and gate CI on it with
   `dotnet tool restore` then `dotnet okf validate`. `dotnet tool install -g
-  OKF4net.Cli` and `dnx OKF4net.Cli --yes` work too. The package is portable
+  OKF4net.Cli` and `dnx OKF4net.Cli` work too (`dnx` asks before it downloads;
+  its `--yes`, which answers in advance for a non-interactive run, needs the
+  .NET 11 SDK, not the .NET 10 one). The package is portable
   IL: it needs the .NET 10 runtime or a later major one (`RollForward` is
   `Major`), with the same invariant globalization as the native binary. The
   Native AOT binaries for winget and `install.sh` are unchanged and built from
@@ -3081,7 +4697,8 @@ host-scopeable long-term memory — all built on the same zero-dependency core.
 - Relicensed from Apache-2.0 to LGPL-3.0-or-later; Apache-2.0 attribution for
   upstream ported portions is preserved in `NOTICE` and `LICENSE.Apache-2.0`.
 
-[Unreleased]: https://github.com/jchable/okf4net/compare/v0.7.0...main
+[Unreleased]: https://github.com/jchable/okf4net/compare/v0.8.0...main
+[0.8.0]: https://github.com/jchable/okf4net/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jchable/okf4net/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jchable/okf4net/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jchable/okf4net/compare/v0.4.0...v0.5.0

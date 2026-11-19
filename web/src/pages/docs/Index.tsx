@@ -97,7 +97,7 @@ export default function DocsIndex() {
                 concept: <Link to="/docs/catalog">catalog</Link>,
                 desc: (
                   <>
-                    A hot-reloadable <code>catalog.json</code> manifest naming local bundles as sources, a
+                    A hot-reloadable <code>catalog.json</code> manifest naming bundles as sources (directories, or any registered provider), a
                     multi-source resolver, and a scoped memory store for multi-tenant agent deployments.
                   </>
                 ),

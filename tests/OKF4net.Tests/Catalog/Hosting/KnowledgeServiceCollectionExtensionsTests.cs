@@ -389,6 +389,44 @@ public class KnowledgeServiceCollectionExtensionsTests
     }
 
     [Fact]
+    public void AddKnowledge_hands_the_RefreshPolicy_to_the_catalog_options()
+    {
+        using var root = new TempDir();
+        var catalogPath = SetUpTwoSourceCatalogFile(root);
+
+        var services = new ServiceCollection();
+        services.AddKnowledge(o =>
+        {
+            o.AddCatalogFile(catalogPath);
+            o.RefreshPolicy = OKF4net.Providers.BundleRefreshPolicy.Manual;
+        });
+        using var provider = services.BuildServiceProvider();
+
+        Assert.Same(OKF4net.Providers.BundleRefreshPolicy.Manual, provider.GetRequiredService<KnowledgeCatalogOptions>().RefreshPolicy);
+        Assert.Equal(OKF4net.Providers.BundleRefreshMode.Manual, provider.GetRequiredService<IKnowledgeCatalog>().Current.Handles["hi"].RefreshPolicy.Mode);
+
+        var defaults = new ServiceCollection();
+        defaults.AddKnowledge(o => o.AddCatalogFile(catalogPath));
+        using var defaultProvider = defaults.BuildServiceProvider();
+        Assert.Same(OKF4net.Providers.BundleRefreshPolicy.OnAccess, defaultProvider.GetRequiredService<KnowledgeCatalogOptions>().RefreshPolicy);
+    }
+
+    [Fact]
+    public void AddKnowledge_with_a_null_RefreshPolicy_throws_immediately()
+    {
+        using var root = new TempDir();
+        var catalogPath = SetUpTwoSourceCatalogFile(root);
+        var services = new ServiceCollection();
+
+        var ex = Assert.Throws<ArgumentException>(() => services.AddKnowledge(o =>
+        {
+            o.AddCatalogFile(catalogPath);
+            o.RefreshPolicy = null!;
+        }));
+        Assert.Contains("RefreshPolicy", ex.Message);
+    }
+
+    [Fact]
     public void AddKnowledge_with_an_undefined_DefaultResolverStrategy_throws_immediately()
     {
         using var root = new TempDir();

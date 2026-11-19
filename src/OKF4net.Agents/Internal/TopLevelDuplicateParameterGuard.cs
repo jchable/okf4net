@@ -9,8 +9,8 @@ namespace OKF4net.Agents.Internal;
 /// Wraps the <c>AIFunctionFactory</c>-created <c>okf_run_computation</c> so a model's
 /// call naming the same top-level parameter twice is rejected instead of resolved.
 /// The factory deserializes <c>parameterValues</c> into a dictionary on default
-/// System.Text.Json options before <see cref="OkfBundleTools.RunComputationAsync"/>
-/// runs, which keeps the last occurrence: <c>{"n": 1, "n": 2}</c> reached the binder
+/// System.Text.Json options before <see cref="OkfBundleTools.RunComputationToolAsync"/>
+/// (the gated wrapper the tool binds, not the public method) runs, which keeps the last occurrence: <c>{"n": 1, "n": 2}</c> reached the binder
 /// as <c>n = 2</c>, a value the model's own JSON also says is 1. Only the raw forms a
 /// client hands over are read — a <see cref="JsonElement"/>, a <see cref="JsonNode"/>,
 /// or JSON text as a <see langword="string"/>, all of which the factory deserializes

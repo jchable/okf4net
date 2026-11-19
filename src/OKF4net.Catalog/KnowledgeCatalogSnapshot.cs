@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Collections.ObjectModel;
+using OKF4net.Providers;
+
 namespace OKF4net.Catalog;
 
 /// <summary>
-/// An immutable, validated catalog manifest snapshot (no filesystem access yet).
+/// An immutable, validated catalog manifest snapshot.
 /// </summary>
 /// <param name="Version">The manifest schema version; always <c>1</c> for a successfully parsed snapshot.</param>
 /// <param name="Sources">
@@ -21,4 +24,20 @@ namespace OKF4net.Catalog;
 /// catalog stamps the real value on publish.
 /// </param>
 public sealed record KnowledgeCatalogSnapshot(
-    int Version, IReadOnlyList<KnowledgeCatalogSource> Sources, string ManifestDirectory, long Generation);
+    int Version, IReadOnlyList<KnowledgeCatalogSource> Sources, string ManifestDirectory, long Generation)
+{
+    private static readonly IReadOnlyDictionary<string, BundleHandle> NoHandles =
+        new ReadOnlyDictionary<string, BundleHandle>(new Dictionary<string, BundleHandle>(StringComparer.Ordinal));
+
+    /// <summary>
+    /// The handle of every enabled <see cref="SourceRole.Knowledge"/> source, by source id
+    /// (spec §5.2, §9): the catalog that published this snapshot created them, keeps each one
+    /// across reloads while the source's effective configuration is unchanged, and the
+    /// resolvers search through them, so a source's image survives from one request to the
+    /// next and is refreshed under the source's policy. Empty for a snapshot the parser built
+    /// (<see cref="CatalogManifestParser.TryParse"/>) or one built by hand: a resolver then
+    /// resolves the source's path at each request, as before the seam. Never
+    /// <see langword="null"/>; a genuine read-only view.
+    /// </summary>
+    public IReadOnlyDictionary<string, BundleHandle> Handles { get; init; } = NoHandles;
+}

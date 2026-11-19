@@ -82,7 +82,14 @@ public sealed class OkfContextProviderOptions
 
     /// <summary>
     /// Called with the real exception whenever context assembly swallows one:
-    /// a bundle that fails to (re)load, or a knowledge/memory read that fails.
+    /// a bundle whose first load fails (the model then reads
+    /// <c>bundle unavailable: &lt;reason&gt;</c>), a RELOAD that fails after a
+    /// successful load (the previous image is served and the model reads its
+    /// context as usual, spec §5.2 — the callback receives the handle's
+    /// <see cref="OKF4net.Providers.BundleHandle.LastLoadError"/>, on every
+    /// assembly while the handle is stale), or a knowledge/memory read that fails.
+    /// In both load cases the exception's own message names no host path and
+    /// its <see cref="Exception.InnerException"/> is the raw cause.
     /// <see langword="null"/> (the default) discards them, preserving the
     /// never-throw contract exactly as before.
     ///

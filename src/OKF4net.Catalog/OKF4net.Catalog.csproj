@@ -10,7 +10,7 @@
   <PropertyGroup Label="Packaging">
     <PackageId>OKF4net.Catalog</PackageId>
     <Authors>Julien CHABLE</Authors>
-    <Description>A catalog of local OKF knowledge bundles for .NET: hot-reloadable catalog.json, multi-source search grouped by source, over the OKF4net format core.</Description>
+    <Description>A catalog of OKF knowledge bundles for .NET: hot-reloadable catalog.json, multi-source search grouped by source, over any IBundleProvider (local directories built in), on the OKF4net format core.</Description>
     <Copyright>Copyright 2026 Julien CHABLE</Copyright>
     <PackageLicenseExpression>LGPL-3.0-or-later</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>

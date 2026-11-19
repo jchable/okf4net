@@ -28,6 +28,61 @@ public class MemoryPathTests
         Assert.All(hash, c => Assert.True(Uri.IsHexDigit(c) && !char.IsUpper(c), $"hash char '{c}' is not lowercase hex"));
     }
 
+    // ---- Reserved Windows device names (spec §9, D4) ----------------------
+
+    [Theory]
+    [InlineData("con.foo", "_con.foo")]
+    [InlineData("CON.Foo", "_con.foo")]
+    [InlineData("com1.logs", "_com1.logs")]
+    [InlineData("LPT9.x", "_lpt9.x")]
+    [InlineData("aux.a.b", "_aux.a.b")]
+    public void An_identifier_whose_base_is_a_reserved_device_name_is_prefixed_with_an_underscore(string tenant, string expectedReadable)
+    {
+        var segment = MemoryPath.For(MemoryTier.Tenant, new KnowledgeAccessScope(tenantId: tenant)).Split('/')[1];
+
+        AssertEncoded(segment, expectedReadable);
+
+        // The hash is that of the raw identifier, prefix or not: the same as for an unreserved name.
+        var hash = segment[(segment.LastIndexOf('-') + 1)..];
+        Assert.Equal(16, hash.Length);
+        Assert.Equal(RawHash(tenant), hash);
+    }
+
+    [Theory]
+    [InlineData("con")]
+    [InlineData("console.foo")]
+    [InlineData("com10.x")]
+    [InlineData("acme")]
+    [InlineData("con_foo")]
+    public void An_identifier_without_a_reserved_base_is_not_prefixed(string tenant)
+    {
+        var segment = MemoryPath.For(MemoryTier.Tenant, new KnowledgeAccessScope(tenantId: tenant)).Split('/')[1];
+
+        AssertEncoded(segment, tenant.ToLowerInvariant());
+        Assert.False(segment.StartsWith('_'));
+
+        // Byte-identical to the pre-D4 encoding: lowercased raw + '-' + SHA-256(raw)[..16].
+        Assert.Equal($"{tenant.ToLowerInvariant()}-{RawHash(tenant)}", segment);
+    }
+
+    // The documented hash, computed independently of MemoryPath: the first 16 lowercase hex
+    // chars of the SHA-256 of the case-sensitive raw identifier's UTF-8 bytes.
+    private static string RawHash(string raw) =>
+        Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(raw)))[..16];
+
+    [Fact]
+    public void A_prefixed_identifier_and_the_reserved_one_it_imitates_encode_to_different_segments()
+    {
+        var reserved = MemoryPath.For(MemoryTier.Tenant, new KnowledgeAccessScope(tenantId: "con.foo")).Split('/')[1];
+        var imitation = MemoryPath.For(MemoryTier.Tenant, new KnowledgeAccessScope(tenantId: "_con.foo")).Split('/')[1];
+
+        // The readable part alone would collide (both "_con.foo"); the hash of the raw identifier tells them apart.
+        Assert.NotEqual(reserved, imitation, StringComparer.OrdinalIgnoreCase);
+        AssertEncoded(reserved, "_con.foo");
+        AssertEncoded(imitation, "_con.foo");
+        Assert.Equal(RawHash("_con.foo"), imitation[(imitation.LastIndexOf('-') + 1)..]);
+    }
+
     [Fact]
     public void Tenant_tier_keeps_its_literal_prefix_with_an_encoded_segment()
     {

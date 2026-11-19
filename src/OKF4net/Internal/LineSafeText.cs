@@ -15,7 +15,11 @@ internal static class LineSafeText
     /// them, plus <c>ESC</c>, which forges appearance in a terminal), plus
     /// U+2028/U+2029, which <see cref="char.IsControl(char)"/> does not
     /// classify as control but which JavaScript-family line splitters treat as
-    /// terminators.
+    /// terminators, plus the twelve bidirectional controls
+    /// (<see cref="ModelText.IsBidiControl"/>), which reorder what a reader is
+    /// shown. The character set is <see cref="ModelText"/>'s (#122), so this
+    /// refusal and the model-facing fold cannot disagree; the set only grew
+    /// (by the bidi controls), so every value refused before is refused still.
     ///
     /// <b>One predicate, every call site.</b> Two distinct values reach it, for
     /// two different reasons, and both were real injections before it existed:
@@ -51,19 +55,11 @@ internal static class LineSafeText
     /// assume this predicate ran.
     /// </summary>
     /// <param name="value">The caller-supplied string about to be stored or echoed.</param>
-    internal static bool ContainsControlCharacter(string value)
-    {
-        foreach (var c in value)
-        {
-            // The two separators are written as numeric constants on purpose:
-            // a literal U+2028 in source is invisible in every editor and diff
-            // that would have to review this line.
-            if (char.IsControl(c) || c is (char)0x2028 or (char)0x2029)
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
+    internal static bool ContainsControlCharacter(string value) =>
+        // One classification, ModelText's: every character ModelText.Fold
+        // would change (a line terminator, a C0/C1 control, a bidi control),
+        // plus TAB, which the fold keeps as ordinary whitespace inside a line
+        // but which no value this predicate guards may carry. So a value this
+        // accepts is one the fold leaves unchanged: the two cannot disagree.
+        ModelText.NeedsFold(value) || value.Contains('\t');
 }

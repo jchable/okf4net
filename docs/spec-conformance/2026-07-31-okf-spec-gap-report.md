@@ -728,6 +728,29 @@ README mapping: `Frontmatter.ComputationContract`, `OkfDocument.Computation()`,
   hands the attester contract/computation/bound/values/receipt) — the
   actual re-derivation lives entirely behind the host-plugged
   `IAttester.AttestAsync` and isn't implemented in this repo, so Partial.
+- **S10.5-1** (§10.5, the attestation step: "attest … via the attester") —
+  **Diverges / Intentional** (Major, added 2026-10-22, decision D6 of the
+  bundle-provider design, `docs/superpowers/specs/2026-10-07-bundle-provider-seam-design.md`
+  §5.1). §10.5 names the attester as the process that verifies a run and
+  §11 leaves `attester` optional (an empty resource is a validator warning).
+  Until lot C, `AttestationOrchestrator` let the host's registered
+  `IAttester` attest a concept that declared no `attester.resource`, or
+  declared a URL, with `AttestationContext.AttesterSourceText = null`. Now
+  (`src/OKF4net.Attestation/AttestationOrchestrator.cs`, `Capture`) both
+  cases are **refused before any runtime stage is called**, as a
+  non-displayable outcome naming the reason (`no attester.resource is
+  declared, so the computation cannot be attested and is not run` / `… is a
+  URL, which is never read, so …`). Reason: the orchestrator pins every piece
+  of sanctioned code to the version the image was loaded with (`Bundle.ExecutableResources`),
+  so that what ran is what the bundle declared; an undeclared or remote
+  attester has nothing to pin, hence nothing the host or the model could hold
+  for the attestation code that actually ran. `AttesterSourceText` is never
+  `null` at a runtime's entry. Scope: every bundle of this repository
+  declares a file attester, and `ContainerAttester` already refused a null
+  source; an external host that relied on an `IAttester` attesting without a
+  source sees its computations refused until its bundle declares one. Tests:
+  `An_undeclared_or_URL_attester_is_refused_before_the_runtime_is_called`,
+  `tests/OKF4net.Tests/Attestation/AttestationOrchestratorTests.cs`.
 
 ### §11 Conformance
 

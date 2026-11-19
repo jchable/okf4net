@@ -65,13 +65,21 @@ export default function Agents() {
             References only <code>OKF4net</code> and <code>Microsoft.Agents.AI</code> — the only project in the
             repo that depends on the Agent Framework.
           </p>
+          <p>
+            <code>new OkfBundleTools(root)</code> serves a directory; <code>new OkfBundleTools(handle)</code> serves
+            the image of a <code>BundleHandle</code> over any <code>IBundleProvider</code> and shares it with every
+            other consumer of that handle (<code>tools.Handle</code>, <code>tools.Location</code>). Two tool sets built
+            from a root string have two handles and two images. The path-based <code>BundleRoot</code> is obsolete.
+          </p>
         </Chapter>
 
         <Chapter id="tools" title="The twelve (or thirteen) tools" refText="OkfBundleTools.GetTools()">
           <p>
             Each tool is a plain string in, string out <code>AIFunction</code>. On any failure — the tool
             returns a plain-text failure message (<code>Error: ...</code>, <code>Concept '...' not found</code>,
-            or <code>Usage: ...</code>) instead of throwing, so a single bad call never crashes the agent loop.
+            or <code>Usage: ...</code>) instead of throwing, so a single bad call never crashes the agent loop. Every value a
+            tool or the context provider prints goes through one fold rule, which also removes invisible format
+            characters such as tag characters.
           </p>
           <MapTable
             head={['Tool', 'Does']}
@@ -79,7 +87,7 @@ export default function Agents() {
               [
                 'okf_read_concept',
                 <>
-                  Read one concept's frontmatter, body, links, and backlinks; adds a{' '}
+                  Read one concept's frontmatter (a YAML block <code>okf_write_concept</code> accepts back as is), body, links, and backlinks; adds a{' '}
                   <code>status | trust | stale</code> line when any of those differ from the default.
                 </>,
               ],
@@ -112,7 +120,8 @@ export default function Agents() {
                 'okf_write_concept',
                 <>
                   Validate and write a concept atomically, under a per-bundle lock, auto-stamping{' '}
-                  <code>generated</code> (§5.2) when the caller didn't supply one.
+                  <code>generated</code> (§5.2) when the caller didn't supply one. Refused unless this session read the
+                  concept in full, or was shown it absent.
                 </>,
               ],
               [
@@ -148,7 +157,8 @@ export default function Agents() {
                 <>
                   Run a §10 attested computation end to end — bind → execute → attest → stale-gate — through a
                   host-wired <code>AttestationOrchestrator</code>. Only present in <code>GetTools()</code> when
-                  one was passed to the <code>OkfBundleTools</code> constructor.
+                  one was passed to the <code>OkfBundleTools</code> constructor. Runs only what this session was
+                  shown, pinned to that version.
                 </>,
               ],
             ]}
@@ -226,6 +236,14 @@ export default function Agents() {
             receipt-shape check → attest → gate on the verdict and <code>stale_after</code>), always returning
             an outcome rather than throwing for an expected failure. See the{' '}
             <Link to="/docs/spec">spec mapping</Link> for the frontmatter contract.
+          </p>
+          <p>
+            An orchestrator runs whatever sanctioned code the bundle references. To pin <em>what</em> may run,
+            whoever can write to the bundle&rsquo;s source, give it{' '}
+            <code>AttestationOrchestratorOptions.AllowedCodeDigests</code>. That is an allowlist of SHA-256
+            digests of the exact computation and attester texts (<code>AttestationCodeDigest.Of</code>). Anything
+            else is refused before any runtime stage. The refused digests go to the host on{' '}
+            <code>outcome.UnapprovedCode</code>, never into the text the model reads.
           </p>
           <p>
             Binding, execution and attestation are <strong>host-plugged</strong>: the orchestrator resolves an{' '}

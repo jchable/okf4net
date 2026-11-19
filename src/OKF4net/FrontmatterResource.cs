@@ -5,7 +5,7 @@ namespace OKF4net;
 
 /// <summary>
 /// How a §6.2 path-valued frontmatter field's raw string is shaped, which
-/// determines how <see cref="Bundle.TryResolveResource"/> resolves it.
+/// determines how <see cref="Bundle.TryResolveResourceKey"/> resolves it.
 /// </summary>
 public enum FrontmatterResourceKind
 {
@@ -35,7 +35,7 @@ public enum FrontmatterResourceKind
     ConceptRelative,
 }
 
-/// <summary>The outcome of resolving a §6.2 path-valued frontmatter field to a filesystem path via <see cref="Bundle.TryResolveResource"/>.</summary>
+/// <summary>The outcome of resolving a §6.2 path-valued frontmatter field to a key via <see cref="Bundle.TryResolveResourceKey"/> (or, before the seam, to a filesystem path).</summary>
 public enum ResourceResolutionStatus
 {
     /// <summary>The raw value is a URL; it was never resolved to a local path (<c>absolutePath</c> is <c>null</c>).</summary>

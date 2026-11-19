@@ -472,6 +472,32 @@ public class CliTests
         Assert.True(File.Exists(Path.Combine(tmp.Path, "index.md")));
     }
 
+    /// <summary>
+    /// Spec §2 and §10 (D2) at the CLI surface: for a bundle holding an empty directory,
+    /// <c>okf index</c> prints the lines it printed before (the empty directory never had an index
+    /// of its own), but the root index no longer references it. A directory holding only a
+    /// non-<c>.md</c> file still is. On the code before the provider the root index listed
+    /// <c>empty</c>, and this test failed.
+    /// </summary>
+    [Fact]
+    public void Index_no_longer_references_an_empty_directory()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("notes/a.md", "---\ntype: Note\ntitle: A\ndescription: d\n---\n\nbody\n");
+        tmp.Write("assets/logo.png", "png");
+        Directory.CreateDirectory(Path.Combine(tmp.Path, "empty"));
+
+        var r = Run("index", tmp.Path);
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal(
+            $"wrote {Path.Combine(tmp.Path, "notes", "index.md")}\nwrote {Path.Combine(tmp.Path, "index.md")}\n\n2 index file(s) regenerated.\n",
+            r.Out);
+        Assert.Equal(
+            "# Subdirectories\n\n* [assets](assets/index.md)\n* [notes](notes/index.md) - d\n",
+            File.ReadAllText(Path.Combine(tmp.Path, "index.md")));
+    }
+
 
     /// <summary>
     /// `okf graph` without `--dot` had no test at all (issue #14): the golden
@@ -1561,10 +1587,10 @@ public class CliTests
     /// refactor — <c>bundle.Get</c> compares <c>ConceptId</c>s ordinally, and
     /// <c>Bundle.Load</c> builds them from the real directory-listing casing,
     /// so <c>METRICS/DAU</c> was never an alias for an on-disk
-    /// <c>metrics/dau.md</c>. Without <c>ExistsWithExactCase</c>,
-    /// <c>File.Exists</c> alone answers case-insensitively on Windows/macOS
-    /// and would accept it. Passes identically on a case-sensitive
-    /// filesystem too (there, <c>File.Exists</c> itself already says no).
+    /// <c>metrics/dau.md</c>. The provider matches every segment of the key
+    /// exactly, where <c>File.Exists</c> alone answers case-insensitively on
+    /// Windows/macOS and would accept it. Passes identically on a
+    /// case-sensitive filesystem too.
     /// </summary>
     [Fact]
     public void Verify_dry_run_rejects_a_case_variant_of_an_existing_concept_id()
@@ -1606,7 +1632,7 @@ public class CliTests
             "2026-08-28T09:14:00Z");
 
         Assert.Equal(1, r.Code);
-        Assert.Equal("error: --by must not contain control characters\n", r.Err);
+        Assert.Equal("error: --by must not contain control, bidirectional or invisible format characters\n", r.Err);
         Assert.Equal(string.Empty, r.Out);
         Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
     }
@@ -1625,13 +1651,13 @@ public class CliTests
     // An actor that is BOTH control-bearing and malformed: the control-character
     // arm must win, because the well-formedness message echoes the value and
     // would put the refused newline straight into stderr.
-    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "\nrecorded x  human:ceo" }, "error: --by must not contain control characters\n")]
+    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "\nrecorded x  human:ceo" }, "error: --by must not contain control, bidirectional or invisible format characters\n")]
     // The same trap on the other flag, and it stayed open after the actor one
     // was closed: the three --at arms above prove a malformed timestamp is
     // REFUSED, but each of their messages QUOTES it, so a control-bearing value
     // was still echoed into stderr on a run that wrote nothing. The
     // control-character arm must win over the quoting one here too.
-    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "human:ada", "--at", "bad\nrecorded x  human:ceo  2020-01-01T00:00:00Z" }, "error: --at must not contain control characters\n")]
+    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "human:ada", "--at", "bad\nrecorded x  human:ceo  2020-01-01T00:00:00Z" }, "error: --at must not contain control, bidirectional or invisible format characters\n")]
     public void Verify_rejects_bad_invocations(string[] args, string expected)
     {
         using var tmp = new TempDir();

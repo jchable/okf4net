@@ -132,8 +132,8 @@ export default function Spec() {
               [
                 <>§6.2 Path-valued fields</>,
                 <>
-                  <code>OkfDocument.FrontmatterResources()</code>, <code>Bundle.TryResolveResource</code>/
-                  <code>ReadResourceText</code> — the path-valued fields (<code>resource</code>, each{' '}
+                  <code>OkfDocument.FrontmatterResources()</code>, <code>Bundle.TryResolveResourceKey</code>/
+                  <code>ReadResourceText(BundleKey)</code> — the path-valued fields (<code>resource</code>, each{' '}
                   <code>sources[i].resource</code>, and §10.2's <code>computation</code>,{' '}
                   <code>executor.resource</code>, <code>attester.resource</code>), resolved from the{' '}
                   <strong>bundle root</strong> and refused if they would leave it.
@@ -169,8 +169,8 @@ export default function Spec() {
         <Chapter id="reserved" title="Reserved files" refText="§8, §9 — not concepts">
           <p>
             Two filenames are structural, not concepts: <code>index.md</code> (generated listings) and{' '}
-            <code>log.md</code> (change history). OKF4net surfaces them separately — <code>Bundle.IndexFiles</code>{' '}
-            and <code>Bundle.LogFiles</code> — and neither counts toward <code>Bundle.Count</code>. Regenerate indexes
+            <code>log.md</code> (change history). OKF4net surfaces them separately — <code>Bundle.IndexKeys</code>{' '}
+            and <code>Bundle.LogKeys</code> — and neither counts toward <code>Bundle.Count</code>. Regenerate indexes
             with <code>IndexGenerator.RegenerateIndexes</code>; parse a log with <code>ChangeLog.Parse</code>. A
             malformed reserved file (bad structure, or unreadable/unparseable) is a §11 conformance failure —{' '}
             <code>okf validate</code> exits <code>1</code>, not a silent warning.
@@ -191,7 +191,7 @@ export default function Spec() {
           <ul className="plain">
             <li>
               <strong>Permissive by construction.</strong> <code>Bundle.Load</code> collects parse failures in{' '}
-              <code>ParseErrors</code> and retains broken links as graph edges to missing concepts — §11's
+              <code>ParseProblems</code> and retains broken links as graph edges to missing concepts — §11's
               tolerance, made structural.
             </li>
             <li>

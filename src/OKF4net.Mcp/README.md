@@ -58,6 +58,17 @@ working and keeps meaning the same thing.
 > `OKF_MCP_READONLY=1` was set. If you relied on that, add
 > `OKF_MCP_WRITABLE=1`.
 
+## Storage: filesystem only
+
+`okf-mcp` serves a bundle from the local filesystem only: the bundle root is a
+directory path and the server builds a `FileSystemBundleProvider` over it; there
+is no option to choose another `IBundleProvider`. The read-only default (and
+`OKF_MCP_READONLY=1`) is a **tool-mode filter** — `OkfToolMode.ReadOnly` omits
+the four write tools from the registered set — not a read-only provider: the
+underlying provider can still write, it is simply never reached through the
+tools the server offers. A host that needs a bundle from another store embeds
+`OKF4net.Agents` and passes its own `BundleHandle` instead.
+
 ## Bundle resolution order
 
 `okf-mcp` resolves its bundle root in this order:

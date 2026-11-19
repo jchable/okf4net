@@ -134,7 +134,6 @@ public class BundleConceptWriterLockTests
 
         bool settled;
         bool workerFinishedWhileHeld;
-        string mainResult;
         using (a.EnterWriteLock())
         {
             worker.Start();
@@ -144,54 +143,17 @@ public class BundleConceptWriterLockTests
                 () => (worker.ThreadState & (ThreadState.WaitSleepJoin | ThreadState.Stopped)) != 0,
                 TimeSpan.FromSeconds(10));
             workerFinishedWhileHeld = (worker.ThreadState & ThreadState.Stopped) != 0;
-            mainResult = a.AppendToConceptAtomic("notes/shared", Fm, body => (body ?? string.Empty).Trim() + "[A]");
         }
 
         Assert.True(worker.Join(TimeSpan.FromSeconds(10)), "The worker did not finish.");
         Assert.True(settled, "The worker neither waited nor completed.");
         Assert.False(workerFinishedWhileHeld, "B wrote while A held the lock: the two writers do not share it.");
-        Assert.DoesNotContain("Error", mainResult, StringComparison.Ordinal);
         Assert.DoesNotContain("Error", workerResult!, StringComparison.Ordinal);
 
+        // B ran once A released the lock it shared with it (a lease is not re-entrant: A cannot
+        // write under its own lease through the writer, so only the worker writes here).
         var doc = OkfDocument.Parse(File.ReadAllText(Path.Combine(external.Path, "bundle", "notes", "shared.md")));
-        // A wrote first, under its hold; B's read-modify-write then saw it.
-        Assert.Equal("[A][B]", doc.Body.Trim());
-    }
-
-    [SkippableFact]
-    public void A_nested_acquisition_reuses_the_held_lock_even_if_the_topology_changed()
-    {
-        using var tmp = new TempDir();
-        using var external = new TempDir();
-        var a = new BundleConceptWriter(Path.Combine(tmp.Path, "later", "bundle"));
-
-        object outerObject;
-        object nowObject;
-        using (var outer = a.EnterWriteLock())
-        {
-            outerObject = outer.LockObject;
-            Skip.IfNot(tmp.TryCreateJunctionToExternalDir("later", external.Path), NoLinkPrivilege);
-            Directory.CreateDirectory(Path.Combine(external.Path, "bundle"));
-
-            nowObject = a.CurrentLockObjectForTest();
-            Assert.NotSame(outerObject, nowObject); // the topology change moved the root
-
-            using (var inner = a.EnterWriteLock())
-            {
-                Assert.Same(outerObject, inner.LockObject);
-                Assert.True(Monitor.IsEntered(outerObject));
-                Assert.False(Monitor.IsEntered(nowObject));
-            }
-
-            Assert.True(Monitor.IsEntered(outerObject)); // the outer hold survives the inner release
-        }
-
-        Assert.False(Monitor.IsEntered(outerObject));
-        Assert.False(Monitor.IsEntered(nowObject));
-
-        // A fresh outermost acquisition follows the new topology.
-        using var next = a.EnterWriteLock();
-        Assert.Same(nowObject, next.LockObject);
+        Assert.Equal("[B]", doc.Body.Trim());
     }
 
     [SkippableFact]
@@ -289,7 +251,7 @@ public class BundleConceptWriterLockTests
 
 
     [SkippableFact]
-    public void Case_distinct_aliases_do_not_reuse_each_others_held_lock()
+    public void Case_distinct_aliases_hold_independent_locks()
     {
         using var tmp = new TempDir();
         using var x = new TempDir();
@@ -312,9 +274,6 @@ public class BundleConceptWriterLockTests
         using var outer = upper.EnterWriteLock();
         // Independent physical bundles must remain independently acquirable.
         AssertAnotherThreadCanEnter(lower);
-        using var inner = lower.EnterWriteLock();
-        Assert.Same(yLock, inner.LockObject);
-        Assert.True(Monitor.IsEntered(yLock));
     }
 
     [SkippableTheory]
@@ -366,78 +325,6 @@ public class BundleConceptWriterLockTests
         Assert.DoesNotContain("Error", secondResult!, StringComparison.Ordinal);
         Assert.Equal("[A][B]", OkfDocument.Parse(File.ReadAllText(
             Path.Combine(external.Path, "notes", "shared.md"))).Body.Trim());
-    }
-
-    [SkippableFact]
-    public void A_waiter_through_an_alias_does_not_block_the_owners_nested_acquisition()
-    {
-        using var tmp = new TempDir();
-        using var actual = new TempDir();
-        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("a", actual.Path), NoLinkPrivilege);
-        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("b", actual.Path), NoLinkPrivilege);
-        var a = new BundleConceptWriter(Path.Combine(tmp.Path, "a"));
-        var b = new BundleConceptWriter(Path.Combine(tmp.Path, "b"));
-        using var aboutToWait = new ManualResetEventSlim();
-        b.BeforeContendedWaitForTest = aboutToWait.Set;
-        Exception? ownerError = null;
-        Exception? waiterError = null;
-        var waiterEntered = false;
-        var waiter = new Thread(() =>
-        {
-            try
-            {
-                using var scope = b.EnterWriteLock();
-                waiterEntered = true;
-            }
-            catch (Exception e)
-            {
-                waiterError = e;
-            }
-        })
-        { IsBackground = true };
-
-        // Run the owner on a background thread as well: a broken acquisition
-        // order must fail the deadline, not deadlock the xunit thread.
-        var owner = new Thread(() =>
-        {
-            try
-            {
-                using var outer = a.EnterWriteLock();
-                waiter.Start();
-                Assert.True(aboutToWait.Wait(TimeSpan.FromSeconds(10)), "The waiter never found the monitor busy.");
-                Assert.False(waiterEntered);
-                using var inner = b.EnterWriteLock();
-                Assert.Same(outer.LockObject, inner.LockObject);
-            }
-            catch (Exception e)
-            {
-                ownerError = e;
-            }
-        })
-        { IsBackground = true };
-
-        owner.Start();
-        Assert.True(owner.Join(TimeSpan.FromSeconds(15)), "Nested alias acquisition deadlocked.");
-        Assert.True(waiter.Join(TimeSpan.FromSeconds(10)), "The waiter did not finish.");
-        Assert.Null(ownerError);
-        Assert.Null(waiterError);
-        Assert.True(waiterEntered);
-    }
-
-    [Fact]
-    public void Out_of_order_scope_disposal_keeps_the_remaining_hold()
-    {
-        using var tmp = new TempDir();
-        var writer = new BundleConceptWriter(tmp.Path);
-        var outer = writer.EnterWriteLock();
-        var inner = writer.EnterWriteLock();
-        outer.Dispose();
-        Assert.True(Monitor.IsEntered(inner.LockObject));
-        inner.Dispose();
-        Assert.False(Monitor.IsEntered(inner.LockObject));
-        AssertAnotherThreadCanEnter(writer);
-        using var next = writer.EnterWriteLock();
-        Assert.Same(inner.LockObject, next.LockObject);
     }
 
 
@@ -544,297 +431,6 @@ public class BundleConceptWriterLockTests
         Assert.True(waiter.Join(TimeSpan.FromSeconds(10)));
         Assert.Null(error);
         Assert.Same(new BundleConceptWriter(after.Path).CurrentLockObjectForTest(), entered);
-    }
-
-    /// <summary>
-    /// Two aliases of one bundle, <c>j -&gt; A</c> and <c>k -&gt; j</c>,
-    /// nested in opposite order on two threads while <c>j</c> is retargeted.
-    /// T holds X's gate and M(A); after the retarget, U holds Y's gate and
-    /// M(B); then each nests the other alias. With <paramref name="retargetAgain"/>,
-    /// <c>j</c> moves once more (to C) before they nest, so neither thread
-    /// holds the monitor its nested alias now resolves to. A lock-holding
-    /// thread that waited (blocking or retrying) for the other's lexical
-    /// gate closed a cycle here; neither thread may wait for a gate.
-    /// The outcome does not depend on which thread nests first.
-    /// </summary>
-    [SkippableTheory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void Aliases_nested_in_opposite_order_across_a_retarget_do_not_deadlock(bool retargetAgain)
-    {
-        using var tmp = new TempDir();
-        using var a = new TempDir();
-        using var b = new TempDir();
-        using var c = new TempDir();
-        var j = Path.Combine(tmp.Path, "j");
-        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("j", a.Path), NoLinkPrivilege);
-        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("k", j), NoLinkPrivilege);
-        var x = new BundleConceptWriter(j);
-        var y = new BundleConceptWriter(Path.Combine(tmp.Path, "k"));
-        Assert.Same(x.CurrentLockObjectForTest(), y.CurrentLockObjectForTest());
-
-        using var tHolds = new ManualResetEventSlim();
-        using var uMayEnter = new ManualResetEventSlim();
-        using var uHolds = new ManualResetEventSlim();
-        using var nest = new ManualResetEventSlim();
-        Exception? tError = null;
-        Exception? uError = null;
-        var t = new Thread(() =>
-        {
-            try
-            {
-                using var outer = x.EnterWriteLock();
-                tHolds.Set();
-                nest.Wait();
-                using var inner = y.EnterWriteLock();
-            }
-            catch (Exception e)
-            {
-                tError = e;
-            }
-        })
-        { IsBackground = true };
-        var u = new Thread(() =>
-        {
-            try
-            {
-                uMayEnter.Wait();
-                using var outer = y.EnterWriteLock();
-                uHolds.Set();
-                nest.Wait();
-                using var inner = x.EnterWriteLock();
-            }
-            catch (Exception e)
-            {
-                uError = e;
-            }
-        })
-        { IsBackground = true };
-
-        t.Start();
-        u.Start();
-        Assert.True(tHolds.Wait(TimeSpan.FromSeconds(10)), "T never entered X.");
-        Retarget(tmp, j, b.Path);
-        uMayEnter.Set();
-        Assert.True(uHolds.Wait(TimeSpan.FromSeconds(10)), "U never entered Y after the retarget.");
-        if (retargetAgain)
-        {
-            Retarget(tmp, j, c.Path);
-        }
-
-        nest.Set();
-        var tDone = t.Join(TimeSpan.FromSeconds(15));
-        var uDone = u.Join(TimeSpan.FromSeconds(15));
-        Assert.True(tDone && uDone, "Aliases nested in opposite order deadlocked.");
-        Assert.Null(tError);
-        Assert.Null(uError);
-        AssertAnotherThreadCanEnter(x);
-        AssertAnotherThreadCanEnter(y);
-    }
-
-    /// <summary>
-    /// Characterizes the documented cost of never waiting for a gate while
-    /// holding a write lock. No topology change is needed for a nested
-    /// acquisition to lose its gate: a helper holds <c>l</c>'s gate, standing
-    /// in for an outermost writer caught between taking that gate and taking
-    /// its resolved monitor. T, already holding the bundle through its real
-    /// path, nests over <c>l -&gt; A</c> and proceeds WITHOUT the gate, and
-    /// keeps it that way for its whole operation. Once the helper is gone and
-    /// <c>l</c> is retargeted, a new outermost writer over the same lexical
-    /// root <c>l</c> takes the gate and another monitor and runs while T still
-    /// holds its <c>l</c> scope: the overlap the docs disclose. If this test
-    /// starts failing because the overlap no longer happens, the docs (and
-    /// this test) must be revised with it.
-    /// </summary>
-    [SkippableFact]
-    public void A_nested_acquisition_that_finds_the_gate_busy_holds_no_gate_and_can_be_overlapped_after_a_retarget()
-    {
-        using var tmp = new TempDir();
-        using var a = new TempDir();
-        using var b = new TempDir();
-        var l = Path.Combine(tmp.Path, "l");
-        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("l", a.Path), NoLinkPrivilege);
-        var direct = new BundleConceptWriter(a.Path);
-        var overL = new BundleConceptWriter(l);
-        Assert.Same(direct.CurrentLockObjectForTest(), overL.CurrentLockObjectForTest());
-
-        using var helperHolds = new ManualResetEventSlim();
-        using var helperMayRelease = new ManualResetEventSlim();
-        using var tNested = new ManualResetEventSlim();
-        using var tMayLeave = new ManualResetEventSlim();
-        bool? tHeldGate = null;
-        object? tLock = null;
-        object? vLock = null;
-        var vEnteredWhileTHeld = false;
-        Exception? helperError = null;
-        Exception? tError = null;
-        Exception? vError = null;
-
-        var helper = new Thread(() =>
-        {
-            try
-            {
-                var gate = overL.LexicalGateForTest();
-                lock (gate)
-                {
-                    helperHolds.Set();
-                    helperMayRelease.Wait();
-                }
-            }
-            catch (Exception e)
-            {
-                helperError = e;
-            }
-        })
-        { IsBackground = true };
-        var t = new Thread(() =>
-        {
-            try
-            {
-                using var outer = direct.EnterWriteLock();
-                using var inner = overL.EnterWriteLock();
-                tHeldGate = inner.HoldsLexicalGateForTest;
-                tLock = inner.LockObject;
-                tNested.Set();
-                tMayLeave.Wait();
-            }
-            catch (Exception e)
-            {
-                tError = e;
-            }
-        })
-        { IsBackground = true };
-
-        helper.Start();
-        Assert.True(helperHolds.Wait(TimeSpan.FromSeconds(10)), "The helper never took the gate.");
-        t.Start();
-        try
-        {
-            Assert.True(tNested.Wait(TimeSpan.FromSeconds(10)), "The nested acquisition waited for the busy gate.");
-            Assert.False(tHeldGate, "The nested acquisition holds the gate.");
-            Assert.Same(direct.CurrentLockObjectForTest(), tLock);
-
-            helperMayRelease.Set();
-            Assert.True(helper.Join(TimeSpan.FromSeconds(10)), "The helper did not release the gate.");
-            Retarget(tmp, l, b.Path);
-
-            var v = new Thread(() =>
-            {
-                try
-                {
-                    using var scope = overL.EnterWriteLock();
-                    vLock = scope.LockObject;
-                    vEnteredWhileTHeld = t.IsAlive && !tMayLeave.IsSet;
-                }
-                catch (Exception e)
-                {
-                    vError = e;
-                }
-            })
-            { IsBackground = true };
-            v.Start();
-            Assert.True(v.Join(TimeSpan.FromSeconds(10)), "The outermost writer over l was serialized after T.");
-            Assert.Null(vError);
-            Assert.True(vEnteredWhileTHeld, "The outermost writer did not run while T held its l scope.");
-            Assert.NotSame(tLock, vLock);
-        }
-        finally
-        {
-            helperMayRelease.Set();
-            tMayLeave.Set();
-        }
-
-        Assert.True(t.Join(TimeSpan.FromSeconds(10)), "T did not finish.");
-        Assert.Null(helperError);
-        Assert.Null(tError);
-        AssertAnotherThreadCanEnter(overL);
-        AssertAnotherThreadCanEnter(direct);
-    }
-
-    /// <summary>
-    /// A nested acquisition retries a busy gate once, without blocking, after
-    /// resolving the root. Here the gate's owner releases everything while
-    /// the nested thread is between its first (failed) gate attempt and its
-    /// resolution, so the retry finds the gate free and the nested hold keeps
-    /// it. Without the retry, the hold would proceed without the gate.
-    /// </summary>
-    [SkippableFact]
-    public void A_nested_acquisition_retries_a_gate_released_while_it_resolved_the_root()
-    {
-        using var tmp = new TempDir();
-        using var a = new TempDir();
-        using var unrelated = new TempDir();
-        var l = Path.Combine(tmp.Path, "l");
-        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("l", a.Path), NoLinkPrivilege);
-        var ownerWriter = new BundleConceptWriter(l);
-        var nestedWriter = new BundleConceptWriter(l);
-        var outerWriter = new BundleConceptWriter(unrelated.Path);
-
-        using var ownerHolds = new ManualResetEventSlim();
-        using var ownerMayRelease = new ManualResetEventSlim();
-        using var ownerReleased = new ManualResetEventSlim();
-        var releasedDuringHook = false;
-        bool? nestedHeldGate = null;
-        Exception? ownerError = null;
-        Exception? nestedError = null;
-        nestedWriter.GateBusyForTest = () =>
-        {
-            ownerMayRelease.Set();
-            releasedDuringHook |= ownerReleased.Wait(TimeSpan.FromSeconds(10));
-        };
-
-        var owner = new Thread(() =>
-        {
-            try
-            {
-                using (ownerWriter.EnterWriteLock())
-                {
-                    ownerHolds.Set();
-                    ownerMayRelease.Wait();
-                }
-
-                ownerReleased.Set();
-            }
-            catch (Exception e)
-            {
-                ownerError = e;
-            }
-        })
-        { IsBackground = true };
-        var nested = new Thread(() =>
-        {
-            try
-            {
-                using var outer = outerWriter.EnterWriteLock();
-                using var inner = nestedWriter.EnterWriteLock();
-                nestedHeldGate = inner.HoldsLexicalGateForTest;
-            }
-            catch (Exception e)
-            {
-                nestedError = e;
-            }
-        })
-        { IsBackground = true };
-
-        owner.Start();
-        Assert.True(ownerHolds.Wait(TimeSpan.FromSeconds(10)), "The owner never entered.");
-        nested.Start();
-        try
-        {
-            Assert.True(nested.Join(TimeSpan.FromSeconds(15)), "The nested acquisition did not finish.");
-        }
-        finally
-        {
-            ownerMayRelease.Set();
-        }
-
-        Assert.True(owner.Join(TimeSpan.FromSeconds(10)), "The owner did not finish.");
-        Assert.Null(ownerError);
-        Assert.Null(nestedError);
-        Assert.True(releasedDuringHook, "The nested thread never found the gate busy, or the owner never released.");
-        Assert.True(nestedHeldGate, "The nested acquisition proceeded without the gate its owner had released.");
-        AssertAnotherThreadCanEnter(nestedWriter);
-        AssertAnotherThreadCanEnter(outerWriter);
     }
 
     private static void Retarget(TempDir tmp, string link, string target)

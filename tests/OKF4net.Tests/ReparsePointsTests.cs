@@ -268,6 +268,116 @@ public class ReparsePointsTests
         Assert.False(ReparsePoints.IsReparsePointOrUninspectable(Path.GetDirectoryName(file)!));
     }
 
+    [Fact]
+    public void The_typed_predicates_answer_as_the_plain_ones_and_give_the_type_of_a_plain_entry_only()
+    {
+        using var tmp = new TempDir();
+        var file = tmp.Write(Path.Combine("dir", "plain.md"), "x");
+        var dir = Path.GetDirectoryName(file)!;
+        var missing = Path.Combine(dir, "missing.md");
+        var belowFile = Path.Combine(file, "child");
+
+        Assert.False(ReparsePoints.IsReparsePointWithType(file, out var lenient));
+        Assert.False(lenient);
+        Assert.False(ReparsePoints.IsReparsePointOrUninspectableWithType(file, out var strict));
+        Assert.False(strict);
+
+        Assert.False(ReparsePoints.IsReparsePointWithType(dir, out lenient));
+        Assert.True(lenient);
+        Assert.False(ReparsePoints.IsReparsePointOrUninspectableWithType(dir, out strict));
+        Assert.True(strict);
+
+        // An entry that does not exist has no type: the caller asks the OS, as it did before.
+        foreach (var absent in new[] { missing, belowFile })
+        {
+            Assert.False(ReparsePoints.IsReparsePointWithType(absent, out lenient));
+            Assert.Null(lenient);
+            Assert.False(ReparsePoints.IsReparsePointOrUninspectableWithType(absent, out strict));
+            Assert.Null(strict);
+        }
+    }
+
+    [SkippableFact]
+    public void The_typed_predicates_give_no_type_for_a_link()
+    {
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("link", external.Path), "no junction/symlink privilege on this machine");
+        var link = Path.Combine(tmp.Path, "link");
+        try
+        {
+            Assert.True(ReparsePoints.IsReparsePointWithType(link, out var lenient));
+            Assert.Null(lenient);
+            Assert.True(ReparsePoints.IsReparsePointOrUninspectableWithType(link, out var strict));
+            Assert.Null(strict);
+        }
+        finally
+        {
+            Directory.Delete(link);
+        }
+    }
+
+    [SkippableFact]
+    public void The_typed_predicates_give_no_type_for_an_uninspectable_entry_and_still_disagree_on_it()
+    {
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        using var junction = tmp.TryCreateUninspectableJunction(Path.Combine("x", "y"), external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+        var link = Path.Combine(tmp.Path, "x", "y");
+
+        Assert.False(ReparsePoints.IsReparsePointWithType(link, out var lenient));
+        Assert.Null(lenient);
+        Assert.True(ReparsePoints.IsReparsePointOrUninspectableWithType(link, out var strict));
+        Assert.Null(strict);
+    }
+
+    /// <summary>
+    /// What the single-look classification relies on, on Windows: an entry is a link exactly
+    /// when its own attributes carry <see cref="FileAttributes.ReparsePoint"/>, so no entry
+    /// without it has a link target. On Unix the predicate asks
+    /// <see cref="FileSystemInfo.LinkTarget"/> as well, and this pins that it finds the link.
+    /// </summary>
+    [SkippableFact]
+    public void A_link_is_seen_by_the_predicates_and_a_plain_entry_has_no_link_target()
+    {
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        var file = tmp.Write(Path.Combine("dir", "plain.md"), "x");
+        var dir = Path.GetDirectoryName(file)!;
+        Assert.Null(new FileInfo(file).LinkTarget);
+        Assert.Null(new DirectoryInfo(dir).LinkTarget);
+        Assert.False(ReparsePoints.IsReparsePoint(file));
+        Assert.False(ReparsePoints.IsReparsePoint(dir));
+
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("link", external.Path), "no junction/symlink privilege on this machine");
+        var link = Path.Combine(tmp.Path, "link");
+        try
+        {
+            Assert.NotNull(new DirectoryInfo(link).LinkTarget);
+            Assert.True(ReparsePoints.IsReparsePoint(link));
+            if (OperatingSystem.IsWindows())
+            {
+                Assert.True((File.GetAttributes(link) & FileAttributes.ReparsePoint) != 0);
+            }
+        }
+        finally
+        {
+            Directory.Delete(link);
+        }
+
+        var target = external.Write("target.md", "t");
+        if (tmp.TryCreateFileSymlinkToExternalFile("file-link.md", target))
+        {
+            var fileLink = Path.Combine(tmp.Path, "file-link.md");
+            Assert.NotNull(new FileInfo(fileLink).LinkTarget);
+            Assert.True(ReparsePoints.IsReparsePoint(fileLink));
+            Assert.True(ReparsePoints.IsReparsePointOrUninspectable(fileLink));
+            Assert.True(ReparsePoints.IsReparsePointWithType(fileLink, out var type));
+            Assert.Null(type);
+        }
+    }
+
     [SkippableFact]
     public void Strict_predicate_is_true_for_a_junction_or_symlink()
     {

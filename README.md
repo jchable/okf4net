@@ -33,6 +33,12 @@ a guided project overview, getting-started walkthroughs, and developer docs:
 This README is the technical reference; the site is the friendlier entry point
 for newcomers.
 
+**Tutorials** (in this repository, every step run against the current code):
+[library users](docs/tutorials/library-users.md) — write, index, load and
+validate a bundle through the provider API ·
+[agent builders](docs/tutorials/agent-builders.md) — expose a bundle through
+`OKF4net.Agents` and `okf-mcp`.
+
 <!-- -->
 
 > **Want to contribute?** OKF4net is a young, welcoming project with a clear
@@ -73,8 +79,10 @@ other project layers a specific integration on top and points back to it.
 | `OKF4net.Render`         | — (Native AOT `okf-render` binary, no PackageId) | Standalone CLI: generates a browsable HTML site from a bundle. | [As a CLI](#as-a-cli)                                        |
 | `OKF4net.Viewer`         | — (ships inside the `okf-render` binary, not packed by `release.yml`) | Static HTML site generation for a bundle; backs `okf-render`. | [As a CLI](#as-a-cli)                                        |
 | `OKF4net.Agents`         | `OKF4net.Agents`          | Microsoft Agent Framework tools + `OkfContextProvider` (context & memory). | [Microsoft Agent Framework](#using-okf4net-with-microsoft-agent-framework) |
-| `OKF4net.Catalog`        | `OKF4net.Catalog`         | Local catalog of OKF bundles: `catalog.json` manifest + source resolver.   | [Local catalog](#local-catalog-okf4netcatalog) · [README](src/OKF4net.Catalog/README.md) |
+| `OKF4net.Catalog`        | `OKF4net.Catalog`         | Catalog of OKF bundles (local or any provider): `catalog.json` + resolver. | [Local catalog](#local-catalog-okf4netcatalog) · [README](src/OKF4net.Catalog/README.md) |
 | `OKF4net.Catalog.Hosting`| `OKF4net.Catalog.Hosting` | `IServiceCollection` integration (`AddKnowledge`) for the catalog.         | [README](src/OKF4net.Catalog.Hosting/README.md)              |
+| `OKF4net.Providers.EmbeddedResources` | `OKF4net.Providers.EmbeddedResources` | A bundle shipped inside your assembly: the `OkfBundle` MSBuild item and a read-only provider; BCL only. | [README](src/OKF4net.Providers.EmbeddedResources/README.md) |
+| `OKF4net.Providers.S3` | `OKF4net.Providers.S3` | A bundle in Amazon S3 or an S3-compatible store (read-only, async; depends on `AWSSDK.S3`). | [README](src/OKF4net.Providers.S3/README.md) |
 | `OKF4net.Mcp`            | `OKF4net.Mcp`             | Local MCP server exposing an OKF bundle to Claude Desktop / Claude Code.    | [Use OKF in Claude (MCP)](#use-okf-in-claude-mcp) · [README](src/OKF4net.Mcp/README.md) |
 | `OKF4net.Attestation`    | `OKF4net.Attestation`    | Host-plugged §10 attested-computation orchestration (bind → execute → attest). | [Attested computation](#attested-computation-okf4netattestation) · [README](src/OKF4net.Attestation/README.md) |
 | `OKF4net.Attestation.Containers` | — (not packed by `release.yml`; needs a container engine on `PATH`) | Runs a bundle's sanctioned script/SQL and its attester in real containers (Docker/Podman/nerdctl), never reimplemented in C#. | [README](src/OKF4net.Attestation.Containers/README.md) |
@@ -108,7 +116,7 @@ extensive test suite, including snapshot comparisons of the CLI's output.
   top. This satisfies the spec's requirement that consumers preserve unknown
   keys when round-tripping.
 - **Permissive loading.** `Bundle.Load` never aborts on a bad concept file; it
-  collects parse failures in `ParseErrors` and keeps going. Broken
+  collects parse failures in `ParseProblems` and keeps going. Broken
   cross-links are retained as graph edges to non-existent concepts.
 - **Two levels of validation.** `OkfDocument.ValidateConformance()` enforces
   only what §11 requires (a non-empty `type`). `OkfDocument.Validate()` is the
@@ -150,8 +158,10 @@ extensive test suite, including snapshot comparisons of the CLI's output.
 ### As a library
 
 A concern-by-concern API walkthrough lives in the
-[library docs on the site](https://jchable.github.io/okf4net/docs/library/);
-below is the short version.
+[library docs on the site](https://jchable.github.io/okf4net/docs/library/),
+and [the library users' tutorial](docs/tutorials/library-users.md) builds a
+bundle end to end with the asynchronous provider API; below is the short
+version.
 
 ```csharp
 using OKF4net;
@@ -194,7 +204,6 @@ var text = doc.Serialize();
 Reading and appending to a bundle's `log.md` change history (§9):
 
 ```csharp
-using System.Globalization;
 using OKF4net;
 
 var log = ChangeLog.Parse(File.ReadAllText("./my_bundle/log.md"));
@@ -206,15 +215,288 @@ foreach (var day in log.Days) // newest first, by convention
     }
 }
 
-// Days are immutable records: build the new list, then re-render.
-var today = DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-var added = new LogEntry("Update", "Documented the refunds table.");
-var days = log.Days.ToList();
-var i = days.FindIndex(d => d.Date == today);
-if (i >= 0) days[i] = days[i] with { Entries = [.. days[i].Entries, added] };
-else days.Insert(0, new LogDay(today, [added]));
-File.WriteAllText("./my_bundle/log.md", new ChangeLog(log.Title, days).ToMarkdown());
+// Appending goes through the writer, not through File.WriteAllText: it writes
+// through the bundle's provider, under the write lock, conditioned on the
+// version it read, and throws BundleReadOnlyException over a read-only provider.
+// (ChangeLog, LogDay and LogEntry remain the immutable model to parse and render.)
+var writer = new BundleConceptWriter("./my_bundle");
+Console.WriteLine(writer.AppendLog("Update", "Documented the refunds table."));
 ```
+
+### Loading through a provider
+
+`Bundle.Load(string root)` is now an overload over the default
+`FileSystemBundleProvider` (it still throws `BundleLoadException` for a root
+that is not a directory, before delegating). A host can load through any `IBundleProvider`
+(`OKF4net.Providers`) — a key space of objects, read-only unless the provider
+declares `Capabilities.CanWrite` — with `await Bundle.LoadAsync(provider, new
+BundleLoadOptions { Limits = …, KeyPolicy = … }, ct)`. The provider contract is
+asynchronous at the I/O edges (`ValueTask`, `IAsyncEnumerable`, a required
+`CancellationToken`); queries on the loaded image stay synchronous. A provider
+whose operations always complete before they return says so with
+`Capabilities.CompletesSynchronously` (the filesystem provider does): only such a
+provider serves the synchronous entry points (`Bundle.Load(string)`, the writer's
+and the index generator's `string` overloads, `BundleValidator.Validate`), which
+never wait — a pending read is cancelled and the call throws
+`InvalidOperationException` naming the async overload, and a synchronous write is
+refused before any I/O starts. `LoadAsync` reads the concepts with at most
+`BundleLimits.MaxConcurrentRequests` reads in flight, and reports the failing key
+of the smallest rank whatever finished first. Every image reports the memory it
+takes as an estimate, `Bundle.EstimatedMemoryBytes`: a linear model over the size
+of the concept objects read and the links they hold, calibrated against retained
+bytes. It is an approximation, not a heap measurement. A host can bound it with
+`BundleLoadOptions.MemoryCeilingBytes` (no ceiling by default). A load that would
+exceed the ceiling is refused with `BundleMemoryCeilingExceededException`, inside
+the `BundleLoadException`, carrying the ceiling and the estimate. The refusal
+comes before any read when the sizes the listing declares already exceed it,
+otherwise as soon as the running estimate crosses it, never after loading
+everything. The ceiling bounds one image: during a refresh the previous image is
+still held, so the peak can reach twice the ceiling. A `BundleHandle` whose reload
+is refused keeps serving its previous image, flagged stale. Keys are validated as a tree
+under the `Native` policy by default: the loader refuses only what the
+provider's storage itself cannot hold or would alias (OKF §11 imposes no naming
+constraint), so `Orders.md` beside `orders.md` (on any volume that holds
+both) or a decomposed `café.md` load as they always did, and so does `con.md`
+on every OS: Windows 11 creates and opens such reserved device names through
+ordinary APIs (`git` refuses them), so the default loads them with a
+`KeyNotPortable` warning and `Strict` refuses them. The Windows native set keeps
+only what aliases another name (a trailing dot or space, a character Windows
+forbids) and the file/directory conflict. Sibling collisions are not a native rule on any OS:
+the provider matches stored names exactly, so no key opens another key's
+object. A name the portable
+profile would refuse is listed in `Bundle.PortabilityIssues` and reported by
+`okf validate` as a `KeyNotPortable` warning (`the name is not portable: …`).
+`Strict` is the opt-in portable profile, for hosts that must produce or
+consume bundles that survive any filesystem: no Windows reserved names, no
+trailing dot, no case- or Unicode-form-colliding siblings, NFC names only (a
+quick check), no file that is also a directory. `FileSystemBundleProvider`
+always matches the stored name exactly, on every OS; a host that wants
+colliding siblings refused at load rather than reported adds
+`additionalConstraints: BundleKeyConstraints.CaseInsensitiveCollisions` (or
+`UnicodeFormCollisions`). Default bounds, finite but
+out of reach of real bundles: 256 MiB per object, 10 000 000 entries, depth
+1 024 (every listed name counted, `node_modules` included), keys of 1 024
+bytes; hosts reading untrusted storage should lower them. The filesystem
+walk is recursive and needs roughly 0.6 KB of stack per level, so the default
+depth takes about 0.6 MB: a host that runs `Bundle.Load` over untrusted storage
+on a thread of 512 KB or less should lower `MaxDepth`.
+Every rejected `.md` name is a `Bundle.ParseProblems` entry
+(`bundle.DisplayPath(problem)` gives the path to print; the obsolete
+`ParseErrors` projects the same list); other rejected names are skipped silently. The
+filesystem provider is writable (see "Writing through a provider" below); no
+other provider is writable: `OKF4net.Providers.EmbeddedResources` (see "A bundle
+inside your assembly" below, #141) and `OKF4net.Providers.S3` (see "A bundle in
+S3" below, #142) serve a bundle read-only.
+
+The historical members `Bundle.TryResolveResource` and
+`Bundle.ReadResourceText(string)` still resolve through the OS filesystem, so
+they apply neither the key policy, nor the rejected-key guard, nor the
+exact-case and backslash rules; they are obsolete (a warning naming
+`TryResolveResourceKey` and `ReadResourceText(BundleKey)`, removed with #152),
+and no reader in this repository uses them any more
+(`AttestationOrchestrator.Capture`, `OkfBundleTools` and the validator read
+through the key-based members). The other path-based members of `Bundle`
+(`Root`, `IndexFiles`, `LogFiles`, `ParseErrors`) and the `BundleRoot` of
+`BundleConceptWriter` and `OkfBundleTools` are obsolete in the same way;
+`Concept.Path`, `Diagnostic.Path` and `AuditFinding.Path` are not: each is the
+display path of its object, set beside the `Key` the load gave it (a
+`Diagnostic` about a refused name, or a hand-built finding, has a `Path` and no
+`Key`).
+
+### Writing through a provider
+
+`provider.Write(key, bytes, condition)` stores one object atomically if its
+condition holds — `BundleWriteCondition.None`, `MustNotExist`, or
+`IfMatch(version)` with the version a `Read` returned — and returns the new
+version; `provider.Delete(key, condition)` removes one. A key space has no
+directories: a write creates the missing prefixes, and a delete leaves empty
+directories behind, which hold no key. A provider whose `Capabilities.CanWrite`
+is `false`, or the view `provider.AsReadOnly()` returns, throws
+`BundleReadOnlyException` before attempting anything. A condition that does
+not hold throws `BundleWriteConflictException` and changes nothing.
+
+`FileSystemBundleProvider` writes the bytes to a temporary
+`.okf-write-<32 hex>.tmp` beside the target, flushes it to stable storage,
+then checks the confinement boundary, the path (no symlink or junction, the
+exact stored names) and the condition (on the SHA-256 of the stored bytes)
+again under a per-object lock, and commits with `File.Replace` or, for a new
+object, `File.Move` without overwrite. On Unix a replacement's temporary is
+owner-only until it takes the target's mode, and a read-only target is
+refused as before; only `IfMatch` reads the target. **What a write needs:** the
+right to create files in, and rename within, the target's directory — more
+than the old in-place `File.WriteAllText`, which needed only the right to write
+the target. In a directory the process cannot create files in (mode 0555 on
+Unix; on Windows an ACL denying it that right) every write is refused with the
+raw access error, which names the `.okf-write-*.tmp` it could not create
+(`okf verify`, `okf index` and the writer's methods exit 1 or return
+`Error: Access to the path '…/.okf-write-….tmp' is denied.`), the object
+unchanged and no temporary left; on Unix, in a sticky directory shared between
+users (like `/tmp`), a file owned by another user cannot be replaced either. A
+delete needs the right to write the object's directory too (an unprivileged
+process in a 0555 directory gets the access error, the file kept). There is no in-place fallback — it would reopen the torn writes of #157 — so a
+bundle in a directory its writer cannot create files in is not a supported
+deployment for writes. What this promises:
+
+- **Crash or I/O error mid-write:** never a part of either content: the object
+  holds its whole old content or its whole new content, or (Windows,
+  `ReplaceFile` error 1176 or 1177) no object under the key while the new
+  content is kept in the temporary.
+- **Power loss:** the old content, the new content, or for a new object no
+  object at all — the directory entry is not flushed (.NET has no API for
+  it).
+- **Concurrent readers:** never a part of the new content. On Unix the commit
+  is a `rename`. On Windows `ReplaceFile` can, for a moment, make a reader
+  find no object under the name or meet a sharing violation; `Read` retries
+  both a few times, which narrows that moment without removing it.
+- **A replacement Windows refuses without effect** (`ReplaceFile` error 1175,
+  or a sharing violation) is made again, at most three times in all, then
+  fails with `BundleWriteNotCommittedException`, the object unchanged.
+- **Other processes:** a condition is checked atomically with the replacement
+  within one process only (the lock is an in-process lock); between the last
+  check and the commit another process can still write the same object, which is
+  then overwritten although its caller was told it was committed (#178, the
+  tracked follow-up; there is no cross-process lock yet). Measured in the review
+  of this change, with two processes each making 150 `AppendLog` /
+  `AppendToConceptAtomic` appends to one bundle: on Linux up to 100 of 297
+  appends reported committed were lost; on Windows 17 were lost, with
+  `ReplaceFile` errors 1176/1177 reported as unknown outcomes, the log
+  momentarily absent, and `.okf-write-*.tmp` files left behind by ordinary
+  contention. The old in-place writer lost more entries in the same Windows
+  test (127 + 136 reported committed, 83 + 89 present) but never left a
+  temporary. Do not run two processes writing the same objects of one bundle
+  where an append must not be lost.
+
+A write whose outcome cannot be established (`BundleWriteOutcomeUnknownException`,
+for instance Windows `ReplaceFile` error 1176, which can leave no object
+under the key) keeps its temporary: it may be the only copy of the new
+content. So does a process crash between the temporary's creation and the
+commit, so can a failed write whose temporary could not be removed safely, and
+on Windows so can ordinary contention between two processes writing one object
+(the same `ReplaceFile` errors, see "Other processes").
+`okf validate` ignores such a file (it is not `.md`), but it counts
+toward the entry bound and an empty-directory check sees it; look for
+`.okf-write-*.tmp` files and remove them by hand once you have checked them.
+
+`BundleConceptWriter` writes concepts through a provider:
+`new BundleConceptWriter(provider, options: loadOptions)` (the string
+constructor builds a `FileSystemBundleProvider` over the directory). Give it
+the `BundleLoadOptions` the bundle is loaded with: it checks every key under
+that policy before writing, and refuses a creation that would make the tree
+invalid under it — a concept file on the new key's path, objects under it,
+or, under a policy that folds names, a sibling differing only in case or
+Unicode form — so it never writes what the next load would discard. A
+read-only provider makes every write method throw `BundleReadOnlyException`.
+`AppendToConceptAtomic` and `RecordVerifications` write conditioned on the
+version they read and retry a conflict, at most three attempts in all, re-reading each
+time (so `buildBody` must be a pure function of the body it receives);
+`WriteConcept(…, BundleWriteCondition)` lets a caller condition a rewrite on
+the version it read itself, and is never retried.
+`AppendLog(kind, text)` appends an entry to the root `log.md` the same way.
+The writer's in-process lock is keyed by the directory for a
+`FileSystemBundleProvider` and by the provider's `Id` for any other provider,
+so a decorator around a `FileSystemBundleProvider` does not share the
+directory's lock with a writer built from the root string: two such writers
+are then serialised only by the provider's own commit lock and the write
+conditions.
+
+`IndexGenerator.RegenerateIndexes(provider, options)` regenerates every
+`index.md` through a provider: it lists and validates the bundle as a load
+does, writes each `index.md` conditioned on the version it read (or on its
+absence), retries a conflict like the writer, and returns a
+`BundleWriteReport` — the `index.md` keys written, in order, and those it could
+not write, with why. A directory is referenced by its parent's index only when
+a file lies under it: an empty directory is not, a directory holding only
+non-`.md` files is. `IndexGenerator.RegenerateIndexes(path)` and `okf index`
+go through a `FileSystemBundleProvider` and keep their return values and
+output, except for the directories the rule above no longer references and the
+other cases the CHANGELOG lists. They throw `BundleWriteConflictException`
+(reason `NameUnavailable`, `okf index` exits 1) for a directory named
+`index.md` with files under it, and, on a volume that folds case (NTFS, the
+default macOS volume), for a file whose name differs from `index.md` only in
+case (`Index.md` at the root or in a subdirectory): that file is never written
+through, where the write that preceded the provider overwrote it. The
+"Failures" remarks of `RegenerateIndexesWith` give the rest of what they throw.
+
+### A bundle inside your assembly
+
+`OKF4net.Providers.EmbeddedResources` embeds a bundle at build time and serves it back at run time, Native AOT and single-file included:
+
+```xml
+<OkfBundle Include="knowledge/" Prefix="kb" />
+```
+
+```csharp
+var bundle = await Bundle.LoadAsync(new EmbeddedResourceBundleProvider(typeof(App).Assembly, "kb"));
+```
+
+The bundle is read-only, one manifest resource per file (`okf:kb/<path>`); links under the directory, and names an assembly cannot hold, fail the build with a named `OKFEMB00x` error. See the [package README](src/OKF4net.Providers.EmbeddedResources/README.md).
+
+### A bundle in S3
+
+`OKF4net.Providers.S3` serves a bundle from Amazon S3 or an S3-compatible store, through a read-only, truly asynchronous `IBundleProvider` (synchronous entry points refuse it or never wait on it):
+
+```csharp
+using var provider = new S3BundleProvider(credentials, new S3BundleSource { Bucket = "my-knowledge", Prefix = "okf/prod", Region = RegionEndpoint.EUWest3 });
+var bundle = await Bundle.LoadAsync(provider);
+```
+
+It builds its own client behind a request guard (one authority, one path prefix), takes your credentials as any `AWSCredentials`, and versions objects by the SHA-256 of their bytes. Like `OKF4net.Agents`, `OKF4net.Catalog.Hosting` and `OKF4net.Mcp`, it carries a third-party dependency (`AWSSDK.S3`); the core and the other providers do not. Its tests against a real store are excluded from CI and run locally (`dotnet test tests/OKF4net.Tests --filter Category=S3Integration`). See the [package README](src/OKF4net.Providers.S3/README.md).
+
+### One image per source: `BundleHandle`
+
+A `BundleHandle` (spec §5.2) holds one bundle's image: its provider, the
+`BundleLoadOptions` every load uses, a refresh policy and the current `Bundle`
+(`await handle.GetCurrentAsync(ct)`, loaded on first use). One load runs at a time
+and is shared — concurrent callers join the operation in progress (a caller joins
+only one that started at a generation covering its own reload obligation), and one
+that cancels stops waiting without cancelling the others' load — and the image is
+replaced as a whole, so a caller never sees two versions. A reload that fails (the
+storage unreachable, a bound exceeded) keeps the previous image served:
+`handle.IsStale` is `true` and `handle.LastLoadError` holds the failure (its
+inner exception is the raw cause, for the host's log only); only the very
+first load throws. `handle.Invalidate()` obliges the next use to reload
+whatever the policy; the obligation is acknowledged only by a successful load
+started after it. The refresh policies (`BundleRefreshPolicy`) are all lazy —
+no timer, no thread: `Manual` (the default: the host calls `await handle.RefreshAsync()`),
+`OnAccess` (the provider's version token is compared before every use),
+`Every(interval)` (compared at most once per interval, at an access) and
+`Notify` (a provider implementing `IBundleChangeNotifier` signals a possible
+change; the next access compares the token — a signal is a hint, never a
+reload by itself, and asking for `Notify` over a provider that cannot signal is
+an `ArgumentException`).
+
+Sharing is explicit: `new OkfBundleTools(handle)` and `new
+BundleConceptWriter(handle)` work on that image (the writer invalidates it
+after each committed write), an `OkfContextProvider` built over the tool set
+uses the tool set's handle, and two consumers built from a root string
+(`new OkfBundleTools(root)`) have two handles and two images. `tools.Handle`
+is the handle a tool set serves from; `tools.Location` the provider's
+displayable location. The image is replaced as a whole but its documents are
+not frozen (the `Frontmatter` of today is mutable): modifying a document of a
+shared image is not supported.
+
+A catalog keeps the handles itself (spec §9): each `FileKnowledgeCatalog`
+snapshot carries one per enabled knowledge source
+(`snapshot.Handles[sourceId]`), built under the catalog's
+`KnowledgeCatalogOptions.LoadOptions` and the source's refresh policy
+(`RefreshPolicy`, `OnAccess` by default, so a source stays almost as fresh as when it
+was reloaded at every request at the cost of a token read — a weak token for a
+directory: name, length and modification time; `RefreshPolicyFor` chooses per
+source), and the resolvers search through them. A source whose later reload
+fails is answered from its last good image and reported as
+`KnowledgeDiagnosticCode.SourceStale`; only a first load that fails is
+`SourceUnavailable`. A reload keeps a source's handle, image included, while
+its effective configuration is unchanged, and rebuilds it otherwise (a changed
+`path`, say); a handle that leaves the catalog is disposed, which only ends its
+change subscription — a request still holding the old snapshot keeps reading
+its image. A `catalog.json` source may name another storage than a directory
+under the catalog root: `"provider": "<type>"` plus `"settings"`, served by the
+`IBundleProviderFactory` the host registered for that type
+(`KnowledgeOptions.AddProviderFactory`, or `KnowledgeCatalogOptions.ProviderFactories`);
+each factory declares the settings it accepts, and a source carrying any other
+setting, an unknown type (on an enabled source), or a `path` on a non-filesystem type is rejected
+with the whole manifest or reload, so no credential ever travels through the
+manifest (spec §7). Memory sources stay on the filesystem.
 
 ### As a CLI
 
@@ -253,8 +535,9 @@ dotnet okf validate ./knowledge
 ```
 
 `dotnet tool install -g OKF4net.Cli` installs it globally instead, and
-`dnx OKF4net.Cli --yes validate ./knowledge` runs it once without installing
-anything. The tool is portable IL and needs the .NET 10 runtime or a later
+`dnx OKF4net.Cli validate ./knowledge` runs it once without installing
+anything (it asks before downloading; `--yes` answers in advance for a
+non-interactive run, but only the .NET 11 SDK and later have it). The tool is portable IL and needs the .NET 10 runtime or a later
 one. It is built from the same source as the native binary and gives the same
 verdicts. If both are installed, the first `okf` on `PATH` wins, while
 `dotnet okf` always runs the manifest's version.
@@ -302,6 +585,22 @@ okf audit bundles/acme_retail --stale --trust unverified,machine-confirmed
 Without filter flags it selects exactly what `--stale` selects and prints the
 summary form; with any filter flag it prints one line per matching concept, so
 the output pipes. `--json` always emits the full document.
+
+A `verified` stamp attests a moment, not a version (§5.2: content can change
+without re-confirmation). `--review-outdated` selects the concepts whose content
+changed after their latest review: `generated.at` (or the legacy `timestamp`,
+§13.1) strictly later than the latest `verified[].at`, whoever the actor. It is
+a signal for a reviewer and leaves the trust tier alone. A concept without
+either date is never selected. Each `--json` finding carries the two instants
+compared (`lastVerifiedAt`, `lastChangedAt`) and the verdict (`reviewOutdated`).
+Only the frontmatter is read, so a file edited without updating `generated.at` is
+not detected. To compare with the file's history instead, take `lastVerifiedAt`
+from the JSON and `git log -1 --format=%cI -- <path>` from git.
+
+```sh
+# Which reviewed concepts were regenerated since their last review?
+okf audit bundles/acme_retail --review-outdated
+```
 
 `--as-of <YYYY-MM-DD>` pins the date staleness is evaluated against, on both
 `okf audit` and `okf validate`; it pins to midnight UTC on that date, since §5
@@ -439,9 +738,10 @@ VS Code extension instead (see
 server. `okf-render` has its own winget package,
 **`Coderise.OKF4net.Render`**, built and attached to each Release the same way
 as `okf`'s — but its *first* submission to `winget-pkgs` is a manual, one-time
-step (see [`packaging/winget/README.md`](packaging/winget/README.md)) that has
-not happened yet, so `winget install Coderise.OKF4net.Render` will not resolve
-until it does. Until then, on Linux or macOS install it with the same script
+step (see [`packaging/winget/README.md`](packaging/winget/README.md)). It was made for 0.6.0 and
+closed, then made again for 0.7.0, and that PR is waiting in the winget-pkgs moderation queue, so
+`winget install Coderise.OKF4net.Render` will not resolve until it is merged.
+Until then, on Linux or macOS install it with the same script
 as `okf` above (`--bin okf-render`), or on any OS grab a prebuilt archive from
 a [GitHub Release](https://github.com/jchable/okf4net/releases) or build it
 from source as shown above.
@@ -479,6 +779,15 @@ tool list — through a scripted `IChatClient` against `bundles/ga4`
 (`dotnet run --project samples/agents-quickstart/src/AgentsQuickstart`).
 [`samples/acme-retail-agent/`](samples/acme-retail-agent/README.md) is the
 same kind of agent over a real OpenAI-compatible endpoint.
+[The agent builders' tutorial](docs/tutorials/agent-builders.md) walks through
+a shared `BundleHandle`, the tool modes, `OkfContextProvider`, an approved
+write and `okf-mcp`.
+[`samples/agents-handoff/`](samples/agents-handoff/README.md), also with no
+model or key, hands knowledge from one agent to another over a copy of
+`bundles/ga4`: a curator with the read-write tools writes a note, and a reader
+with the read-only tools finds it in its `OkfContextProvider` context, because
+both tool sets share one `BundleHandle` (see
+[Sharing a `BundleHandle`](src/OKF4net.Agents/README.md#sharing-a-bundlehandle-and-what-can-write)).
 
 The twelve unconditional tools, plus the thirteenth conditional on an attestation
 orchestrator being wired (read → browse → graph → search → audit → write →
@@ -486,14 +795,14 @@ verify → append → regenerate → validate → changes-since → get-computat
 
 | Tool                     | Description                                                                                                                                                                                                    |
 |--------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `okf_read_concept`       | Read one concept from the OKF bundle: its frontmatter, body, outgoing links and backlinks.                                                                                                                    |
+| `okf_read_concept`       | Read one concept from the OKF bundle: its frontmatter (a yaml block that okf_write_concept accepts as is), body, outgoing links and backlinks.                                                                 |
 | `okf_browse`             | Browse the bundle via its index files (progressive disclosure). Without a path, lists the bundle root.                                                                                                        |
 | `okf_graph`              | Inspect the cross-link graph. With a concept id: its outgoing links, backlinks and broken links. Without: bundle-wide stats.                                                                                  |
 | `okf_search`             | Full-text search across concept titles, descriptions, tags and bodies. Returns the best-matching concept id first, then spreads the remaining results across top-level id families, so the list is not in descending score order. |
 | `okf_audit`              | Audit the bundle's trust, freshness and lifecycle signals (§5.3–§5.5): counts by trust tier and status, plus the concepts needing attention. Read-only.                                                       |
 | `okf_write_concept`      | Create or update a concept document. The frontmatter must contain non-empty type, title and description (producer-grade validation is enforced before writing).                                               |
 | `okf_verify`             | Record a review (§5.2): adds or replaces the caller's `{by, at}` entry in each concept's `verified` list — a dated declaration, not a proof; never infer one from a PR approval.                            |
-| `okf_append_log`         | Append an entry to the bundle root log.md under today's date (ISO). Note: log.md is re-rendered through the strict §9 model, so non-conforming prose or comments in a hand-authored log.md are not preserved. |
+| `okf_append_log`         | Append an entry to the bundle root log.md under today's date (ISO). Note: log.md is re-rendered through the strict §9 model, so non-conforming prose or comments in a hand-authored log.md are not preserved; a leading frontmatter block is kept as it was. |
 | `okf_regenerate_indexes` | Regenerate every index.md in the bundle (progressive-disclosure listings). Run after adding or changing concepts.                                                                                             |
 | `okf_validate_bundle`    | Validate the bundle against OKF v0.2 conformance (§11). Returns the diagnostics report.                                                                                                                        |
 | `okf_changes_since`      | Summarize bundle changes since a given ISO date, aggregated from every log.md in the bundle.                                                                                                                  |
@@ -530,8 +839,8 @@ host's own filtering either. The parameterless `GetTools()` keeps its
 historical ungated meaning so existing hosts are not changed under them.
 
 The core `OKF4net` library stays dependency-free (BCL only); only
-`OKF4net.Agents` references `Microsoft.Agents.AI` (see
-[Hard rules](CLAUDE.md) for the per-project dependency policy).
+`OKF4net.Agents` references `Microsoft.Agents.AI`, and `OKF4net.Providers.S3` references
+`AWSSDK.S3` (see [Hard rules](CLAUDE.md) for the per-project dependency policy).
 
 #### Automatic context & memory (OkfContextProvider)
 
@@ -611,12 +920,15 @@ A few known v1 caveats:
   message tracks the budget closely — but it's still a soft budget, not a
   hard cap: the estimate itself is approximate, so the result can land a
   little under or over.
-- **The `<okf-context id="…">` fences are readability markers, not a security
-  boundary:** the whole injected message is untrusted user-role reference
-  data (a concept body containing a literal `</okf-context>` could visually
-  break out of its fence); this doesn't matter because nothing in that
-  message is ever treated as instructions in the first place (see the
-  security note above).
+- **The `<okf-context id="…">` elements keep their structure, but they are
+  not a security boundary:** inside an element (and in its id) every `&` is
+  written `&amp;` and every `<` `&lt;`, and the content sits in a code fence
+  longer than any fence run it holds, so a concept body containing a literal
+  `</okf-context>`, or an `index.md` that leaves a fence open, can no longer
+  close its element or reach into the next one (#122); still, the whole
+  injected message is untrusted user-role reference data, and nothing in it
+  is ever treated as instructions in the first place (see the security note
+  above).
 - **Memory is bundle-global, unscoped, and opt-in:** captured memory carries
   no session/user/tenant key, so a scored recall in `ProvideAIContextAsync`
   can surface one session's captured exchange in a completely different
@@ -708,6 +1020,14 @@ else
 }
 ```
 
+An orchestrator runs whatever sanctioned code the bundle references. A host
+that does not trust everyone who can write to the bundle's source passes
+`AttestationOrchestratorOptions.AllowedCodeDigests`. That is an allowlist of
+SHA-256 digests of the exact computation and attester texts
+(`AttestationCodeDigest.Of`). Anything else is refused before any runtime
+stage, and the refused digests are reported to the host on
+`outcome.UnapprovedCode`, never in the reasons a model sees (#154).
+
 `OKF4net.Agents`' `okf_get_computation` tool (read-only, always available)
 surfaces a computation's contract and source without running anything; pass
 an `AttestationOrchestrator` to `new OkfBundleTools(bundleRoot,
@@ -720,7 +1040,8 @@ full contract/value-type reference.
 ### Local catalog (OKF4net.Catalog)
 
 `src/OKF4net.Catalog/` and `src/OKF4net.Catalog.Hosting/` add a catalog of
-local OKF bundles: a hot-reloadable `catalog.json` manifest naming one or more
+OKF bundles (directories under the catalog root unless the host registers a
+provider factory): a hot-reloadable `catalog.json` manifest naming one or more
 bundles as *sources*, and a resolver that searches every enabled source.
 `catalog.json` is an **OKF4net manifest, not an OKF concept** — it configures
 the catalog from the outside and is not part of the OKF spec.
@@ -738,7 +1059,11 @@ KnowledgeContext result = await resolver.SearchAsync(new KnowledgeQuery("refund 
 
 **V1 limits, stated exactly:**
 
-- Local filesystem bundles only.
+- Bundles under the catalog root by default; another storage only through a
+  provider factory the host registers (`provider` in `catalog.json`, see "One
+  image per source" above). No provider but the filesystem ships with this
+  repository (#141 embedded resources, #142 S3 are the tracked ones), and
+  memory sources are always on the filesystem.
 - One shared catalog.
 - No semantic/fuzzy deduplication across sources (two manifest entries
   resolving to the *same directory* are collapsed only under the two merged
@@ -794,6 +1119,13 @@ Then point Claude Desktop at a bundle in `claude_desktop_config.json`:
 to register the four write tools as well. See
 [`src/OKF4net.Mcp/README.md`](src/OKF4net.Mcp/README.md) for the full tool list, or the
 [MCP setup guide on the site](https://jchable.github.io/okf4net/docs/mcp/).
+[`samples/second-brain/`](samples/second-brain/README.md) is a read-write
+example: a starter personal-notes bundle served writable in Claude Desktop
+(the `claude_desktop_config.json` for Windows and macOS, from the installed
+tool or from this repository), example prompts, and a smoke test that drives
+`okf-mcp` over stdio without Claude Desktop. It also says what a write does
+not do: `okf_write_concept` leaves `index.md` and `log.md` alone, and they
+change only when `okf_regenerate_indexes` and `okf_append_log` are called.
 
 ## Mapping to the spec
 
@@ -810,7 +1142,7 @@ This table is also published as the
 | §5.2 Generation and verification stamps | `Frontmatter.Generated`/`Verified`, `BundleConceptWriter.RecordVerifications` — the governed writer behind `okf verify` and `okf_verify` |
 | §5.3–§5.5 trust, lifecycle, staleness | `ConceptAudit`, `AuditQuery`, `AuditReport` — the corpus-level query behind `okf audit` and `okf_audit` |
 | §6 Cross-linking and paths            | `OKF4net.LinkScanner`, `Bundle.LinksFrom` / `Bundle.Backlinks` |
-| §6.2 Path-valued fields               | `OkfDocument.FrontmatterResources()`, `Bundle.TryResolveResource` / `Bundle.ReadResourceText` |
+| §6.2 Path-valued fields               | `OkfDocument.FrontmatterResources()`, `Bundle.TryResolveResourceKey` / `Bundle.ReadResourceText(BundleKey)` |
 | §7 Actor convention                   | `OKF4net.Actor.Parse` — `human:`/`process:`/`<producer>/<version>` |
 | §8 Index files                        | `OKF4net.IndexGenerator`                                       |
 | §9 Log files                          | `OKF4net.ChangeLog`                                            |
@@ -832,6 +1164,7 @@ This table is also published as the
 | [0.5.0](CHANGELOG.md#050---2026-07-31) | v0.2     | `--json` diagnostics on `validate`/`info`, §11 conformance now enforced for malformed reserved files, YAML multi-line scalar support, producer-facing in-memory concept API |
 | [0.6.0](CHANGELOG.md#060---2026-10-01) | v0.2     | `okf audit` / `okf verify` (§5.2–§5.5), `okf-render` split out of `okf`, `okf-mcp` read-only by default, §6.2 paths resolved from the bundle root, container-based §10 host (unpublished), hardened model-facing output and link guards |
 | [0.7.0](CHANGELOG.md#070---2026-10-14) | v0.2     | Interactive `okf-render` sites (explorer, palette, local and global link graphs), `okf` as the `OKF4net.Cli` dotnet tool, one YAML nesting rule, `okf verify` output hardened against forged lines, bounded `YamlValue` equality and emitter |
+| [0.8.0](CHANGELOG.md#080---2026-11-19) | v0.2     | Bundle providers (asynchronous `IBundleProvider`, shared `BundleHandle`), new `OKF4net.Providers.EmbeddedResources` and `OKF4net.Providers.S3` packages, a provider failure no longer read as a problem of the file, agent tools that show round-tripping frontmatter and return plain text over `okf-mcp`, `generated.by` naming the library version |
 
 ## Contributing & roadmap
 
@@ -870,6 +1203,7 @@ That applies to everything this project builds: every OKF4net library and
 binary is original work, LGPL-3.0-or-later in its entirety. The `okf` binary
 and the packages published to NuGet — `OKF4net`, `OKF4net.Agents`,
 `OKF4net.Catalog`, `OKF4net.Catalog.Hosting`, `OKF4net.Attestation`,
+`OKF4net.Providers.EmbeddedResources`, `OKF4net.Providers.S3`,
 `OKF4net.Cli`, `OKF4net.Mcp` — carry that one licence and include no third-party source
 code.
 

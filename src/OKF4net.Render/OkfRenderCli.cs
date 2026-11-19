@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-using System.Reflection;
 using OKF4net.Internal;
 using OKF4net.Viewer;
 
@@ -46,11 +45,9 @@ public static class OkfRenderCli
     /// The tool's version echoed by <c>-V</c>/<c>--version</c>, read from the
     /// assembly the build stamped. See <c>OkfCli.CliVersion</c> for why this
     /// is read from the assembly attribute rather than a hand-maintained
-    /// constant.
+    /// constant (read through the shared <see cref="ProductVersion"/>).
     /// </summary>
-    private static readonly string CliVersion =
-        typeof(OkfRenderCli).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
-        ?? "0.0.0-unknown";
+    private static readonly string CliVersion = ProductVersion.Of(typeof(OkfRenderCli).Assembly);
 
     /// <summary>The <c>--help</c> / usage text.</summary>
     private const string Usage =

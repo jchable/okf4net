@@ -1,18 +1,151 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using OKF4net;
 using OKF4net.Catalog;
+using OKF4net.Providers;
+using OKF4net.Tests.Providers;
 
 namespace OKF4net.Tests.Catalog;
 
 /// <summary>
-/// <see cref="OkfBundleKnowledgeSource"/>: stateless per-call loading,
-/// mapping of <see cref="ScoredConcept"/> to <see cref="KnowledgePassage"/>,
-/// scoring/ordering parity with the core <see cref="ConceptSearch"/>, and
-/// never-throws behaviour on a bad bundle directory.
+/// <see cref="OkfBundleKnowledgeSource"/>: one image served from a <see cref="BundleHandle"/>
+/// under its refresh policy (spec §5.2, §9), mapping of <see cref="ScoredConcept"/> to
+/// <see cref="KnowledgePassage"/>, scoring/ordering parity with the core
+/// <see cref="ConceptSearch"/>, and never-throws behaviour on a bad bundle directory.
 /// </summary>
 public class OkfBundleKnowledgeSourceTests
 {
     private static readonly string BundlePath = Path.Combine(TestPaths.RepoRoot(), "tests", "fixtures", "appendix_a");
+
+    private const string Doc = "---\ntype: Note\ntitle: Orders\ndescription: d\n---\n\nOrders and refunds.\n";
+
+    private static int Loads(InMemoryBundleProvider storage) => storage.Calls.Count(c => c == "enumerate ");
+
+    // ---- The image comes from the handle (lot D) ---------------------------
+
+    [Fact]
+    public async Task Two_searches_over_an_unchanged_bundle_load_it_once_under_OnAccess()
+    {
+        var storage = new InMemoryBundleProvider(id: "k").Add("a.md", Doc);
+        using var handle = new BundleHandle(storage, refreshPolicy: BundleRefreshPolicy.OnAccess);
+        var source = new OkfBundleKnowledgeSource("k", handle);
+
+        var first = await source.SearchAsync(new KnowledgeQuery("orders"));
+        var second = await source.SearchAsync(new KnowledgeQuery("orders"));
+
+        Assert.Single(first.Passages);
+        Assert.Single(second.Passages);
+        Assert.Equal(1, Loads(storage));
+        Assert.Same(handle, source.Handle);
+    }
+
+    [Fact]
+    public async Task A_change_in_storage_is_seen_at_the_next_search_under_OnAccess()
+    {
+        var storage = new InMemoryBundleProvider(id: "k").Add("a.md", Doc);
+        using var handle = new BundleHandle(storage, refreshPolicy: BundleRefreshPolicy.OnAccess);
+        var source = new OkfBundleKnowledgeSource("k", handle);
+
+        Assert.Single((await source.SearchAsync(new KnowledgeQuery("orders"))).Passages);
+        storage.Add("b.md", Doc);
+
+        var after = await source.SearchAsync(new KnowledgeQuery("orders"));
+        Assert.Equal(2, after.Passages.Count);
+        Assert.Equal(2, Loads(storage));
+    }
+
+    [Fact]
+    public async Task Under_Manual_the_image_is_served_until_the_host_refreshes()
+    {
+        var storage = new InMemoryBundleProvider(id: "k").Add("a.md", Doc);
+        using var handle = new BundleHandle(storage);
+        var source = new OkfBundleKnowledgeSource("k", handle);
+
+        Assert.Single((await source.SearchAsync(new KnowledgeQuery("orders"))).Passages);
+        storage.Add("b.md", Doc);
+        Assert.Single((await source.SearchAsync(new KnowledgeQuery("orders"))).Passages);
+
+        handle.Refresh();
+        Assert.Equal(2, (await source.SearchAsync(new KnowledgeQuery("orders"))).Passages.Count);
+    }
+
+    [Fact]
+    public async Task A_failed_reload_keeps_the_previous_image_served_and_a_failed_first_load_is_SourceUnavailable()
+    {
+        var storage = new InMemoryBundleProvider(id: "k").Add("a.md", Doc);
+        using var handle = new BundleHandle(storage, refreshPolicy: BundleRefreshPolicy.OnAccess);
+        var source = new OkfBundleKnowledgeSource("k", handle);
+        Assert.Single((await source.SearchAsync(new KnowledgeQuery("orders"))).Passages);
+
+        storage.Add("b.md", Doc);
+        storage.FailEnumerateWith = new IOException("storage down");
+        var stale = await source.SearchAsync(new KnowledgeQuery("orders"));
+
+        Assert.Null(stale.Diagnostic);
+        Assert.Single(stale.Passages);
+        Assert.True(handle.IsStale);
+
+        var broken = new InMemoryBundleProvider(id: "never") { FailEnumerateWith = new IOException("storage down") };
+        using var neverLoaded = new BundleHandle(broken);
+        var result = await new OkfBundleKnowledgeSource("never", neverLoaded).SearchAsync(new KnowledgeQuery("orders"));
+        Assert.Empty(result.Passages);
+        Assert.Equal(KnowledgeDiagnosticCode.SourceUnavailable, result.Diagnostic!.Code);
+        Assert.Equal("never", result.Diagnostic.SourceId);
+        Assert.Contains("bundle at 'memory://never' could not be loaded", result.Diagnostic.Message);
+    }
+
+    [Fact]
+    public async Task A_failed_token_read_keeps_the_previous_image_served()
+    {
+        var storage = new InMemoryBundleProvider(id: "k").Add("a.md", Doc);
+        using var handle = new BundleHandle(storage, refreshPolicy: BundleRefreshPolicy.OnAccess);
+        var source = new OkfBundleKnowledgeSource("k", handle);
+        Assert.Single((await source.SearchAsync(new KnowledgeQuery("orders"))).Passages);
+
+        storage.FailVersionWith = new IOException("token unreadable");
+        var result = await source.SearchAsync(new KnowledgeQuery("orders"));
+
+        Assert.Null(result.Diagnostic);
+        Assert.Single(result.Passages);
+        Assert.True(handle.IsStale);
+    }
+
+    [Fact]
+    public void The_directory_constructor_builds_its_own_OnAccess_handle_over_the_filesystem()
+    {
+        using var tmp = new TempDir();
+        var source = new OkfBundleKnowledgeSource("mine", tmp.Path);
+
+        Assert.Equal(BundleRefreshMode.OnAccess, source.Handle.RefreshPolicy.Mode);
+        var provider = Assert.IsType<FileSystemBundleProvider>(source.Handle.Provider);
+        Assert.Equal(tmp.Path, provider.Root);
+        Assert.Null(provider.ConfinementBoundary);
+        Assert.NotSame(source.Handle, new OkfBundleKnowledgeSource("other", tmp.Path).Handle);
+        Assert.Throws<ArgumentNullException>(() => new OkfBundleKnowledgeSource("x", (BundleHandle)null!));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("a\0b")]
+    public void The_directory_constructor_refuses_a_directory_that_is_null_empty_or_not_a_path(string? directory)
+    {
+        // A null or empty one is the provider's own guard; a string Path.GetFullPath rejects (an embedded NUL)
+        // is the canonicalisation of the root: both surface as an ArgumentException at construction.
+        Assert.ThrowsAny<ArgumentException>(() => new OkfBundleKnowledgeSource("x", directory!));
+    }
+
+    [Fact]
+    public void BundleRelativePath_is_the_key_or_the_relativised_path_of_a_hand_built_concept()
+    {
+        var storage = new InMemoryBundleProvider(id: "k").Add("tables/orders.md", Doc);
+        var bundle = Bundle.Load(storage);
+        var loaded = Assert.Single(bundle.Concepts);
+        Assert.Equal("tables/orders.md", OkfBundleKnowledgeSource.RelativePathOf(bundle, loaded));
+
+        var handBuilt = new Concept(loaded.Id, Path.Combine(bundle.Location, "tables", "orders.md"), loaded.Document);
+        Assert.Null(handBuilt.Key);
+        Assert.Equal("tables/orders.md", OkfBundleKnowledgeSource.RelativePathOf(bundle, handBuilt));
+    }
 
     private static void CopyDirectory(string sourceDir, string destDir)
     {
@@ -64,7 +197,7 @@ public class OkfBundleKnowledgeSourceTests
             Assert.Equal(e.Concept.Document.Frontmatter.Title, p.Title);
             Assert.Equal(e.Score, p.Score);
             Assert.Equal(ConceptSearch.Excerpt(e.Concept.Document.Body, query.Text) ?? string.Empty, p.Excerpt);
-            Assert.Equal(Path.GetRelativePath(bundle.Root, e.Concept.Path).Replace(Path.DirectorySeparatorChar, '/'), p.BundleRelativePath);
+            Assert.Equal(e.Concept.Key!.ToString(), p.BundleRelativePath);
         }
 
         // The scorer's own contract: descending score, ties broken by ascending concept id --

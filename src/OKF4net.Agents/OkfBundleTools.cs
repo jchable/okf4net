@@ -7,15 +7,22 @@ using Microsoft.Extensions.AI;
 using OKF4net.Agents.Internal;
 using OKF4net.Attestation;
 using OKF4net.Internal;
+using OKF4net.Providers;
 using OKF4net.Yaml;
 
 namespace OKF4net.Agents;
 
-/// <summary>OKF bundle operations exposed as Microsoft Agent Framework function tools.</summary>
+/// <summary>
+/// OKF bundle operations exposed as Microsoft Agent Framework function tools.
+/// <para>Build <b>one instance per conversation</b> (spec §5.4): the functions exposed to the
+/// model record what the session was shown, per instance, and <c>okf_write_concept</c> writes
+/// only what that record holds. A second tool set over the same handle shares the image and
+/// each other's writes, but not the observations: what one was shown authorises nothing for
+/// the other.</para>
+/// </summary>
 public sealed class OkfBundleTools
 {
     private const string IndexFilename = "index.md";
-    private const string LogFilename = "log.md";
     private const string NoneLine = "(none)";
 
     private const string SearchUsageMessage =
@@ -47,81 +54,90 @@ public sealed class OkfBundleTools
     /// would put the newline it is refusing into this very message.
     /// </summary>
     private const string VerifyControlCharacterMessage =
-        "Error: a §7 actor must not contain control characters.";
+        "Error: a §7 actor must not contain control, bidirectional or invisible format characters.";
 
     /// <summary>
     /// The core write primitive this tool set delegates every write to:
-    /// producer-validated create/update (<see cref="WriteConcept"/>) and
-    /// atomic read-modify-write append (<see cref="AppendToConceptAtomic"/>),
+    /// producer-validated create/update (<see cref="BundleConceptWriter.WriteConcept(string, string, string)"/>) and
+    /// atomic read-modify-write append (<see cref="BundleConceptWriter.AppendToConceptAtomic"/>),
     /// plus the bundle's write lock, which this class takes through
-    /// <see cref="BundleConceptWriter.EnterWriteLock"/> at each site rather
-    /// than caching a lock object. Constructed with <c>onWriteCommitted:
-    /// () =&gt; _bundle = null</c> so a successful write invalidates this
-    /// instance's cache atomically with the write, from inside the shared
-    /// lock.
+    /// <see cref="BundleConceptWriter.EnterWriteLockAsync"/> at each site rather
+    /// than caching a lock object. Built over <see cref="_handle"/>: a committed write invalidates
+    /// the handle's image, after the write lease is released (#152).
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The write lock guards <see cref="_bundle"/> and every write this class
-    /// performs to disk. Agent hosts may invoke tool methods concurrently from
-    /// multiple threads, so the lazy cache in <see cref="GetBundle"/> and the
-    /// invalidation in <see cref="InvalidateBundle"/> must not race; the same
-    /// lock also serializes <see cref="AppendLog"/> and
-    /// <see cref="RegenerateIndexes"/>'s own read-modify-write sequences
-    /// (each holds it around the read, the write, and its own cache
-    /// invalidation) against <see cref="_writer"/>'s own writes, so two
-    /// concurrent calls into the same tool can't interleave and lose one
-    /// side's update.
+    /// The write lease guards the image load (<see cref="GetBundleAsync"/> holds it while the handle loads, so a read never
+    /// interleaves with this tool set's own writes, decision Q6 of the async design) and the
+    /// read-modify-write sequences of <see cref="RegenerateIndexesAsync"/> and the writer's own methods, so two
+    /// concurrent calls into the same tool set cannot interleave and lose one side's update. The
+    /// invalidation of the handle (<see cref="InvalidateBundleAsync"/>) is a lock-free increment and takes no lease.
     /// </para>
     /// <para>
-    /// The guarantee is <see cref="BundleConceptWriter.EnterWriteLock"/>'s:
-    /// tool sets and writers in one process serialize when, at the moment they
-    /// take the lock, their roots resolve to the same directory, so a junction
-    /// or symlink to the bundle shares the lock; resolution failure falls back
-    /// to the lexical root; a topology change during an operation is not
-    /// followed -- a writer method called while this class already holds the
-    /// lock re-enters the object held, never a second resolved one. A stable
-    /// gate also serializes identical namespace-normalized lexical roots
-    /// across changes of resolved key, with one exception: a thread already
-    /// holding a write lock never waits for that gate. A nested acquisition
-    /// that finds it busy (which ordinary contention on that root causes, with
-    /// no topology change) holds no gate for its whole operation; if the
-    /// root's resolution changes while it runs, another writer on the same
-    /// lexical root can overlap it. Releasing the gate before the monitor,
-    /// and retrying it once (without blocking) after resolving, narrow this
-    /// but do not close it. Different aliases can still
-    /// diverge during an active topology change; targets are not pinned.
-    /// Nested calls over different resolved bundles need a consistent lock
-    /// order over the registry's case-folded keys. A link on the path
-    /// retargeted during an operation, even one every alias follows, splits
-    /// the bundle in two for that purpose: aliases of it nested in opposite
-    /// order can then deadlock between their resolved monitors. It does NOT
-    /// serialize writes across separate processes (e.g. two CLI invocations,
-    /// or two server processes sharing a network path), and a C# lock cannot
-    /// defend against a concurrent external actor mutating the bundle's files
-    /// directly on disk. The per-instance <see cref="_bundle"/> CACHE
-    /// deliberately stays instance-level: <see cref="AppendToConceptAtomic"/>
-    /// always re-reads the concept's on-disk body under this lock rather than
-    /// trusting any cache, so two instances having independent caches does not
-    /// affect write correctness, only how eagerly each one's read-only calls
-    /// see another instance's writes before their own next reload.
+    /// The guarantee is <see cref="BundleConceptWriter.EnterWriteLock"/>'s: tool sets and writers in one process serialize when, at the
+    /// moment they take the lease, their roots resolve to the same directory, so a junction or symlink to the bundle
+    /// shares the lock; resolution failure falls back to the lexical root; a topology change during an operation
+    /// is not followed. The lease is NOT re-entrant (it is not tied to a thread, so it can be held across an
+    /// <see langword="await"/>): code that already holds it receives it instead of acquiring again, and a contended
+    /// resolved lock is waited for without the lexical gate, so no wait cycle passes through a gate. It does NOT
+    /// serialize writes across separate processes (e.g. two CLI invocations, or two server processes sharing a
+    /// network path), and a C# lock cannot defend against a concurrent external actor mutating the bundle's files
+    /// directly on disk. The image (<see cref="_handle"/>) is per handle, shared only with the consumers the host
+    /// gives the same handle to: <see cref="AppendToConceptAtomicAsync"/> always re-reads the concept's stored body
+    /// under the lease rather than trusting any image, so two instances having independent images does not affect
+    /// write correctness, only how eagerly each one's read-only calls see another instance's writes before their own
+    /// next reload.
     /// </para>
     /// </remarks>
     private readonly BundleConceptWriter _writer;
 
-    private Bundle? _bundle;
+    /// <summary>
+    /// The image holder (spec §5.2): the one cache of this tool set, shared with any
+    /// <c>OkfContextProvider</c> built over it and with whatever else the host hands the same
+    /// handle to. Every read tool takes its <see cref="Bundle"/> from it through
+    /// <see cref="GetBundle"/>; every write invalidates it (<see cref="BundleConceptWriter(BundleHandle, Action?)"/>).
+    /// </summary>
+    private readonly BundleHandle _handle;
+
+    /// <summary>The root directory when the handle is over a <see cref="FileSystemBundleProvider"/> (the string the constructor was given, or that provider's <see cref="FileSystemBundleProvider.Root"/>); <see langword="null"/> otherwise.</summary>
+    private readonly string? _root;
 
     /// <summary>
     /// The §10.5 attestation orchestrator, if one has been wired for this tool
     /// set. <see langword="null"/> unless the <see cref="OkfBundleTools(string, AttestationOrchestrator?)"/>
     /// overload was used with a non-null orchestrator — in that case,
-    /// <see cref="RunComputation"/> is a no-op error and <see cref="GetTools()"/>
+    /// <see cref="RunComputationAsync"/> is a no-op error and <see cref="GetTools()"/>
     /// omits <c>okf_run_computation</c> entirely (§10.5 requires a host-supplied
     /// runtime; there is nothing sane to expose without one). <see cref="GetComputation"/>
     /// never depends on this field: reading a computation's contract and
     /// source needs no runtime.
     /// </summary>
     private readonly AttestationOrchestrator? _orchestrator;
+
+    /// <summary>
+    /// What this tool set's session was shown, and to what end (spec §5.4, D1): recorded only
+    /// by the functions exposed to the model (<c>okf_read_concept</c>, <c>okf_get_computation</c>),
+    /// once they have produced their complete result — never by the public
+    /// <see cref="ReadConcept"/> and <see cref="GetComputation"/> a host or an
+    /// <c>OkfContextProvider</c> calls (D5: an injection is not an observation). Consulted by
+    /// <c>okf_write_concept</c> and <c>okf_run_computation</c>. Per instance: not shared
+    /// through the handle, and it survives every refresh of the image.
+    /// </summary>
+    private readonly ObservationRegistry _observations = new();
+
+    /// <summary>The session's observation registry; a test seam.</summary>
+    internal ObservationRegistry Observations => _observations;
+
+    private const string ReadConceptDescription = "Read one concept from the OKF bundle: its frontmatter (a yaml block that okf_write_concept accepts as is), body, outgoing links and backlinks.";
+    private const string ConceptIdDescription = "The concept id, e.g. 'tables/orders'.";
+    private const string WriteConceptDescription = "Create or update a concept document. The frontmatter must contain non-empty type, title and description (producer-grade validation is enforced before writing).";
+    private const string WriteConceptIdDescription = "The concept id (path without .md), e.g. 'tables/refunds'.";
+    private const string FrontmatterYamlDescription = "Frontmatter as YAML (subset), without the '---' delimiters; nested maps and lists keep their structure (e.g. the frontmatter block okf_read_concept shows, as is).";
+    private const string BodyDescription = "The markdown body.";
+    private const string GetComputationDescription = "Read an Attested Computation's §10 contract (runtime, parameters, executor, attester) and its sanctioned computation source (inline code, or the text of a referenced file).";
+    private const string ComputationIdDescription = "The concept id, e.g. 'computations/monthly-revenue'.";
+    private const string RunComputationDescription = "Run an Attested Computation (§10.5: bind, execute, attest, gate on staleness) via the configured attestation runtime, and return the resulting outcome (displayable, verdict, receipt, reasons).";
+    private const string ParameterValuesDescription = "Parameter values for this run, by name (§10.3: values only, never computation code).";
 
     /// <summary>
     /// Creates the tool set rooted at <paramref name="bundleRoot"/>, without an
@@ -142,29 +158,73 @@ public sealed class OkfBundleTools
     /// equivalent to <see cref="OkfBundleTools(string)"/>: <c>okf_get_computation</c>
     /// is still exposed (it is read-only and needs no runtime), but
     /// <c>okf_run_computation</c> is omitted from <see cref="GetTools()"/> and
-    /// <see cref="RunComputation"/> reports a plain-text error instead of
+    /// <see cref="RunComputationAsync"/> reports a plain-text error instead of
     /// running anything.
     /// </summary>
     /// <param name="bundleRoot">Path to the bundle's root directory.</param>
     /// <param name="orchestrator">The attestation orchestrator to run §10.5 computations through, or <see langword="null"/> to leave attested-computation execution unwired.</param>
     /// <exception cref="ArgumentException"><paramref name="bundleRoot"/> does not exist.</exception>
     public OkfBundleTools(string bundleRoot, AttestationOrchestrator? orchestrator)
+        : this(bundleRoot, orchestrator, writeProvider: null)
     {
-        if (!Directory.Exists(bundleRoot))
-        {
-            throw new ArgumentException($"bundle root does not exist: {bundleRoot}", nameof(bundleRoot));
-        }
+    }
 
-        BundleRoot = bundleRoot;
+    /// <summary>
+    /// As <see cref="OkfBundleTools(string, AttestationOrchestrator?)"/>, with the provider the
+    /// writer writes through when it is not the filesystem one built over
+    /// <paramref name="bundleRoot"/> — a test seam (a provider that commits and then fails with
+    /// an unknown outcome); reads still go through <paramref name="bundleRoot"/>.
+    /// </summary>
+    internal OkfBundleTools(string bundleRoot, AttestationOrchestrator? orchestrator, IBundleProvider? writeProvider)
+        : this(
+            Directory.Exists(bundleRoot)
+                ? new BundleHandle(new FileSystemBundleProvider(bundleRoot))
+                : throw new ArgumentException($"bundle root does not exist: {bundleRoot}", nameof(bundleRoot)),
+            orchestrator,
+            writeProvider)
+    {
+        _root = bundleRoot;
+    }
+
+    /// <summary>
+    /// Creates the tool set over <paramref name="handle"/> (spec §5.2, §9): its image is the
+    /// handle's, reloaded under the handle's refresh policy and after this tool set's own
+    /// writes, and shared with every other consumer the host gives the same handle to — an
+    /// <c>OkfContextProvider</c> built over this tool set uses it too. The write tools are
+    /// offered only when the handle's provider can write (<see cref="GetTools(OkfToolMode)"/>).
+    /// </summary>
+    /// <param name="handle">The handle over the bundle's provider.</param>
+    /// <param name="orchestrator">The attestation orchestrator to run §10.5 computations through, or <see langword="null"/> to leave attested-computation execution unwired.</param>
+    public OkfBundleTools(BundleHandle handle, AttestationOrchestrator? orchestrator = null)
+        : this(handle, orchestrator, writeProvider: null)
+    {
+    }
+
+    private OkfBundleTools(BundleHandle handle, AttestationOrchestrator? orchestrator, IBundleProvider? writeProvider)
+    {
+        ArgumentNullException.ThrowIfNull(handle);
+        _handle = handle;
+        _root = (handle.Provider as FileSystemBundleProvider)?.Root;
         _orchestrator = orchestrator;
 
-        _writer = new BundleConceptWriter(bundleRoot, onWriteCommitted: () => _bundle = null);
+        _writer = writeProvider is null
+            ? new BundleConceptWriter(handle)
+            : new BundleConceptWriter(writeProvider, onWriteCommitted: handle.Invalidate, handle.Options);
         _writer.AutoStampGenerated = true;
         _writer.UtcNow = () => UtcNow();
     }
 
-    /// <summary>The bundle's root directory, as passed to the constructor.</summary>
-    public string BundleRoot { get; }
+    /// <summary>The handle this tool set serves its image from (spec §5.2); give it to an <c>OkfContextProvider</c> or another tool set to share one image.</summary>
+    public BundleHandle Handle => _handle;
+
+    /// <summary>The bundle's displayable location (the root directory for the filesystem provider).</summary>
+    public string Location => _handle.Location;
+
+    /// <summary>The bundle's root directory: the string a root-based constructor was given, or the filesystem provider's root. Obsolete (spec §9, §10): a tool set over another provider has no root.</summary>
+    /// <exception cref="NotSupportedException">The tool set is over another provider: a path has no meaning for it (spec §9).</exception>
+    [Obsolete("OkfBundleTools.BundleRoot has no meaning for a tool set over a provider other than the filesystem: use Location (the provider's displayable location), or Handle.Provider as a FileSystemBundleProvider for its Root. Removed with the asynchronous provider contract (#152).")]
+    public string BundleRoot => _root
+        ?? throw new NotSupportedException("this tool set is not over a filesystem provider, so it has no bundle root");
 
     /// <summary>
     /// Wall-clock ceiling on one <see cref="RunComputationAsync"/> run, default
@@ -197,28 +257,93 @@ public sealed class OkfBundleTools
     private DateTimeOffset Now => new(DateTime.SpecifyKind(UtcNow(), DateTimeKind.Utc), TimeSpan.Zero);
 
     /// <summary>
-    /// Returns the loaded bundle, loading it from <see cref="BundleRoot"/> on
-    /// first access and caching it thereafter until <see cref="InvalidateBundle"/>
-    /// is called.
+    /// Returns the handle's image (<see cref="BundleHandle.GetCurrentAsync"/>, taken synchronously here): loaded on first
+    /// access, reloaded under the handle's refresh policy and after <see cref="InvalidateBundle"/>.
+    /// Taken under the write lock, as before the handle, so that a read never interleaves
+    /// with this tool set's own writes.
     /// </summary>
     internal Bundle GetBundle()
     {
         using (_writer.EnterWriteLock())
         {
-            return _bundle ??= Bundle.Load(BundleRoot);
+            return _handle.Current;
         }
     }
 
     /// <summary>
-    /// Drops the cached bundle so the next <see cref="GetBundle"/> call
-    /// reloads it from disk. Call after any write to <see cref="BundleRoot"/>.
+    /// Obliges the handle to reload at the next <see cref="GetBundle"/>
+    /// (<see cref="BundleHandle.Invalidate"/>). Call after any write to the bundle.
     /// </summary>
-    internal void InvalidateBundle()
+    internal void InvalidateBundle() => _handle.Invalidate();
+
+    /// <summary>
+    /// The result of an asynchronous tool for a synchronous caller (the obsolete <c>string</c> methods,
+    /// #152): only over a provider that completes synchronously — refused before anything starts
+    /// otherwise — and waiting, if need be, for what that provider makes finite: this tool set's own lease,
+    /// a load another consumer of the same handle has in progress, and a write's retry delay; never for a
+    /// provider that answers later.
+    /// </summary>
+    private string RunSync(Func<Task<string>> tool)
     {
-        using (_writer.EnterWriteLock())
+        // Refused BEFORE the tool starts: an asynchronous tool begins its I/O as soon as it is called.
+        SyncBridge.RequireSynchronousProvider(_handle.Provider);
+        return tool().GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// <see cref="GetBundle"/> without the blocking (#152): the handle's image, loaded asynchronously
+    /// (<see cref="BundleHandle.GetCurrentAsync"/>) while the tool set's write lock is held, so that a
+    /// read still never interleaves with this tool set's own writes (decision Q6 of the design).
+    /// </summary>
+    internal async Task<Bundle> GetBundleAsync(CancellationToken ct)
+    {
+        var lease = await _writer.EnterWriteLockAsync(ct).ConfigureAwait(false);
+        try
         {
-            _bundle = null;
+            return await _handle.GetCurrentAsync(ct).ConfigureAwait(false);
         }
+        finally
+        {
+            lease.Dispose();
+        }
+    }
+
+    /// <summary><see cref="InvalidateBundle"/> without the blocking (#152).</summary>
+    internal Task InvalidateBundleAsync(CancellationToken ct)
+    {
+        // Never waits and never honours the token: the invalidation of a write that came back
+        // with an error (or was cancelled after a commit) is what keeps the handle from serving
+        // what the storage no longer holds, and BundleHandle.Invalidate is a lock-free increment.
+        _handle.Invalidate();
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// A write tool's result, passed on: an <c>Error:</c> text invalidates the handle's image. The
+    /// writer's notification (which does that after a committed write) never runs for a write
+    /// whose outcome is unknown — the content may have landed all the same — so a failed write
+    /// must not leave the handle serving what the file no longer holds. A refused write costs one
+    /// reload at the next read.
+    /// </summary>
+    private string DropBundleOnError(string result)
+    {
+        if (result.StartsWith("Error:", StringComparison.Ordinal))
+        {
+            InvalidateBundle();
+        }
+
+        return result;
+    }
+
+    /// <summary><see cref="DropBundleOnError"/> without the blocking (#152).</summary>
+    private async Task<string> DropBundleOnErrorAsync(string result, CancellationToken ct)
+    {
+        if (result.StartsWith("Error:", StringComparison.Ordinal))
+        {
+            await InvalidateBundleAsync(ct).ConfigureAwait(false);
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -246,7 +371,16 @@ public sealed class OkfBundleTools
     /// call returns a fresh list of freshly-created <see cref="AIFunction"/>
     /// instances bound to this <see cref="OkfBundleTools"/> — invoking one
     /// invokes the corresponding public method above, including its
-    /// never-throw behavior.
+    /// never-throw behavior, with four exceptions: <c>okf_read_concept</c>,
+    /// <c>okf_get_computation</c>, <c>okf_write_concept</c> and
+    /// <c>okf_run_computation</c> invoke internal wrappers that record what the
+    /// session was shown (spec §5.4), <c>okf_write_concept</c> refuses a concept
+    /// this session has not read (or seen absent) with no write, and
+    /// <c>okf_run_computation</c> refuses a computation this session was not
+    /// shown (the concept in full or as code, a file computation's file as code,
+    /// at the versions the image holds) with no runtime called. The public
+    /// methods record and require nothing. Observations are per instance: use
+    /// one tool set per conversation.
     ///
     /// Names are explicit snake_case (the default would be the C# method
     /// name); descriptions are omitted here and instead derived by
@@ -287,18 +421,18 @@ public sealed class OkfBundleTools
     {
         var tools = new List<AITool>
         {
-            AIFunctionFactory.Create(ReadConcept, "okf_read_concept"),
-            AIFunctionFactory.Create(Browse, "okf_browse"),
-            AIFunctionFactory.Create(Graph, "okf_graph"),
-            AIFunctionFactory.Create(Search, "okf_search"),
-            AIFunctionFactory.Create(Audit, "okf_audit"),
-            AIFunctionFactory.Create(WriteConcept, "okf_write_concept"),
-            AIFunctionFactory.Create(Verify, "okf_verify"),
-            AIFunctionFactory.Create(AppendLog, "okf_append_log"),
-            AIFunctionFactory.Create(RegenerateIndexes, "okf_regenerate_indexes"),
-            AIFunctionFactory.Create(ValidateBundle, "okf_validate_bundle"),
-            AIFunctionFactory.Create(ChangesSince, "okf_changes_since"),
-            AIFunctionFactory.Create(GetComputation, "okf_get_computation"),
+            AIFunctionFactory.Create(ReadConceptTool, "okf_read_concept"),
+            AIFunctionFactory.Create(BrowseAsync, "okf_browse"),
+            AIFunctionFactory.Create(GraphAsync, "okf_graph"),
+            AIFunctionFactory.Create(SearchAsync, "okf_search"),
+            AIFunctionFactory.Create(AuditAsync, "okf_audit"),
+            AIFunctionFactory.Create(WriteConceptTool, "okf_write_concept"),
+            AIFunctionFactory.Create(VerifyAsync, "okf_verify"),
+            AIFunctionFactory.Create(AppendLogAsync, "okf_append_log"),
+            AIFunctionFactory.Create(RegenerateIndexesAsync, "okf_regenerate_indexes"),
+            AIFunctionFactory.Create(ValidateBundleAsync, "okf_validate_bundle"),
+            AIFunctionFactory.Create(ChangesSinceAsync, "okf_changes_since"),
+            AIFunctionFactory.Create(GetComputationTool, "okf_get_computation"),
         };
 
         if (_orchestrator is not null)
@@ -308,7 +442,16 @@ public sealed class OkfBundleTools
             // same two parameters while the host gains a way to stop a wedged run.
             // Wrapped so a duplicate top-level parameter name in the model's JSON is an
             // error rather than last-wins; the schema the model sees is unchanged.
-            tools.Add(new TopLevelDuplicateParameterGuard(AIFunctionFactory.Create(RunComputationAsync, "okf_run_computation")));
+            tools.Add(new TopLevelDuplicateParameterGuard(AIFunctionFactory.Create(RunComputationToolAsync, "okf_run_computation")));
+        }
+
+        // The effective permission to write is `provider.CanWrite && mode != ReadOnly`
+        // (spec §3): over a provider that cannot write, the write tools are not offered,
+        // by the same filtering as ReadOnly; the library's BundleReadOnlyException stays
+        // the last rampart for a direct caller.
+        if (!_handle.Provider.Capabilities.CanWrite)
+        {
+            mode = OkfToolMode.ReadOnly;
         }
 
         return mode switch
@@ -327,28 +470,119 @@ public sealed class OkfBundleTools
     /// Reads one concept: its frontmatter, body, outgoing links, and
     /// backlinks, rendered as agent-friendly markdown. Never throws for
     /// expected errors (a null/blank, malformed, or unknown concept id, or a
-    /// bundle that fails to (re)load) — those are reported as a plain-text
-    /// message instead.
+    /// bundle whose first load fails) — those are reported as a plain-text
+    /// message instead. A reload that fails keeps the previous image served
+    /// (<see cref="BundleHandle.IsStale"/>, <see cref="BundleHandle.LastLoadError"/>).
     /// </summary>
     /// <param name="conceptId">The concept id, e.g. <c>tables/orders</c>.</param>
-    [Description("Read one concept from the OKF bundle: its frontmatter, body, outgoing links and backlinks.")]
-    public string ReadConcept([Description("The concept id, e.g. 'tables/orders'.")] string conceptId)
+    [Description(ReadConceptDescription)]
+    [Obsolete("Use ReadConceptAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string ReadConcept([Description(ConceptIdDescription)] string conceptId) => RunSync(() => ReadConceptAsync(conceptId));
+
+    /// <summary>
+    /// The asynchronous <see cref="ReadConcept"/> (#152): the same text, the image loaded asynchronously.
+    /// A host method: it records no observation (an injection of context is not one).
+    /// </summary>
+    /// <param name="conceptId">The concept id.</param>
+    /// <param name="ct">Stops the wait for the image.</param>
+    [Description(ReadConceptDescription)]
+    public async Task<string> ReadConceptAsync([Description(ConceptIdDescription)] string conceptId, CancellationToken ct = default) =>
+        (await ReadConceptCoreAsync(conceptId, describeUnreadable: false, ct).ConfigureAwait(false)).Result;
+
+    /// <summary>
+    /// <c>okf_read_concept</c>: <see cref="ReadConcept"/>, then the observation (spec §5.4):
+    /// the whole concept shown at its version, or the key shown absent. Recorded here, at the
+    /// presentation boundary, never in the public method a host or an <c>OkfContextProvider</c>
+    /// calls (D5). Internal so that tests reach the exposed function without the AI plumbing.
+    /// </summary>
+    [Description(ReadConceptDescription)]
+    internal async Task<string> ReadConceptTool([Description(ConceptIdDescription)] string conceptId, CancellationToken ct = default)
+    {
+        var (result, key, version) = await ReadConceptCoreAsync(conceptId, describeUnreadable: true, ct).ConfigureAwait(false);
+        if (key is not null)
+        {
+            if (version is { } shown)
+            {
+                _observations.RecordFullConcept(key, shown);
+            }
+            else
+            {
+                _observations.RecordAbsent(key);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// <see cref="ReadConcept"/>, reporting what the rendering showed: the key
+    /// with its version when the whole concept was rendered, the
+    /// the key alone when the id parsed and nothing exists under it (shown
+    /// absent), neither otherwise (an invalid id, a bundle that failed to load, an object that
+    /// exists without a known version). An object that exists but is no concept (a parse
+    /// failure) is never reported absent to the observation: with <paramref name="describeUnreadable"/>
+    /// (the model-facing <c>okf_read_concept</c>) it is described in the message and shown with
+    /// its version; without it (the public method, whose text is what it always was) the message
+    /// is the plain not-found one and nothing is reported.
+    /// </summary>
+    private async Task<(string Result, BundleKey? Key, BundleObjectVersion? Version)> ReadConceptCoreAsync(string conceptId, bool describeUnreadable, CancellationToken ct)
     {
         if (GuardConceptId(conceptId) is { } err)
         {
-            return err;
+            return (err, null, null);
         }
 
-        return RunTool(() =>
+        BundleKey? shownKey = null;
+        BundleObjectVersion? shownVersion = null;
+        var result = await RunToolAsync(async () =>
         {
-            var bundle = GetBundle();
-            if (!ConceptId.TryParse(conceptId, out var id) || bundle.Get(id) is not { } concept)
+            var bundle = await GetBundleAsync(ct).ConfigureAwait(false);
+            if (!ConceptId.TryParse(conceptId, out var id))
             {
                 return ConceptNotFoundMessage(conceptId);
             }
 
-            var sb = new StringBuilder();
-            sb.Append("# ").Append(DisplayTitle(concept, concept.Id.ToString())).Append('\n').Append('\n');
+            if (bundle.Get(id) is not { } concept)
+            {
+                var missingKey = id.ToKey();
+                if (!describeUnreadable)
+                {
+                    return ConceptNotFoundMessage(conceptId);
+                }
+
+                // An object that exists but did not become a concept (an unterminated
+                // frontmatter fence, invalid YAML, an oversized file, a bundle index or log)
+                // is NOT absent: recording it absent would make the write a MustNotExist
+                // that the storage refuses ("already exists"), and the re-read would say
+                // "not found" again, for ever. Where the image holds a version of the
+                // object, show it as read in full at that version, so that the repair is a
+                // rewrite conditioned on it (IfMatch), as the writer allows it.
+                if (bundle.ObjectVersions.TryGetValue(missingKey, out var existingVersion))
+                {
+                    shownKey = missingKey;
+                    shownVersion = existingVersion;
+                    return ModelTextBuilder.Message($"Concept '{id}' exists but could not be read as a concept: {UnreadableReason(bundle, missingKey)} It can be rewritten with okf_write_concept.");
+                }
+
+                if (bundle.ParseProblems.Any(p => missingKey.Equals(p.Key)))
+                {
+                    // Existing, with no version in the image (an oversized object): nothing
+                    // was shown that a write could be conditioned on, so nothing is recorded.
+                    return ModelTextBuilder.Message($"Concept '{id}' exists but could not be read as a concept: {UnreadableReason(bundle, missingKey)} It cannot be rewritten through this tool.");
+                }
+
+                if (bundle.IndexKeys.Contains(missingKey) || bundle.LogKeys.Contains(missingKey))
+                {
+                    return ModelTextBuilder.Message($"'{id}' is not a concept: that name is a bundle index or log file.");
+                }
+
+                shownKey = missingKey;
+                return ConceptNotFoundMessage(conceptId);
+            }
+
+            var conceptKey = concept.Key ?? id.ToKey();
+            var text = new ModelTextBuilder();
+            text.Line($"# {DisplayTitle(concept, concept.Id.ToString())}").Line();
 
             var fm = concept.Document.Frontmatter;
             var lc = fm.Lifecycle;
@@ -356,50 +590,82 @@ public sealed class OkfBundleTools
             var stale = lc.IsStale(Now);
             if (lc.Status != ConceptStatus.Stable || trust != TrustTier.Unverified || stale)
             {
-                sb.Append("> status: ").Append(AuditVocabulary.Name(lc.Status))
-                  .Append(" | trust: ").Append(AuditVocabulary.Name(trust))
-                  .Append(" | stale: ").Append(stale ? "yes" : "no")
-                  .Append("\n\n");
+                text.Line($"> status: {AuditVocabulary.Name(lc.Status)} | trust: {AuditVocabulary.Name(trust)} | stale: {(stale ? "yes" : "no")}").Line();
             }
 
-            AppendFrontmatterBlock(sb, concept.Document.Frontmatter);
-            sb.Append(concept.Document.Body.TrimEnd('\n')).Append('\n').Append('\n');
-            AppendSection(sb, "Outgoing links", FormatOutgoingLinks(bundle.LinksFrom(id)));
-            sb.Append('\n');
-            AppendSection(sb, "Backlinks", FormatBacklinks(bundle.Backlinks(id)));
+            AppendFrontmatterBlock(text, concept.Document.Frontmatter);
+
+            // The body is the one multi-line value here: fenced, so that a body line reading
+            // "## Backlinks" cannot pass for the real section below (#122).
+            text.Block(BlockKind.ConceptBody, concept.Document.Body).Line();
+            AppendSection(text, "Outgoing links", FormatOutgoingLinks(bundle.LinksFrom(id)));
+            text.Line();
+            AppendSection(text, "Backlinks", FormatBacklinks(bundle.Backlinks(id)));
 
             if (fm.IsAttestedComputation)
             {
-                sb.Append('\n');
-                AppendContractSummary(sb, fm.ComputationContract);
-                sb.Append(_orchestrator is not null
-                    ? "(Use okf_get_computation for the full computation source; okf_run_computation to run it.)"
-                    : "(Use okf_get_computation for the full computation source.)").Append('\n');
+                text.Line();
+                AppendContractSummary(text, fm.ComputationContract);
+                if (_orchestrator is not null)
+                {
+                    text.Line($"(Use okf_get_computation for the full computation source; okf_run_computation to run it.)");
+                }
+                else
+                {
+                    text.Line($"(Use okf_get_computation for the full computation source.)");
+                }
             }
 
-            return sb.ToString();
-        });
+            // Recorded only now, after a complete rendering (an exception above shows nothing).
+            if (bundle.ObjectVersions.TryGetValue(conceptKey, out var objectVersion))
+            {
+                shownKey = conceptKey;
+                shownVersion = objectVersion;
+            }
+
+            return text.ToString();
+        }).ConfigureAwait(false);
+        return (result, shownKey, shownVersion);
+    }
+
+    /// <summary>
+    /// The library-authored reason the loader gave for an object that exists but is no concept,
+    /// as one sentence ending in a period and followed by a space; a generic sentence when the
+    /// loader recorded none. Names keys and parser messages, never a host path.
+    /// </summary>
+    private static string UnreadableReason(Bundle bundle, BundleKey key)
+    {
+        var problem = bundle.ParseProblems.FirstOrDefault(p => key.Equals(p.Key));
+        var reason = problem is null ? "its content is not a valid OKF document" : ModelText.Fold(problem.Error).TrimEnd();
+        return reason.EndsWith('.') ? reason + " " : reason + ". ";
     }
 
     /// <summary>
     /// Browses the bundle via its <c>index.md</c> files (progressive
-    /// disclosure): returns the raw content of the requested directory's
-    /// index if one exists, otherwise a generated listing of the concepts
+    /// disclosure): returns the content of the requested directory's index if
+    /// one exists (after a line naming whose index it is, inside a fence it
+    /// cannot close: <see cref="BlockKind.IndexText"/>), otherwise a generated listing of the concepts
     /// and subdirectories at that level. Never throws for expected errors
-    /// (an invalid, traversing, or out-of-bundle path, or a bundle that
-    /// fails to (re)load) — those are reported as a plain-text message
+    /// (an invalid, traversing, or out-of-bundle path, or a bundle whose
+    /// first load fails) — those are reported as a plain-text message
     /// instead.
     /// </summary>
     /// <param name="path">Optional directory path within the bundle, e.g. <c>tables</c>. Omit to list the bundle root.</param>
+    [Obsolete("Use BrowseAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string Browse(string? path = null) => RunSync(() => BrowseAsync(path));
+
+    /// <summary>The asynchronous <see cref="Browse"/> (#152): the same text, the image and the index read asynchronously.</summary>
+    /// <param name="path">Optional directory path within the bundle, e.g. <c>tables</c>. Omit to list the bundle root.</param>
+    /// <param name="ct">Stops the wait for the image and the reads.</param>
     [Description("Browse the bundle via its index files (progressive disclosure). Without a path, lists the bundle root.")]
-    public string Browse([Description("Optional directory path within the bundle, e.g. 'tables'.")] string? path = null)
+    public async Task<string> BrowseAsync([Description("Optional directory path within the bundle, e.g. 'tables'.")] string? path = null, CancellationToken ct = default)
     {
         if (path is not null && path.Contains('\0'))
         {
             return "Error: invalid path — it must not contain a null character.";
         }
 
-        return RunTool(() =>
+        return await RunToolAsync(async () =>
         {
             var relPath = path?.Trim() ?? string.Empty;
             var segments = relPath.Length == 0
@@ -408,55 +674,88 @@ public sealed class OkfBundleTools
 
             if (segments.Any(s => s == "..") || Path.IsPathRooted(relPath))
             {
-                // Folded: `path` is the tool's own argument, which the guard
-                // above rejects for shape, not for line terminators. See OneLine.
-                return $"Error: invalid path '{OneLine(path ?? string.Empty)}' — '..' segments and absolute paths are not allowed.";
+                // `path` is the tool's own argument, which the guard above rejects
+                // for shape, not for line terminators: folded like every hole.
+                return ModelTextBuilder.Message($"Error: invalid path '{path}' — '..' segments and absolute paths are not allowed.");
             }
 
-            var bundle = GetBundle();
-            var fullDir = segments.Length == 0 ? bundle.Root : Path.Combine([bundle.Root, .. segments]);
+            var bundle = await GetBundleAsync(ct).ConfigureAwait(false);
 
-            // Strict ancestor walk: Browse reads through fullDir, so a directory
-            // whose link status cannot be read is refused like a link (a guard
-            // fails closed -- see ReparsePoints.IsReparsePointOrUninspectable).
-            if (!ReparsePoints.IsWithinBundleRoot(bundle.Root, fullDir)
-                || !Directory.Exists(fullDir)
-                || ReparsePoints.HasReparsePointOrUninspectableAncestor(bundle.Root, fullDir))
+            // A directory is a prefix of the key space (spec §2): it exists while an object
+            // lies under it, and its key must pass the load's policy. The provider answers
+            // through its own guards -- a prefix through a junction, or one whose entry cannot
+            // be inspected, is refused, never listed -- so every path that does not resolve
+            // lands on the one not-found line below.
+            BundleKey? prefix = null;
+            if (segments.Length > 0
+                && (!BundleKey.TryParse(string.Join('/', segments), out prefix, out _)
+                    || !bundle.IsKeyAllowed(prefix, out _)
+                    || !await PrefixExistsAsync(bundle, prefix, ct).ConfigureAwait(false)))
             {
-                // Folded, same reason as the invalid-path line above: this is
-                // the one Browse message an arbitrary string reaches, since
-                // any path that does not resolve lands here. See OneLine.
-                return $"Error: path '{OneLine(path ?? string.Empty)}' not found in the bundle. Use okf_browse to list available directories.";
+                // Same as the invalid-path line above: this is the one Browse
+                // message an arbitrary string reaches, since any path that does
+                // not resolve lands here.
+                return ModelTextBuilder.Message($"Error: path '{path}' not found in the bundle. Use okf_browse to list available directories.");
             }
 
-            var indexPath = Path.Combine(fullDir, IndexFilename);
-            if (File.Exists(indexPath))
+            // The directory's index.md as it is now, read through the provider as strict
+            // UTF-8 (spec §9; a non-UTF-8 index is an Error: like any unreadable object);
+            // without one, a listing generated from the image.
+            var indexKey = prefix is null ? BundleKey.Parse(IndexFilename) : prefix.Append(IndexFilename);
+            try
             {
-                return File.ReadAllText(indexPath);
-            }
+                // One leading U+FEFF is the file's byte-order mark, which the direct read
+                // used to drop; the strict reader keeps it as a character. Browse is the
+                // one producer of an index text, for the tool and for the context provider
+                // (its root block is Browse(null)).
+                // The file's text is the bundle's, not the tool's (#122): a literal line says
+                // whose index it is, and the text sits in a fence it cannot close, so it can
+                // neither pass for a generated listing or an error message nor leave a fence
+                // open behind it (in the context provider's root element above all).
+                var index = (await bundle.ReadResourceTextAsync(indexKey, null, ct).ConfigureAwait(false)).Text;
+                var text = new ModelTextBuilder();
+                if (segments.Length == 0)
+                {
+                    text.Line($"index.md of the bundle root:");
+                }
+                else
+                {
+                    text.Line($"index.md of '{relPath}':");
+                }
 
-            return BuildLevelListing(bundle, segments, relPath);
-        });
+                return text.Block(BlockKind.IndexText, index.Length > 0 && index[0] == (char)0xFEFF ? index[1..] : index).ToString();
+            }
+            catch (FileNotFoundException)
+            {
+                return BuildLevelListing(bundle, segments, relPath);
+            }
+        }).ConfigureAwait(false);
     }
 
     /// <summary>
     /// Inspects the cross-link graph: bundle-wide stats, or (with a concept
     /// id) that concept's outgoing links, backlinks, and broken links.
     /// Never throws for expected errors (an unknown concept id, or a bundle
-    /// that fails to (re)load) — reported as a plain-text message instead.
+    /// whose first load fails) — reported as a plain-text message instead.
     /// </summary>
     /// <param name="conceptId">Optional concept id to focus on.</param>
+    [Obsolete("Use GraphAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string Graph(string? conceptId = null) => RunSync(() => GraphAsync(conceptId));
+
+    /// <summary>The asynchronous <see cref="Graph"/> (#152).</summary>
+    /// <param name="conceptId">Optional concept id to focus on.</param>
+    /// <param name="ct">Stops the wait for the image.</param>
     [Description("Inspect the cross-link graph. With a concept id: its outgoing links, backlinks and broken links. Without: bundle-wide stats.")]
-    public string Graph([Description("Optional concept id to focus on.")] string? conceptId = null)
+    public async Task<string> GraphAsync([Description("Optional concept id to focus on.")] string? conceptId = null, CancellationToken ct = default)
     {
         if (conceptId is not null && conceptId.Contains('\0'))
         {
             return "Error: invalid concept id — it must not contain a null character.";
         }
 
-        return RunTool(() =>
+        return await RunToolAsync(async () =>
         {
-            var bundle = GetBundle();
+            var bundle = await GetBundleAsync(ct).ConfigureAwait(false);
 
             if (string.IsNullOrWhiteSpace(conceptId))
             {
@@ -469,14 +768,14 @@ public sealed class OkfBundleTools
             }
 
             return BuildConceptGraphDetail(bundle, id);
-        });
+        }).ConfigureAwait(false);
     }
 
     /// <summary>
     /// Full-text search across concept titles, descriptions, tags and
     /// bodies. Never throws for expected errors (a null/blank query, a
-    /// query or tag containing a null character, or a bundle that fails to
-    /// (re)load) — those are reported as a plain-text message instead.
+    /// query or tag containing a null character, or a bundle whose first
+    /// load fails) — those are reported as a plain-text message instead.
     ///
     /// The query is split into terms on whitespace; each term is matched as
     /// an <see cref="StringComparison.OrdinalIgnoreCase"/> substring. A
@@ -492,10 +791,18 @@ public sealed class OkfBundleTools
     /// </summary>
     /// <param name="query">The search query (case-insensitive substring terms).</param>
     /// <param name="tag">Optional tag filter: only concepts carrying this tag.</param>
+    [Obsolete("Use SearchAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string Search(string query, string? tag = null) => RunSync(() => SearchAsync(query, tag));
+
+    /// <summary>The asynchronous <see cref="Search"/> (#152).</summary>
+    /// <param name="query">The search query (case-insensitive substring terms).</param>
+    /// <param name="tag">Optional tag filter: only concepts carrying this tag.</param>
+    /// <param name="ct">Stops the wait for the image.</param>
     [Description("Full-text search across concept titles, descriptions, tags and bodies. Returns the best-matching concept id first, then spreads the remaining results across top-level id families, so the list is not in descending score order.")]
-    public string Search(
+    public async Task<string> SearchAsync(
         [Description("The search query (case-insensitive substring terms).")] string query,
-        [Description("Optional tag filter: only concepts carrying this tag.")] string? tag = null)
+        [Description("Optional tag filter: only concepts carrying this tag.")] string? tag = null,
+        CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(query))
         {
@@ -512,7 +819,7 @@ public sealed class OkfBundleTools
             return "Error: invalid tag — it must not contain a null character.";
         }
 
-        return RunTool(() =>
+        return await RunToolAsync(async () =>
         {
             var terms = query.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
             if (terms.Length == 0)
@@ -521,20 +828,20 @@ public sealed class OkfBundleTools
             }
 
             var effectiveTag = string.IsNullOrWhiteSpace(tag) ? null : tag;
-            var scored = ScoreConceptsFor(query, tag);
+            var scored = await ScoreConceptsForAsync(query, tag, ct).ConfigureAwait(false);
 
             if (scored.Count == 0)
             {
                 // Folded, like the results header: this line is a tool result
                 // of its own, and `query`/`tag` being the caller's arguments
-                // says nothing about what they carry (see OneLine).
+                // says nothing about what they carry.
                 return effectiveTag is null
-                    ? $"No results for query '{OneLine(query)}'."
-                    : $"No results for query '{OneLine(query)}' with tag '{OneLine(effectiveTag)}'.";
+                    ? ModelTextBuilder.Message($"No results for query '{query}'.")
+                    : ModelTextBuilder.Message($"No results for query '{query}' with tag '{effectiveTag}'.");
             }
 
             return FormatSearchResults(query, effectiveTag, scored, Now);
-        });
+        }).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -550,8 +857,9 @@ public sealed class OkfBundleTools
     /// own precondition); a query that splits into zero terms yields an empty
     /// result rather than throwing.
     /// </summary>
-    internal IReadOnlyList<ScoredConcept> ScoreConceptsFor(string query, string? tag = null) =>
-        ConceptSearch.Search(GetBundle().Concepts, query, tag);
+    /// <summary><see cref="ScoreConceptsForAsync"/> without the blocking (#152): the image loaded asynchronously, the one shared scorer.</summary>
+    internal async Task<IReadOnlyList<ScoredConcept>> ScoreConceptsForAsync(string query, string? tag, CancellationToken ct) =>
+        ConceptSearch.Search((await GetBundleAsync(ct).ConfigureAwait(false)).Concepts, query, tag);
 
     /// <summary>
     /// Audits the bundle's trust, freshness and lifecycle signals (§5.3–§5.5):
@@ -573,12 +881,25 @@ public sealed class OkfBundleTools
     /// <param name="trust">Comma-separated trust tiers to keep.</param>
     /// <param name="status">Keep only concepts with this lifecycle status.</param>
     /// <param name="type">Keep only concepts with this frontmatter type (exact match).</param>
+    [Obsolete("Use AuditAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string Audit(bool? stale = null, string? trust = null, string? status = null, string? type = null) =>
+        RunSync(() => AuditAsync(stale, trust, status, type));
+
+    /// <summary>The asynchronous <see cref="Audit"/> (#152).</summary>
+    /// <param name="stale">Only concepts past their stale_after instant.</param>
+    /// <param name="trust">Comma-separated trust tiers to include.</param>
+    /// <param name="status">Only concepts with this lifecycle status.</param>
+    /// <param name="type">Only concepts with this frontmatter type (exact match).</param>
+    /// <param name="reviewOutdated">Only concepts whose content changed after their latest review (#156).</param>
+    /// <param name="ct">Stops the wait for the image.</param>
     [Description("Audit the bundle's trust, freshness and lifecycle signals: counts by trust tier and status over the whole bundle, plus the concepts the filters select. Called bare it returns the stale worklist; combined with trust/status/type it stops constraining staleness unless you pass stale explicitly.")]
-    public string Audit(
+    public async Task<string> AuditAsync(
         [Description("Only concepts past their stale_after instant. Leave unset for the default: the stale worklist when no other filter is given, no staleness constraint when one is.")] bool? stale = null,
         [Description("Comma-separated trust tiers to include: unverified, machine-confirmed, human-reviewed.")] string? trust = null,
         [Description("Only concepts with this lifecycle status: draft, stable or deprecated.")] string? status = null,
-        [Description("Only concepts with this frontmatter type (exact match).")] string? type = null)
+        [Description("Only concepts with this frontmatter type (exact match).")] string? type = null,
+        [Description("Only concepts whose content changed (generated.at) after their latest review (the latest verified[].at). A signal for a reviewer, not a change of trust tier.")] bool? reviewOutdated = null,
+        CancellationToken ct = default)
     {
         HashSet<TrustTier>? tiers = null;
         if (trust is not null)
@@ -611,7 +932,8 @@ public sealed class OkfBundleTools
         // The CLI's rule, restated: with no filter flag it reports the stale
         // worklist; the moment one is given, staleness stops being implied.
         // An explicit `stale` always wins over that default.
-        var otherFilterGiven = tiers is not null || parsedStatus is not null || trimmedType is not null;
+        var reviewOutdatedOnly = reviewOutdated ?? false;
+        var otherFilterGiven = tiers is not null || parsedStatus is not null || trimmedType is not null || reviewOutdatedOnly;
         var staleOnly = stale ?? !otherFilterGiven;
 
         // Everything that can touch the filesystem goes through RunTool, the
@@ -621,11 +943,11 @@ public sealed class OkfBundleTools
         // "Error: ..." string. A function tool must return an error, not throw
         // one -- a directory deleted after construction would otherwise escape
         // as an exception into the agent runtime.
-        return RunTool(() =>
+        return await RunToolAsync(async () =>
         {
             var report = ConceptAudit.Run(
-                GetBundle(),
-                new AuditQuery(staleOnly, tiers, parsedStatus, trimmedType),
+                await GetBundleAsync(ct).ConfigureAwait(false),
+                new AuditQuery(staleOnly, tiers, parsedStatus, trimmedType, reviewOutdatedOnly),
 
                 // Pinned to Now -- the same UtcNow seam ReadConcept and
                 // Search use -- so the tool's output never depends on the day
@@ -633,7 +955,7 @@ public sealed class OkfBundleTools
                 new FixedClock(Now));
 
             return RenderAudit(report, staleOnly);
-        });
+        }).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -647,14 +969,82 @@ public sealed class OkfBundleTools
     /// thin delegate onto <see cref="BundleConceptWriter.WriteConcept(string, string, string)"/>.
     /// </summary>
     /// <param name="conceptId">The concept id (path without <c>.md</c>), e.g. <c>tables/refunds</c>.</param>
-    /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines (the same YAML subset used inside a document's frontmatter block, without the <c>---</c> delimiters).</param>
+    /// <param name="frontmatterYaml">Frontmatter as YAML (the same subset used inside a document's frontmatter block, without the <c>---</c> delimiters; nested maps and lists keep their structure, as in the block <c>okf_read_concept</c> shows).</param>
     /// <param name="body">The markdown body.</param>
-    [Description("Create or update a concept document. The frontmatter must contain non-empty type, title and description (producer-grade validation is enforced before writing).")]
-    public string WriteConcept(
-        [Description("The concept id (path without .md), e.g. 'tables/refunds'.")] string conceptId,
-        [Description("Frontmatter as 'key: value' lines (YAML subset).")] string frontmatterYaml,
-        [Description("The markdown body.")] string body) =>
-        _writer.WriteConcept(conceptId, frontmatterYaml, body);
+    [Obsolete("Use WriteConceptAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string WriteConcept(string conceptId, string frontmatterYaml, string body) =>
+        ModelTextBuilder.Message(DropBundleOnError(_writer.WriteConcept(conceptId, frontmatterYaml, body)));
+
+    /// <summary>
+    /// The asynchronous <see cref="WriteConcept"/> (#152): the same write, the provider asked
+    /// asynchronously. A host method: it requires and records no observation.
+    /// </summary>
+    /// <param name="conceptId">The concept id (path without <c>.md</c>).</param>
+    /// <param name="frontmatterYaml">Frontmatter as YAML (subset), without the <c>---</c> delimiters.</param>
+    /// <param name="body">The markdown body.</param>
+    /// <param name="ct">Cancels the write before its commit.</param>
+    [Description(WriteConceptDescription)]
+    public async Task<string> WriteConceptAsync(
+        [Description(WriteConceptIdDescription)] string conceptId,
+        [Description(FrontmatterYamlDescription)] string frontmatterYaml,
+        [Description(BodyDescription)] string body,
+        CancellationToken ct = default) =>
+        // The writer's text, folded whole: an exception's own message can reach it (#122).
+        ModelTextBuilder.Message(await DropBundleOnErrorAsync(await _writer.WriteConceptAsync(conceptId, frontmatterYaml, body, ct).ConfigureAwait(false), ct).ConfigureAwait(false));
+
+    /// <summary>
+    /// <c>okf_write_concept</c>: <see cref="WriteConcept"/> conditioned on what this session
+    /// observed (spec §4, §5.4, D1). A whole-concept observation at version v writes with
+    /// <see cref="BundleWriteCondition.IfMatch"/>; an absent observation creates with
+    /// <see cref="BundleWriteCondition.MustNotExist"/>; anything else — never read in full,
+    /// only shown by <c>okf_get_computation</c>, injected by a context provider (D5), or
+    /// evicted from the registry — is refused with no write, whether the concept exists or
+    /// not. A condition that does not hold is the writer's refusal (the concept changed, or no
+    /// longer exists, since it was read; read it again), and the image is refreshed. A
+    /// committed write drops the observation: what the session saw is no longer what the
+    /// bundle holds, so the next rewrite reads first. A write that answers <c>Error:</c> keeps
+    /// the observation (the writer's own refusals, a failed commit): nothing was written, and
+    /// <c>IfMatch</c>/<c>MustNotExist</c> already refuse a later write over a changed object,
+    /// so a retry needs no new read. An id that does not parse goes to the
+    /// writer, whose refusal is unchanged.
+    /// </summary>
+    [Description(WriteConceptDescription)]
+    internal async Task<string> WriteConceptTool(
+        [Description(WriteConceptIdDescription)] string conceptId,
+        [Description(FrontmatterYamlDescription)] string frontmatterYaml,
+        [Description(BodyDescription)] string body,
+        CancellationToken ct = default)
+    {
+        if (!ConceptId.TryParse(conceptId, out var id))
+        {
+            return await WriteConceptAsync(conceptId, frontmatterYaml, body, ct).ConfigureAwait(false);
+        }
+
+        var key = id.ToKey();
+        BundleWriteCondition condition;
+        if (_observations.TryGetFullConcept(key, out var observed))
+        {
+            condition = BundleWriteCondition.IfMatch(observed);
+        }
+        else if (_observations.IsAbsent(key))
+        {
+            condition = BundleWriteCondition.MustNotExist;
+        }
+        else
+        {
+            return ModelTextBuilder.Message($"Error: '{id}' has not been read by this session; read it first with okf_read_concept (a context block injected for you, or okf_get_computation, does not count), then write it.");
+        }
+
+        // The writer's text, folded whole: a refusal or failure can carry an exception's own
+        // message, and that can name a path carrying a line terminator (#122, defect 4).
+        var result = ModelTextBuilder.Message(await DropBundleOnErrorAsync(await _writer.WriteConceptAsync(conceptId, frontmatterYaml, body, condition, ct).ConfigureAwait(false), ct).ConfigureAwait(false));
+        if (!result.StartsWith("Error:", StringComparison.Ordinal))
+        {
+            _observations.Forget(key);
+        }
+
+        return result;
+    }
 
     /// <summary>
     /// Records a review of one or more concepts: adds — or replaces — the
@@ -669,12 +1059,29 @@ public sealed class OkfBundleTools
     /// <see cref="BundleConceptWriter.RecordVerifications"/> rejects fractional
     /// seconds, a numeric offset, and a bare date); omit for now.
     /// </param>
+    [Obsolete("Use VerifyAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string Verify(string conceptIds, string by, string? at = null) => RunSync(() => VerifyAsync(conceptIds, by, at));
+
+    /// <summary>The asynchronous <see cref="Verify"/> (#152).</summary>
+    /// <param name="conceptIds">Comma-separated concept ids (paths without .md).</param>
+    /// <param name="by">The §7 actor recording the review.</param>
+    /// <param name="at">UTC timestamp in the exact form yyyy-MM-ddTHH:mm:ssZ; omit for now.</param>
+    /// <param name="ct">Cancels the batch before its first commit; after it, the batch stops between two objects and says what landed.</param>
     [Description("Record a review of one or more concepts: adds or replaces the caller's { by, at } entry in each concept's `verified` list. The stamp is a dated declaration, not a proof — the same rules as the okf verify CLI verb.")]
-    public string Verify(
+    public async Task<string> VerifyAsync(
         [Description("Comma-separated concept ids (paths without .md). Explicit ids only — there is no whole-bundle form.")] string conceptIds,
-        [Description("The §7 actor recording the review — one of exactly three forms: human:<id> (e.g. human:ada), process:<id> (e.g. process:nightly), or <producer>/<version> for an agent or tool (e.g. assistant/1.0). There is no agent: prefix: writing agent:assistant/1.0 stores the producer name \"agent:assistant\". Must not contain control characters.")] string by,
-        [Description("UTC timestamp in the exact form yyyy-MM-ddTHH:mm:ssZ, e.g. 2026-08-28T09:14:00Z — no fractional seconds, no offset, no bare date. Omit for now.")] string? at = null)
+        [Description("The §7 actor recording the review — one of exactly three forms: human:<id> (e.g. human:ada), process:<id> (e.g. process:nightly), or <producer>/<version> for an agent or tool (e.g. assistant/1.0). There is no agent: prefix: writing agent:assistant/1.0 stores the producer name \"agent:assistant\". Must not contain control, bidirectional or invisible format characters.")] string by,
+        [Description("UTC timestamp in the exact form yyyy-MM-ddTHH:mm:ssZ, e.g. 2026-08-28T09:14:00Z — no fractional seconds, no offset, no bare date. Omit for now.")] string? at = null,
+        CancellationToken ct = default)
     {
+        // The capability guard of every write entry point (spec §3, #218), ahead of any
+        // argument check and outside RunTool like the other write tools: a read-only
+        // provider is a host mistake, not a content error to hand the model as text.
+        if (!_handle.Provider.Capabilities.CanWrite)
+        {
+            throw new BundleReadOnlyException(_handle.Provider.Id);
+        }
+
         var ids = (conceptIds ?? string.Empty)
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToList();
@@ -695,7 +1102,7 @@ public sealed class OkfBundleTools
             return VerifyUsageMessage;
         }
 
-        return RunTool(() =>
+        return await DropBundleOnErrorAsync(await RunToolAsync(async () =>
         {
             // The single governed §11 floor (BundleConceptWriter.CheckVerificationTargets,
             // also called first thing inside RecordVerifications itself, same
@@ -707,26 +1114,27 @@ public sealed class OkfBundleTools
             // message shape, and it reads the k named files directly rather
             // than going through the tool's cached bundle (unaffected by
             // whether that cache is stale).
-            var targetProblem = _writer.CheckVerificationTargets(ids);
+            var targetProblem = await _writer.CheckVerificationTargetsAsync(ids, ct).ConfigureAwait(false);
             if (targetProblem is { } problem)
             {
                 return problem.Kind switch
                 {
                     VerificationTargetProblemKind.NotConformant =>
-                        $"Error: concept {DebugQuote.Quote(problem.ConceptId)} has no `type` and is not §11-conformant.",
+                        ModelTextBuilder.Message($"Error: concept {DebugQuote.Quote(problem.ConceptId)} has no `type` and is not §11-conformant."),
                     VerificationTargetProblemKind.DuplicateName =>
-                        $"Error: concept {DebugQuote.Quote(problem.ConceptId)} is named more than once.",
+                        ModelTextBuilder.Message($"Error: concept {DebugQuote.Quote(problem.ConceptId)} is named more than once."),
                     // The file exists and names its own parse error: falling
                     // through to "does not exist" (which this did until now)
                     // told the model to go and create a concept that is
-                    // already there. The detail is the parser's own message
-                    // -- library-authored, never bundle text. Rendered through
-                    // DetailAsSentence, not "{Detail}.", which doubled the
-                    // period on every unreadable-concept refusal.
+                    // already there. Rendered through DetailAsSentence, not
+                    // "{Detail}.", which doubled the period on every
+                    // unreadable-concept refusal. The detail is an exception's
+                    // own message (a parser's, or an I/O failure naming a path),
+                    // so it is folded like every hole (#122, defect 5).
                     VerificationTargetProblemKind.ParseFailure =>
-                        $"Error: concept {DebugQuote.Quote(problem.ConceptId)} could not be parsed as a valid OKF document: {problem.DetailAsSentence()}",
+                        ModelTextBuilder.Message($"Error: concept {DebugQuote.Quote(problem.ConceptId)} could not be parsed as a valid OKF document: {problem.DetailAsSentence()}"),
                     VerificationTargetProblemKind.Unreadable =>
-                        $"Error: concept {DebugQuote.Quote(problem.ConceptId)} could not be read: {problem.DetailAsSentence()}",
+                        ModelTextBuilder.Message($"Error: concept {DebugQuote.Quote(problem.ConceptId)} could not be read: {problem.DetailAsSentence()}"),
                     // Already a complete "Error: "-prefixed sentence naming the
                     // id (ValidateConceptTarget's own return value, captured
                     // once by CheckVerificationTargets), so it is returned
@@ -735,7 +1143,7 @@ public sealed class OkfBundleTools
                     // This is the ONE arm whose message embeds an id that
                     // ConceptId's ASCII-only grammar has NOT vetted (it is the
                     // arm for an id that failed to PARSE), and it briefly
-                    // carried a local OneLine because DebugQuote.Quote escaped
+                    // carried a local fold because DebugQuote.Quote escaped
                     // Cc controls but not U+2028/U+2029 (Zl/Zp), so a soft
                     // terminator in a caller's id forged a line here. The fold
                     // is gone because the hole is: DebugQuote now escapes those
@@ -745,14 +1153,15 @@ public sealed class OkfBundleTools
                     // literals, so nothing here can start a line. Pinned by
                     // Verify_refuses_an_unparseable_id_without_forging_a_line,
                     // which now guards the shared helper through this tool.
-                    VerificationTargetProblemKind.InvalidId => problem.Detail!,
+                    // Folded all the same, like every value this tool prints.
+                    VerificationTargetProblemKind.InvalidId => ModelTextBuilder.Message(problem.Detail!),
                     VerificationTargetProblemKind.NotFound =>
-                        $"Error: concept {DebugQuote.Quote(problem.ConceptId)} does not exist.",
+                        ModelTextBuilder.Message($"Error: concept {DebugQuote.Quote(problem.ConceptId)} does not exist."),
                     // Deliberately NOT "does not exist": a kind added to the
                     // enum later must not be misdiagnosed as a missing file,
                     // which is exactly what happened to ParseFailure and
                     // InvalidId while this switch ended at a catch-all arm.
-                    _ => $"Error: concept {DebugQuote.Quote(problem.ConceptId)} cannot be verified.",
+                    _ => ModelTextBuilder.Message($"Error: concept {DebugQuote.Quote(problem.ConceptId)} cannot be verified."),
                 };
             }
 
@@ -761,11 +1170,18 @@ public sealed class OkfBundleTools
             // `at` is passed through untouched, null included: the writer owns
             // the clock seam and reports the timestamp it used, so the tool
             // never dates anything itself.
-            var outcome = _writer.RecordVerifications(ids, by, at);
+            var outcome = await _writer.RecordVerificationsAsync(ids, by, at, ct).ConfigureAwait(false);
 
-            // No OneLine here: AuditText.FormatVerificationRecord makes every
-            // value it interpolates line-safe itself (#123), quoting one that
-            // carries a C0/C1 control or U+2028/U+2029 and leaving every other
+            // A batch that failed part-way (an unknown outcome included) may have written
+            // concepts the writer's notification did not report: drop the cache.
+            if (!outcome.Recorded)
+            {
+                await InvalidateBundleAsync(ct).ConfigureAwait(false);
+            }
+
+            // AuditText's record line (Rendered): it makes every value it
+            // interpolates line-safe itself (#123), quoting one that carries a
+            // control, a separator or a bidi control and leaving every other
             // value byte-identical. That is what covers `record.ReplacedAt`,
             // the `at` already STORED in the concept, which no check on this
             // tool's arguments ever sees. The guards upstream still stand and
@@ -779,28 +1195,29 @@ public sealed class OkfBundleTools
             // because an agent-facing string was tuned. The tool's tests
             // still assert this exact shape so a change here cannot drift
             // unnoticed.
-            var lines = new StringBuilder();
+            var text = new ModelTextBuilder();
             foreach (var record in outcome.Records)
             {
-                lines.Append(AuditText.FormatVerificationRecord(record, by)).Append('\n');
+                text.Rendered(AuditText.AuditLine.Record(record, by));
             }
 
             // A rejected batch has no records and yields the message alone; a
             // batch that failed part-way through writing has both, and the
             // agent must see both — the lines for what landed, then why it
-            // stopped.
+            // stopped. The message can carry an exception's own text (#122,
+            // defect 5): folded, like every value.
             if (!outcome.Recorded)
             {
-                lines.Append(outcome.Message).Append('\n');
+                text.Line($"{outcome.Message}");
             }
 
-            return lines.ToString();
-        });
+            return text.ToString();
+        }).ConfigureAwait(false), ct).ConfigureAwait(false);
     }
 
     /// <summary>
     /// Atomically reads, transforms, and rewrites one concept's body — the
-    /// seam <see cref="OKF4net.Agents.OkfContextProvider.CaptureMemory"/> uses
+    /// seam <see cref="OKF4net.Agents.OkfContextProvider.CaptureMemoryAsync"/> uses
     /// to close the same-day memory-capture race (E2). A thin delegate onto
     /// <see cref="BundleConceptWriter.AppendToConceptAtomic"/>, whose remarks
     /// describe the full atomicity guarantee (and its residual TOCTOU
@@ -818,27 +1235,38 @@ public sealed class OkfBundleTools
     /// </param>
     /// <param name="buildBody">
     /// Given the concept's current body (<see langword="null"/> if it does
-    /// not yet exist), returns the full new body to write. Invoked exactly
-    /// once, inside the lock, against the freshly re-read current body —
-    /// never a caller's own stale, pre-lock snapshot.
+    /// not yet exist), returns the full new body to write. Invoked once per
+    /// attempt (at most <see cref="BundleConceptWriter.MaxAttempts"/>), inside
+    /// the lock, each time against the freshly re-read current body — never a
+    /// caller's own stale, pre-lock snapshot — so it must be a pure function
+    /// of the body it receives.
     /// </param>
     /// <returns>
     /// The same style of result text as <see cref="WriteConcept"/> (a
     /// <c>Written ...</c> confirmation) or an <c>Error: ...</c> message;
-    /// never throws.
+    /// never throws (except as below, or what <paramref name="buildBody"/> itself throws).
     /// </returns>
+    /// <exception cref="OKF4net.Providers.BundleReadOnlyException">The bundle's provider cannot write; nothing was attempted.</exception>
     internal string AppendToConceptAtomic(
         string conceptId,
         string frontmatterYamlIfCreating,
         Func<string?, string> buildBody) =>
-        _writer.AppendToConceptAtomic(conceptId, frontmatterYamlIfCreating, buildBody);
+        DropBundleOnError(_writer.AppendToConceptAtomic(conceptId, frontmatterYamlIfCreating, buildBody));
+
+    /// <summary><see cref="AppendToConceptAtomic"/> without the blocking (#152), for the context provider's memory capture.</summary>
+    internal async Task<string> AppendToConceptAtomicAsync(
+        string conceptId,
+        string frontmatterYamlIfCreating,
+        Func<string?, string> buildBody,
+        CancellationToken ct) =>
+        await DropBundleOnErrorAsync(await _writer.AppendToConceptAtomicAsync(conceptId, frontmatterYamlIfCreating, buildBody, ct).ConfigureAwait(false), ct).ConfigureAwait(false);
 
     /// <summary>
     /// Test-only hook, forwarded to <see cref="BundleConceptWriter.BeforeLateReparseCheckForTest"/>
     /// so it fires immediately before the late reparse-point re-check inside
-    /// <see cref="_writer"/>'s own write methods, and separately consulted by
-    /// <see cref="AppendLog"/>'s own inline late re-check (after computing the
-    /// new log content, still inside the bundle write lock). Lets a test
+    /// <see cref="_writer"/>'s own write methods, <see cref="AppendLog"/>'s
+    /// included (it delegates to <see cref="BundleConceptWriter.AppendLog"/>,
+    /// so the hook has no field of its own here). Lets a test
     /// deterministically simulate a filesystem substitution racing the final
     /// write -- e.g. deleting the just-created parent directory and replacing
     /// it with a junction to an external directory, or swapping <c>log.md</c>
@@ -849,327 +1277,49 @@ public sealed class OkfBundleTools
     /// </summary>
     internal Action? BeforeLateReparseCheckForTest
     {
-        get => _beforeLateReparseCheckForTest;
-        set
-        {
-            _beforeLateReparseCheckForTest = value; // still consulted by AppendLog's own late re-check
-            _writer.BeforeLateReparseCheckForTest = value;
-        }
+        get => _writer.BeforeLateReparseCheckForTest;
+        set => _writer.BeforeLateReparseCheckForTest = value;
     }
-
-    private Action? _beforeLateReparseCheckForTest;
-
-    /// <summary>
-    /// Validates one <see cref="AppendLog"/> argument, returning the rejection
-    /// message or <see langword="null"/> when it is acceptable.
-    ///
-    /// Both of that method's arguments get the identical checks, so they share
-    /// one validator rather than two copies that could drift.
-    ///
-    /// <para><b>Three treatments, one boundary.</b> A caller-supplied field is
-    /// written into the user's repository AND echoed into a tool result, so
-    /// every character that survives does so for a stated reason:</para>
-    ///
-    /// <list type="bullet">
-    /// <item><c>\n</c> and <c>\r</c> — <b>REJECTED</b>. They split
-    /// <c>log.md</c> on re-read: a newline lets an entry forge a fabricated
-    /// <c>## &lt;date&gt;</c> heading or <c>* entry</c> bullet that a later
-    /// <c>ChangeLog.Parse</c> reads back as genuine audit-trail history (§9).
-    /// Rejected rather than stripped, so the caller learns the write did not
-    /// happen.</item>
-    /// <item>U+000C, U+0085, U+2028 and U+2029 — <b>FOLDED</b> to a space at
-    /// the write (<see cref="FoldLogField"/>), not rejected. They cannot forge
-    /// a §9 line, they only split a downstream renderer, and most callers
-    /// cannot see them, so failing a call over one would cost more than it
-    /// buys.</item>
-    /// <item>Every other control character — <b>REJECTED</b>: ESC, backspace,
-    /// BEL, VT, DEL and the rest of C0/C1. None has a legitimate use in a log
-    /// entry, and each forges what a HUMAN reading the audit trail sees rather
-    /// than what it says: <c>ESC[2K ESC[1A</c> rewrites the terminal line
-    /// <c>cat log.md</c> just printed, backspace erases it. Folding them would
-    /// silently rewrite the caller's words, and persisting them writes a
-    /// rendering attack into the repository.</item>
-    /// <item>Every bidirectional CONTROL character — <b>REJECTED</b>: U+061C,
-    /// U+200E, U+200F, U+202A–U+202E and U+2066–U+2069
-    /// (<see cref="IsBidiControl"/>). Each reorders the text a reader is shown
-    /// without changing the bytes stored, so the <c>log.md</c> a human reads
-    /// and the <c>log.md</c> a tool reads disagree. Ordinary right-to-left
-    /// TEXT is NOT affected: Arabic and Hebrew letters carry their own strong
-    /// direction and need none of these.</item>
-    /// <item><c>\t</c> — <b>ACCEPTED, verbatim in the interior of the field.</b>
-    /// The one control character a log message may legitimately carry. Not
-    /// folded to a space the way the four soft separators are: this guard
-    /// rewrites a caller's words only when the character would otherwise
-    /// break structure, and an interior tab cannot — <c>ChangeLog.Parse</c>
-    /// splits on LF, a tab is not a terminator, and it can never reach the
-    /// START of a line (the renderer always emits <c>* </c> first), the only
-    /// position where markdown would read it as an indented code block. A
-    /// LEADING or TRAILING tab does not survive, though: <see cref="FoldLogField"/>
-    /// trims the field before this guard or the writer ever sees it, exactly
-    /// as it has always trimmed a leading/trailing space — so <c>"\tUpdate\t"</c>
-    /// is written (and echoed) as <c>Update</c>, not <c>&lt;TAB&gt;Update&lt;TAB&gt;</c>.</item>
-    /// </list>
-    ///
-    /// <para>The control-character half reuses
-    /// <see cref="LineSafeText.ContainsControlCharacter"/> — the repo's shared
-    /// predicate, already used at <c>okf_verify</c>'s <c>by</c> — rather than a
-    /// second character list here, which is exactly the drift that predicate's
-    /// own doc comment exists to prevent. Two adjustments are made to the value
-    /// it sees, not to the predicate: it runs over the FOLDED text (by then the
-    /// four soft separators are spaces, and the predicate would otherwise
-    /// refuse U+2028/U+2029 and undo the fold), and over a probe in which tabs
-    /// are spaces (the exemption above). The value WRITTEN keeps its tabs.</para>
-    /// </summary>
-    /// <param name="value">The argument's value.</param>
-    /// <param name="fieldName">The argument's name, as it appears in the message.</param>
-    private static string? GuardLogField(string value, string fieldName)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return $"Error: invalid {fieldName} — it must not be empty.";
-        }
-
-        if (value.Contains('\0'))
-        {
-            return $"Error: invalid {fieldName} — it must not contain a null character.";
-        }
-
-        if (value.Contains('\n') || value.Contains('\r'))
-        {
-            return $"Error: invalid {fieldName} — it must not contain a line break (this would let it "
-                + "forge fake '## date' or '* entry' lines in log.md).";
-        }
-
-        var folded = FoldLogField(value);
-        var probe = folded.Replace('\t', ' ');
-
-        if (LineSafeText.ContainsControlCharacter(probe))
-        {
-            return $"Error: invalid {fieldName} — it must not contain a control character other than a "
-                + "tab (ESC, backspace and BEL forge what a human reading log.md sees).";
-        }
-
-        if (ContainsBidiControl(folded))
-        {
-            return $"Error: invalid {fieldName} — it must not contain a bidirectional control character "
-                + "(U+061C, U+200E, U+200F, U+202A-U+202E, U+2066-U+2069 reorder the stored text on "
-                + "display; ordinary right-to-left text needs none of them).";
-        }
-
-        return null;
-    }
-
-    /// <summary>
-    /// True when the value carries any Unicode bidirectional CONTROL
-    /// character — see <see cref="IsBidiControl"/> for the list and for why
-    /// the whole class is refused rather than the two overrides alone.
-    ///
-    /// Local to this tool rather than added to
-    /// <see cref="LineSafeText.ContainsControlCharacter"/>: none of these code
-    /// points is a <see cref="char.IsControl(char)"/> character, so putting
-    /// them there would widen the shared cross-assembly predicate that also
-    /// gates §7 actors and <c>at</c> timestamps — a decision for those call
-    /// sites, not one this tool may take on their behalf.
-    /// </summary>
-    /// <param name="value">The guarded argument's value.</param>
-    private static bool ContainsBidiControl(string value)
-    {
-        foreach (var c in value)
-        {
-            if (IsBidiControl(c))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /// <summary>
-    /// The twelve Unicode bidirectional control characters: the marks U+061C
-    /// (ALM), U+200E (LRM) and U+200F (RLM); the embeddings and overrides
-    /// U+202A (LRE), U+202B (RLE), U+202C (PDF), U+202D (LRO) and U+202E
-    /// (RLO); and the isolates U+2066 (LRI), U+2067 (RLI), U+2068 (FSI) and
-    /// U+2069 (PDI).
-    ///
-    /// <para>The WHOLE class, not just the two overrides: an embedding or an
-    /// isolate reorders a rendered line as effectively as U+202E, a
-    /// terminator can unbalance one an author opened, and a mark reorders a
-    /// neutral run. A rule that stopped at "override" would refuse
-    /// <c>RLO</c> and pass <c>RLE</c>, which is not a distinction any reader
-    /// of a rendered <c>log.md</c> can see.</para>
-    ///
-    /// <para><b>One list, two call sites</b> — <see cref="ContainsBidiControl"/>
-    /// (the write guard) and <see cref="NeedsVisibleEscape"/> (the read
-    /// rendering). They must agree: a character the write refuses is exactly a
-    /// character the read has to make visible when an older build, another
-    /// producer or a human already put it in the file.</para>
-    /// </summary>
-    /// <param name="c">The character to classify.</param>
-    private static bool IsBidiControl(char c) =>
-        // Numeric constants on purpose: every one of these is invisible in
-        // source, in a diff and in a review (the convention
-        // Internal/LineSafeText.cs sets).
-        c is (char)0x061C or (char)0x200E or (char)0x200F
-            or (char)0x202A or (char)0x202B or (char)0x202C or (char)0x202D or (char)0x202E
-            or (char)0x2066 or (char)0x2067 or (char)0x2068 or (char)0x2069;
-
-    /// <summary>
-    /// The four separators <see cref="GuardLogField"/> deliberately does NOT
-    /// reject, folded to a single space before the value is written. Leading
-    /// and trailing whitespace, tabs included, is removed first by the
-    /// <see cref="string.Trim()"/> this method also does — the same trimming
-    /// an ordinary leading/trailing space has always had, and the reason a
-    /// tab is "verbatim" only in the interior of a field (see the <c>\t</c>
-    /// item on <see cref="GuardLogField"/>).
-    ///
-    /// <para><b>Why the asymmetry.</b> <c>\n</c> and <c>\r</c> are REFUSED
-    /// (<see cref="GuardLogField"/>): <c>ChangeLog.Parse</c> is LF-line-based,
-    /// so those two are the characters that would make a later read back a
-    /// forged <c>## date</c> heading or <c>* entry</c> bullet as genuine
-    /// audit-trail history (§9), and a caller who sent one needs to learn the
-    /// write did not happen. U+000C, U+0085, U+2028 and U+2029 cannot do that —
-    /// the §9 parser does not split on them — but they DO split a downstream
-    /// markdown or JavaScript renderer of the same file, and they were
-    /// persisted verbatim into the user's repository, where every other
-    /// consumer inherits them. Refusing them too would fail a call over a
-    /// character most callers cannot see, so they are folded and the call
-    /// succeeds. Same rule as the read side (<see cref="OneLine"/>): nothing
-    /// downstream can start a new line.</para>
-    ///
-    /// <para><see cref="string.ReplaceLineEndings(string)"/> rather than a
-    /// hand-rolled set: it is the same helper the rendering side uses, and by
-    /// the time this runs <see cref="GuardLogField"/> has already refused the
-    /// only two terminators it folds that we do not want folded silently.</para>
-    /// </summary>
-    /// <param name="value">The guarded argument's value.</param>
-    private static string FoldLogField(string value) => value.Trim().ReplaceLineEndings(" ");
 
     /// <summary>
     /// Appends one entry to the bundle root's <c>log.md</c> under today's
     /// (UTC) ISO date, creating the file if it does not yet exist. If a
     /// heading for today's date already exists, the entry is appended to the
     /// end of that day's entries (days are newest-first by convention (§9),
-    /// but entries within a day stay chronological). The read-modify-write is
-    /// serialized under the bundle write lock (shared with
-    /// <see cref="WriteConcept"/> and <see cref="RegenerateIndexes"/>) so
-    /// concurrent calls can't lose an update to each other. The existing file,
+    /// but entries within a day stay chronological). A thin delegate onto
+    /// <see cref="BundleConceptWriter.AppendLog"/>, the single write path of
+    /// <c>log.md</c>: the read-modify-write is serialized under the bundle
+    /// write lock (shared with <see cref="WriteConcept"/> and
+    /// <see cref="RegenerateIndexes"/>) so concurrent calls can't lose an
+    /// update to each other, and is written through the provider conditioned
+    /// on the version read, retried on a conflict. The existing file,
     /// if any, is read with the same strict-UTF-8 decoding <see cref="ChangesSince"/>
     /// uses, then re-rendered through <see cref="ChangeLog.ToMarkdown"/> — the
     /// strict §9 model — so any non-conforming prose or comments in a
-    /// hand-authored <c>log.md</c> are not preserved. Never throws for
+    /// hand-authored <c>log.md</c> are not preserved, except a frontmatter block
+    /// the file opens with, written back byte for byte (#258). Never throws for
     /// expected errors (a <paramref name="kind"/> or <paramref name="text"/>
-    /// that <see cref="GuardLogField"/> refuses — empty, or carrying a line
+    /// that <see cref="BundleConceptWriter.GuardLogField"/> refuses — empty, or carrying a line
     /// break, a control character or a bidirectional control character — or a
     /// <c>log.md</c> that fails strict UTF-8 decoding) — those are reported as
-    /// a plain-text message instead.
+    /// a plain-text message instead, folded onto one line (<see cref="ModelText.Fold"/>):
+    /// an I/O failure's own text can name a path carrying a line terminator.
     /// </summary>
     /// <param name="kind">Entry kind, e.g. <c>Update</c> or <c>Creation</c>.</param>
     /// <param name="text">The entry text.</param>
-    [Description("Append an entry to the bundle root log.md under today's date (ISO). Note: log.md is re-rendered through the strict §9 model, so non-conforming prose or comments in a hand-authored log.md are not preserved.")]
-    public string AppendLog(
+    [Obsolete("Use AppendLogAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string AppendLog(string kind, string text) => ModelTextBuilder.Message(DropBundleOnError(_writer.AppendLog(kind, text)));
+
+    /// <summary>The asynchronous <see cref="AppendLog"/> (#152).</summary>
+    /// <param name="kind">Entry kind, e.g. 'Update' or 'Creation'.</param>
+    /// <param name="text">The entry text.</param>
+    /// <param name="ct">Cancels the append before its commit.</param>
+    [Description("Append an entry to the bundle root log.md under today's date (ISO). Note: log.md is re-rendered through the strict §9 model, so non-conforming prose or comments in a hand-authored log.md are not preserved; a leading frontmatter block is kept as it was.")]
+    public async Task<string> AppendLogAsync(
         [Description("Entry kind, e.g. 'Update' or 'Creation'.")] string kind,
-        [Description("The entry text.")] string text)
-    {
-        if (GuardLogField(kind, "kind") is { } kindError)
-        {
-            return kindError;
-        }
-
-        if (GuardLogField(text, "text") is { } textError)
-        {
-            return textError;
-        }
-
-        return RunTool(() =>
-        {
-            var logPath = Path.Combine(BundleRoot, LogFilename);
-
-            // Reject log.md itself being a reparse point (symlink/junction),
-            // e.g. a planted file symlink at bundleRoot/log.md pointing at an
-            // external file: File.Exists/ReadAllBytes/WriteAllText below all
-            // follow it, so without this check AppendLog would silently
-            // overwrite whatever external file it points at. log.md always
-            // lives directly at BundleRoot, so its only directory ancestor is
-            // BundleRoot itself -- the ancestor walk stops there
-            // immediately without checking anything, which is why the file
-            // node itself (not its ancestor chain) is the check that matters
-            // here; both are included for the same defense-in-depth shape as
-            // WriteConcept's guard. Both strict: a log.md whose link status
-            // cannot be read is refused like a link (a guard fails closed --
-            // see ReparsePoints.IsReparsePointOrUninspectable).
-            if (ReparsePoints.IsReparsePointOrUninspectable(logPath) || ReparsePoints.HasReparsePointOrUninspectableAncestor(BundleRoot, BundleRoot))
-            {
-                return "Error: log.md is a reparse point (symlink/junction) or could not be inspected, not a regular file -- refusing to write through it.";
-            }
-
-            var today = UtcNow().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            var foldedKind = FoldLogField(kind);
-            var entry = new LogEntry(foldedKind, FoldLogField(text));
-
-            // Serialized under the bundle write lock (shared with WriteConcept and
-            // RegenerateIndexes): without it, two concurrent AppendLog calls
-            // could both read the same "before" text, each append their own
-            // entry to it, and the second write would silently clobber the
-            // first (a lost update). Locking the whole read-modify-write
-            // makes it atomic.
-            using (_writer.EnterWriteLock())
-            {
-                // Strict UTF-8, matching ChangesSince's AppendLogFileChanges:
-                // a non-UTF-8 log.md throws DecoderFallbackException (caught
-                // by RunTool below) instead of being silently re-decoded with
-                // U+FFFD replacement characters and then rewritten that way.
-                var existingText = File.Exists(logPath)
-                    ? OkfEncodings.Strict.GetString(File.ReadAllBytes(logPath))
-                    : string.Empty;
-
-                // ChangeLog.Parse is permissive (never throws); used here only to
-                // locate today's day (if any) among the existing entries.
-                var changeLog = ChangeLog.Parse(existingText);
-
-                var days = changeLog.Days.ToList();
-                var dayIndex = days.FindIndex(d => string.Equals(d.Date, today, StringComparison.Ordinal));
-                if (dayIndex >= 0)
-                {
-                    var day = days[dayIndex];
-                    days[dayIndex] = day with { Entries = [.. day.Entries, entry] };
-                }
-                else
-                {
-                    // New LogDay at the head: days are newest-first (§9).
-                    days.Insert(0, new LogDay(today, [entry]));
-                }
-
-                BeforeLateReparseCheckForTest?.Invoke();
-
-                // Late, best-effort re-check -- same TOCTOU gap as
-                // BundleConceptWriter's own late re-check (see its remarks);
-                // AppendLog has the identical validate-then-write shape
-                // between the early check above (run before acquiring
-                // the write lock) and the write below, just without an
-                // intervening Directory.CreateDirectory call. log.md always
-                // lives directly at BundleRoot, so the ancestor-walk half of
-                // this re-check is a no-op here, same as the early check's
-                // ancestor call above -- the check that matters is log.md
-                // itself having been replaced with a reparse point in this
-                // narrow window.
-                var logParentDir = Path.GetDirectoryName(logPath);
-                if ((!string.IsNullOrEmpty(logParentDir) && ReparsePoints.HasReparsePointOrUninspectableAncestor(BundleRoot, logParentDir))
-                    || ReparsePoints.IsReparsePointOrUninspectable(logPath))
-                {
-                    return "Error: log.md resolves through a reparse point (symlink/junction), or an entry that could not be inspected, inside the bundle, which is not allowed.";
-                }
-
-                File.WriteAllText(logPath, new ChangeLog(changeLog.Title, days).ToMarkdown(), OkfEncodings.NoBom);
-                _bundle = null;
-            }
-
-            // The FOLDED kind, not the raw argument: this message is itself a
-            // line-structured tool result, and echoing the argument verbatim
-            // would put back the separator the write just removed.
-            return $"Appended a '{foldedKind}' entry under {today} in log.md.";
-        });
-    }
+        [Description("The entry text.")] string text,
+        CancellationToken ct = default) =>
+        ModelTextBuilder.Message(await DropBundleOnErrorAsync(await _writer.AppendLogAsync(kind, text, null, ct).ConfigureAwait(false), ct).ConfigureAwait(false));
 
     /// <summary>
     /// Regenerates every <c>index.md</c> in the bundle (progressive
@@ -1180,16 +1330,46 @@ public sealed class OkfBundleTools
     /// Never throws for expected errors (a bundle root that disappeared out
     /// from under it) — reported as a plain-text message instead.
     /// </summary>
+    [Obsolete("Use RegenerateIndexesAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string RegenerateIndexes() => RunSync(() => RegenerateIndexesAsync());
+
+    /// <summary>The asynchronous <see cref="RegenerateIndexes"/> (#152).</summary>
+    /// <param name="ct">Cancels the run: before the first index it is an <see cref="OperationCanceledException"/>; after, the run stops between two indexes.</param>
     [Description("Regenerate every index.md in the bundle (progressive-disclosure listings). Run after adding or changing concepts.")]
-    public string RegenerateIndexes()
+    public async Task<string> RegenerateIndexesAsync(CancellationToken ct = default)
     {
-        return RunTool(() =>
+        // The capability guard of every write entry point (spec §3), outside RunTool like
+        // the writer's own: a read-only provider is a host mistake, not a content error.
+        if (!_handle.Provider.Capabilities.CanWrite)
         {
-            IReadOnlyList<string> written;
-            using (_writer.EnterWriteLock())
+            throw new BundleReadOnlyException(_handle.Provider.Id);
+        }
+
+        return await RunToolAsync(async () =>
+        {
+            IReadOnlyList<BundleKey> written;
+            var lease = await _writer.EnterWriteLockAsync(ct).ConfigureAwait(false);
+            try
             {
-                written = IndexGenerator.RegenerateIndexes(BundleRoot);
-                _bundle = null;
+                try
+                {
+                    // The string overload's contract (what it skips silently, what it
+                    // throws), through the handle's provider and options rather than a
+                    // second provider built from the root: the output of this tool does
+                    // not change, and a confinement boundary the host gave the provider
+                    // still applies.
+                    written = (await IndexGenerator.RegenerateAsync(_handle.Provider, IndexGenerator.DefaultSynthesize, _handle.Options, legacy: true, synchronous: false, ct).ConfigureAwait(false)).Written;
+                }
+                finally
+                {
+                    // Also when the pass fails part-way (an unknown outcome among others): the
+                    // indexes it did write are on disk and no notification reports them.
+                    _handle.Invalidate();
+                }
+            }
+            finally
+            {
+                lease.Dispose();
             }
 
             if (written.Count == 0)
@@ -1197,23 +1377,18 @@ public sealed class OkfBundleTools
                 return "No index.md files were regenerated (empty bundle?).";
             }
 
-            var relative = written
-                .Select(p => Path.GetRelativePath(BundleRoot, p).Replace('\\', '/'))
-                .ToList();
-
-            var sb = new StringBuilder();
-            sb.Append("Regenerated ").Append(relative.Count).Append(" index file(s):").Append('\n');
-            foreach (var rel in relative)
+            var text = new ModelTextBuilder();
+            text.Line($"Regenerated {written.Count} index file(s):");
+            foreach (var key in written)
             {
-                // Same sink shape as AppendLogFileChanges's "## {rel}" and
-                // "> Skipped {rel}": `rel` is a Path.GetRelativePath over a
-                // bundle path (just above), and a directory name may carry a
-                // line terminator. One index file, one "- " line.
-                sb.Append("- ").Append(OneLine(rel)).Append('\n');
+                // A key is the '/'-joined path under the root, and a directory
+                // name may carry a line terminator or a bidi control: folded, one
+                // index file, one "- " line.
+                text.Line($"- {key}");
             }
 
-            return sb.ToString();
-        });
+            return text.ToString();
+        }).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1222,17 +1397,22 @@ public sealed class OkfBundleTools
     /// per <see cref="Diagnostic"/> (via its own <see cref="Diagnostic.ToString"/>),
     /// then a summary line with the concept/error/warning/info counts and a
     /// conformant ✓/✗ verdict. Never throws for expected errors (a bundle
-    /// that fails to (re)load) — reported as a plain-text message instead.
+    /// whose first load fails) — reported as a plain-text message instead.
     /// </summary>
-    [Description("Validate the bundle against OKF v0.2 conformance (§11). Returns the diagnostics report.")]
-    public string ValidateBundle()
-    {
-        return RunTool(() =>
-        {
-            var bundle = GetBundle();
-            var report = BundleValidator.Validate(bundle);
+    [Obsolete("Use ValidateBundleAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string ValidateBundle() => RunSync(() => ValidateBundleAsync());
 
-            var sb = new StringBuilder();
+    /// <summary>The asynchronous <see cref="ValidateBundle"/> (#152): the validator asks the provider asynchronously.</summary>
+    /// <param name="ct">Stops the wait for the image and the validation.</param>
+    [Description("Validate the bundle against OKF v0.2 conformance (§11). Returns the diagnostics report.")]
+    public async Task<string> ValidateBundleAsync(CancellationToken ct = default)
+    {
+        return await RunToolAsync(async () =>
+        {
+            var bundle = await GetBundleAsync(ct).ConfigureAwait(false);
+            var report = await BundleValidator.ValidateAsync(bundle, null, ct).ConfigureAwait(false);
+
+            var text = new ModelTextBuilder();
             foreach (var diagnostic in report.Diagnostics)
             {
                 // One diagnostic, one line -- and a diagnostic message can
@@ -1240,29 +1420,30 @@ public sealed class OkfBundleTools
                 // is what makes that true. The CLI's own validate output is
                 // golden-locked and is rendered elsewhere; this is the tool's
                 // renderer only.
-                sb.Append(OneLine(diagnostic.ToString())).Append('\n');
+                text.Line($"{diagnostic}");
             }
 
             var errors = report.ErrorCount;
             var warnings = report.WarningCount;
             var infos = report.Of(Severity.Info).Count();
-            sb.Append('\n')
-                .Append(bundle.Count).Append(" concept(s); ")
-                .Append(errors).Append(" error(s), ")
-                .Append(warnings).Append(" warning(s), ")
-                .Append(infos).Append(" info.").Append('\n');
+            text.Line();
+            text.Line($"{bundle.Count} concept(s); {errors} error(s), {warnings} warning(s), {infos} info.");
+            if (report.IsConformant)
+            {
+                text.Line($"✓ conformant with OKF v{OkfSpec.Version}");
+            }
+            else
+            {
+                text.Line($"✗ not conformant with OKF v{OkfSpec.Version}");
+            }
 
-            sb.Append(report.IsConformant
-                ? $"✓ conformant with OKF v{OkfSpec.Version}"
-                : $"✗ not conformant with OKF v{OkfSpec.Version}").Append('\n');
-
-            return sb.ToString();
-        });
+            return text.ToString();
+        }).ConfigureAwait(false);
     }
 
     /// <summary>
     /// Summarizes bundle changes since a given ISO date (inclusive),
-    /// aggregated across every <c>log.md</c> in the bundle (<see cref="Bundle.LogFiles"/>).
+    /// aggregated across every <c>log.md</c> in the bundle (<see cref="Bundle.LogKeys"/>).
     /// Each log is parsed with <see cref="ChangeLog.Parse"/>, filtered to the
     /// <see cref="LogDay"/>s whose <see cref="LogDay.Date"/> is a valid ISO
     /// date (<see cref="ChangeLog.IsIsoDate"/>) greater than or equal to
@@ -1276,12 +1457,18 @@ public sealed class OkfBundleTools
     /// than aborting the whole report (mirroring <see cref="BundleValidator"/>'s
     /// permissive handling of reserved files); that note is preserved even
     /// when no other log contributes matching days. Never throws for
-    /// expected errors (a null/blank/invalid date, or a bundle that fails to
-    /// (re)load) — those are reported as a plain-text message instead.
+    /// expected errors (a null/blank/invalid date, or a bundle whose first
+    /// load fails) — those are reported as a plain-text message instead.
     /// </summary>
     /// <param name="sinceDate">ISO date (<c>yyyy-MM-dd</c>), inclusive.</param>
+    [Obsolete("Use ChangesSinceAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string ChangesSince(string sinceDate) => RunSync(() => ChangesSinceAsync(sinceDate));
+
+    /// <summary>The asynchronous <see cref="ChangesSince"/> (#152).</summary>
+    /// <param name="sinceDate">ISO date (yyyy-MM-dd), inclusive.</param>
+    /// <param name="ct">Stops the wait for the image and the reads of the logs.</param>
     [Description("Summarize bundle changes since a given ISO date, aggregated from every log.md in the bundle.")]
-    public string ChangesSince([Description("ISO date (yyyy-MM-dd), inclusive.")] string sinceDate)
+    public async Task<string> ChangesSinceAsync([Description("ISO date (yyyy-MM-dd), inclusive.")] string sinceDate, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(sinceDate))
         {
@@ -1293,29 +1480,26 @@ public sealed class OkfBundleTools
             return "Error: invalid date — it must not contain a null character.";
         }
 
-        // Not folded below, and the reason is a GRAMMAR, not provenance (see
-        // OneLine): ChangeLog.IsIsoDate accepts exactly ten characters, all of
-        // them ASCII digits but for the two '-' it requires at index 4 and 7.
-        // A value that reaches the "# Changes since {date}" heading or the
-        // "No changes since {date}." line has therefore been proved to carry
-        // no terminator at all. If that predicate is ever loosened, these two
-        // sinks need OneLine.
+        // ChangeLog.IsIsoDate accepts exactly ten characters, all of them ASCII
+        // digits but for the two '-' it requires at index 4 and 7: the date the
+        // lines below print carries no terminator (and is folded anyway, like
+        // every hole, should that predicate ever be loosened).
         var date = sinceDate.Trim();
         if (!ChangeLog.IsIsoDate(date))
         {
             return ChangesSinceUsageMessage;
         }
 
-        return RunTool(() =>
+        return await RunToolAsync(async () =>
         {
-            var bundle = GetBundle();
-            var notes = new StringBuilder();
-            var changes = new StringBuilder();
+            var bundle = await GetBundleAsync(ct).ConfigureAwait(false);
+            var notes = new ModelTextBuilder();
+            var changes = new ModelTextBuilder();
             var any = false;
 
-            foreach (var logPath in bundle.LogFiles)
+            foreach (var logKey in bundle.LogKeys)
             {
-                any |= AppendLogFileChanges(bundle.Root, logPath, date, notes, changes);
+                any |= await AppendLogFileChangesAsync(bundle, logKey, date, notes, changes, ct).ConfigureAwait(false);
             }
 
             if (!any)
@@ -1323,41 +1507,99 @@ public sealed class OkfBundleTools
                 // Preserve any skip notes even when nothing matched — a
                 // silently-discarded note would hide a real read failure
                 // behind an otherwise-correct "no changes" report.
-                return notes.Length == 0 ? $"No changes since {date}." : notes + $"No changes since {date}.";
+                return notes.Write($"No changes since {date}.").ToString();
             }
 
-            var sb = new StringBuilder();
-            sb.Append("# Changes since ").Append(date).Append('\n').Append('\n');
-            sb.Append(notes);
-            sb.Append(changes);
-            return sb.ToString();
-        });
+            var text = new ModelTextBuilder();
+            text.Line($"# Changes since {date}").Line();
+            text.Include(notes).Include(changes);
+            return text.ToString();
+        }).ConfigureAwait(false);
     }
 
     /// <summary>
     /// Reads one §10 Attested Computation's contract and sanctioned
     /// computation source (§10.3: an inline <c># Computation</c> fence, or the
-    /// text of a file resolved through <see cref="Bundle.TryResolveResource"/>),
+    /// text of a file resolved through <see cref="Bundle.TryResolveResourceKey"/>
+    /// and read with <see cref="Bundle.ReadResourceText(BundleKey)"/>),
     /// rendered as agent-friendly markdown. Always available — it is
     /// read-only and needs no attestation runtime (unlike
-    /// <see cref="RunComputation"/>). Never throws for expected errors (a
+    /// <see cref="RunComputationAsync"/>). Never throws for expected errors (a
     /// null/blank/malformed/unknown concept id, a concept that is not an
     /// Attested Computation, an unresolved or unreadable computation file, or
-    /// a bundle that fails to (re)load) — those are reported as a plain-text
+    /// a bundle whose first load fails) — those are reported as a plain-text
     /// message instead.
     /// </summary>
     /// <param name="conceptId">The concept id, e.g. <c>computations/monthly-revenue</c>.</param>
-    [Description("Read an Attested Computation's §10 contract (runtime, parameters, executor, attester) and its sanctioned computation source (inline code, or the text of a referenced file).")]
-    public string GetComputation([Description("The concept id, e.g. 'computations/monthly-revenue'.")] string conceptId)
+    [Description(GetComputationDescription)]
+    [Obsolete("Use GetComputationAsync: the synchronous tool methods work over a provider that completes synchronously only, and are removed in the release after 0.8.0 (#152).")]
+    public string GetComputation(string conceptId) => RunSync(() => GetComputationAsync(conceptId));
+
+    /// <summary>
+    /// The asynchronous <see cref="GetComputation"/> (#152). A host method: it records no observation.
+    /// </summary>
+    /// <param name="conceptId">The attested computation's concept id.</param>
+    /// <param name="ct">Stops the wait for the image and the read of the computation file.</param>
+    [Description(GetComputationDescription)]
+    public async Task<string> GetComputationAsync([Description(ComputationIdDescription)] string conceptId, CancellationToken ct = default) =>
+        (await GetComputationCoreAsync(conceptId, ct).ConfigureAwait(false)).Result;
+
+    /// <summary>
+    /// <c>okf_get_computation</c>: <see cref="GetComputation"/>, then the code observation
+    /// (spec §5.4) — the concept (contract and code) at its version — and, for a file
+    /// computation, a separate file observation of the file at the version read — recorded only
+    /// when the rendering showed the code. A file that could not be resolved or read (a URL
+    /// excepted) records nothing and invalidates the handle: the image may be behind, and the
+    /// reload lets the run's capture name the state instead of telling the model for ever to
+    /// read first. Never by the public method (D5). Internal so that tests reach the exposed
+    /// function without the AI plumbing.
+    /// </summary>
+    [Description(GetComputationDescription)]
+    internal async Task<string> GetComputationTool([Description(ComputationIdDescription)] string conceptId, CancellationToken ct = default)
+    {
+        var (result, conceptKey, conceptVersion, fileKey, fileVersion, fileFailed) = await GetComputationCoreAsync(conceptId, ct).ConfigureAwait(false);
+        if (fileFailed)
+        {
+            // The image says the file is there (or does not say), the provider now says it is not
+            // or cannot be read: the image may be behind (spec §5.1). Nothing is recorded, and the
+            // handle must reload, or a Manual host would see the model told to "read it first" with
+            // a tool that cannot show it, for ever; after the reload the capture's own refusal
+            // names the state.
+            await InvalidateBundleAsync(ct).ConfigureAwait(false);
+        }
+
+        if (conceptKey is not null && conceptVersion is { } shown)
+        {
+            _observations.RecordCode(conceptKey, shown);
+            if (fileKey is not null && fileVersion is { } shownFile)
+            {
+                _observations.RecordFile(fileKey, shownFile);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// <see cref="GetComputation"/>, reporting what the rendering showed when it showed the
+    /// code: the concept's key and version, and the computation file's when the code came
+    /// from one; all <see langword="null"/> otherwise.
+    /// </summary>
+    private async Task<(string Result, BundleKey? ConceptKey, BundleObjectVersion? ConceptVersion, BundleKey? FileKey, BundleObjectVersion? FileVersion, bool FileFailed)> GetComputationCoreAsync(string conceptId, CancellationToken ct)
     {
         if (GuardConceptId(conceptId) is { } err)
         {
-            return err;
+            return (err, null, null, null, null, false);
         }
 
-        return RunTool(() =>
+        BundleKey? shownConcept = null;
+        BundleObjectVersion? shownConceptVersion = null;
+        BundleKey? shownFile = null;
+        BundleObjectVersion? shownFileVersion = null;
+        var failedFile = false;
+        var result = await RunToolAsync(async () =>
         {
-            var bundle = GetBundle();
+            var bundle = await GetBundleAsync(ct).ConfigureAwait(false);
             if (!ConceptId.TryParse(conceptId, out var id) || bundle.Get(id) is not { } concept)
             {
                 return ConceptNotFoundMessage(conceptId);
@@ -1366,143 +1608,107 @@ public sealed class OkfBundleTools
             var fm = concept.Document.Frontmatter;
             if (!fm.IsAttestedComputation)
             {
-                // OneLine on both. `type` is frontmatter, so it can be a block
-                // scalar. `conceptId` is folded too, and the fold is honest
-                // about being belt-and-braces: reaching this line means
-                // ConceptId.TryParse ACCEPTED the id, and ConceptId's segment
-                // charset is ASCII letters/digits/_/./- only, so no terminator
-                // can be here today and no test can make this fold matter.
-                // It is written anyway because the comment it replaces claimed
-                // the wrong guarantee -- "the caller's own argument, already
-                // rejected upstream if it carries a control character", when
-                // GuardConceptId rejects only a NUL -- and because ConceptId's
+                // Both holes are folded. `type` is frontmatter, so it can be a
+                // block scalar. `conceptId` has parsed (ConceptId's segment
+                // charset is ASCII letters/digits/_/./- only), so no terminator
+                // can be here today; folded all the same, because ConceptId's
                 // own remarks point at an open upstream question about relaxing
-                // that ASCII-only rule. This line must not depend on the answer.
-                return $"Concept '{OneLine(conceptId)}' is not an Attested Computation (type: {OneLine(fm.Type ?? "(none)")}).";
+                // that ASCII-only rule, and this line must not depend on the
+                // answer.
+                return ModelTextBuilder.Message($"Concept '{conceptId}' is not an Attested Computation (type: {fm.Type ?? "(none)"}).");
             }
 
-            var sb = new StringBuilder();
-            sb.Append("# Computation: ").Append(id).Append('\n').Append('\n');
-            AppendContractSummary(sb, fm.ComputationContract);
-            sb.Append('\n').Append("## Source").Append('\n');
+            var text = new ModelTextBuilder();
+            text.Line($"# Computation: {id}").Line();
+            AppendContractSummary(text, fm.ComputationContract);
+            text.Line().Line($"## Source");
 
             var computation = concept.Document.Computation();
             switch (computation)
             {
                 case { Source: ComputationSource.File, Path.Length: > 0 } file:
-                    if (!bundle.TryResolveResource(concept, file.Path!, out var absolutePath, out var status)
-                        || status != ResourceResolutionStatus.Resolved)
+                    var (resolvedKey, status) = await bundle.ResolveResourceKeyAsync(concept, file.Path!, ct).ConfigureAwait(false);
+                    if (status != ResourceResolutionStatus.Resolved)
                     {
-                        // OneLine on file.Path here and on the two lines below:
-                        // it is the frontmatter `computation` field, so a block
-                        // scalar can put a line break in the middle of an
-                        // "Error: "/"File: " line. `status` is an enum.
-                        sb.Append("Error: computation file '").Append(OneLine(file.Path!)).Append("' could not be resolved (").Append(status).Append(").\n");
+                        // file.Path is the frontmatter `computation` field, so a
+                        // block scalar can put a line break in the middle of an
+                        // "Error: "/"File: " line: folded, here and below.
+                        failedFile = status != ResourceResolutionStatus.Url; // a URL is never read: no reload can change that
+                        text.Line($"Error: computation file '{file.Path}' could not be resolved ({status}).");
                         break;
                     }
 
-                    string text;
+                    string source;
+                    BundleObjectVersion readVersion;
                     try
                     {
-                        // Guarded: TryResolveResource only establishes path
-                        // safety, not readability -- the file may still fail
-                        // to read (I/O error, or non-UTF-8 content), same
-                        // lesson as AttestationOrchestrator.RunAsync's own
-                        // file-computation step.
-                        text = bundle.ReadResourceText(absolutePath!);
+                        // Guarded: TryResolveResourceKey only establishes that
+                        // the key is allowed and exists, not readability -- the
+                        // object may still fail to read (I/O error, refused path,
+                        // non-UTF-8 content), same lesson as the orchestrator's
+                        // own file-computation capture.
+                        var read = await bundle.ReadResourceTextAsync(resolvedKey!, null, ct).ConfigureAwait(false);
+                        source = read.Text;
+                        readVersion = read.Version;
                     }
                     catch (Exception e) when (e is IOException or UnauthorizedAccessException or DecoderFallbackException)
                     {
-                        sb.Append("Error: computation file '").Append(OneLine(file.Path!)).Append("' could not be read: ").Append(OneLine(e.Message)).Append('\n');
+                        // The file's own failure, which a reload may fix. A provider failure
+                        // (BundleLoadException, #247) is not caught: RunTool reports it as the
+                        // tool's error, and no reload obligation is created for it.
+                        failedFile = true;
+                        text.Line($"Error: computation file '{file.Path}' could not be read: {e.Message}");
                         break;
                     }
 
-                    sb.Append("File: ").Append(OneLine(file.Path!)).Append('\n').Append('\n');
-                    sb.Append("```\n").Append(text.TrimEnd('\n')).Append('\n').Append("```\n");
+                    text.Line($"File: {file.Path}").Line();
+
+                    // Fenced longer than any backtick run in the source, so a line of
+                    // three backticks in it no longer closes the block early (#122).
+                    text.Block(BlockKind.ComputationSource, source);
+                    shownFile = resolvedKey;
+                    shownFileVersion = readVersion;
+                    Shown();
                     break;
 
                 case { Source: ComputationSource.Inline, InlineCode.Length: > 0 } inline:
-                    sb.Append("```\n").Append(inline.InlineCode!.TrimEnd('\n')).Append('\n').Append("```\n");
+                    text.Block(BlockKind.ComputationSource, inline.InlineCode!);
+                    Shown();
                     break;
 
                 default:
-                    sb.Append(NoneLine).Append('\n');
+                    text.Line($"{NoneLine}");
                     break;
             }
 
-            return sb.ToString();
-        });
+            return text.ToString();
+
+            // The code was shown: the concept (contract and code) at the version of this image.
+            void Shown()
+            {
+                var conceptKeyShown = concept.Key ?? id.ToKey();
+                if (bundle.ObjectVersions.TryGetValue(conceptKeyShown, out var objectVersion))
+                {
+                    shownConcept = conceptKeyShown;
+                    shownConceptVersion = objectVersion;
+                }
+            }
+        }).ConfigureAwait(false);
+        return (result, shownConcept, shownConceptVersion, shownFile, shownFileVersion, failedFile);
     }
 
     /// <summary>
-    /// Runs the §10.5 attested-computation workflow (load → resolve
-    /// computation → resolve runtime → validate parameters → bind → execute →
-    /// validate receipt shape → attest → gate on staleness) for one concept,
-    /// via the <see cref="AttestationOrchestrator"/> this tool set was
-    /// constructed with (see <see cref="OkfBundleTools(string, AttestationOrchestrator?)"/>),
-    /// and renders the resulting <see cref="AttestationOutcome"/> as
-    /// agent-friendly markdown. If no orchestrator was wired, returns a
-    /// plain-text error rather than being omitted silently (mirroring
-    /// <see cref="GetTools()"/>, which omits <c>okf_run_computation</c>
-    /// entirely in that case — this direct-call path exists for callers that
-    /// invoke the method itself rather than through the tool list). Synchronous
-    /// like every other tool method here: the orchestrator's async workflow is
-    /// awaited to completion at this boundary. Never throws for expected
-    /// errors (a null/blank/malformed concept id, or any §10.5 failure the
-    /// orchestrator reports as a non-displayable <see cref="AttestationOutcome"/>)
-    /// — those are reported as plain text (an <c>Error: ...</c> message, or an
-    /// outcome whose <c>displayable: no</c>) instead.
-    /// </summary>
-    /// <param name="conceptId">The Attested Computation concept id to run.</param>
-    /// <param name="parameterValues">
-    /// The parameter values for this run (§10.3: values only, never
-    /// computation code). A <see langword="null"/> value — reachable despite
-    /// the non-nullable static type when a host/LLM binds the call with the
-    /// property omitted — is treated as an empty dictionary rather than
-    /// dereferenced, so a computation with no required parameters still runs,
-    /// and one that does simply degrades to the orchestrator's normal
-    /// "missing required parameter" non-displayable outcome instead of
-    /// throwing.
-    /// </param>
-    [Obsolete("Use RunComputationAsync: this overload blocks the calling thread and passes no cancellation token, so a slow or wedged host runtime pins the caller with no way out. Kept for one version.")]
-    [Description("Run an Attested Computation (§10.5: bind, execute, attest, gate on staleness) via the configured attestation runtime, and return the resulting outcome (displayable, verdict, receipt, reasons).")]
-    public string RunComputation(
-        [Description("The concept id, e.g. 'computations/monthly-revenue'.")] string conceptId,
-        [Description("Parameter values for this run, by name (§10.3: values only, never computation code).")] IReadOnlyDictionary<string, object?> parameterValues)
-    {
-        if (GuardConceptId(conceptId) is { } err)
-        {
-            return err;
-        }
-
-        if (_orchestrator is null)
-        {
-            return "Error: no attestation runtime configured.";
-        }
-
-        // A reflection/AIFunction-bound call can pass null here despite the
-        // non-nullable static type (same convention as the conceptId guards
-        // above) -- e.g. a host/LLM that omits the parameterValues property
-        // entirely. Without this guard, AttestationOrchestrator.RunAsync's
-        // own required-parameter gate (parameterValues.ContainsKey(...))
-        // would throw a NullReferenceException that RunTool's catch filter
-        // does not cover, breaking the "tools never throw toward the LLM"
-        // invariant. Treating null as "no values supplied" lets the
-        // orchestrator's existing missing-required-parameter handling take
-        // over instead.
-        parameterValues ??= new Dictionary<string, object?>();
-
-        return RunComputationAsync(conceptId, parameterValues).GetAwaiter().GetResult();
-    }
-
-    /// <summary>
-    /// The §10.5 attested-computation workflow, asynchronous and cancellable —
-    /// the form <see cref="GetTools()"/> exposes as <c>okf_run_computation</c>.
+    /// The §10.5 attested-computation workflow, asynchronous and cancellable.
+    /// <c>okf_run_computation</c> binds the gated wrapper <see cref="RunComputationToolAsync"/>
+    /// instead; this public method, which a host calls directly, needs no
+    /// observation, but captures the sanctioned code and the pinned attester
+    /// the same way and invalidates the handle after a refusal the image may
+    /// be behind on, so that its next call starts from a fresh survey.
     ///
     /// This is the only tool here that hands control to host-plugged code
     /// (<c>IParameterBinder</c>/<c>IComputationExecutor</c>/<c>IAttester</c>),
     /// which may do real I/O of unbounded duration. The synchronous
-    /// <see cref="RunComputation"/> blocked its thread and passed no token at
+    /// <see cref="RunComputationAsync"/> blocked its thread and passed no token at
     /// all, so a slow or wedged executor pinned an Agent Framework worker with
     /// no way out.
     ///
@@ -1523,11 +1729,37 @@ public sealed class OkfBundleTools
     /// <param name="conceptId">The Attested Computation concept id to run.</param>
     /// <param name="parameterValues">The parameter values for this run (§10.3: values only, never computation code).</param>
     /// <param name="cancellationToken">The host's token; combined with <see cref="ComputationTimeout"/>.</param>
-    [Description("Run an Attested Computation (§10.5: bind, execute, attest, gate on staleness) via the configured attestation runtime, and return the resulting outcome (displayable, verdict, receipt, reasons).")]
-    public async Task<string> RunComputationAsync(
-        [Description("The concept id, e.g. 'computations/monthly-revenue'.")] string conceptId,
-        [Description("Parameter values for this run, by name (§10.3: values only, never computation code).")] IReadOnlyDictionary<string, object?> parameterValues,
-        CancellationToken cancellationToken = default)
+    [Description(RunComputationDescription)]
+    public Task<string> RunComputationAsync(
+        [Description(ComputationIdDescription)] string conceptId,
+        [Description(ParameterValuesDescription)] IReadOnlyDictionary<string, object?> parameterValues,
+        CancellationToken cancellationToken = default) =>
+        RunComputationCoreAsync(conceptId, parameterValues, gated: false, cancellationToken);
+
+    /// <summary>
+    /// <c>okf_run_computation</c>: <see cref="RunComputationAsync"/>, gated on what this session
+    /// observed (spec §5.4, D1). The concept must have been shown — in full by
+    /// <c>okf_read_concept</c>, or as code by <c>okf_get_computation</c> — at the version the
+    /// current image holds, so that the contract and the runtime run are the ones shown; a
+    /// file computation must also have been shown by <c>okf_get_computation</c>, and the file is
+    /// read pinned to that version. Otherwise the run is refused with no runtime called:
+    /// <c>Error: … has not been shown to this session; read it first with okf_get_computation</c>,
+    /// or <c>… changed since it was shown …</c>, in which case the image is refreshed. A run the
+    /// image's survey says cannot be captured (an undeclared, URL, missing or unreadable file or
+    /// attester, no computation) is not judged by the observations: the gate defers to
+    /// <see cref="AttestationOrchestrator.Capture"/>, whose own refusal comes first, and refuses
+    /// the run itself (<c>… was not gated …</c>) should Capture accept what the gate deferred.
+    /// The attester is pinned to the image whatever the path (<see cref="AttestationOrchestrator.Capture"/>).
+    /// Internal so that tests reach the exposed function without the AI plumbing.
+    /// </summary>
+    [Description(RunComputationDescription)]
+    internal Task<string> RunComputationToolAsync(
+        [Description(ComputationIdDescription)] string conceptId,
+        [Description(ParameterValuesDescription)] IReadOnlyDictionary<string, object?> parameterValues,
+        CancellationToken cancellationToken = default) =>
+        RunComputationCoreAsync(conceptId, parameterValues, gated: true, cancellationToken);
+
+    private async Task<string> RunComputationCoreAsync(string conceptId, IReadOnlyDictionary<string, object?> parameterValues, bool gated, CancellationToken cancellationToken)
     {
         if (GuardConceptId(conceptId) is { } err)
         {
@@ -1547,13 +1779,13 @@ public sealed class OkfBundleTools
         // is the tool's error text, never a throw toward the model.
         if (!ParameterValues.TryNormalize(parameterValues ?? new Dictionary<string, object?>(), out var normalizedValues, out var valuesError))
         {
-            // Not folded, and checked rather than assumed: `valuesError` is one
+            // `valuesError` is one
             // of three FIXED string literals in ParameterValues.TryNormalize,
             // with nothing interpolated into any of them -- not the offending
-            // key, not the value. A fold here would be provably a no-op. If
-            // that method ever starts naming the property it rejected, this
-            // line needs OneLine like every other.
-            return $"Error: {valuesError}";
+            // key, not the value; folded all the same, as a hole, so that it
+            // stays one line should that method ever start naming the property
+            // it rejected.
+            return ModelTextBuilder.Message($"Error: {valuesError}");
         }
 
         parameterValues = normalizedValues;
@@ -1576,7 +1808,7 @@ public sealed class OkfBundleTools
         // "must be positive" (caught in review).
         if (ComputationTimeout <= TimeSpan.Zero && ComputationTimeout != Timeout.InfiniteTimeSpan)
         {
-            return $"Error: ComputationTimeout must be positive or Timeout.InfiniteTimeSpan, but is {ComputationTimeout}.";
+            return ModelTextBuilder.Message($"Error: ComputationTimeout must be positive or Timeout.InfiniteTimeSpan, but is {ComputationTimeout}.");
         }
 
         // And this one is about the throw, on every bound the runtime enforces
@@ -1593,16 +1825,61 @@ public sealed class OkfBundleTools
         }
         catch (ArgumentOutOfRangeException)
         {
-            return $"Error: ComputationTimeout is out of the range the runtime accepts (at most about 49.7 days, or Timeout.InfiniteTimeSpan), but is {ComputationTimeout}.";
+            return ModelTextBuilder.Message($"Error: ComputationTimeout is out of the range the runtime accepts (at most about 49.7 days, or Timeout.InfiniteTimeSpan), but is {ComputationTimeout}.");
         }
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
 
         try
         {
-            var outcome = await _orchestrator
-                .RunAsync(GetBundle(), ConceptId.Parse(conceptId), parameterValues, cancellationToken: linked.Token)
-                .ConfigureAwait(false);
+            var bundle = await GetBundleAsync(cancellationToken).ConfigureAwait(false);
+            var id = ConceptId.Parse(conceptId);
+            AttestationOutcome outcome;
+            if (bundle.Get(id) is not { } concept || !concept.Document.Frontmatter.IsAttestedComputation)
+            {
+                // Not found, or not a computation: the orchestrator's own refusal, as before.
+                outcome = await _orchestrator.RunAsync(bundle, id, parameterValues, cancellationToken: linked.Token).ConfigureAwait(false);
+            }
+            else
+            {
+                BundleObjectVersion? fileVersion = null;
+                var deferred = false;
+                if (gated && GuardObserved(bundle, concept, out fileVersion, out deferred) is { } refused)
+                {
+                    return refused;
+                }
+
+                // Captured once, before any runtime is called (spec §5.4): the computation
+                // (pinned to the file version the session observed, when gated) and the
+                // attester at the version the image was loaded with. A refusal the image may
+                // be behind on invalidates it, so that the next attempt starts from a fresh
+                // survey (spec §5.1) -- whatever the handle's policy, and for a direct caller
+                // of RunComputationAsync too.
+                var captured = await AttestationOrchestrator.CaptureAsync(bundle, concept, fileVersion, cancellationToken).ConfigureAwait(false);
+                if (captured.Capture is null)
+                {
+                    if (captured.ImageOutdated)
+                    {
+                        InvalidateBundle();
+                    }
+
+                    return FormatOutcome(captured.Failure!);
+                }
+
+                if (deferred)
+                {
+                    // The gate judged this run not capturable and left the refusal to Capture, which
+                    // accepted it: the gate's predicate and Capture's preconditions have drifted
+                    // apart, and nothing has been observed that covers what would run. A defect, not
+                    // a runnable computation: fail closed.
+                    return ModelTextBuilder.Message($"Error: '{concept.Id}' was not gated by this session's observations (a defect in the run gate); it is not run.");
+                }
+
+                outcome = await _orchestrator
+                    .RunCapturedAsync(bundle, id, parameterValues, captured.Capture, cancellationToken: linked.Token)
+                    .ConfigureAwait(false);
+            }
+
             return FormatOutcome(outcome);
         }
         // Ours, not the caller's: the token fired because ComputationTimeout
@@ -1610,7 +1887,13 @@ public sealed class OkfBundleTools
         // rather than throwing at a caller who never asked to stop.
         catch (OperationCanceledException) when (timeoutSource.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
-            return $"displayable: no\n\nReasons:\n- the computation timed out after {ComputationTimeout.TotalSeconds:0.###}s\n";
+            // The seconds under the invariant culture, as every number a tool prints.
+            return new ModelTextBuilder()
+                .Line($"displayable: no")
+                .Line()
+                .Line($"Reasons:")
+                .Line($"- the computation timed out after {ComputationTimeout.TotalSeconds:0.###}s")
+                .ToString();
         }
         // This method does not go through RunTool (it is async and owns its own
         // cancellation arms), so it carries RunTool's catch-all verbatim --
@@ -1618,8 +1901,102 @@ public sealed class OkfBundleTools
         // library-authored text: `GetBundle()` is called inside this very try.
         catch (Exception ex) when (ex is OkfException or ArgumentException or IOException or UnauthorizedAccessException or DecoderFallbackException)
         {
-            return $"Error: {OneLine(ex.Message)}";
+            return ModelTextBuilder.Message($"Error: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Whether <see cref="AttestationOrchestrator.Capture"/> can be expected to accept this
+    /// concept from the image's survey: a computation (inline code, or a file surveyed
+    /// <see cref="ExecutableResourceState.Pinned"/> with its key and version) and a pinned
+    /// attester. An exact copy of Capture's preconditions, which is why a run the gate
+    /// judged otherwise is refused even if Capture then accepts it.
+    /// </summary>
+    private static bool IsCapturable(Bundle bundle, Concept concept)
+    {
+        var computation = concept.Document.Computation();
+        var survey = bundle.ExecutableResources.TryGetValue(concept.Id, out var found) ? found : null;
+        return survey is { Attester: { State: ExecutableResourceState.Pinned, Key: not null, Version: not null } }
+            && computation.Source switch
+            {
+                ComputationSource.Inline => !string.IsNullOrEmpty(computation.InlineCode),
+                ComputationSource.File => !string.IsNullOrEmpty(computation.Path)
+                    && survey.Computation is { State: ExecutableResourceState.Pinned, Key: not null, Version: not null },
+                _ => false,
+            };
+    }
+
+    /// <summary>
+    /// The predicate <see cref="GuardObserved"/> asks whether the run is capturable; the real one by
+    /// default. A seam for the tests of the defence that refuses a run the gate deferred and Capture
+    /// accepted anyway.
+    /// </summary>
+    internal Func<Bundle, Concept, bool> GateCapturable { get; set; } = IsCapturable;
+
+    /// <summary>
+    /// The gate of <c>okf_run_computation</c> (spec §5.4, points 1 and 2): the refusal text, or
+    /// <see langword="null"/> when the session observed <paramref name="concept"/> at the version
+    /// this image holds — in full (<c>okf_read_concept</c>) <b>or</b> as code
+    /// (<c>okf_get_computation</c>), either at that version being enough — and, for a file
+    /// computation, that file too (<paramref name="fileVersion"/> is then the version the read
+    /// is pinned to). The file is decided from the <b>image's survey</b>, never from live I/O:
+    /// a guard that decides which code runs must not depend on a lookup that can fail
+    /// transiently. A concept shown only at another version refreshes the image: a changed
+    /// contract or runtime is run only after it is shown again.
+    /// <para>When the survey says the run cannot be captured at all — a computation file or an
+    /// attester that is not <see cref="ExecutableResourceState.Pinned"/>, no computation to run —
+    /// the gate answers <see langword="null"/> and leaves the refusal to
+    /// <see cref="AttestationOrchestrator.Capture"/>, whose text is the honest one: telling the
+    /// model to "read it first with okf_get_computation" is no use where that tool can never
+    /// record. Capture refuses every such state, so nothing runs: and if it accepts one (the
+    /// predicate and Capture drifted apart), <paramref name="deferred"/> is <see langword="true"/>
+    /// and the caller refuses the run all the same.</para>
+    /// </summary>
+    private string? GuardObserved(Bundle bundle, Concept concept, out BundleObjectVersion? fileVersion, out bool deferred)
+    {
+        fileVersion = null;
+        deferred = false;
+        var computation = concept.Document.Computation();
+        if (!GateCapturable(bundle, concept)
+            || !bundle.ExecutableResources.TryGetValue(concept.Id, out var survey))
+        {
+            // Capture refuses it, with the reason; if it does not, the caller refuses the run.
+            deferred = true;
+            return null;
+        }
+
+        var key = concept.Key ?? concept.Id.ToKey();
+        var shownFull = _observations.TryGetFullConcept(key, out var full);
+        var shownCode = _observations.TryGetCode(key, out var code);
+        if (!shownFull && !shownCode)
+        {
+            return ModelTextBuilder.Message($"Error: '{concept.Id}' has not been shown to this session; read it first with okf_get_computation, then run it.");
+        }
+
+        if (!bundle.ObjectVersions.TryGetValue(key, out var current)
+            || !((shownFull && full == current) || (shownCode && code == current)))
+        {
+            InvalidateBundle();
+            return ModelTextBuilder.Message($"Error: '{concept.Id}' changed since it was shown to this session; read it again with okf_get_computation before running it.");
+        }
+
+        if (computation.Source == ComputationSource.File)
+        {
+            if (survey.Computation.Key is not { } fileKey)
+            {
+                deferred = true; // the predicate said Pinned and keyed: a drift, left to the caller's refusal
+                return null;
+            }
+
+            if (!_observations.TryGetFile(fileKey, out var shownFile))
+            {
+                return ModelTextBuilder.Message($"Error: the computation file '{computation.Path}' of '{concept.Id}' has not been shown to this session; read it first with okf_get_computation, then run it.");
+            }
+
+            fileVersion = shownFile;
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -1630,28 +2007,24 @@ public sealed class OkfBundleTools
     /// matched — appends a <c>## {relative path}</c> section to <paramref name="changes"/>
     /// and returns <c>true</c>.
     /// </summary>
-    private static bool AppendLogFileChanges(string bundleRoot, string logPath, string date, StringBuilder notes, StringBuilder changes)
+    private static async Task<bool> AppendLogFileChangesAsync(Bundle bundle, BundleKey logKey, string date, ModelTextBuilder notes, ModelTextBuilder changes, CancellationToken ct)
     {
-        var rel = Path.GetRelativePath(bundleRoot, logPath).Replace('\\', '/');
-
         string text;
         try
         {
-            text = OkfEncodings.Strict.GetString(File.ReadAllBytes(logPath));
+            // Through the provider, strict UTF-8, bounded (spec §6, §9): a missing, refused,
+            // oversized or non-UTF-8 log is the skip note below, as the direct read's was. A
+            // failure of the provider (BundleLoadException, #247) is not the log's: it is not
+            // caught here and RunTool reports the whole tool call as an error.
+            text = (await bundle.ReadResourceTextAsync(logKey, null, ct).ConfigureAwait(false)).Text;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DecoderFallbackException)
         {
-            // `rel` is a path on disk, not text this process wrote: a POSIX
-            // filename may hold a line terminator, and (as of the post-audit
-            // re-review's Important 1) any of the other filesystems here
-            // accepts a bidi control in a directory name too, with no
-            // privilege needed. It goes through `OneLineLogText`, not
-            // `OneLine` alone, for the same reason entry text does — folding
-            // the four soft separators answers "nothing downstream can start
-            // a new line", not "nothing can reorder what a human is shown".
-            // `SkipReason` is a fixed library word.
-            notes.Append("> Skipped ").Append(OneLineLogText(rel)).Append(" (could not be read: ")
-                .Append(SkipReason(ex)).Append(").").Append('\n').Append('\n');
+            // The key is one the storage listed, not text this process wrote: a POSIX
+            // filename may hold a line terminator, and every filesystem here accepts a
+            // bidi control in a directory name, with no privilege needed. Folded like
+            // every hole (ModelText.Fold). `SkipReason` is a fixed library word.
+            notes.Line($"> Skipped {logKey} (could not be read: {SkipReason(ex)}).").Line();
             return false;
         }
 
@@ -1665,19 +2038,19 @@ public sealed class OkfBundleTools
             return false;
         }
 
-        changes.Append("## ").Append(OneLineLogText(rel)).Append('\n');
+        changes.Line($"## {logKey}");
         foreach (var day in matchingDays)
         {
             AppendLogDay(changes, day);
         }
 
-        changes.Append('\n');
+        changes.Line();
         return true;
     }
 
     /// <summary>
     /// Appends one <c>### {date}</c> section and its bulleted entries (bold
-    /// <c>Kind</c> when present) to <paramref name="sb"/>.
+    /// <c>Kind</c> when present) to <paramref name="text"/>.
     ///
     /// <para><b>The entries are folded even though a <c>\n</c> cannot reach
     /// them.</b> <see cref="ChangeLog.Parse"/> is LF-line-based, so a literal
@@ -1686,38 +2059,29 @@ public sealed class OkfBundleTools
     /// U+2028, U+2029, U+0085 and U+000C are ordinary characters to an
     /// LF-based parser and line breaks to the markdown and JavaScript
     /// splitters downstream, and a <c>log.md</c> bullet carrying one printed a
-    /// second, forged <c>- **Update**: …</c> bullet (measured). That is the
-    /// whole reason <see cref="OneLine"/> is
-    /// <see cref="string.ReplaceLineEndings(string)"/> rather than a
-    /// <c>\r</c>/<c>\n</c> pass, so the rule applies here like everywhere else
-    /// — "a literal newline cannot get in" is not the test; "nothing
-    /// downstream can start a new line" is.</para>
+    /// second, forged <c>- **Update**: …</c> bullet (measured). "A literal
+    /// newline cannot get in" is not the test; "nothing downstream can start a
+    /// new line" is.</para>
     ///
-    /// <para>Folding is not the whole job, though. It answers "nothing
-    /// downstream can start a new line"; it says nothing about ESC, backspace
-    /// or a bidi control, which a <c>log.md</c> written by an older build, by
-    /// another producer or by hand may carry and which forge what a HUMAN
-    /// reading this report sees. Both fields therefore go through
-    /// <see cref="OneLineLogText"/>, which folds AND names each such character
-    /// visibly as <c>&lt;U+XXXX&gt;</c> — see that method for why a read
-    /// escapes where the write (<see cref="GuardLogField"/>) refuses.</para>
-    ///
-    /// <para><c>day.Date</c> needs neither: only dates matching
-    /// <see cref="ChangeLog.IsIsoDate"/> reach here, and that grammar admits
-    /// digits and hyphens only.</para>
+    /// <para>And a <c>log.md</c> written by an older build, by another
+    /// producer or by hand may carry ESC, backspace or a bidi control, which
+    /// forge what a reader is shown: <see cref="ModelText.Fold"/> replaces a
+    /// control with U+FFFD and removes a bidi control (#122; this used to name
+    /// each as <c>&lt;U+XXXX&gt;</c>, a second rule the shared fold replaced).
+    /// A tab, which the write accepts, is kept.</para>
     /// </summary>
-    private static void AppendLogDay(StringBuilder sb, LogDay day)
+    private static void AppendLogDay(ModelTextBuilder text, LogDay day)
     {
-        sb.Append("### ").Append(day.Date).Append('\n');
+        text.Line($"### {day.Date}");
         foreach (var entry in day.Entries)
         {
             if (entry.Kind is not null)
             {
-                sb.Append("- **").Append(OneLineLogText(entry.Kind)).Append("**: ").Append(OneLineLogText(entry.Text)).Append('\n');
+                text.Line($"- **{entry.Kind}**: {entry.Text}");
             }
             else
             {
-                sb.Append("- ").Append(OneLineLogText(entry.Text)).Append('\n');
+                text.Line($"- {entry.Text}");
             }
         }
     }
@@ -1750,51 +2114,51 @@ public sealed class OkfBundleTools
         // 20 for broad queries (design §8.7).
         var shown = ConceptSearch.TopDiversified(scored, MaxResults);
 
-        var sb = new StringBuilder();
+        var text = new ModelTextBuilder();
 
         // `query` and `tag` are the tool's own arguments and are folded anyway:
         // an external audit of PR #108 called okf_search with a query carrying
-        // an LF and got a forged `## FORGED` heading out of this very line. See
-        // OneLine for why provenance is not the boundary.
-        sb.Append("# Search: \"").Append(OneLine(query)).Append('"');
+        // an LF and got a forged `## FORGED` heading out of this very line.
+        // Provenance is not the boundary.
+        text.Write($"# Search: \"{query}\"");
         if (tag is not null)
         {
-            sb.Append(" (tag: ").Append(OneLine(tag)).Append(')');
+            text.Write($" (tag: {tag})");
         }
 
-        sb.Append('\n').Append('\n');
-        sb.Append("Showing ").Append(shown.Count).Append(" of ").Append(scored.Count).Append(" result(s).").Append('\n').Append('\n');
+        text.Line().Line();
+        text.Line($"Showing {shown.Count} of {scored.Count} result(s).").Line();
 
         foreach (var (concept, score) in shown)
         {
-            // DisplayTitle folds it: `title` comes from frontmatter, where a
-            // `|` block scalar carries line breaks perfectly legally, and one
-            // result is one "* " line here. (The excerpt below needs no such
-            // call -- ConceptSearch.Excerpt returns a single split line by
-            // construction.)
+            // `title` comes from frontmatter, where a `|` block scalar carries
+            // line breaks perfectly legally, and one result is one "* " line.
             var title = DisplayTitle(concept, concept.Id.ToString());
             var lc = concept.Document.Frontmatter.Lifecycle;
-            sb.Append("* ").Append(concept.Id).Append(" — ").Append(title).Append(" (").Append(score).Append(')');
+            text.Write($"* {concept.Id} — {title} ({score})");
             if (lc.Status == ConceptStatus.Deprecated)
             {
-                sb.Append(" [deprecated]");
+                text.Write($" [deprecated]");
             }
 
             if (lc.IsStale(now))
             {
-                sb.Append(" [stale]");
+                text.Write($" [stale]");
             }
 
-            sb.Append('\n');
+            text.Line();
 
+            // ConceptSearch.Excerpt returns one folded line (#122: it used to split on LF
+            // only, so a CR, NEL or U+2028 inside a body line forged a line here), and the
+            // hole folds it once more.
             var excerpt = ConceptSearch.Excerpt(concept.Document.Body, query);
             if (excerpt is not null)
             {
-                sb.Append("  ").Append(excerpt).Append('\n');
+                text.Line($"  {excerpt}");
             }
         }
 
-        return sb.ToString();
+        return text.ToString();
     }
 
     /// <summary>
@@ -1816,35 +2180,79 @@ public sealed class OkfBundleTools
     private static string RenderAudit(AuditReport report, bool staleOnly)
     {
         const int MaxResults = 20;
-        var sw = new StringWriter();
+        var text = new ModelTextBuilder();
 
         // Same summary bytes as the CLI renderer, via the shared AuditText --
         // the two renderers stay separate on purpose (the CLI's bytes are
         // golden-locked), but the vocabulary/summary text is not spelled
-        // twice.
-        AuditText.WriteSummary(sw, report);
-        var sb = sw.GetStringBuilder();
+        // twice. Each line enters as a rendered AuditLine.
+        foreach (var line in AuditText.AuditLine.Summary(report))
+        {
+            text.Rendered(line);
+        }
 
         var heading = staleOnly ? "needs attention" : "selected";
 
         if (report.Findings.Count == 0)
         {
-            sb.Append($"\n{heading}: none\n");
-            return sb.ToString();
+            text.Line().Line($"{heading}: none");
+            return text.ToString();
         }
 
-        sb.Append($"\n{heading} ({report.Findings.Count}):\n");
+        text.Line().Line($"{heading} ({report.Findings.Count}):");
         foreach (var finding in report.Findings.Take(MaxResults))
         {
-            sb.Append("  ").Append(AuditText.FormatFinding(finding)).Append('\n');
+            text.Write($"  ").Rendered(AuditText.AuditLine.Finding(finding));
         }
 
         if (report.Findings.Count > MaxResults)
         {
-            sb.Append($"… and {report.Findings.Count - MaxResults} more (narrow with stale/trust/status/type)\n");
+            text.Line($"… and {report.Findings.Count - MaxResults} more (narrow with stale/trust/status/type)");
         }
 
-        return sb.ToString();
+        return text.ToString();
+    }
+
+    /// <summary>
+    /// Whether an object lies under <paramref name="prefix"/> at the provider now (spec §2: a
+    /// prefix exists while an object lives under it; an empty directory does not, D2). A
+    /// listing the provider refuses — a junction or an entry that cannot be inspected on the
+    /// prefix's path, the confinement boundary — or that fails is "not found": nothing is
+    /// read through it, which is what the old strict ancestor walk refused too.
+    /// </summary>
+    private static async Task<bool> PrefixExistsAsync(Bundle bundle, BundleKey prefix, CancellationToken ct)
+    {
+        // Strictly under the prefix: an object stored under the prefix's own key (a
+        // provider may list it) is not a directory, and the old Directory.Exists said so.
+        var under = prefix + "/";
+
+        // The image first, with no I/O: any concept, index or log the load saw under the
+        // prefix proves it. The read that follows still goes through the provider's guards
+        // (a prefix that has become a link is refused there, never listed); only a prefix
+        // the image knows nothing of costs a listing.
+        if (bundle.Concepts.Any(c => c.Key?.ToString().StartsWith(under, StringComparison.Ordinal) == true)
+            || bundle.IndexKeys.Any(k => k.ToString().StartsWith(under, StringComparison.Ordinal))
+            || bundle.LogKeys.Any(k => k.ToString().StartsWith(under, StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        try
+        {
+            await foreach (var listing in bundle.Provider.EnumerateAsync(prefix, bundle.Options.Limits, ct).WithCancellation(ct).ConfigureAwait(false))
+            {
+                if (listing.RawName.StartsWith(under, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+        catch (Exception e) when (e is BundleProviderException or IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     /// <summary>
@@ -1874,24 +2282,33 @@ public sealed class OkfBundleTools
             }
         }
 
-        var sb = new StringBuilder();
+        var text = new ModelTextBuilder();
 
         // `relPath` is Browse's own `path` argument, trimmed. Reaching here
         // means the directory exists, and a POSIX directory name may hold a
         // line terminator -- so the H1 this method promises is folded like
-        // every other interpolated value. See OneLine.
-        sb.Append("# ").Append(segments.Count == 0 ? "(bundle root)" : OneLine(relPath)).Append('\n').Append('\n');
+        // every other hole.
+        if (segments.Count == 0)
+        {
+            text.Line($"# (bundle root)");
+        }
+        else
+        {
+            text.Line($"# {relPath}");
+        }
+
+        text.Line();
 
         if (subdirectories.Count == 0 && concepts.Count == 0)
         {
-            sb.Append("(empty)").Append('\n');
-            return sb.ToString();
+            text.Line($"(empty)");
+            return text.ToString();
         }
 
         if (subdirectories.Count > 0)
         {
-            AppendSection(sb, "Subdirectories", subdirectories);
-            sb.Append('\n');
+            AppendSection(text, "Subdirectories", subdirectories);
+            text.Line();
         }
 
         if (concepts.Count > 0)
@@ -1903,10 +2320,10 @@ public sealed class OkfBundleTools
                 // folds its bullets too; going through DisplayTitle keeps the
                 // derivation itself in one place.
                 .Select(c => $"{c.Id} — {DisplayTitle(c, c.Id.Name)}");
-            AppendSection(sb, "Concepts", lines);
+            AppendSection(text, "Concepts", lines);
         }
 
-        return sb.ToString();
+        return text.ToString();
     }
 
     /// <summary>Bundle-wide stats: concept, link, and broken-link counts, plus the broken links themselves.</summary>
@@ -1915,19 +2332,19 @@ public sealed class OkfBundleTools
         var totalLinks = bundle.Concepts.Sum(c => bundle.LinksFrom(c.Id).Count);
         var broken = bundle.BrokenLinks();
 
-        var sb = new StringBuilder();
-        sb.Append("# Bundle graph").Append('\n').Append('\n');
-        sb.Append("- ").Append(bundle.Count).Append(" concepts").Append('\n');
-        sb.Append("- ").Append(totalLinks).Append(" links").Append('\n');
-        sb.Append("- ").Append(broken.Count).Append(" broken links").Append('\n');
+        var text = new ModelTextBuilder();
+        text.Line($"# Bundle graph").Line();
+        text.Line($"- {bundle.Count} concepts");
+        text.Line($"- {totalLinks} links");
+        text.Line($"- {broken.Count} broken links");
 
         if (broken.Count > 0)
         {
-            sb.Append('\n');
-            AppendSection(sb, "Broken links", broken.Select(b => $"{b.Source} -> {b.RawTarget}"));
+            text.Line();
+            AppendSection(text, "Broken links", broken.Select(b => $"{b.Source} -> {b.RawTarget}"));
         }
 
-        return sb.ToString();
+        return text.ToString();
     }
 
     /// <summary>A single concept's outgoing links, backlinks, and broken outgoing links.</summary>
@@ -1937,15 +2354,15 @@ public sealed class OkfBundleTools
         var backlinks = bundle.Backlinks(id);
         var brokenOutgoing = outgoing.Where(l => !l.Exists).ToList();
 
-        var sb = new StringBuilder();
-        sb.Append("# Graph: ").Append(id).Append('\n').Append('\n');
-        AppendSection(sb, "Outgoing links", FormatOutgoingLinks(outgoing));
-        sb.Append('\n');
-        AppendSection(sb, "Backlinks", FormatBacklinks(backlinks));
-        sb.Append('\n');
-        AppendSection(sb, "Broken links", brokenOutgoing.Select(l => $"{id} -> {l.Raw}"));
+        var text = new ModelTextBuilder();
+        text.Line($"# Graph: {id}").Line();
+        AppendSection(text, "Outgoing links", FormatOutgoingLinks(outgoing));
+        text.Line();
+        AppendSection(text, "Backlinks", FormatBacklinks(backlinks));
+        text.Line();
+        AppendSection(text, "Broken links", brokenOutgoing.Select(l => $"{id} -> {l.Raw}"));
 
-        return sb.ToString();
+        return text.ToString();
     }
 
     private static IEnumerable<string> FormatOutgoingLinks(IEnumerable<ResolvedLink> links) =>
@@ -1955,128 +2372,11 @@ public sealed class OkfBundleTools
         backlinks.Select(source => source.ToString());
 
     /// <summary>
-    /// <b>The one rule for EVERY value a line-oriented tool result
-    /// interpolates, whatever its provenance:</b> every line terminator
-    /// collapses to a single space, so the value occupies exactly the one line
-    /// the renderer gave it and cannot forge a second.
-    ///
-    /// <para><b>Provenance is not the boundary.</b> That sentence used to read
-    /// "untrusted text", and it carried a deliberate exemption with it: an
-    /// earlier re-review folded bundle, container and warehouse text but left a
-    /// tool's OWN arguments (<c>query</c>, <c>tag</c>, <c>path</c>,
-    /// <c>conceptId</c>) raw, as "caller-supplied, not bundle text". That
-    /// reasoning is wrong. The caller is the model, and a model's argument
-    /// routinely carries text it read a moment earlier — out of a bundle, off a
-    /// web page, out of another tool's result — so "caller-supplied" says
-    /// nothing at all about whether the text is hostile. An external audit of
-    /// PR #108 demonstrated it: <c>okf_search</c> called with
-    /// <c>revenue</c> + LF + <c>## FORGED</c> printed <c># Search: "revenue</c>
-    /// and then a forged <c>## FORGED</c> heading, in the tool's own result
-    /// header. The test is therefore never "who supplied this value"; it is
-    /// "does this renderer promise that this value occupies one line". Where a
-    /// value IS left raw, the justification must name a grammar that has
-    /// already been validated (<see cref="ChangeLog.IsIsoDate"/> for
-    /// <see cref="ChangesSince"/>'s date) or a refusal that has already run
-    /// (<see cref="LineSafeText.ContainsControlCharacter"/> for
-    /// <see cref="Verify"/>'s actor) — never where the value came from.</para>
-    ///
-    /// <para><see cref="string.ReplaceLineEndings(string)"/> and not a hand-rolled
-    /// <c>\r</c>/<c>\n</c> pass: it also folds <c>FF</c>, <c>NEL</c> (U+0085)
-    /// and <c>LS</c>/<c>PS</c> (U+2028/U+2029), which a markdown or JavaScript
-    /// line splitter downstream may well treat as terminators even though
-    /// <see cref="char.IsControl(char)"/> does not classify the last two.
-    /// It is the same neutralisation the orchestrator's <c>RunStageAsync</c>
-    /// and <see cref="FormatOutcome"/>'s <c>Error:</c> line already applied,
-    /// promoted here so the remaining sinks cannot keep diverging one at a
-    /// time (they did: the verdict detail, the reason lines, the receipt keys
-    /// and the receipt string values were each left raw by a change that fixed
-    /// one of the others).</para>
-    ///
-    /// <para><b>What it is not.</b> Nothing else is escaped: a value keeps its
-    /// <c>-</c>, <c>#</c> and backticks, because the alternative — escaping
-    /// markdown — would hide the data the model is meant to read, and forging
-    /// a BULLET or a HEADING is what needs a line break of its own to begin
-    /// with. Collections already arrive as JSON (which escapes its own line
-    /// endings), so they pass through this unchanged.</para>
-    /// </summary>
-    /// <param name="value">Any value about to be interpolated into a line this library promises to keep whole: bundle text, a receipt field, an attester's detail — or one of the tool's own arguments.</param>
-    private static string OneLine(string value) => value.ReplaceLineEndings(" ");
-
-    /// <summary>
-    /// <see cref="OneLine"/>, plus every REMAINING control character and every
-    /// bidi control rendered visibly as <c>&lt;U+XXXX&gt;</c>: the read-side
-    /// counterpart of <see cref="GuardLogField"/>, for <c>log.md</c> text this
-    /// process did not write.
-    ///
-    /// <para><b>Why escape rather than strip, fold or refuse.</b> A read has
-    /// nothing to refuse — the file exists, and its entries are a human's
-    /// words. Stripping or folding would silently delete what someone wrote,
-    /// which an audit trail's own reader must never do. Naming each character
-    /// instead keeps every word intact, makes the line inert (nothing left can
-    /// reorder the display or drive a terminal), and is the form a reader can
-    /// ACT on: <c>&lt;U+202E&gt;</c> in a rendered entry says exactly what is
-    /// in the file and that someone put it there, where a dropped character
-    /// would have said nothing at all.</para>
-    ///
-    /// <para>TAB is exempt on both sides (see <see cref="GuardLogField"/>):
-    /// the write accepts it verbatim, so the read must not disfigure it.
-    /// U+000C/U+0085/U+2028/U+2029 never reach the escaper as themselves —
-    /// <see cref="OneLine"/> has already folded them to spaces, which is the
-    /// established rule for this sink; everything the fold leaves behind is a
-    /// character that has no business in a rendered line at all.</para>
-    ///
-    /// <para>Scoped to the <c>log.md</c> readers this round — which, as of
-    /// the post-audit re-review's Important 1, includes the relative path
-    /// <see cref="AppendLogFileChanges"/> prints in its own <c>## {path}</c>
-    /// heading and <c>&gt; Skipped {path}</c> note: a path is text this
-    /// library did not write either, so it needs the same treatment as entry
-    /// content, not a new escaper. The same exposure still exists wherever
-    /// <see cref="OneLine"/> ALONE renders text this library did not write
-    /// (concept bodies, titles, receipt values, and other paths such as
-    /// <see cref="GetComputation"/>'s computation-file path) — folding a line
-    /// terminator was never a claim about ESC. Widening it further is a
-    /// separate decision, not an oversight here.</para>
-    /// </summary>
-    /// <param name="value">Text read back out of a <c>log.md</c>.</param>
-    private static string OneLineLogText(string value)
-    {
-        var folded = OneLine(value);
-        if (!folded.Any(NeedsVisibleEscape))
-        {
-            return folded;
-        }
-
-        var sb = new StringBuilder(folded.Length + 8);
-        foreach (var c in folded)
-        {
-            if (NeedsVisibleEscape(c))
-            {
-                sb.Append("<U+").Append(((int)c).ToString("X4", CultureInfo.InvariantCulture)).Append('>');
-            }
-            else
-            {
-                sb.Append(c);
-            }
-        }
-
-        return sb.ToString();
-    }
-
-    /// <summary>
-    /// The read-side twin of <see cref="GuardLogField"/>'s two rejections: a
-    /// control character or a bidi control, TAB excepted exactly as the write
-    /// excepts it. <see cref="IsBidiControl"/> is the same single list both
-    /// sides read, so the two cannot drift.
-    /// </summary>
-    /// <param name="c">The character to classify.</param>
-    private static bool NeedsVisibleEscape(char c) =>
-        c != '\t' && (char.IsControl(c) || IsBidiControl(c));
-
-    /// <summary>
     /// A concept's display title — its frontmatter <c>title</c>, or
     /// <paramref name="fallback"/> (always derived from the already-validated
     /// <see cref="ConceptId"/>) when it has none — folded by
-    /// <see cref="OneLine"/>.
+    /// <see cref="ModelText.Fold"/> (it is printed into a hole as well, which
+    /// folds it again to no effect).
     ///
     /// <para><b>One call site for the one frontmatter field three different
     /// renderers print into a line of their own structure</b>: this method's
@@ -2090,43 +2390,53 @@ public sealed class OkfBundleTools
     /// <param name="concept">The concept whose title is being rendered.</param>
     /// <param name="fallback">What to print when the concept declares no <c>title</c>.</param>
     private static string DisplayTitle(Concept concept, string fallback) =>
-        OneLine(concept.Document.Frontmatter.Title ?? fallback);
+        ModelText.Fold(concept.Document.Frontmatter.Title ?? fallback);
 
     /// <summary>
     /// Appends a markdown <c>## </c>-heading section, one bullet per line, or
-    /// <see cref="NoneLine"/> if empty. Every bullet goes through
-    /// <see cref="OneLine"/>: the bullets carry bundle text (a concept title,
-    /// a raw link target) and orchestrator <c>Reasons</c> (which embed an
-    /// attester's verdict detail), and "one bullet per line" is a promise this
-    /// method makes, so it is this method that keeps it.
+    /// <see cref="NoneLine"/> if empty. Every bullet is a hole, so folded: the
+    /// bullets carry bundle text (a concept title, a raw link target) and
+    /// orchestrator <c>Reasons</c> (which embed an attester's verdict detail),
+    /// and "one bullet per line" is a promise this method makes.
     /// </summary>
-    private static void AppendSection(StringBuilder sb, string heading, IEnumerable<string> lines)
+    private static void AppendSection(ModelTextBuilder text, string heading, IEnumerable<string> lines)
     {
-        sb.Append("## ").Append(heading).Append('\n');
+        text.Line($"## {heading}");
         var any = false;
         foreach (var line in lines)
         {
             any = true;
-            sb.Append("- ").Append(OneLine(line)).Append('\n');
+            text.Line($"- {line}");
         }
 
         if (!any)
         {
-            sb.Append(NoneLine).Append('\n');
+            text.Line($"{NoneLine}");
         }
     }
 
     /// <summary>
-    /// Appends the concept's frontmatter as one <c>key: value</c> line per
-    /// entry. Both sides go through <see cref="OneLine"/>: a <c>|</c> block
-    /// scalar is perfectly legal YAML, and a line break in one of these values
-    /// printed what looked like another frontmatter ENTRY -- a bundle could
-    /// show a <c>type:</c> or <c>verified:</c> line it does not actually carry.
-    /// Folding a genuinely multi-line value (typically a <c>description</c>)
-    /// onto one line is the accepted cost, and is what a <c>&gt;</c> folded
-    /// scalar would have rendered anyway.
+    /// Appends the concept's frontmatter as one fenced <c>yaml</c> block
+    /// (<see cref="BlockKind.Frontmatter"/>) written by <see cref="YamlEmitter"/>,
+    /// so that parsing what is shown gives back the stored mapping -- nested
+    /// maps and lists of maps included (#256). A read-modify-write through
+    /// <c>okf_write_concept</c>, the flow the observation gate requires, then
+    /// keeps the §5.2 <c>generated</c> and <c>verified</c> structures instead of
+    /// storing their flattened text as strings. The block is fenced like the
+    /// body (<see cref="ModelTextBuilder.Fence"/>), so a line break inside a
+    /// value -- the emitter writes it as a <c>\n</c> escape in a quoted scalar
+    /// anyway -- cannot pass for another entry or for the tool's own text.
+    /// It is written by <see cref="YamlEmitter.EmitEscapingInvisible"/>, the
+    /// same emitter with one reader-facing option: a key or value holding an
+    /// invisible, bidi, line-separator or control character is quoted with
+    /// that character as a <c>\uXXXX</c> escape, so none is shown raw (astral
+    /// tag characters excepted: the subset cannot escape them). The round trip
+    /// stays exact. What is written to disk is unchanged.
+    /// A mapping the emitter refuses (past its nesting or size bounds, which a
+    /// mapping the parser read cannot reach; only one built in code can) is
+    /// reported on one line instead. Internal as a test seam for that line.
     /// </summary>
-    private static void AppendFrontmatterBlock(StringBuilder sb, Frontmatter frontmatter)
+    internal static void AppendFrontmatterBlock(ModelTextBuilder text, Frontmatter frontmatter)
     {
         var map = frontmatter.AsMapping();
         if (map.IsEmpty)
@@ -2134,12 +2444,18 @@ public sealed class OkfBundleTools
             return;
         }
 
-        foreach (var key in map.Keys)
+        string yaml;
+        try
         {
-            sb.Append(OneLine(key)).Append(": ").Append(OneLine(FormatFrontmatterValue(map.Get(key)))).Append('\n');
+            yaml = YamlEmitter.EmitEscapingInvisible(map);
+        }
+        catch (YamlEmitException ex)
+        {
+            text.Line($"(frontmatter not shown: {ex.Message})").Line();
+            return;
         }
 
-        sb.Append('\n');
+        text.Block(BlockKind.Frontmatter, yaml).Line();
     }
 
     /// <summary>
@@ -2152,133 +2468,125 @@ public sealed class OkfBundleTools
     /// <see cref="ReadConcept"/>'s compact enrichment, so the two summaries
     /// can never drift apart.
     ///
-    /// <para><b>Every value here comes out of frontmatter, so every one of them
-    /// goes through <see cref="OneLine"/>.</b> Each is a §10.2 field a bundle
-    /// author writes, and YAML lets any of them be a <c>|</c> block scalar: a
-    /// newline in <c>runtime</c> or <c>attester.resource</c> forged a second
-    /// <c>- </c> line in a block whose whole job is to tell a model what will be
-    /// run and what will vouch for it. Same rule and same reason as
-    /// <see cref="FormatOutcome"/>'s — see <see cref="OneLine"/>. The literals
-    /// around them (<see cref="NoneLine"/>, <c>(inline)</c>, <c>(unnamed)</c>,
-    /// <c>[required]</c>) are this library's own and need no call.</para>
+    /// <para><b>Every value here comes out of frontmatter, and every one of
+    /// them is a hole, so folded.</b> Each is a §10.2 field a bundle author
+    /// writes, and YAML lets any of them be a <c>|</c> block scalar: a newline
+    /// in <c>runtime</c> or <c>attester.resource</c> forged a second <c>- </c>
+    /// line in a block whose whole job is to tell a model what will be run and
+    /// what will vouch for it. The literals around them (<see cref="NoneLine"/>,
+    /// <c>(inline)</c>, <c>(unnamed)</c>, <c>[required]</c>) are this library's
+    /// own.</para>
     /// </summary>
-    private static void AppendContractSummary(StringBuilder sb, AttestedComputationContract contract)
+    private static void AppendContractSummary(ModelTextBuilder text, AttestedComputationContract contract)
     {
-        sb.Append("## Contract").Append('\n');
-        sb.Append("- runtime: ").Append(OneLine(contract.Runtime ?? NoneLine)).Append('\n');
+        text.Line($"## Contract");
+        text.Line($"- runtime: {contract.Runtime ?? NoneLine}");
 
         if (contract.Parameters.Count == 0)
         {
-            sb.Append("- parameters: ").Append(NoneLine).Append('\n');
+            text.Line($"- parameters: {NoneLine}");
         }
         else
         {
-            sb.Append("- parameters:").Append('\n');
+            text.Line($"- parameters:");
             foreach (var parameter in contract.Parameters)
             {
-                sb.Append("  - ").Append(parameter.Name.Length == 0 ? "(unnamed)" : OneLine(parameter.Name));
+                text.Write($"  - {(parameter.Name.Length == 0 ? "(unnamed)" : parameter.Name)}");
                 if (parameter.Type is not null)
                 {
-                    sb.Append(" (").Append(OneLine(parameter.Type)).Append(')');
+                    text.Write($" ({parameter.Type})");
                 }
 
                 if (parameter.Required)
                 {
-                    sb.Append(" [required]");
+                    text.Write($" [required]");
                 }
 
-                sb.Append('\n');
+                text.Line();
             }
         }
 
-        sb.Append("- computation: ").Append(string.IsNullOrEmpty(contract.ComputationPath) ? "(inline)" : OneLine(contract.ComputationPath)).Append('\n');
+        text.Line($"- computation: {(string.IsNullOrEmpty(contract.ComputationPath) ? "(inline)" : contract.ComputationPath)}");
 
-        sb.Append("- executor: ");
         if (contract.Executor is { } executor)
         {
-            // The joined list, not each item: a newline inside ONE receipt
-            // field name breaks the line just as a newline between two would,
-            // and folding after the join covers both with one call.
-            sb.Append(OneLine(executor.Resource ?? NoneLine))
-              .Append(" (receipt: ")
-              .Append(executor.Receipt.Count == 0 ? NoneLine : OneLine(string.Join(", ", executor.Receipt)))
-              .Append(')');
+            // The joined list is one hole: a newline inside ONE receipt field name
+            // breaks the line just as a newline between two would.
+            text.Line($"- executor: {executor.Resource ?? NoneLine} (receipt: {(executor.Receipt.Count == 0 ? NoneLine : string.Join(", ", executor.Receipt))})");
         }
         else
         {
-            sb.Append(NoneLine);
+            text.Line($"- executor: {NoneLine}");
         }
 
-        sb.Append('\n');
-        sb.Append("- attester: ").Append(OneLine(contract.Attester?.Resource ?? NoneLine)).Append('\n');
+        text.Line($"- attester: {contract.Attester?.Resource ?? NoneLine}");
     }
 
     /// <summary>
     /// Renders an <see cref="AttestationOutcome"/> (§10.5's gated result) as
-    /// agent-friendly markdown for <see cref="RunComputation"/>: whether it is
+    /// agent-friendly markdown for <see cref="RunComputationAsync"/>: whether it is
     /// <c>displayable</c>, the attester's verdict, staleness, whether the
     /// receipt shape matched the contract's declared fields, the receipt's own
     /// fields, and every reason (if any) that kept the run from being
     /// displayable, plus a captured binder/executor/attester exception's
     /// message, if any.
     ///
-    /// <para><b>Every value here that this library did not author goes through
-    /// <see cref="OneLine"/>.</b> §10.5 step 6 makes the <c>displayable</c> and
+    /// <para><b>Every value here that this library did not author is a hole,
+    /// so folded.</b> §10.5 step 6 makes the <c>displayable</c> and
     /// <c>verdict</c> lines the gate the model reads, and the attester's
     /// verdict detail, the orchestrator's reason lines and the receipt's own
-    /// keys and string values are all authored outside it — by a bundle's
-    /// attester script, by a container, by a warehouse. A single line break in
-    /// any of them printed a second, forged <c>- displayable: yes</c> right
-    /// under the real <c>- displayable: no</c>.</para>
+    /// keys and values are all authored outside it — by a bundle's attester
+    /// script, by a container, by a warehouse, by a host executor. A single
+    /// line break in any of them printed a second, forged
+    /// <c>- displayable: yes</c> right under the real <c>- displayable: no</c>.</para>
     /// </summary>
     private static string FormatOutcome(AttestationOutcome outcome)
     {
-        var sb = new StringBuilder();
-        sb.Append("# Attestation outcome").Append('\n').Append('\n');
-        sb.Append("- displayable: ").Append(outcome.Displayable ? "yes" : "no").Append('\n');
+        var text = new ModelTextBuilder();
+        text.Line($"# Attestation outcome").Line();
+        text.Line($"- displayable: {(outcome.Displayable ? "yes" : "no")}");
 
-        sb.Append("- verdict: ");
         if (outcome.Verdict is { } verdict)
         {
-            sb.Append(verdict.Passed ? "passed" : "failed");
+            text.Write($"- verdict: {(verdict.Passed ? "passed" : "failed")}");
             if (!string.IsNullOrEmpty(verdict.Detail))
             {
                 // The attester authored this, and an attester is a script a
                 // bundle names: a newline here forged a second "- displayable:
-                // yes" line one line below the real "- displayable: no". See
-                // OneLine.
-                sb.Append(" (").Append(OneLine(verdict.Detail)).Append(')');
+                // yes" line one line below the real "- displayable: no".
+                text.Write($" ({verdict.Detail})");
             }
+
+            text.Line();
         }
         else
         {
-            sb.Append(NoneLine);
+            text.Line($"- verdict: {NoneLine}");
         }
 
-        sb.Append('\n');
-        sb.Append("- stale: ").Append(StaleLabel(outcome.Stale)).Append('\n');
-        sb.Append("- receipt shape ok: ").Append(outcome.ReceiptShapeOk ? "yes" : "no").Append('\n');
+        text.Line($"- stale: {StaleLabel(outcome.Stale)}");
+        text.Line($"- receipt shape ok: {(outcome.ReceiptShapeOk ? "yes" : "no")}");
 
         if (outcome.Receipt is { } receipt && receipt.Fields.Count > 0)
         {
-            sb.Append("- receipt:").Append('\n');
+            text.Line($"- receipt:");
             foreach (var (key, value) in receipt.Fields)
             {
                 // Both the field NAME and its value come from whatever the
                 // executor returned -- a JSON object key can hold a newline as
-                // readily as a string value can. See OneLine.
-                sb.Append("  - ").Append(OneLine(key)).Append(": ").Append(FormatReceiptValue(value)).Append('\n');
+                // readily as a string value can.
+                text.Line($"  - {key}: {FormatReceiptValue(value)}");
             }
         }
         else
         {
-            sb.Append("- receipt: ").Append(NoneLine).Append('\n');
+            text.Line($"- receipt: {NoneLine}");
         }
 
         if (outcome.Reasons.Count > 0)
         {
-            sb.Append('\n');
-            AppendSection(sb, "Reasons", outcome.Reasons);
+            text.Line();
+            AppendSection(text, "Reasons", outcome.Reasons);
         }
 
         if (outcome.Error is not null)
@@ -2292,21 +2600,23 @@ public sealed class OkfBundleTools
             // already renders it into Reasons. The exception object stays on
             // outcome.Error for the host either way.
             //
-            // OneLine, matching the orchestrator's own RunStageAsync: this text
-            // lands in the same agent-facing markdown blob as Reasons (see this
-            // method's doc comment), and a diagnostic message CAN carry an
-            // embedded newline -- e.g. a ContainerExecutionException whose
-            // message interpolates a downstream JsonException.Message built
-            // from bundle-influenced stdout (Internal/ReceiptParsing.cs). Left
-            // unneutralized here, an untrusted newline could spoof extra "- "
-            // bullet lines or section headers in the rendered output.
-            var errorLine = outcome.Error is AttestationDiagnosticException diagnostic
-                ? $"{diagnostic.GetType().Name}: {OneLine(diagnostic.Message)}"
-                : outcome.Error.GetType().Name;
-            sb.Append('\n').Append("Error: ").Append(errorLine).Append('\n');
+            // Folded, matching the orchestrator's own RunStageAsync: a
+            // diagnostic message CAN carry an embedded newline -- e.g. a
+            // ContainerExecutionException whose message interpolates a
+            // downstream JsonException.Message built from bundle-influenced
+            // stdout (Internal/ReceiptParsing.cs).
+            text.Line();
+            if (outcome.Error is AttestationDiagnosticException diagnostic)
+            {
+                text.Line($"Error: {diagnostic.GetType().Name}: {diagnostic.Message}");
+            }
+            else
+            {
+                text.Line($"Error: {outcome.Error.GetType().Name}");
+            }
         }
 
-        return sb.ToString();
+        return text.ToString();
     }
 
     /// <summary>
@@ -2321,14 +2631,15 @@ public sealed class OkfBundleTools
     /// <c>List&lt;object&gt;</c>'s type name tells the model nothing about
     /// the rows the computation returned. This deliberately changes how a
     /// bool- or double-valued field printed before this method existed.
+    ///
+    /// <para>Not folded here: it is printed into a hole, which folds every arm
+    /// — the string arm, and the <see cref="IFormattable"/> arm too, whose text
+    /// a host executor's own type decides (#122, defect 6).</para>
     /// </summary>
     private static string FormatReceiptValue(object? value) => value switch
     {
         null => NoneLine,
-        // OneLine: a scalar string is the one arm that carries warehouse or
-        // script text verbatim -- the JSON arm below escapes its own line
-        // endings, and no other arm can produce one.
-        string s => OneLine(s),
+        string s => s,
         bool b => b ? "true" : "false",
         IFormattable f => f.ToString(null, CultureInfo.InvariantCulture),
         _ => JsonSerializer.Serialize(value),
@@ -2343,8 +2654,8 @@ public sealed class OkfBundleTools
 
     /// <summary>
     /// Runs a tool method body, converting any exception that a well-formed
-    /// but unlucky input could still trigger — a bundle that fails to
-    /// (re)load (<see cref="OkfException"/>, e.g. <see cref="BundleLoadException"/>
+    /// but unlucky input could still trigger — a bundle whose first load
+    /// fails (<see cref="OkfException"/>, e.g. <see cref="BundleLoadException"/>
     /// for I/O failures, a missing root, or non-UTF-8 content), a rejected
     /// argument surfaced late by a BCL API (<see cref="ArgumentException"/>),
     /// a filesystem read failure (<see cref="IOException"/>,
@@ -2358,7 +2669,7 @@ public sealed class OkfBundleTools
     /// but this catch-all is what makes every public tool method structurally
     /// unable to throw for any string input, now and for tools added later.
     ///
-    /// <para><b>The message is folded</b> (<see cref="OneLine"/>), like every
+    /// <para><b>The message is folded</b> (<see cref="ModelText.Fold"/>, through the message builder), like every
     /// other value a renderer here puts on a line of its own. An exception
     /// message is not library-authored boilerplate: it routinely embeds a PATH
     /// (<c>BundleLoadException</c>'s "bundle root is not a directory: {root}"
@@ -2368,15 +2679,15 @@ public sealed class OkfBundleTools
     /// <c>Error:</c> report into two (executed). This is the last catch-all in
     /// this file that still rendered an outside string raw.</para>
     /// </summary>
-    private static string RunTool(Func<string> body)
+    private static async Task<string> RunToolAsync(Func<Task<string>> body)
     {
         try
         {
-            return body();
+            return await body().ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is OkfException or ArgumentException or IOException or UnauthorizedAccessException or DecoderFallbackException)
         {
-            return $"Error: {OneLine(ex.Message)}";
+            return ModelTextBuilder.Message($"Error: {ex.Message}");
         }
     }
 
@@ -2389,15 +2700,15 @@ public sealed class OkfBundleTools
     /// argument, and <see cref="GuardConceptId"/> rejects only a NUL — every
     /// other terminator reaches here, on the one path an arbitrary string is
     /// guaranteed to take (an id that does not parse is "not found"). See
-    /// <see cref="OneLine"/>.</para>
+    /// <see cref="ModelText.Fold"/>.</para>
     /// </summary>
     /// <param name="conceptId">The id the caller asked for, as given.</param>
     private static string ConceptNotFoundMessage(string conceptId) =>
-        $"Concept '{OneLine(conceptId)}' not found. Use okf_browse to list available concepts.";
+        ModelTextBuilder.Message($"Concept '{conceptId}' not found. Use okf_browse to list available concepts.");
 
     /// <summary>
     /// The common conceptId guard shared by <see cref="ReadConcept"/>,
-    /// <see cref="GetComputation"/> and <see cref="RunComputation"/>: blank
+    /// <see cref="GetComputation"/> and <see cref="RunComputationAsync"/>: blank
     /// (or <c>null</c>) is "not found", an embedded null character is
     /// rejected outright. Returns the error message to return verbatim, or
     /// <c>null</c> if <paramref name="conceptId"/> is fit to parse.
@@ -2417,30 +2728,4 @@ public sealed class OkfBundleTools
         return null;
     }
 
-    /// <summary>
-    /// Renders a frontmatter value as a single display line: scalars via
-    /// <see cref="YamlValue.AsDisplayString"/>, sequences as a
-    /// comma-separated flow list (e.g. <c>[sales, orders]</c>), and any
-    /// other structure via its YAML text with newlines collapsed.
-    /// </summary>
-    private static string FormatFrontmatterValue(YamlValue? value)
-    {
-        if (value is null)
-        {
-            return string.Empty;
-        }
-
-        var display = value.AsDisplayString();
-        if (display is not null)
-        {
-            return display;
-        }
-
-        if (value is YamlSequence seq)
-        {
-            return "[" + string.Join(", ", seq.Items.Select(FormatFrontmatterValue)) + "]";
-        }
-
-        return value.ToYamlString().Trim();
-    }
 }

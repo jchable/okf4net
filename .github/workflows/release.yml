@@ -44,7 +44,8 @@ jobs:
         # registry. ubuntu-latest would actually run them (it has working Docker);
         # a Windows runner defaults to Windows containers and would fail outright
         # rather than skip. Excluded by decision, like producers/ — see CLAUDE.md.
-        run: dotnet test OKF4net.sln -c Release --filter "Category!=ContainerIntegration"
+        # S3Integration starts RustFS in a container: excluded for the same reason (spec D14).
+        run: dotnet test OKF4net.sln -c Release --filter "Category!=ContainerIntegration&Category!=S3Integration"
 
       - name: Pack
         run: >
@@ -61,6 +62,18 @@ jobs:
       - name: Pack (Catalog)
         run: >
           dotnet pack src/OKF4net.Catalog/OKF4net.Catalog.csproj -c Release -o artifacts
+          -p:Version=$VERSION
+          -p:ContinuousIntegrationBuild=true
+
+      - name: Pack (Providers.EmbeddedResources)
+        run: >
+          dotnet pack src/OKF4net.Providers.EmbeddedResources/OKF4net.Providers.EmbeddedResources.csproj -c Release -o artifacts
+          -p:Version=$VERSION
+          -p:ContinuousIntegrationBuild=true
+
+      - name: Pack (Providers.S3)
+        run: >
+          dotnet pack src/OKF4net.Providers.S3/OKF4net.Providers.S3.csproj -c Release -o artifacts
           -p:Version=$VERSION
           -p:ContinuousIntegrationBuild=true
 
@@ -91,6 +104,15 @@ jobs:
           dotnet pack src/OKF4net.Cli/OKF4net.Cli.csproj -c Release -o artifacts
           -p:Version=$VERSION
           -p:ContinuousIntegrationBuild=true
+
+      # `dotnet nuget push "artifacts/*.nupkg"` pushes whatever is there: a pack step dropped or failing quietly
+      # would publish a release without that package. Every package this job packs must be in artifacts/ at VERSION.
+      - name: Every packed package is in artifacts/
+        run: |
+          for id in OKF4net OKF4net.Agents OKF4net.Catalog OKF4net.Providers.EmbeddedResources OKF4net.Providers.S3 \
+                    OKF4net.Attestation OKF4net.Catalog.Hosting OKF4net.Mcp OKF4net.Cli; do
+            test -f "artifacts/$id.$VERSION.nupkg" || { echo "::error::artifacts/ holds no $id.$VERSION.nupkg"; exit 1; }
+          done
 
       # Trusted Publishing: exchanges this job's OIDC token for a short-lived
       # (1 h, single-use) API key — no long-lived secret stored. Requires a

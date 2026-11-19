@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+#pragma warning disable CS0618 // pins the obsolete path-based projections (lot D): the strings they always were, until their removal
 namespace OKF4net.Tests;
 
 /// <summary>
@@ -247,6 +248,75 @@ public class AuditTests
     {
         Assert.False(AuditQuery.All.IsFiltered);
         Assert.True(new AuditQuery(StaleOnly: true).IsFiltered);
+        Assert.True(new AuditQuery(ReviewOutdatedOnly: true).IsFiltered);
+    }
+
+    /// <summary>#156: the four-value deconstruction of the pre-#156 type still compiles and reads the same members.</summary>
+    [Fact]
+    public void Deconstruct_keeps_the_four_value_form_beside_the_five_value_one()
+    {
+        var query = new AuditQuery(StaleOnly: true, Status: ConceptStatus.Stable, Type: "Note", ReviewOutdatedOnly: true);
+
+        var (stale, trust, status, type) = query;
+        Assert.True(stale);
+        Assert.Null(trust);
+        Assert.Equal(ConceptStatus.Stable, status);
+        Assert.Equal("Note", type);
+
+        var (_, _, _, _, reviewOutdated) = query;
+        Assert.True(reviewOutdated);
+    }
+
+    /// <summary>The four-value deconstruction keeps the record-generated parameter names, so named arguments still compile.</summary>
+    [Fact]
+    public void Deconstruct_four_value_form_accepts_the_generated_parameter_names()
+    {
+        var query = new AuditQuery(StaleOnly: true, Status: ConceptStatus.Stable, Type: "Note");
+
+        query.Deconstruct(StaleOnly: out var stale, Trust: out var trust, Status: out var status, Type: out var type);
+
+        Assert.True(stale);
+        Assert.Null(trust);
+        Assert.Equal(ConceptStatus.Stable, status);
+        Assert.Equal("Note", type);
+    }
+
+    /// <summary>
+    /// #156: a review is outdated when the content's last change (§5.2 <c>generated.at</c>,
+    /// §13.1 <c>timestamp</c> as fallback) is strictly later than the latest readable
+    /// <c>verified[].at</c>. Neither the tier nor any count moves; without either instant
+    /// nothing is claimed.
+    /// </summary>
+    [Fact]
+    public void A_review_is_outdated_only_when_the_content_changed_strictly_after_the_latest_stamp()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("after.md", "---\ntype: Metric\ngenerated: { by: okf4net/0.8.0, at: 2026-07-05T11:00:00Z }\nverified:\n  - { by: process:bot, at: 2026-07-05T10:00:00Z }\n---\n");
+        tmp.Write("before.md", "---\ntype: Metric\ngenerated: { by: okf4net/0.8.0, at: 2026-07-05T09:00:00Z }\nverified:\n  - { by: process:bot, at: 2026-07-01T00:00:00Z }\n  - { by: human:ada, at: 2026-07-05T10:00:00Z }\n---\n");
+        tmp.Write("equal.md", "---\ntype: Metric\ngenerated: { by: okf4net/0.8.0, at: 2026-07-05T10:00:00Z }\nverified: { by: human:ada, at: 2026-07-05T10:00:00Z }\n---\n");
+        tmp.Write("legacy.md", "---\ntype: Metric\ntimestamp: 2026-07-09\nverified:\n  - { by: human:ada, at: 2026-07-08T00:00:00Z }\n---\n");
+        tmp.Write("nochange.md", "---\ntype: Metric\nverified:\n  - { by: human:ada, at: 2026-07-08T00:00:00Z }\n---\n");
+        tmp.Write("unread.md", "---\ntype: Metric\ngenerated: { by: okf4net/0.8.0, at: 2026-07-05T10:00:00Z }\nverified:\n  - { by: human:ada, at: soon }\n---\n");
+        tmp.Write("unverified.md", "---\ntype: Metric\ngenerated: { by: okf4net/0.8.0, at: 2026-07-05T10:00:00Z }\n---\n");
+
+        var all = Audit(tmp).Findings.ToDictionary(f => f.Id.ToString());
+
+        Assert.True(all["after"].IsReviewOutdated);
+        Assert.Equal(TrustTier.MachineConfirmed, all["after"].Trust); // a signal, not a tier change
+        Assert.False(all["before"].IsReviewOutdated); // the latest stamp counts, not the first
+        Assert.Equal(new DateTimeOffset(2026, 7, 5, 10, 0, 0, TimeSpan.Zero), all["before"].LastVerifiedAt);
+        Assert.False(all["equal"].IsReviewOutdated); // strictly later only; a bare mapping is a one-element list
+        Assert.True(all["legacy"].IsReviewOutdated); // a bare date reads as midnight UTC
+        Assert.Equal(new DateTimeOffset(2026, 7, 9, 0, 0, 0, TimeSpan.Zero), all["legacy"].LastChangedAt);
+        Assert.False(all["nochange"].IsReviewOutdated);
+        Assert.Null(all["nochange"].LastChangedAt);
+        Assert.False(all["unread"].IsReviewOutdated);
+        Assert.Null(all["unread"].LastVerifiedAt);
+        Assert.False(all["unverified"].IsReviewOutdated);
+
+        var selected = Audit(tmp, new AuditQuery(ReviewOutdatedOnly: true));
+        Assert.Equal(["after", "legacy"], selected.Findings.Select(f => f.Id.ToString()));
+        Assert.Equal(7, selected.ConceptCount); // the counts never narrow with the query
     }
 
     [Fact]
