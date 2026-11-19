@@ -775,6 +775,23 @@ reste à confirmer ou à renverser, et son coût est dit. Les mesures portent su
 `AWSSDK.S3` 4.1.0 avec `AWSSDK.Core` 4.1.0 (et 4.1.0.1 pour la porte), RustFS 1.0.3,
 Windows 11.
 
+Les commits cités ci-dessous sont ceux de la branche après son rebase sur `origin/dev` (2026-11-19) ; un
+nouveau rebase les change. Chacun est identifié par son sujet, qui survit :
+
+- `2befd07a` — docs(s3): gate results (spec appendix B) and the plan amendments they require (#142)
+- `25c11bf1` — docs(s3): maintainer decisions of 2026-11-19 (#142)
+- `7344c24c` — docs(s3): package README, root README, CHANGELOG, CLAUDE.md, spec annex (#142)
+- `8a84c0ed` — feat(s3): buffered reads versioned by SHA-256, closed error table (#142)
+- `80ddd674` — feat(s3): project, S3BundleSource validation, opaque Id and bucket-free Location (#142)
+- `f312670b` — feat(s3): request guard on one authority and path, transport bounds, provider-owned HttpClient, hermetic client (#142)
+- `0b4fd0e0` — feat(s3): strict key decoding, page parser, listing walker with D9 invariants, s3v1 token (#142)
+- `b666d859` — fix(core): only a refusal resolves as Unsafe; other provider failures surface, translated (#142, spec D15 b)
+- `43ebc131` — fix(s3): guard admits GET only, one Host, an allowlisted query; bounds follow the operation (#142)
+- `fccbd988` — fix(s3): listed keys form-decoded, raw '+' refused by the guard, bounded operation deadline, re-parse never escapes (#142)
+- `95d9eaad` — fix(s3): load-robust deadlines, a read-ahead guard that can fail, integrity through wrappers (#142)
+- `bbb29d9d` — test(s3): consumers, synchronous bridge, D7, no residual file I/O, bucket-free output (#142)
+- `65567c88` — test(s3): RustFS integration (parity, hostile names, pinning, freshness, bounds, outage) (#142)
+
 **Reste ouvert après les décisions du 2026-11-19 (ci-dessous) : C11 (région de signature d'une source `ServiceUrl`), reporté. À confirmer : C8. C1, C3, C4, C5c, C10 et C12 sont tranchés. Les autres entrées (C2, C5 hors c, C6, C7, C9) sont des constats.**
 
 **Décisions du mainteneur (2026-11-19).**
@@ -799,7 +816,7 @@ l'espace en `+` et le `+` littéral en `%2B` (relecteur sûr à 80–85 %, non m
 les deux lectures possibles (ordre D9, ou 404 à la lecture) ; le coût d'une erreur est un nom avec espace ou
 `+` mal nommé sur un store qui rendrait un `+` brut pour un `+`. Gardé par les tests unitaires seuls
 (`CodecTests`, `ListPageParserTests`, `ListingWalkerTests`), pas par la passe RustFS.
-*Commit* : `dff3de21`. *Statut* : tranché par le contrôleur — à arbitrer par le mainteneur.
+*Commit* : `fccbd988`. *Statut* : tranché par le contrôleur — à arbitrer par le mainteneur.
 
 **C2 — §4.4 et §5, redirection 307 entre les deux autorités d'un même bucket.**
 *Le texte* : « le chemin inchangé désigne un autre bucket », dans les deux sens.
@@ -808,7 +825,7 @@ le SDK **retire le segment du bucket** et garde le chemin de la clé (`/kb/x`) ;
 `Location`. La contre-épreuve de ce sens a été corrigée en conséquence ; le garde ferme les deux sens sans
 changement (il compare l'autorité et le chemin brut). La phrase de §4.4 se lit donc « dans le sens
 *virtual-hosted* → régional ».
-*Commits* : `68fac0b1` (mesure et contre-épreuve), `cac080e6` (garde durci). *Statut* : constat mesuré ;
+*Commits* : `f312670b` (mesure et contre-épreuve), `43ebc131` (garde durci). *Statut* : constat mesuré ;
 formulation du corps à corriger à la prochaine révision.
 
 **C3 — Annexe B, conséquence 4 : au plus 3 envois par appel du SDK.**
@@ -817,7 +834,7 @@ formulation du corps à corriger à la prochaine révision.
 sans borne (3,6 Go en quelques minutes). `PinningHandler.MaxSendsPerOperation = 3` : au-delà,
 `InvalidResponse`. C'est une **addition explicite à la spec, pas encore reconnue par le mainteneur** ; coût
 d'une erreur : un cas de refus de plus (aucun chemin légitime n'a besoin de plus de 3 envois, `MaxErrorRetry = 2`).
-*Commits* : `9a595986` (annexe B), `68fac0b1` (garde). *Statut* : tranché par le contrôleur — à arbitrer par le mainteneur.
+*Commits* : `2befd07a` (annexe B), `f312670b` (garde). *Statut* : tranché par le contrôleur — à arbitrer par le mainteneur.
 
 **C4 — D15 (b), §4.7 : effet du changement sur tous les providers.**
 *Le texte* : `ResolveResourceKeyAsync` ne rend `Unsafe` que sur un refus ; toute autre défaillance remonte
@@ -829,7 +846,7 @@ provider autre qu'un refus, y compris une `IOException` ou une `UnauthorizedAcce
 `provider failure resolving '<clé>' (<Type>)` : la clé et le **type** de l'exception, jamais son texte, l'original
 en cause. La lecture d'`index.md`/`log.md` par la validation reste `UnparseableIndex`/`UnparseableLog` (#247).
 Aucun golden n'a bougé.
-*Commit* : `42a83936`. *Statut* : D15 arbitrée le 2026-11-16 ; son extension au relevé et au filesystem est à confirmer.
+*Commit* : `b666d859`. *Statut* : D15 arbitrée le 2026-11-16 ; son extension au relevé et au filesystem est à confirmer.
 
 **C5 — §4.6, mesures de l'exécution** (toutes sur `AWSSDK.S3` 4.1.0).
 - a. Un ETag simple (MD5 hexadécimal) qui ne correspond pas aux octets est refusé par le SDK lui-même :
@@ -858,7 +875,7 @@ Aucun golden n'a bougé.
   (`AggregateException` comprise, profondeur 16). Un SDK plus récent peut donner `Transport` ; échec fermé, gardé
   par deux tests sur le vrai pipeline.
 
-*Commits* : `47e781ca`, `54df499a`. *Statut* : mesures ; c et h assumées comme limites documentées.
+*Commits* : `8a84c0ed`, `95d9eaad`. *Statut* : mesures ; c et h assumées comme limites documentées.
 
 **C6 — §6, tableaux de tests.**
 - **T2 « Fraîcheur »** : le cas à triplet (nom, ETag, taille) constant y est dit « servi par un double scripté au-dessus
@@ -873,7 +890,7 @@ Aucun golden n'a bougé.
   elle-même cette requête (SigV4, `UNSIGNED-PAYLOAD`, horloge de l'hôte à moins de 15 minutes de celle du
   moteur) ; RustFS la range sous la clé normalisée (M4).
 
-*Commits* : `079f1ca0`, `cef5d51d`. *Statut* : constats ; les lignes du corps n'ont pas été réécrites.
+*Commits* : `65567c88`, `bbb29d9d`. *Statut* : constats ; les lignes du corps n'ont pas été réécrites.
 
 **C7 — §4.3, D9 : espace de noms du XML de listing.**
 *Le texte* : non précisé.
@@ -882,14 +899,14 @@ Aucun golden n'a bougé.
 autre espace de noms est refusé (`InvalidResponse`) plutôt que lu ou ignoré. Un store qui en emploie un autre est
 donc refusé, par exemple l'interopérabilité S3 de Google Cloud Storage (`http://doc.s3.amazonaws.com/2006-03-01`).
 Limite consignée au README.
-*Commit* : `f170fda3`. *Statut* : limite assumée, à rouvrir sur la demande d'un store réel.
+*Commit* : `0b4fd0e0`. *Statut* : limite assumée, à rouvrir sur la demande d'un store réel.
 
 **C8 — D6, §4.4 : partitions hors `aws`.**
 *Le texte* : « les hôtes exacts pour chaque région (dont les partitions hors `aws`) sont relevés par la porte ».
 *Constaté* : une `Region` hors de la partition DNS `amazonaws.com` (Chine, `amazonaws.com.cn`) est **refusée à la
 construction** (`ArgumentException`) ; ce cas passe par un `ServiceUrl`. Les autorités des régions `amazonaws.com`
 sont celles de la table de §4.4.
-*Commit* : `e27a5db9`. *Statut* : décision d'implémentation, à confirmer par le mainteneur.
+*Commit* : `80ddd674`. *Statut* : décision d'implémentation, à confirmer par le mainteneur.
 
 **C9 — §4.4 : « une région mal configurée se manifeste par un refus du garde ».**
 *Le texte* (§4.4, avant-dernier paragraphe) : une région mal configurée se manifeste par un refus du garde.
@@ -897,7 +914,7 @@ sont celles de la table de §4.4.
 autre hôte est bien refusée par le garde (`RefusedHost`) ; mais un 301 `PermanentRedirect` ou un 400
 `AuthorizationHeaderMalformed` est classé `BucketUnavailable`. Le README du paquet dit les deux cas ; aucun des
 deux n'a été mesuré contre Amazon S3 réel. Formulation du corps à corriger à la prochaine révision.
-*Commit* : `22bc5ccd` (README). *Statut* : constat.
+*Commit* : `7344c24c` (README). *Statut* : constat.
 
 **C10 — D9, §4.3 : page tronquée sans clé.**
 *Le texte* (D9) : « progrès exigé de chaque page tronquée » ; une page tronquée (`IsTruncated=true`) qui ne porte
@@ -920,7 +937,7 @@ page tronquée ») dit encore « refuser » : le repli dans le corps est #287, d
 `MaxEntries` très bas, des pages vides épuisent ce budget et l'échec est un `InvalidResponse`, pas une borne d'entrées.
 L'échéance est par page, non par parcours : un store qui répond chaque page juste avant `RequestTimeout` tient un
 parcours (`ExistsAsync` : 1 000 pages) jusqu'au produit du budget par le délai (suivi : #283). Passe `S3Integration`
-locale à 0 ignoré : 35/35 le 2026-11-19 sur `6f992fef` (reprise après le complément de l'entrée C12 : voir ci-dessous).
+locale à 0 ignoré : 35/35 le 2026-11-19 sur `25c11bf1` (reprise après le complément de l'entrée C12 : voir ci-dessous).
 
 **C11 — §4.4, D2 : région de signature d'une source `ServiceUrl`.**
 *Le texte* : la région d'authentification est `us-east-1` pour `ServiceUrl` ; `Region` et `ServiceUrl` sont
