@@ -55,6 +55,29 @@ internal sealed class PinningHandler(AddressingPlan plan) : DelegatingHandler
     /// <summary>The header the SDK adds inside AWS Lambda (AWS_LAMBDA_FUNCTION_NAME and _X_AMZN_TRACE_ID set), carrying the ambient trace id; not signed (measured).</summary>
     internal const string TraceIdHeader = "x-amzn-trace-id";
 
+    // Review of 2026-11-19: a value is a NUMBER or an element of a CLOSED SET, never free text. Checking only the form let
+    // an ambient text imitating a token ride in a slot the SDK had left empty (a newer SDK that renamed the token, a value
+    // outside the form), where no second value contradicts it. A set too narrow for a platform or a newer SDK only removes
+    // information; the request is sent all the same. The values were measured on Windows only; the other names come from
+    // the runtime's own enumerations and are unmeasured. (Declared before UserAgentSlots, whose lambdas read them.)
+    private static readonly HashSet<string> Architectures = new(StringComparer.Ordinal)
+    {
+        "X86", "X64", "Arm", "Arm64", "Armv6", "Wasm", "S390x", "LoongArch64", "Ppc64le", "RiscV64",
+    };
+
+    private static readonly HashSet<string> OsNames = new(StringComparer.Ordinal)
+    {
+        "windows", "linux", "macos", "osx", "freebsd", "android", "ios", "tvos", "browser", "wasi",
+    };
+
+    private static readonly HashSet<string> LanguageNames = new(StringComparer.Ordinal)
+    {
+        ".NET_Core", ".NET_Framework", ".NET_Native", ".NET", "Mono",
+    };
+
+    /// <summary>The SDK's business-metric codes seen so far (b, e, E, F, N, P, R); an unknown code makes the token unknown.</summary>
+    private static readonly HashSet<char> MetricCodes = ['b', 'e', 'E', 'F', 'N', 'P', 'R'];
+
     /// <summary>
     /// The User-Agent's slots, in the order the guard writes them back: a token prefix (ordinal, case-sensitive) and the
     /// form of the value after it. Derived from what AWSSDK.S3/Core 4.1.0 send in a clean environment, measured
@@ -66,16 +89,16 @@ internal sealed class PinningHandler(AddressingPlan plan) : DelegatingHandler
     /// </summary>
     private static readonly (string Prefix, Func<string, bool> Value)[] UserAgentSlots =
     [
-        ("aws-sdk-dotnet-coreclr/", IsWord),
-        ("ua/", IsWord),
-        ("os/", IsNameAndVersion),
-        ("md/ARCH#", IsWord),
-        ("lang/", IsNameAndVersion),
-        ("md/aws-sdk-dotnet-core#", IsWord),
+        ("aws-sdk-dotnet-coreclr/", IsVersion),
+        ("ua/", IsVersion),
+        ("os/", v => IsNameAndVersion(v, OsNames)),
+        ("md/ARCH#", v => Architectures.Contains(v)),
+        ("lang/", v => IsNameAndVersion(v, LanguageNames)),
+        ("md/aws-sdk-dotnet-core#", IsVersion),
         ("ft/", v => v == "aot"),
-        ("api/S3#", IsWord),
+        ("api/S3#", IsVersion),
         ("md/Client", v => v is "Async" or "Sync"),
-        ("cfg/init-coll#", IsWord),
+        ("cfg/init-coll#", IsVersion),
         ("m/", IsMetrics),
     ];
 
@@ -97,18 +120,27 @@ internal sealed class PinningHandler(AddressingPlan plan) : DelegatingHandler
     {
         request.Headers.Remove(TraceIdHeader); // HttpHeaders names are case-insensitive
         request.Content?.Headers.Remove(TraceIdHeader);
-        if (!request.Headers.TryGetValues("User-Agent", out var values))
+        foreach (var name in UserAgentHeaders)
         {
-            return;
-        }
+            if (!request.Headers.TryGetValues(name, out var values))
+            {
+                continue;
+            }
 
-        var rebuilt = RebuildUserAgent(string.Join(' ', values));
-        request.Headers.Remove("User-Agent");
-        if (rebuilt.Length > 0)
-        {
-            request.Headers.TryAddWithoutValidation("User-Agent", rebuilt);
+            var rebuilt = RebuildUserAgent(string.Join(' ', values));
+            request.Headers.Remove(name);
+            if (rebuilt.Length > 0)
+            {
+                request.Headers.TryAddWithoutValidation(name, rebuilt);
+            }
         }
     }
+
+    /// <summary>
+    /// The two headers the SDK puts its agent text in: <c>User-Agent</c>, or <c>x-amz-user-agent</c> when the host sets the
+    /// process-wide <c>AWSConfigs.UseAlternateUserAgentHeader</c>. Measured 2026-11-19: neither is signed.
+    /// </summary>
+    private static readonly string[] UserAgentHeaders = ["User-Agent", "x-amz-user-agent"];
 
     /// <summary>The User-Agent rebuilt from <paramref name="received"/> by <see cref="UserAgentSlots"/> (see <see cref="DropAmbientHeaderContent"/>).</summary>
     internal static string RebuildUserAgent(string received)
@@ -136,21 +168,26 @@ internal sealed class PinningHandler(AddressingPlan plan) : DelegatingHandler
         return string.Join(' ', kept.Where((t, i) => t is not null && !ambiguous[i]));
     }
 
-    /// <summary>1 to 64 characters among ASCII letters, digits, '.', '_' and '-' (a version, an architecture, a name).</summary>
-    private static bool IsWord(string v) =>
-        v.Length is > 0 and <= 64 && v.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '-');
-
-    /// <summary>Two words joined by one '#' (os/windows#10.0.26200.0, lang/.NET_Core#10.0.15).</summary>
-    private static bool IsNameAndVersion(string v)
+    /// <summary>One to four dot-separated numbers of one to five digits (4.1.0.0, 10.0.26200.0, 2.1, 0).</summary>
+    private static bool IsVersion(string v)
     {
-        var hash = v.IndexOf('#', StringComparison.Ordinal);
-        return hash > 0 && IsWord(v[..hash]) && IsWord(v[(hash + 1)..]);
+        var parts = v.Split('.');
+        return parts.Length is >= 1 and <= 4 && parts.All(p => p.Length is >= 1 and <= 5 && p.All(char.IsAsciiDigit));
     }
 
-    /// <summary>The business-metric codes: comma-separated, each 1 to 4 ASCII letters, digits, '+' or '-'; at most 256 characters.</summary>
-    private static bool IsMetrics(string v) =>
-        v.Length is > 0 and <= 256
-        && v.Split(',').All(code => code.Length is > 0 and <= 4 && code.All(c => char.IsAsciiLetterOrDigit(c) || c is '+' or '-'));
+    /// <summary>A name of <paramref name="names"/> and an <see cref="IsVersion"/>, joined by one '#' (os/windows#10.0.26200.0).</summary>
+    private static bool IsNameAndVersion(string v, HashSet<string> names)
+    {
+        var hash = v.IndexOf('#', StringComparison.Ordinal);
+        return hash > 0 && names.Contains(v[..hash]) && IsVersion(v[(hash + 1)..]);
+    }
+
+    /// <summary>The business-metric codes: comma-separated single codes of <see cref="MetricCodes"/>, at most 16 of them.</summary>
+    private static bool IsMetrics(string v)
+    {
+        var codes = v.Split(',');
+        return codes.Length is >= 1 and <= 16 && codes.All(c => c.Length == 1 && MetricCodes.Contains(c[0]));
+    }
 
     /// <summary>
     /// An explicit Host header (none: the URI's authority is sent) must be one value naming the plan's host and port;

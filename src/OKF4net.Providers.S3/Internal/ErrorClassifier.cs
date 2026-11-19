@@ -109,7 +109,9 @@ internal static class ErrorClassifier
     /// makes the SDK's own MD5 check (AmazonS3ResponseHandler.ProcessResponseHandlers → AWSSDKUtils.HexStringToBytes →
     /// Convert.FromHexString) throw a bare FormatException out of GetObjectAsync — the store's response is malformed, not
     /// the transport: <see cref="S3FailureKind.InvalidResponse"/>. Nothing in the provider's own code throws one
-    /// (ListPageParser turns its own into a refusal), so any FormatException here comes from reading a response.
+    /// (ListPageParser turns its own into a refusal), so a FormatException here comes, in every case measured, from reading
+    /// a response. A request-side one (a <see cref="UriFormatException"/> is a FormatException) is not excluded by
+    /// measurement: it would be labelled InvalidResponse instead of Transport, and both fail closed.
     /// </summary>
     private static bool Carries<T>(Exception e, int depth)
         where T : Exception

@@ -36,8 +36,9 @@ internal sealed class ListingWalker(AmazonS3Client client, string bucket, Operat
             if (page >= maxPages)
             {
                 // The budget counts every page, an empty truncated one too (spec Annexe C10): with the repeated-token
-                // refusal below, it is what stops a store that never ends, in pages fetched and in memory (one 32-byte
-                // digest per page).
+                // refusal below, it is what stops a store that never ends, in pages fetched and in memory (one token
+                // digest per page: about 32 bytes of digest plus the set's own overhead, so the order of 1 GB at the
+                // default MaxEntries; the host lowers MaxEntries for a store it does not trust, see the README).
                 throw Inconsistent(operation, key);
             }
 

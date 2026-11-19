@@ -900,7 +900,12 @@ de code demande la passe locale `S3Integration` à 0 ignoré.
 (`S3BundleProvider.ExistsMaxPages`), chaque page étant une opération avec son échéance et son plafond d'envois ; au-delà,
 `InvalidResponse`, jamais `false`. Un jeton de continuation répété, ou une page tronquée sans jeton, restent refusés
 (`InvalidResponse`) ; la borne de 1 024 octets du jeton est inchangée. Le corps de la spec (D9, « progrès exigé de chaque
-page tronquée ») dit encore « refuser » : le repli dans le corps est #287. Passe `S3Integration` locale refaite à 0 ignoré.
+page tronquée ») dit encore « refuser » : le repli dans le corps est #287, de même que la ligne du plan de test
+« refusées dès la première » (Incohérences de transport). Le budget de pages est partagé avec `MaxEntries + 1` : sous un
+`MaxEntries` très bas, des pages vides épuisent ce budget et l'échec est un `InvalidResponse`, pas une borne d'entrées.
+L'échéance est par page, non par parcours : un store qui répond chaque page juste avant `RequestTimeout` tient un
+parcours (`ExistsAsync` : 1 000 pages) jusqu'au produit du budget par le délai (suivi : #283). Passe `S3Integration`
+locale à 0 ignoré : 35/35 le 2026-11-19 sur `6f992fef` (reprise après le complément de l'entrée C12 : voir ci-dessous).
 
 **C11 — §4.4, D2 : région de signature d'une source `ServiceUrl`.**
 *Le texte* : la région d'authentification est `us-east-1` pour `ServiceUrl` ; `Region` et `ServiceUrl` sont
@@ -947,3 +952,11 @@ récent perd de l'information, jamais une requête). Témoins positifs : `Hostil
 `variables-lambda-internal-env` (le client ordinaire envoie l'en-tête et le marqueur ; le provider, des requêtes identiques
 à l'exécution propre) ; lignes unitaires : `GuardTests`. Reste vrai : la clé de profil `s3_us_east_1_regional_endpoint`
 n'a pas de test permanent (mesurée en processus frais seulement).
+*Complément (revue du 2026-11-19, même jour)* : la liste ne vérifiait que la **forme** de chaque valeur ; un texte
+ambiant qui imite un jeton pouvait donc passer dans un emplacement que le SDK laisse vide (SDK plus récent, valeur hors
+forme). Chaque valeur est désormais un **nombre** (un à quatre groupes de un à cinq chiffres) ou un élément d'un
+**ensemble fermé** (architectures, noms de système et de langage, codes de métrique `b e E F N P R`), jamais du texte
+libre. Mesuré avec le vrai client : `AWSConfigs.UseAlternateUserAgentHeader` (réglage de processus de l'hôte) place le
+texte du SDK dans `x-amz-user-agent` (non signé) ; la même reconstruction s'applique à cet en-tête. Les ensembles fermés
+sont mesurés sous Windows seulement ; ailleurs un nom hors ensemble retire le jeton (information perdue, requête
+envoyée). Tests : `GuardTests` (lignes d'emplacement vide, d'ensemble fermé et d'en-tête alternatif).

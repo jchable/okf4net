@@ -374,9 +374,13 @@ public sealed class GuardTests : IDisposable
         { CleanUserAgent, CleanUserAgent },
         // AWS_EXECUTION_ENV, AWS_SDK_UA_APP_ID and AWS_INTERNAL_ENV, where the SDK puts them (measured).
         { "aws-sdk-dotnet-coreclr/4.1.0.0 ua/2.1 os/windows#10.0.26200.0 md/ARCH#X64 lang/.NET_Core#10.0.15 exec-env/EXECMARK md/aws-sdk-dotnet-core#4.1.0.0 IENVMARK api/S3#4.1.0.0 app/APPMARK md/ClientAsync cfg/init-coll#0 m/b,P,N,E", CleanUserAgent },
-        // AWS_INTERNAL_ENV with spaces, imitating two known tokens: both slots become ambiguous and are dropped.
+        // AWS_INTERNAL_ENV with spaces, imitating two known tokens with values outside their forms: refused one by one,
+        // the SDK's own tokens stay.
         { "aws-sdk-dotnet-coreclr/4.1.0.0 ua/2.1 os/windows#10.0.26200.0 md/ARCH#X64 lang/.NET_Core#10.0.15 md/aws-sdk-dotnet-core#4.1.0.0 md/ARCH#EVILMARK api/S3#MARK api/S3#4.1.0.0 md/ClientAsync cfg/init-coll#0 m/b,P,N,E",
-          "aws-sdk-dotnet-coreclr/4.1.0.0 ua/2.1 os/windows#10.0.26200.0 lang/.NET_Core#10.0.15 md/aws-sdk-dotnet-core#4.1.0.0 md/ClientAsync cfg/init-coll#0 m/b,P,N,E" },
+          CleanUserAgent },
+        // The same imitation with values INSIDE the forms: the slot comes twice with different values, both are dropped.
+        { "aws-sdk-dotnet-coreclr/4.1.0.0 ua/2.1 md/ARCH#X64 api/S3#4.1.0.0 md/ARCH#Arm64 api/S3#9.9.9.9 m/b,P",
+          "aws-sdk-dotnet-coreclr/4.1.0.0 ua/2.1 m/b,P" },
         // An exact copy of a known token adds nothing: kept once.
         { "aws-sdk-dotnet-coreclr/4.1.0.0 api/S3#4.1.0.0 api/S3#4.1.0.0 m/b,P,N,E", "aws-sdk-dotnet-coreclr/4.1.0.0 api/S3#4.1.0.0 m/b,P,N,E" },
         // The fixed order, whatever the order received; tabs and repeated spaces separate tokens too.
@@ -390,6 +394,16 @@ public sealed class GuardTests : IDisposable
         // Nothing known (a newer SDK that changed every form): no User-Agent at all, and the request is still sent.
         { "something/1.0 else MARK", null },
         { "", null },
+        // Review of 2026-11-19: a token's FORM was not enough. When the SDK leaves a slot empty (a newer SDK that renamed
+        // it, a value outside the form), an ambient text imitating the token has no twin to contradict it. Every value is
+        // now a number or an element of a closed set, so no free text can ride in any slot, empty or not.
+        { "aws-sdk-dotnet-coreclr/4.1.0.0 md/ARCH#SECRETMARK", "aws-sdk-dotnet-coreclr/4.1.0.0" },
+        { "aws-sdk-dotnet-coreclr/4.1.0.0 api/S3#SECRETMARK os/windows#SECRETMARK os/SECRETMARK#10.0 lang/SECRETMARK#10.0 ua/SECRETMARK cfg/init-coll#SECRETMARK md/aws-sdk-dotnet-core#SECRETMARK", "aws-sdk-dotnet-coreclr/4.1.0.0" },
+        { "aws-sdk-dotnet-coreclr/SECRETMARK", null },
+        { "aws-sdk-dotnet-coreclr/4.1.0.0 m/SECRETMARK", "aws-sdk-dotnet-coreclr/4.1.0.0" },
+        { "aws-sdk-dotnet-coreclr/4.1.0.0 m/b,zz,P", "aws-sdk-dotnet-coreclr/4.1.0.0" },
+        // The closed sets still carry what the SDK sends on the platforms it supports (architecture, OS, language names).
+        { "aws-sdk-dotnet-coreclr/4.1.0.0 os/linux#6.8.0 md/ARCH#Arm64 lang/.NET_Core#10.0.15 m/b,P,N,E,e,F,R", "aws-sdk-dotnet-coreclr/4.1.0.0 os/linux#6.8.0 md/ARCH#Arm64 lang/.NET_Core#10.0.15 m/b,P,N,E,e,F,R" },
     };
 
     [Theory]
@@ -400,6 +414,18 @@ public sealed class GuardTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, status); // an allowlist too narrow only reduces information, never breaks a request
         Assert.Equal(expected, UserAgentOf(sent));
         Assert.DoesNotContain("MARK", UserAgentOf(sent) ?? "", StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task The_alternate_User_Agent_header_is_rebuilt_like_the_standard_one()
+    {
+        // AWSConfigs.UseAlternateUserAgentHeader (a process-wide host setting) moves the SDK's text from User-Agent to
+        // x-amz-user-agent; measured 2026-11-19 with the real client: the header is not signed (SignedHeaders is
+        // host, x-amz-checksum-mode, x-amz-content-sha256, x-amz-date, x-amz-security-token).
+        var (sent, status) = await SendThroughGuard(("x-amz-user-agent", "aws-sdk-dotnet-coreclr/4.1.0.0 IENVMARK api/S3#4.1.0.0 app/APPMARK md/ClientAsync"));
+        Assert.Equal(HttpStatusCode.OK, status);
+        Assert.Equal("aws-sdk-dotnet-coreclr/4.1.0.0 api/S3#4.1.0.0 md/ClientAsync", string.Join(' ', sent.Headers.GetValues("x-amz-user-agent")));
+        Assert.DoesNotContain(sent.Headers, h => h.Value.Any(v => v.Contains("MARK", StringComparison.Ordinal)));
     }
 
     [Theory]
