@@ -94,6 +94,17 @@ public sealed class InMemoryBundleProvider : SyncTestProvider
         return this;
     }
 
+    /// <summary>As <see cref="Add(string, string)"/>, with the raw bytes — content that is not UTF-8, say.</summary>
+    public InMemoryBundleProvider Add(string rawName, byte[] bytes)
+    {
+        lock (_gate)
+        {
+            _objects[rawName] = [.. bytes];
+        }
+
+        return this;
+    }
+
     /// <summary>Makes <see cref="Read"/> of one object throw <paramref name="failure"/> instead.</summary>
     public InMemoryBundleProvider FailReadOf(string rawName, Exception failure)
     {

@@ -325,6 +325,48 @@ and this project adheres to
 
 ### Changed (breaking)
 
+- **A failure of the provider while a loaded bundle is read throws
+  `BundleLoadException` instead of passing for a problem of the file (#247).**
+  The error-priority rule of #139 (global failures abort, per-resource states
+  are local) now holds after the load. The message names the key and the
+  exception type only; the cause is in `InnerException`. Documented exceptions
+  change for:
+  - **`Bundle.ReadResourceText(BundleKey)`, `ReadResourceText(BundleKey,
+    expected, out version)` and `ReadResourceTextAsync`.** They used to turn
+    every provider failure into an `IOException`. They now throw
+    `BundleLoadException` for:
+    - a typed provider failure other than a refusal, a missing object, an
+      oversized object or a version mismatch (a bound, a network, a
+      credential, a timeout);
+    - a raw storage error raised while reading the object: a device not ready
+      or gone, a network path or host unreachable, a timeout, a reset
+      connection, a stale NFS handle, a device I/O error (`EIO`).
+
+    Any other raw `IOException` (a locked file, for instance) stays the
+    object's. The object's own problems keep their exceptions:
+    `UnauthorizedAccessException` (refused), `FileNotFoundException`
+    (missing), `BundleObjectTooLargeException`, `IOException` and
+    `DecoderFallbackException` (not UTF-8). A caller that catches those as
+    "unreadable" now lets a provider failure through.
+  - **`BundleValidator.Validate`/`ValidateAsync`** throw `BundleLoadException`
+    where they reported `UnparseableIndex`/`UnparseableLog`. `okf validate`
+    prints `error: …` and exits 1, as for a load failure, and the
+    `okf_validate_bundle` tool returns `Error: …` instead of a report.
+  - **`AttestationOrchestrator.Capture`/`CaptureAsync`/`RunAsync`** throw
+    (`RunAsync`: a faulted task) instead of refusing with `ImageOutdated`.
+  - **The tools.** `okf_browse`, `okf_get_computation`, `okf_changes_since` and
+    `okf_run_computation` return `Error: provider failure reading '…' (…)`.
+    `okf_changes_since` used to print a skip note.
+
+  The load itself is unchanged: its survey of executable resources and its read
+  of the root `index.md` still treat every raw `IOException` as the resource's
+  state, since one bad file must not make the bundle unloadable. **Known
+  limit:** a provider is judged by what it raises, and the filesystem provider
+  still reports a share lost after the load as a missing object (its exact-name
+  lookup reads a failed directory listing as an absence). So that case is still
+  `FileNotFoundException`, and an `UnparseableIndex` finding in a validation.
+  It is tracked separately. No fixture provider fails, so no snapshot moves.
+
 - **The provider contract is asynchronous, before its first publication** (#152). The
   provider seam of #139 was never published (0.7.0 has no `OKF4net.Providers`), so
   `IBundleProvider` is **replaced** by its asynchronous form with no shim: `GetVersionAsync`,
@@ -1168,6 +1210,12 @@ and this project adheres to
   content the file no longer holds.
 
 ### Fixed
+
+- **A provider failure while reading a loaded bundle is no longer reported as a
+  problem of the file (#247).** A validation against an unreachable store
+  reported `index.md could not be read` (`UnparseableIndex`, `UnparseableLog`)
+  instead of failing. The fix changes documented exceptions: see the #247 entry
+  under *Changed (breaking)*.
 
 - **Model-facing text: four review follow-ups on #122 and #249 (#248, #251).**
   - The fold could assemble a tag character out of two lone surrogate halves

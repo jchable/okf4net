@@ -1653,6 +1653,9 @@ public sealed class OkfBundleTools
                     }
                     catch (Exception e) when (e is IOException or UnauthorizedAccessException or DecoderFallbackException)
                     {
+                        // The file's own failure, which a reload may fix. A provider failure
+                        // (BundleLoadException, #247) is not caught: RunTool reports it as the
+                        // tool's error, and no reload obligation is created for it.
                         failedFile = true;
                         text.Line($"Error: computation file '{file.Path}' could not be read: {e.Message}");
                         break;
@@ -2010,7 +2013,9 @@ public sealed class OkfBundleTools
         try
         {
             // Through the provider, strict UTF-8, bounded (spec §6, §9): a missing, refused,
-            // oversized or non-UTF-8 log is the skip note below, as the direct read's was.
+            // oversized or non-UTF-8 log is the skip note below, as the direct read's was. A
+            // failure of the provider (BundleLoadException, #247) is not the log's: it is not
+            // caught here and RunTool reports the whole tool call as an error.
             text = (await bundle.ReadResourceTextAsync(logKey, null, ct).ConfigureAwait(false)).Text;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DecoderFallbackException)
