@@ -8,6 +8,193 @@ and this project adheres to
 
 ## [Unreleased]
 
+The headline is bundle providers: the storage seam under `Bundle`, an
+asynchronous `IBundleProvider`, a shared `BundleHandle`, and two new packages
+that read a bundle from an assembly or from S3. This release is large: 99
+entries below. What follows is the short version: what breaks, and what is new.
+The detail for every line is in the sections after it.
+
+### Breaking changes at a glance
+
+Everything here is a 0.x minor break, stated in full further down.
+`IBundleProvider` and the rest of the provider seam were never published (0.7.0
+has no `OKF4net.Providers`), so replacing them is not a break for a 0.7.0
+caller; what a 0.7.0 caller sees is listed below.
+
+**`OKF4net` (library)**
+
+- A failure of the provider while a loaded bundle is read throws
+  `BundleLoadException` instead of passing for a problem of the file (#247).
+  `Bundle.ReadResourceText(BundleKey)`, `ReadResourceText(BundleKey, expected,
+  out version)` and `ReadResourceTextAsync` used to turn it into an
+  `IOException`; `BundleValidator.Validate`/`ValidateAsync` used to report
+  `UnparseableIndex`/`UnparseableLog`. A caller that caught `IOException` as
+  "unreadable" now lets a provider failure through; `okf validate` prints
+  `error: …` and exits 1 for it.
+- The synchronous entry points that serve a filesystem path (`Bundle.Load(string)`,
+  the `string` overloads of the writer and the index generator,
+  `BundleValidator.Validate`) stay, but never wait on an asynchronous provider:
+  a read still pending throws `InvalidOperationException`, and a synchronous
+  write over a provider without `CompletesSynchronously` is refused before any
+  I/O (#152). `Bundle.Load(IBundleProvider, …)` and the blocking
+  `BundleHandle.Current`/`Refresh()` are not public; use `Bundle.LoadAsync`
+  and `GetCurrentAsync`/`RefreshAsync`. A host implementing `IBundleProvider`
+  implements the asynchronous form, with a required `CancellationToken`.
+- The `onWriteCommitted` callback of `BundleConceptWriter` runs after the write
+  lock is released, so a host that relied on exclusion while it ran loses it
+  (#152). `RecordVerifications` finishes its batch before notifying, so a
+  notification that throws no longer stops it half-way. `BundleHandle` runs one
+  shared operation per handle: concurrent `OnAccess` callers share one token
+  comparison, and a caller that cancels stops waiting without cancelling the
+  load.
+- `Diagnostic` and `AuditFinding` equality now includes the new `Key` property.
+  A finding compared with a hand-built `new Diagnostic(…)` or `new
+  AuditFinding(…)` is `false` unless that sets `Key` too; compare `Path`, `Code`
+  and `Message` instead.
+- Obsolete, kept one version with a warning (not an error): the
+  path-based `Bundle.Root`, `IndexFiles`, `LogFiles`, `ParseErrors`,
+  `TryResolveResource` and `ReadResourceText(string)`, `OkfBundleTools.BundleRoot`
+  and `BundleConceptWriter.BundleRoot`. Each warning names its replacement
+  (`Location`, `IndexKeys`/`LogKeys`, `ParseProblems` with
+  `Bundle.DisplayPath`, `TryResolveResourceKey`, `ReadResourceText(BundleKey)`).
+  Over a provider that is not the filesystem one, `TryResolveResource` and
+  `ReadResourceText(string)` throw `NotSupportedException`.
+- `Bundle.ResolveResourceKeyAsync`/`TryResolveResourceKey` throw
+  `BundleLoadException` for a provider failure other than a refusal; it used to
+  read as `Unsafe` (#142). A validation of a store that is down fails instead of
+  reporting "escapes the bundle".
+
+**`OKF4net.Agents`**
+
+- `OkfBundleTools` has public `…Async` methods (`ReadConceptAsync`,
+  `WriteConceptAsync`, `VerifyAsync`, `AuditAsync`, and the others) and its
+  `string` methods from 0.7.0 are `[Obsolete]` bridges, removed in the release
+  after this one (#152, #224). They throw on a provider that does not complete
+  synchronously. The synchronous `RunComputation`, obsolete since 0.7.0, is
+  removed. The tool names and schemas the model sees are unchanged.
+- The tools `okf_browse`, `okf_get_computation`, `okf_changes_since` and
+  `okf_run_computation` return `Error: provider failure reading '…' (…)`;
+  `okf_validate_bundle` returns `Error: …` instead of a report (#247).
+
+**`OKF4net.Attestation`**
+
+- `AttestationOrchestrator.Capture`, `CaptureAsync` and `RunAsync` throw
+  (`RunAsync`: a faulted task) on a provider failure instead of refusing with
+  `ImageOutdated` (#247).
+
+**`OKF4net.Catalog`**
+
+- `MemoryDeleteResult` is `(IReadOnlyList<MemoryTierDeletion> Tiers, string?
+  Error)`; `TiersDeleted` is gone and `IMemoryStore.DeleteScopeAsync` changes
+  signature, so a host's own `IMemoryStore` must build the new result
+  (`result.TiersDeleted` becomes `result.Tiers.Count(t => t.Report.Succeeded)`,
+  not an exact equivalent).
+- A memory scope segment whose base is a Windows reserved device name is
+  prefixed with `_` (`con.foo` encodes as `_con.foo-<hash>`). On Linux and macOS
+  an existing directory under the old name is no longer found, read, migrated
+  or deleted; copy it by hand with the `_` prefix (#139).
+
+**`okf` and `okf-render` (binaries)**
+
+- The `okf` Native AOT binary grows by about 383 KiB (+8.1 %) with the
+  asynchronous core (linux-x64: 4,842,784 to 5,234,736 bytes).
+
+**Listed under Changed, but a caller can notice them**
+
+- Loading: the `Native` key policy refuses a `.md` name the storage cannot hold
+  or would alias (a trailing dot or space, for instance) as a `ParseErrors`
+  entry, so `okf validate` exits 1 for a bundle that holds one; a concept over
+  256 MiB and a name with a backslash are `ParseErrors` entries, and a listing over 10 000 000 entries aborts the load.
+  Resource paths resolve by exact case, and a backslash, a control character or
+  a climb out and back into the root is `Unsafe`.
+- `okf_write_concept` writes only a concept the session read in full (or was
+  shown absent), and `okf_run_computation` runs only what the session was
+  shown, pinned to that version. A write or a run without that read is refused
+  with a message that says what to read first (#139).
+- A computation without a file `attester.resource`, or with a URL, is no longer
+  run: `AttestationOrchestrator.RunAsync` refuses it before any runtime stage,
+  and a host's `IAttester` never receives a null `AttesterSourceText`. Sanctioned
+  code is read through the provider and only if pinned to the loaded version.
+- `new OkfBundleKnowledgeSource(id, directory)` and `FileMemoryStore` over an
+  empty tier root throw `ArgumentException` at construction. `okf index` no longer references a directory with no file
+  under it, and on a case-folding volume a root `Index.md` ends the run with a
+  conflict instead of being overwritten. Writes need the right to create files
+  in the target's directory.
+
+### What is new
+
+- **Bundle providers (#139, #152).** `IBundleProvider` is the storage seam under
+  `Bundle`: a key space of byte objects, asynchronous with a required
+  `CancellationToken`, with `BundleKey` validation, finite `BundleLimits`, and
+  `BundleKeyPolicy` (`Native` by default, `Strict` opt-in; `KeyNotPortable`
+  warnings in `okf validate`). `FileSystemBundleProvider` is the default, and
+  writable: each write is atomic and conditional (`IfMatch`, `MustNotExist`),
+  and `BundleConceptWriter` and `IndexGenerator` write through any writable
+  provider.
+- **`BundleHandle` (spec §5.2).** One image of a source, meant to be shared by
+  every consumer, with the `Manual`, `OnAccess`, `Every` and `Notify` refresh
+  policies. A reload that fails keeps serving the previous image, flagged stale.
+  A catalog source no longer reloads its bundle at every request.
+- **Two new packages for a bundle that is not a directory.**
+  `OKF4net.Providers.EmbeddedResources` embeds a bundle in an assembly with the
+  `OkfBundle` MSBuild item and serves it read-only, Native AOT included (#141).
+  `OKF4net.Providers.S3` reads a bundle from Amazon S3 or an S3-compatible
+  store, read-only and truly asynchronous; it depends on `AWSSDK.S3` 4.1.0 or
+  later (#142).
+- **Catalog provider factories.** A `catalog.json` source can name its
+  `provider` and `settings`; a host registers one `IBundleProviderFactory` per
+  type, which declares the settings it accepts, so no credential enters through
+  the manifest. The catalog snapshot owns the handles; a source answered from
+  its last good image is reported `SourceStale`.
+  `FileMemoryStore` also accepts one provider per tier (#140).
+- **Safer text for a model.** Every value an agent tool or the context provider
+  prints goes through one fold rule, which also removes invisible format
+  characters such as tag characters (#122, #249). `okf_read_concept` shows
+  frontmatter as YAML that round-trips into `okf_write_concept` (#256), and
+  `okf-mcp` returns tool results as plain text instead of JSON string literals
+  (#255).
+- **Trust and audit.** `AttestationOrchestratorOptions.AllowedCodeDigests`
+  refuses sanctioned code whose SHA-256 is not on the list (#154).
+  `okf audit --review-outdated` and `AuditFinding.LastVerifiedAt`/
+  `LastChangedAt`/`IsReviewOutdated` show a concept changed after its last
+  verification (#156). `Bundle.EstimatedMemoryBytes` and
+  `BundleLoadOptions.MemoryCeilingBytes` bound what a load may hold (#151).
+- **Validator and writer.** `okf validate` warns on a `generated` that is not a
+  `{by, at}` mapping (`GeneratedMalformed`, #271). Appending to `log.md` keeps
+  its leading frontmatter block (#258). The auto-stamped `generated.by` names
+  the library version, `okf4net/<version>`, not the spec version (#257).
+- **Samples and tutorials.** `samples/second-brain` serves a writable bundle
+  to Claude Desktop through `okf-mcp` (#160), `samples/agents-handoff` has two
+  agents share one bundle with no LLM endpoint (#159), and two end-to-end
+  tutorials live under `docs/tutorials/` (#174).
+- **Faster.** A load through `FileSystemBundleProvider` is about three times
+  faster on Windows (2,001 concepts: 1,350 ms to 427 ms), and a `YamlMapping`
+  of n keys is built in O(n) (#198).
+
+### Known limits
+
+- The filesystem provider still reports a share lost after the load as a missing
+  object, so that case is a `FileNotFoundException` and an `UnparseableIndex`
+  finding in a validation instead of a `BundleLoadException` (#278).
+- A write's condition is atomic with the replacement within one process only:
+  there is no cross-process lock, and two processes writing the same objects of
+  one bundle can lose a write that was reported committed (#178).
+- Raw I/O errors can still name a host path in an exception text (#211), and a
+  write over a filesystem provider has no in-place fallback: a bundle in a
+  directory the process cannot create files in is not a supported deployment
+  for writes.
+- `okf index` is slower on a large bundle (#208).
+- The filesystem bundle token is weak: two edits of the same size within one
+  modification-time tick can be missed until the next change.
+- `Bundle.EstimatedMemoryBytes` is an estimate, not a heap measurement, and a
+  refresh holds the previous image too, so the peak can reach twice the ceiling.
+- Deleting a memory scope removes its objects and emptied directories but not
+  the ids carried by its parent directories.
+- The tests of the S3 provider against a real store are excluded from CI by
+  decision and run locally, with 0 skipped.
+
+The detail of every entry is in the sections after this digest.
+
 ### Added
 
 - **Two end-to-end tutorials under `docs/tutorials/`** (#174).
