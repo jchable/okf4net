@@ -99,6 +99,46 @@ are the concrete entry points.
     marked) is the actual guard, and CI runs it as the `viewer sanitizer (JS)`
     job. Re-vendoring `marked.min.js` is the change most likely to regress the
     defense, and that job is what catches it.
+- **S3 bundle provider shipped** — `OKF4net.Providers.S3`
+  ([#142](https://github.com/jchable/okf4net/issues/142), see its
+  [design spec](docs/superpowers/specs/2026-11-16-s3-bundle-provider-design.md)):
+  a bundle in Amazon S3 or an S3-compatible store, read-only and truly
+  asynchronous, in its own package. It is the one backend with a third-party
+  dependency (`AWSSDK.S3`, declared as a minimum, `>= 4.1.0`); the core and the
+  other providers stay zero-dependency. Three decisions worth knowing: the
+  provider builds **its own client and pins every request** (one authority, one
+  path prefix, `GET` only), because a 307 between two S3 hostnames would
+  otherwise silently change the bucket, and no ambient AWS setting is allowed to
+  change what it sends; **credentials are the host's** (the provider never reads
+  the environment or a config file, and resolves them once per operation, in
+  isolation); and **objects are versioned by the SHA-256 of their bytes**, so
+  sanctioned code (§5.1, §5.4) can only run at the version the load surveyed.
+  Two core changes ride with it, for every provider: the load reads the bundle
+  token *before* listing, and `ResolveResourceKeyAsync` throws instead of
+  reporting `Unsafe` for a provider failure other than a refusal (the same
+  confusion while validation reads `index.md`/`log.md` is
+  [#247](https://github.com/jchable/okf4net/issues/247)).
+  - **The guarantee against a real store is local, not CI — decided, not
+    pending.** The `Category=S3Integration` tests start RustFS 1.0.3 themselves
+    (Podman or Docker) and are excluded from CI like `ContainerIntegration`: run
+    `dotnet test tests/OKF4net.Tests --filter Category=S3Integration` and check
+    the run reports **0 skipped**, after any change to the package or any bump
+    of `AWSSDK.S3`/`AWSSDK.Core`. CI's own guard is the `S3 provider AOT smoke
+    test` job (the real packages, Native AOT, at the minimum and the latest SDK).
+  - **What was and was not measured.** Tested against RustFS 1.0.3 only (Podman,
+    Docker, Docker in WSL) and, for Native AOT, on Windows. MinIO, real AWS S3
+    and the Linux/macOS legs of the CI job had not run when this shipped
+    ([#292](https://github.com/jchable/okf4net/issues/292),
+    [#293](https://github.com/jchable/okf4net/issues/293)). The limits the final
+    review found are tickets, and the spec's Annexe C lists the ones awaiting the
+    maintainer's decision: an empty truncated listing page fails the load
+    ([#283](https://github.com/jchable/okf4net/issues/283)), a `ServiceUrl`
+    source always signs for `us-east-1`
+    ([#284](https://github.com/jchable/okf4net/issues/284)), two ambient values
+    still reach the store ([#285](https://github.com/jchable/okf4net/issues/285)),
+    opaque single-part ETags fail every read
+    ([#286](https://github.com/jchable/okf4net/issues/286)), anonymous access is
+    unsupported ([#291](https://github.com/jchable/okf4net/issues/291)).
 
 ## Later
 
@@ -108,16 +148,19 @@ are the concrete entry points.
   [#139](https://github.com/jchable/okf4net/issues/139)), its asynchronous contract
   ([#152](https://github.com/jchable/okf4net/issues/152)) and the filesystem
   reference implementation ([#140](https://github.com/jchable/okf4net/issues/140))
-  are on `dev`, and so is the embedded-resource provider
+  are on `dev`, and so are the embedded-resource provider
   (`OKF4net.Providers.EmbeddedResources`,
-  [#141](https://github.com/jchable/okf4net/issues/141)); what follows is tracked
-  as issues: a built-in catalog factory for it (`"provider": "embedded"` in
-  `catalog.json`, [#236](https://github.com/jchable/okf4net/issues/236)), an S3
-  provider in its own project, read-only first
-  ([#142](https://github.com/jchable/okf4net/issues/142)),
-  and a per-user OS lock closing the cross-process window of the filesystem
-  provider's conditional writes, deferred
-  ([#178](https://github.com/jchable/okf4net/issues/178)).
+  [#141](https://github.com/jchable/okf4net/issues/141)) and the S3 provider
+  ([#142](https://github.com/jchable/okf4net/issues/142), described above); what
+  follows is tracked as issues: a built-in catalog factory for the embedded one
+  (`"provider": "embedded"` in `catalog.json`,
+  [#236](https://github.com/jchable/okf4net/issues/236)) and for the S3 one
+  ([#239](https://github.com/jchable/okf4net/issues/239)), `okf-mcp` over S3
+  ([#238](https://github.com/jchable/okf4net/issues/238)), the S3 follow-ups
+  [#283](https://github.com/jchable/okf4net/issues/283) to
+  [#293](https://github.com/jchable/okf4net/issues/293), and a per-user OS lock
+  closing the cross-process window of the filesystem provider's conditional
+  writes, deferred ([#178](https://github.com/jchable/okf4net/issues/178)).
 
 ## `producers/OkfProducer`
 

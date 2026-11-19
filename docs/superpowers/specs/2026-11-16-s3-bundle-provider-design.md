@@ -762,6 +762,8 @@ Windows 11.
 
 **À arbitrer par le mainteneur : C1 (`+` brut), C3 (3 envois par opération), C5c (ETag simple non hexadécimal), C10 (page tronquée sans clé), C11 (région de signature d'une source `ServiceUrl`), C12 (3) (en-têtes ambiants restants : `x-amzn-trace-id`, `AWS_INTERNAL_ENV`). À confirmer : C4 — le changement du cœur D15 (b) s'étend au relevé des ressources exécutables, donc fait échouer le chargement pour *tous* les providers —, et C8. Les autres entrées (C2, C5 hors c, C6, C7, C9) sont des constats.**
 
+*Suivi (tickets GitHub, 2026-11-19)* : C1 et les mesures hors RustFS → #292 ; C5c → #286 ; C10 → #283 ; C11 → #284 ; C12 (3) → #285 ; repli de ces écarts dans le corps de la spec → #287 ; la ligne « premier run CI Linux/macOS, Trusted Publishing » → #293.
+
 **C1 — §4.3, décodage d'une clé listée.**
 *Le texte* : chaque `%XX` devient un octet, « tout autre caractère ses octets UTF-8 » (un `+` brut reste `+`).
 *Constaté et décidé* : `S3KeyCodec.TryDecodeListed`, pour les seules valeurs **listées** : un `+` brut
