@@ -123,6 +123,91 @@ public class TransportBoundsTests
         Assert.True(Interlocked.Read(ref read) <= BoundingHandler.ListBodyBytes + 1);
     }
 
+    /// <summary>A content that records its own disposal and its stream's, and whose body may fail after some bytes (minors A5).</summary>
+    private sealed class TrackedContent(long bodyLength, bool failAfterFirstRead) : HttpContent
+    {
+        public bool ContentDisposed { get; private set; }
+        public bool StreamDisposed { get; private set; }
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => throw new NotSupportedException();
+
+        protected override Task<Stream> CreateContentReadStreamAsync() => Task.FromResult<Stream>(new TrackedStream(this, bodyLength, failAfterFirstRead));
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            ContentDisposed = true;
+            base.Dispose(disposing);
+        }
+
+        private sealed class TrackedStream(TrackedContent owner, long length, bool failAfterFirstRead) : Stream
+        {
+            private long _sent;
+            private bool _failed;
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+            public override void Flush() { }
+            public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+            public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+            {
+                if (failAfterFirstRead && _sent > 0 && !_failed)
+                {
+                    _failed = true;
+                    throw new IOException("the connection broke in the middle of the body");
+                }
+
+                var n = (int)Math.Min(buffer.Length, Math.Min(length - _sent, 4096));
+                buffer.Span[..n].Clear();
+                _sent += n;
+                return ValueTask.FromResult(n);
+            }
+
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+            protected override void Dispose(bool disposing)
+            {
+                owner.StreamDisposed = true;
+                base.Dispose(disposing);
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData(false)] // a body that overruns the bound
+    [InlineData(true)]  // a body that breaks on the wire
+    public async Task When_reading_the_body_fails_the_original_response_and_its_stream_are_released(bool breaks)
+    {
+        // Minors A5. Whatever ends the bounded read, nothing of the original response is left to the garbage collector:
+        // its content and the stream read from it are disposed. (The copy handed to the SDK is not built until the body
+        // was read within the bound, so a failed read leaves none: nothing for the SDK nor a test to observe.)
+        var content = new TrackedContent(breaks ? 1_000_000 : BoundingHandler.ErrorBodyBytes + 100, failAfterFirstRead: breaks);
+        var (r, e) = await SendIn(new OperationContext(S3Operation.Read), HttpMethod.Get, "http://127.0.0.1:9000/okf/kb/a.md", () => new HttpResponseMessage(HttpStatusCode.InternalServerError) { Content = content });
+        Assert.Null(r);
+        if (breaks)
+        {
+            Assert.IsType<IOException>(e);
+        }
+        else
+        {
+            Assert.Equal(S3FailureKind.InvalidResponse, Assert.IsType<GuardException>(e).Kind);
+        }
+
+        Assert.True(content.StreamDisposed, "the stream read from the original content");
+        Assert.True(content.ContentDisposed, "the original response's content");
+    }
+
     private sealed class EndlessStream : Stream
     {
         public override bool CanRead => true;

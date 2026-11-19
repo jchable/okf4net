@@ -34,23 +34,19 @@ internal sealed class BoundingHandler : DelegatingHandler
 
         // A HEAD answer, a 204 and a 304 carry no body: their Content-Length describes a representation not sent.
         var bodiless = request.Method == HttpMethod.Head || status is 204 or 304;
-        HttpResponseMessage copy;
+        List<KeyValuePair<string, IEnumerable<string>>> headers;
         List<KeyValuePair<string, IEnumerable<string>>> contentHeaders;
         byte[]? body;
+        var statusCode = response.StatusCode;
+        var version = response.Version;
+        var reasonPhrase = response.ReasonPhrase;
+        var requestMessage = response.RequestMessage;
         try
         {
-            // The copy's metadata is taken while the original is intact; the original never reaches the SDK.
-            copy = new HttpResponseMessage(response.StatusCode)
-            {
-                Version = response.Version,
-                ReasonPhrase = response.ReasonPhrase,
-                RequestMessage = response.RequestMessage,
-            };
-            foreach (var h in response.Headers)
-            {
-                copy.Headers.TryAddWithoutValidation(h.Key, h.Value);
-            }
-
+            // The metadata is snapshotted while the original is intact; the original never reaches the SDK. The copy is
+            // built only AFTER the read, from the snapshot: a read that fails (or overruns) leaves no half-built copy
+            // behind (minors A5), only the original, released below whatever the outcome.
+            headers = response.Headers.Select(h => new KeyValuePair<string, IEnumerable<string>>(h.Key, h.Value.ToArray())).ToList();
             contentHeaders = response.Content.Headers
                 .Where(h => !string.Equals(h.Key, "Content-Length", StringComparison.OrdinalIgnoreCase))
                 .Select(h => new KeyValuePair<string, IEnumerable<string>>(h.Key, h.Value.ToArray()))
@@ -64,13 +60,23 @@ internal sealed class BoundingHandler : DelegatingHandler
 
         if (body is null)
         {
-            copy.Dispose();
             throw new GuardException(S3FailureKind.InvalidResponse);
         }
 
         if (isList && status < 300 && operation?.Capture is { } capture)
         {
             capture.Body = body;
+        }
+
+        var copy = new HttpResponseMessage(statusCode)
+        {
+            Version = version,
+            ReasonPhrase = reasonPhrase,
+            RequestMessage = requestMessage,
+        };
+        foreach (var h in headers)
+        {
+            copy.Headers.TryAddWithoutValidation(h.Key, h.Value);
         }
 
         copy.Content = new ByteArrayContent(body);
