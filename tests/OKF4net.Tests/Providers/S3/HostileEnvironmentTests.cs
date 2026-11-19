@@ -116,7 +116,7 @@ public sealed class HostileEnvironmentTests(HostileEnvironmentTests.Baseline bas
     }
 
     public static TheoryData<string> Cases() =>
-        ["variables", "variables-fips-dualstack", "variables-us-east-1-legacy", "variables-defaults-mode", "profile", "profile-fips-dualstack", "profile-defaults-mode", "variables-lambda-internal-env"];
+        ["variables", "variables-fips-dualstack", "variables-us-east-1-legacy", "variables-defaults-mode", "profile", "profile-fips-dualstack", "profile-defaults-mode", "variables-lambda-internal-env", "variables-imds"];
 
     [Theory]
     [MemberData(nameof(Cases))]
@@ -251,6 +251,14 @@ public sealed class HostileEnvironmentTests(HostileEnvironmentTests.Baseline bas
                     ["AWS_INTERNAL_ENV"] = "IENVMARK",
                 });
                 break;
+            case "variables-imds":
+                // The instance-metadata service, switched ON (the clean environment turns it off) and pointed at the "evil"
+                // listener, a loopback port the child can reach. The provider is given explicit credentials and an explicit
+                // endpoint, so it must never contact it: no ambient credential or region lookup may ride on the SDK's fallback
+                // chain. The plain witness (no credentials given) does (AssertWitnesses).
+                env["AWS_EC2_METADATA_DISABLED"] = null;
+                Set(env, new() { ["AWS_EC2_METADATA_SERVICE_ENDPOINT"] = evil });
+                break;
             case "profile":
                 // A NAMED profile (AWS_PROFILE is honoured too: the witness shows its marker). Set but not observable here
                 // (measured, as for the variables): auth_scheme_preference, region, the credentials, the access-point
@@ -374,6 +382,12 @@ public sealed class HostileEnvironmentTests(HostileEnvironmentTests.Baseline bas
                     Assert.DoesNotContain("P", Metrics(ua));
                     break;
                 }
+
+            case "variables-imds":
+                // POSITIVE WITNESS: a plain client with no credentials really goes to the metadata endpoint named by the
+                // environment (a request path under /latest/), so the provider's silence on that listener means something.
+                Assert.Contains(hostile, l => l.StartsWith("evil | ", StringComparison.Ordinal) && l.Contains(" /latest/", StringComparison.Ordinal));
+                break;
 
             case "variables-lambda-internal-env":
                 {

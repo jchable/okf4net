@@ -9,11 +9,18 @@ using Xunit.Abstractions;
 namespace OKF4net.Tests.Providers.S3;
 
 /// <summary>
-/// Spec D2, T1 "Environnement hostile" ("mêmes URI"): on a Region source — the one source an ambient endpoint redirects,
-/// since an explicit ServiceUrl wins over it (HostileEnvironmentTests) — AWS_ENDPOINT_URL_S3 / AWS_ENDPOINT_URL never
-/// change where the provider's credential-bearing requests go. In-process, over the scripted fake (no request leaves the
-/// machine), with the process environment set and restored around each test; the collection runs alone, so no other test
-/// sees the variables.
+/// Spec D2, T1 "Environnement hostile" ("mêmes URI"): on a Region source — the one source an ambient setting can send
+/// elsewhere, since an explicit ServiceUrl wins over every one of them (HostileEnvironmentTests) — no ambient setting
+/// changes the host the provider's credential-bearing requests go to. Two families are pinned here, each with a POSITIVE
+/// WITNESS (a plain client under the same environment IS sent to the other host):
+/// the endpoint-URL variables (AWS_ENDPOINT_URL_S3 and AWS_ENDPOINT_URL, which would send a request to an attacker's
+/// host), and the us-east-1 legacy regional-endpoint variable (AWS_S3_US_EAST_1_REGIONAL_ENDPOINT=legacy, which moves
+/// a us-east-1 client to the global host s3.amazonaws.com, or okf.s3.amazonaws.com virtual-hosted: a host the guard would
+/// refuse, so the provider failed before the fix), in both addressing modes. The settings the SDK reads once per process
+/// (the profile key spelling of the legacy setting, FIPS, dual-stack) and the other ambient ones (defaults mode, retry
+/// mode, checksum modes, account-id endpoint mode, CSM, proxy, User-Agent markers) are pinned in a child process by
+/// HostileEnvironmentTests. In-process, over the scripted fake (no request leaves the machine), with the process
+/// environment set and restored around each test; the collection runs alone, so no other test sees the variables.
 /// </summary>
 [Collection(AmbientEnvironmentCollection.Name)]
 public class AmbientEndpointTests(ITestOutputHelper output)

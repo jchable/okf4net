@@ -142,6 +142,15 @@ else
 
     // proxy: a host name no resolver gives (".invalid", RFC 6761), so only a proxy can carry the request anywhere.
     await PlainAsync("proxy", () => new AmazonS3Config { ServiceURL = $"http://okf-witness.invalid:{s3Port}", ForcePathStyle = true, AuthenticationRegion = "us-east-1" });
+
+    // imds: ONLY when the environment names an instance-metadata endpoint. A client given NO credentials ends its fallback
+    // chain at the instance-metadata service, which the environment then points at the "evil" listener: the witness that
+    // such a setting is really read, and that a client that resolves ambient credentials does contact it. (The metadata
+    // service's own HTTP stack is not the safety net's, but its destination here is a loopback port.)
+    if (Environment.GetEnvironmentVariable("AWS_EC2_METADATA_SERVICE_ENDPOINT") is not null)
+    {
+        await PlainAsync("imds", () => new AmazonS3Config { ServiceURL = endpoint.ToString(), ForcePathStyle = true, AuthenticationRegion = "us-east-1" }, withCredentials: false);
+    }
 }
 
 await Task.Delay(1000); // let a late CSM datagram arrive if one was sent
@@ -169,14 +178,14 @@ foreach (var l in listeners)
 
 return 0;
 
-async Task PlainAsync(string scenario, Func<AmazonS3Config> configure)
+async Task PlainAsync(string scenario, Func<AmazonS3Config> configure, bool withCredentials = true)
 {
     try
     {
         // Built inside the try: an ambient setting the SDK cannot parse fails the configuration itself (measured).
         var config = configure();
         config.HttpClientFactory = new SafetyNetFactory(results, scenario);
-        using var plain = new AmazonS3Client(creds, config);
+        using var plain = withCredentials ? new AmazonS3Client(creds, config) : new AmazonS3Client(config);
         using var _ = await plain.GetObjectAsync(new GetObjectRequest { BucketName = "okf", Key = "kb/" + scenario + ".md" }, deadline.Token);
         lock (results)
         {

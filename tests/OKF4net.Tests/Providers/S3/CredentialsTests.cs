@@ -143,10 +143,13 @@ public class CredentialsTests
     }
 
     [Fact]
-    public async Task A_provider_that_succeeds_once_then_blocks_is_never_called_from_the_pipeline()
+    public async Task The_SDK_facing_credentials_return_the_operations_snapshot_and_never_call_the_hosts_provider()
     {
-        // The SDK reads credentials through SnapshotCredentials, which returns the operation's snapshot and
-        // never touches the host's provider (spec §4.4) — on every signature, retries and redirect included.
+        // Pins the unit: SnapshotCredentials, the only credentials object the SDK is given, returns the operation's
+        // snapshot on every sync and async read and never reaches the host's provider (spec §4.4), which here would block
+        // after its first call. It does NOT drive the SDK's pipeline: that the real pipeline (signature, retries,
+        // redirect re-signing) never calls the host's provider is pinned end to end by ReadTests
+        // (A_credentials_provider_that_blocks_fails_a_read_as_Credentials and the disposal tests that follow it).
         using var block = new ManualResetEventSlim();
         var host = new HostCredentials(n => { if (n > 1) block.Wait(HangGuard); return new ImmutableCredentials("A", "S", "T"); });
         var gate = new OperationGate(1, new ManualClock());
