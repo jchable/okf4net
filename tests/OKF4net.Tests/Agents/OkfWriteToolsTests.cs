@@ -183,13 +183,19 @@ public class OkfWriteToolsTests
     [Fact]
     public void WriteConcept_path_traversal_id_is_refused()
     {
+        // The bundle sits one level below the temp directory, so "../x" would land in a directory
+        // this test owns. Putting the bundle at the temp root made the target `%TEMP%\x.md`, a
+        // file a developer's machine can already hold, which failed the assertion for a reason
+        // unrelated to the refusal.
         using var tmp = new TempDir();
-        var tools = NewToolsOverFixtureCopy(tmp);
+        var bundleRoot = Path.Combine(tmp.Path, "bundle");
+        CopyDirectory(BundlePath, bundleRoot);
+        var tools = new OkfBundleTools(bundleRoot);
 
         var result = tools.WriteConcept("../x", ValidFrontmatter, "Body.\n");
 
         Assert.Contains("Error", result);
-        Assert.False(File.Exists(Path.Combine(tmp.Path, "..", "x.md")));
+        Assert.False(File.Exists(Path.Combine(tmp.Path, "x.md")));
     }
 
     // A junction/symlink placed INSIDE the bundle (e.g. bundleRoot/linked)
