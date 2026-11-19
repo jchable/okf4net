@@ -31,6 +31,14 @@ internal enum BlockKind
     /// the file can neither pass for the tool's own text nor leave a fence open.
     /// </summary>
     IndexText,
+
+    /// <summary>
+    /// A concept's frontmatter (<c>okf_read_concept</c>), written by
+    /// <c>YamlEmitter</c> so that it parses back to the stored mapping and can
+    /// be passed as is to <c>okf_write_concept</c> (#256): info string
+    /// <c>yaml</c>.
+    /// </summary>
+    Frontmatter,
 }
 
 /// <summary>
@@ -67,6 +75,7 @@ internal enum BlockKind
 internal sealed class ModelTextBuilder
 {
     private const string MarkdownInfo = "markdown";
+    private const string YamlInfo = "yaml";
     private const char Backslash = (char)92;
 
     /// <summary>
@@ -123,13 +132,21 @@ internal sealed class ModelTextBuilder
     /// CLI's (golden-locked) and already line-safe (#123); it is folded once
     /// more all the same, which changes nothing but a bidi control a quoted
     /// stored value may still carry (<c>DebugQuote</c> leaves those in place).
-    /// It starts with a concept id, a label or a count, never block syntax.
+    /// It starts with a concept id, a label or a count — and a valid concept id
+    /// can itself be block syntax (<c>1.</c>, file <c>1..md</c>, an ordered-list
+    /// marker; #248 review) — so, here only and not in the CLI's bytes, it is
+    /// treated like a value after its own indentation, which is kept: neutralised
+    /// when it begins a block, every <c>|</c> escaped.
     /// </summary>
     /// <param name="line">The rendered line.</param>
     public ModelTextBuilder Rendered(AuditText.AuditLine line)
     {
         ArgumentNullException.ThrowIfNull(line);
-        _text.Append(ModelText.Fold(line.Text)).Append('\n');
+        var folded = ModelText.Fold(line.Text);
+        var rest = folded.TrimStart(' ', '\t');
+        _text.Append(folded, 0, folded.Length - rest.Length);
+        AppendValue(_text, rest);
+        _text.Append('\n');
         return this;
     }
 
@@ -149,6 +166,7 @@ internal sealed class ModelTextBuilder
         {
             BlockKind.ConceptBody or BlockKind.IndexText => MarkdownInfo,
             BlockKind.ComputationSource => string.Empty,
+            BlockKind.Frontmatter => YamlInfo,
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "not a block kind"),
         };
 
@@ -302,10 +320,11 @@ internal sealed class ModelTextBuilder
     /// trailing spaces (a setext underline); <c>&gt;</c> (a blockquote);
     /// <c>`</c> and <c>~</c> before three of them (a fence); <c>&lt;</c> (an HTML
     /// block); <c>[</c> always (a link reference definition: the literal
-    /// <c>": "</c> after a frontmatter key can complete one); <c>|</c>; and the
+    /// <c>": "</c> after a frontmatter key can complete one); and the
     /// <c>.</c> or <c>)</c> of 1–9 leading digits before a space, a tab or the
-    /// end (an ordered-list item). Every <c>|</c> of a value, wherever it stands,
-    /// is escaped too, by <see cref="EscapePipes"/> (a GFM table). A value that
+    /// end (an ordered-list item). A <c>|</c>, leading or not, is left to
+    /// <see cref="EscapePipes"/>, which escapes every one of a value's (a GFM
+    /// table): escaped here too, it came out as a literal backslash. A value that
     /// starts otherwise — a word, a concept id, a path — is returned as is, so
     /// ordinary values print as they always did.
     /// </summary>
@@ -335,7 +354,9 @@ internal sealed class ModelTextBuilder
             '-' or '+' or '*' => SpaceOrEnd(value, 1) || Thematic(value, c) || (c == '-' && SetextUnderline(value, '-')),
             '_' => Thematic(value, '_'),
             '=' => SetextUnderline(value, '='),
-            '>' or '<' or '|' => true,
+            // Not '|': EscapePipes escapes every pipe, a leading one included, and a
+            // backslash added here would be escaped again there (#248 review).
+            '>' or '<' => true,
             '`' or '~' => value.Length >= 3 && value[1] == c && value[2] == c,
 
             // Always, not only before "]:": a value is often followed by a literal

@@ -245,6 +245,16 @@ public enum DiagnosticCode
     /// survive every filesystem.
     /// </summary>
     KeyNotPortable,
+
+    /// <summary>
+    /// <c>generated</c> is present but is not a <c>{by, at}</c> mapping (§5.2: "<c>generated</c>:
+    /// a <c>{ by, at }</c> mapping"), e.g. a scalar such as <c>generated: "by: human:me"</c>, or a
+    /// list. Such a value carries no provenance a reader can use (<see cref="Trust.ParseGenerated"/>
+    /// reads only a mapping), so it is reported rather than dropped silently; the counterpart of
+    /// <see cref="VerifiedMalformed"/>. An explicit null (<c>generated:</c>) is not reported, like
+    /// <c>verified:</c>; a mapping that lacks <c>by</c> is <see cref="GeneratedMissingBy"/>.
+    /// </summary>
+    GeneratedMalformed,
 }
 
 /// <summary>
@@ -479,6 +489,14 @@ public static class BundleValidator
                         DiagnosticCode.MissingRecommendedField,
                         field));
                 }
+            }
+
+            // §5.2: `generated` is a `{ by, at }` mapping. Trust.ParseGenerated reads
+            // nothing else, so any other non-null shape is reported here rather than
+            // dropped silently (#271), as VerifiedMalformed does for `verified`.
+            if (fm.Get("generated") is not null and not YamlNull and not YamlMapping)
+            {
+                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "generated must be a `{by, at}` mapping", DiagnosticCode.GeneratedMalformed, "generated"));
             }
 
             var gen = fm.Generated;

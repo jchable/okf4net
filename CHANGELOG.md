@@ -10,6 +10,29 @@ and this project adheres to
 
 ### Added
 
+- **Two end-to-end tutorials under `docs/tutorials/`** (#174).
+  [`library-users.md`](docs/tutorials/library-users.md) writes, indexes, loads
+  and validates a bundle through the asynchronous provider API
+  (`FileSystemBundleProvider`, `BundleConceptWriter`, `IndexGenerator`,
+  `Bundle.LoadAsync`, `BundleValidator`, `ChangeLog`) and checks it with
+  `okf validate`/`info`/`graph`/`verify`/`audit`;
+  [`agent-builders.md`](docs/tutorials/agent-builders.md) exposes a bundle
+  through `OKF4net.Agents` (a shared `BundleHandle`, `OkfToolMode`,
+  `OkfContextProvider`, a write behind host approval) with a scripted
+  `IChatClient`, and through `okf-mcp`, with a Node script that checks
+  `initialize`, `tools/list` and `tools/call` over stdio. Every snippet and
+  command was run to produce the output shown; the steps that need a model
+  say so. Linked from the README.
+
+- **`samples/second-brain`, a read-write `okf-mcp` sample (#160).** A starter
+  personal-notes bundle served writable in Claude Desktop, with the
+  `claude_desktop_config.json` for Windows and macOS (installed tool or from
+  the repository), example prompts, and `smoke.cs`, a .NET 10 file-based app
+  that drives `okf-mcp` over stdio on a copy of the bundle and checks the
+  disk. It documents that `okf_write_concept` updates neither `index.md` nor
+  `log.md`, which change only through `okf_regenerate_indexes` and
+  `okf_append_log`.
+
 - **`samples/agents-handoff`**, an `OKF4net.Agents` sample of two agents
   sharing one bundle, with no LLM endpoint, API key or network access (#159).
   Over a temporary copy of `bundles/ga4`, a curator agent with the read-write
@@ -22,8 +45,10 @@ and this project adheres to
 
 - **Allowlist of sanctioned-code digests for attested computations (#154).**
   `AttestationOrchestratorOptions` (`Clock`, `DefaultPolicy`,
-  `AllowedCodeDigests`) and a new `AttestationOrchestrator(runtimes, options)`
-  constructor; the existing constructor is unchanged.
+  `AllowedCodeDigests`) and a new `AttestationOrchestrator.Create(runtimes,
+  options)` factory; the existing constructor is unchanged, and
+  `new AttestationOrchestrator(runtimes, null)` still compiles (a constructor
+  overload taking the options would have made it ambiguous).
   - `AllowedCodeDigests` is `null` by default, which means no allowlist and no
     change. When set, a run whose computation (inline or file) or attester source
     is not in it is refused before any runtime stage.
@@ -77,7 +102,9 @@ and this project adheres to
   consumer can reproduce the comparison. The text lines are unchanged.
   Binary-breaking for a compiled caller of `AuditQuery`'s constructor (a new
   optional parameter); source-compatible, including the four-value
-  `Deconstruct`, which stays beside the generated five-value one.
+  `Deconstruct`, which stays beside the generated five-value one with the
+  generated parameter names (`StaleOnly`, `Trust`, `Status`, `Type`), so a
+  call with named arguments still compiles.
 
 - **Bundle provider seam (#139, lot A).** `OKF4net.Providers`: `IBundleProvider`
   and its value types, `BundleKey` with three-layer validation
@@ -292,7 +319,7 @@ and this project adheres to
   `OKF4net.Providers.EmbeddedResources`: the `OkfBundle` MSBuild item (a
   pure-MSBuild `.targets` shipped in the package) embeds a bundle directory one
   manifest resource per file, `okf:<prefix>/<path>`, refusing links and names an
-  assembly cannot hold (`OKFEMB001`–`OKFEMB009`), and
+  assembly cannot hold (`OKFEMB001`–`OKFEMB010`), and
   `EmbeddedResourceBundleProvider` serves it back read-only, synchronously,
   versioned by the assembly's MVID — Native AOT and single-file included.
 
@@ -1189,6 +1216,54 @@ and this project adheres to
   reported `index.md could not be read` (`UnparseableIndex`, `UnparseableLog`)
   instead of failing. The fix changes documented exceptions: see the #247 entry
   under *Changed (breaking)*.
+
+- **Model-facing text: four review follow-ups on #122 and #249 (#248, #251).**
+  - The fold could assemble a tag character out of two lone surrogate halves
+    separated by characters it removes (`U+DB40`, `U+200B`, `U+DC41` came out
+    as `U+E0041`, and a second fold removed it). Such a pair is now removed
+    too, so the output never holds a tag character and the fold stays
+    idempotent.
+  - A value beginning a Markdown block with `|` was escaped twice and showed a
+    literal backslash (`\\\|name`); it now reads `\|name`, like any other pipe.
+  - `okf_audit` and `okf_verify` lines start with a concept id, and a valid id
+    can be block syntax (`1.`, file `1..md`, read as an ordered-list item).
+    In the tool result only, such a line is now neutralised after its
+    indentation (`  1\.  …`), and its pipes escaped; the CLI's output is
+    unchanged.
+  - The scoped and V1 context providers sized an element's fence from its
+    whole content, even when truncation dropped the part that needed a long
+    fence: a passage whose excerpt was 1,000 backticks could not fit a
+    200-token budget even with its title alone. The fence is now sized from
+    the part kept.
+
+- **A `generated` that is not a mapping is now reported (#271).** §5.2 makes
+  `generated` a `{ by, at }` mapping; a scalar (e.g. `generated: "by: human:me
+  at: …"`) or a list was read as no provenance at all and `okf validate` said
+  nothing. It is now the Warning `generated must be a \`{by, at}\` mapping`,
+  with the new `DiagnosticCode.GeneratedMalformed` (appended to the enum, field
+  `generated`), the counterpart of `VerifiedMalformed`; the bundle stays
+  conformant. An explicit null (`generated:`) is not reported, like `verified:`.
+  A mapping without a usable `by` was already reported (`GeneratedMissingBy`,
+  or `GeneratedInvalidActor` for an empty one) and is unchanged.
+
+- **`okf_read_concept` shows frontmatter as YAML that round-trips (#256).**
+  It used to print one folded `key: value` line per entry, flattening nested
+  values (`generated: { by: human:me, at: … }` came out as
+  `generated: by: human:me at: …`), so a model copying it back into
+  `okf_write_concept` stored `generated`, `verified`, `sources`, `attester`…
+  as plain strings and silently lost §5.2 provenance. The frontmatter is now
+  one fenced `yaml` block written by `YamlEmitter`, which parses back to the
+  stored mapping and can be passed to `okf_write_concept` as is. The
+  `OkfContextProvider` injection, which embeds the same rendering, changes
+  with it, but its element content is HTML-escaped (`&amp;`, `&lt;`), so YAML
+  copied from injected context is not a round-trippable source: re-read the
+  concept with `okf_read_concept` before writing it. Frontmatter values are
+  shown with invisible, bidi, separator and control characters escaped as
+  `\uXXXX` inside quoted scalars (C0 and C1 controls, NEL, soft hyphen, bidi
+  controls, zero-width characters, U+FEFF, U+2028/U+2029), which round-trips
+  exactly; astral tag characters (U+E0000 block) are the exception and stay
+  raw, since the YAML subset cannot escape them. Model-facing text only: what
+  is written to disk and every CLI output (golden) are unchanged.
 
 - **Appending to `log.md` keeps the frontmatter block the file opens with
   (#258).** `BundleConceptWriter.AppendLog` / `AppendLogAsync` (and so

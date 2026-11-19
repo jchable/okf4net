@@ -136,6 +136,38 @@ public class ModelTextTests
         Assert.False(ModelText.IsTagPair(value, 1));
     }
 
+    /// <summary>
+    /// A tag pair the removals would assemble (#251 review): a lone high
+    /// surrogate U+DB40, then removed characters, then a tag low surrogate. The
+    /// fold must not join the halves into a tag character it leaves in its
+    /// output, and its output must be a fixed point of the fold. (Built in code:
+    /// an attribute argument cannot carry a lone surrogate.)
+    /// </summary>
+    [Fact]
+    public void Removals_cannot_assemble_a_tag_character()
+    {
+        const char High = (char)0xDB40;
+        string[] values =
+        [
+            new([High, (char)0x200B, (char)0xDC41]),
+            new(['a', High, (char)0x202E, (char)0xFEFF, (char)0xDC46, 'b']),
+            new([High, High, (char)0x200B, (char)0xDC41, (char)0xDC41]),
+            new([High, High, (char)0xDC41, (char)0x2060, (char)0xDC41]),
+        ];
+
+        foreach (var value in values)
+        {
+            var once = ModelText.Fold(value);
+            for (var i = 0; i < once.Length; i++)
+            {
+                Assert.False(ModelText.IsTagPair(once, i), $"a tag character at {i} in the fold of input #{Array.IndexOf(values, value)}");
+            }
+
+            Assert.Equal(once, ModelText.Fold(once));
+            Assert.False(ModelText.NeedsFold(once));
+        }
+    }
+
     [Fact]
     public void There_are_exactly_twelve_bidi_controls()
     {
