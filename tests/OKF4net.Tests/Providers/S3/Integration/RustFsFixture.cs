@@ -6,7 +6,7 @@ using Amazon.S3.Model;
 namespace OKF4net.Tests.Providers.S3.Integration;
 
 /// <summary>
-/// docker.io/rustfs/rustfs:1.0.3 on a free loopback port (spec T2). Engine chosen explicitly: podman if it answers,
+/// docker.io/rustfs/rustfs:1.0.3, pinned by digest, on a free loopback port (spec T2, D14). Engine chosen explicitly: podman if it answers,
 /// else docker. No engine: <see cref="SkipReason"/> is set and every test reports skipped. An engine that answers but a
 /// container that does not start: <see cref="InitializeAsync"/> throws, so every test FAILS. Each instance runs its own
 /// container (a unique name, <c>--rm</c>), removed at disposal and when the start fails.
@@ -15,7 +15,12 @@ namespace OKF4net.Tests.Providers.S3.Integration;
 /// </summary>
 public sealed class RustFsFixture : IAsyncLifetime, IAsyncDisposable
 {
-    public const string Image = "docker.io/rustfs/rustfs:1.0.3";
+    /// <summary>
+    /// The tag AND the digest of the multi-architecture index (measured 2026-11-19 with <c>docker buildx imagetools inspect</c>:
+    /// linux/amd64 and linux/arm64): a re-tagged image cannot change what the tests talk to. Pulled and started under both Podman
+    /// and Docker; when the digest is bumped, run the local S3Integration suite under both (0 skipped).
+    /// </summary>
+    public const string Image = "docker.io/rustfs/rustfs:1.0.3@sha256:9ca9559533b537d10482fe923288b676ad08f92a7069d9a17327fbae3cab688b";
     public const string Bucket = "okf";
 
     /// <summary>The label every container this fixture starts carries, so a leftover can be found (and only ours).</summary>

@@ -62,7 +62,7 @@ une dépendance tierce.
 | D11 | Transport | `https://` exigé ; `http://` seulement avec `AllowInsecureHttp = true`. |
 | D12 | Checksums | Réglage explicite dans `S3BundleSource` (par défaut : ceux du SDK, mesurés acceptés par RustFS) ; jamais lu de l'environnement. |
 | D13 | Périmètre | Bibliothèque seule. Pas de fabrique de catalogue (#239), pas d'option `okf-mcp` (#238), pas de notification S3, pas d'écriture. |
-| D14 | Tests sans CI | Catégorie **`S3Integration`**, distincte de `ContainerIntegration`, contre `docker.io/rustfs/rustfs:1.0.3` (MinIO n'est plus disponible sur Docker Hub). `ci.yml` et `release.yml` excluent les deux catégories. |
+| D14 | Tests sans CI | Catégorie **`S3Integration`**, distincte de `ContainerIntegration`, contre `docker.io/rustfs/rustfs:1.0.3@sha256:9ca9559533b537d10482fe923288b676ad08f92a7069d9a17327fbae3cab688b` (MinIO n'est plus disponible sur Docker Hub ; l'étiquette seule pourrait être déplacée, le condensé de l'index multi-architecture, mesuré sous Podman et sous Docker, ne le peut pas). `ci.yml` et `release.yml` excluent les deux catégories. |
 | D15 | Changements du cœur | **Deux, en tête du plan, en TDD, dans cette branche** (arbitrages du 2026-11-16) : (a) `LoadCoreAsync` lit la version du bundle **avant** de lister ; (b) `ResolveResourceKeyAsync` ne rend `Unsafe` que sur un refus d'accès, et toute autre défaillance du provider remonte **traduite par le cœur** (§4.7). Rien d'autre : la même confusion dans la lecture d'`index.md`/`log.md` par la validation est commune à tous les providers et part dans #247. |
 | D16 | Concurrence | Le provider borne ses **opérations** en vol par un permis (`MaxConcurrentRequests`, 16 par défaut), tenu de l'appel jusqu'à la fin du corps et du nettoyage, acquisition des identifiants comprise : c'est sa responsabilité (spec de la couture ; spec asynchrone §3.6 ; #139 §4). |
 
@@ -236,9 +236,11 @@ borne, avec et sans `Content-Length`.
 `DisableClockSkewCorrection = false` ; `ClientAppId` fixé à une **valeur
 explicite neutre** (un `ClientAppId` nul retombe sur `AWS_SDK_UA_APP_ID` et
 `sdk_ua_app_id` : la porte §9 vérifie la valeur qui neutralise ce repli sur
-chaque version testée, et T1 vérifie que le User-Agent ne porte aucun marqueur
-ambiant) ; `AuthSchemePreference`
-fixé à SigV4 ; la région (`Region`, ou `us-east-1` d'authentification pour
+chaque version testée ; ce réglage ne suffit pas à lui seul : le garde reconstruit
+le `User-Agent` depuis une liste fermée de jetons, Annexe C12, et T1 vérifie par
+un témoin positif que ni le marqueur `app/`, ni `exec-env/`, ni le texte de
+`AWS_INTERNAL_ENV` n'atteignent le fil) ; `AuthSchemePreference` **n'est pas
+fixé** (le SDK n'offre que SigV4 pour un bucket ordinaire, Annexe C12) ; la région (`Region`, ou `us-east-1` d'authentification pour
 `ServiceUrl`) ; `ForcePathStyle` ; `RequestChecksumCalculation` et
 `ResponseChecksumValidation` depuis `Checksums` ; le point de terminaison
 régional de `us-east-1` et les points d'accès multirégions fixés ; **CSM
@@ -287,6 +289,11 @@ requête atteint la cible ; avec, elle est refusée avec sa marque), vers un aut
 hôte, **et entre les deux autorités d'un même bucket, dans les deux sens** (path
 et *virtual-hosted*, où le chemin inchangé désigne un autre bucket). Les 301 et
 `PermanentRedirect` sont testés comme refus natifs du SDK, traduits par §4.6.
+
+*Précision (Annexe B, conséquence 4 ; Annexe C3)* : le garde refuse aussi tout envoi au-delà de **3 par
+opération**, redirections comprises (`InvalidResponse`). Une 307 vers une URL que le garde **admet** (même
+autorité, même chemin) et répondue indéfiniment n'est donc pas suivie sans borne : elle est refusée au
+troisième envoi.
 
 **Identifiants : un instantané, jamais le fournisseur de l'hôte dans le
 pipeline.** `AWSCredentials.GetCredentialsAsync` ne prend pas de jeton et peut
@@ -436,7 +443,7 @@ provider. Le README du provider S3 documente cette limite jusqu'à #247.
 
 | Menace | Réponse |
 |---|---|
-| Redirection vers un hôte arbitraire, fuite du jeton de session | garde D3 sur une autorité, mesuré (M3c) ; contre-épreuve sur la 307 |
+| Redirection vers un hôte arbitraire, fuite du jeton de session | garde D3 sur une autorité, mesuré (M3c) ; contre-épreuve sur la 307 ; au plus 3 envois par opération, une 307 admise répondue sans fin étant refusée au troisième (Annexe B, conséquence 4) |
 | Redirection entre autorités admissibles d'un même bucket (le chemin inchangé désigne un autre bucket) | une seule autorité et un préfixe de chemin vérifiés par requête (§4.4) ; contre-épreuves dans les deux sens |
 | Fournisseur d'identifiants rappelé par le SDK hors de tout délai (signatures, réessais, redirection synchrone) | instantané interne au provider (§4.4) ; le fournisseur de l'hôte n'est appelé qu'isolé |
 | Alias de clés par un décodage laxiste (`%FF` contre `%25FF`) | décodage strict (§4.3) |
@@ -512,12 +519,20 @@ unique (§4.2).
 
 Un fixture choisit le moteur explicitement (`podman` s'il répond, sinon
 `docker`), vérifie l'accès au moteur, démarre `docker.io/rustfs/rustfs:1.0.3`
-sur un port libre avec des identifiants générés, crée un bucket, téléverse, et
+(épinglé par le condensé de son index multi-architecture, D14) sur un port libre avec des identifiants générés, crée un bucket, téléverse, et
 arrête le conteneur à la fin. Moteur absent : chaque test est **rapporté
 ignoré** avec la raison. Moteur présent mais conteneur en échec : les tests
 **échouent**. Garantie : `dotnet test tests/OKF4net.Tests --filter
-Category=S3Integration` avec **0 skipped**, en tête du README du paquet et dans
-CLAUDE.md ; exécutée sous Podman sans compatibilité Docker et sous Docker.
+Category=S3Integration` avec **0 skipped** (35 tests : 10 scénarios et 25 cas de
+parité), en tête du README du paquet et dans CLAUDE.md ; exécutée sous Podman
+sans compatibilité Docker et sous Docker.
+
+**Ce que RustFS ne peut pas prouver** (README, section Testing) : il envoie une
+espace en `%20` et un `+` en `%2B`, jamais un `+` brut ; il **ne discrimine donc
+pas** le `+` brut d'un nom listé, que seuls les tests T1 (le vrai SDK contre des
+pages scriptées) gardent. Le SDK ne peut pas `PUT` une clé à `/` initial vers
+RustFS : la fixture signe cette requête elle-même, avec l'horloge de l'hôte, qui
+doit s'accorder avec celle du moteur à moins de 15 minutes près.
 
 | Test | Ce qu'il prouve |
 |---|---|
@@ -526,7 +541,7 @@ CLAUDE.md ; exécutée sous Podman sans compatibilité Docker et sous Docker.
 | Noms acceptés, oracle indépendant | `%2F`, `%2e%2e`, `%25`, `%252e`, `+`, espace, `\`, `?`, `#`, NFC et NFD de `café.md`, `dir/`, `/kb/lead.md` (normalisé par RustFS), `kb2/…` à côté de `kb/…` : chaque objet a un **contenu distinctif** ; le listing est comparé à celui d'un client d'administration distinct, sans `EncodingType` (chemin de décodage indépendant : texte XML), `mc` n'étant plus garanti disponible (image MinIO retirée de Docker Hub) ; chaque objet servi par le provider a le contenu de sa clé ; ce que le cœur rejette suit son socle sous `Native` |
 | Longueur | `MaxKeyBytes` abaissé, plutôt qu'une clé de plus de 1 024 octets que RustFS refuse |
 | Lecture épinglée | après réécriture d'un objet, `ReadResourceTextAsync(key, expected, …)` lève `BundleVersionMismatchException` ; `AttestationOrchestrator.CaptureAsync` rend le refus exact et aucune étape d'exécution ne démarre |
-| Fraîcheur | `OnAccess` voit une modification qui change le jeton ; `Every` seulement après l'intervalle ; un remplacement durable à taille et ETag constants (servi par un double scripté au-dessus de RustFS, qui ne peut pas le produire) **n'est pas** rechargé, ce qui fixe la limite 2 de §4.3, tandis que la relecture épinglée du code changé est refusée |
+| Fraîcheur | `OnAccess` voit une modification qui change le jeton ; `Every` seulement après l'intervalle ; un remplacement durable à taille et ETag constants **n'est pas** rechargé, ce qui fixe la limite 2 de §4.3, tandis que la relecture épinglée du code changé est refusée (ce cas n'est **pas** un test T2 : RustFS ne peut pas produire un triplet constant, il est couvert en T1 par un faux S3, `ReadTests.A_persistent_change_with_a_constant_triplet_is_not_reloaded_but_pinned_code_is_refused`, Annexe C6) |
 | Courses | un concept, une ressource du relevé et l'`index.md` racine supprimés entre le listing et leur lecture : échec du chargement avec image précédente servie et périmée, état `Missing`, `okf_version` absent (table de §4.3) |
 | Bornes | un objet au-delà d'un `MaxObjectBytes` abaissé : problème local ; un listing au-delà d'un `MaxEntries` abaissé : échec du chargement |
 | Panne | conteneur arrêté pendant un rechargement : l'image précédente reste servie, marquée périmée, `LastLoadError` renseigné |

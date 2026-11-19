@@ -172,10 +172,10 @@ Register it with `KnowledgeCatalogOptions.ProviderFactories`. The catalog never 
 
 ## Testing
 
-Two layers. The unit tests run in CI with no service: the real SDK against scripted responses, with the guard in place, plus a child-process probe under a hostile environment. The `S3Integration` tests start `docker.io/rustfs/rustfs:1.0.3` themselves (Podman if it answers, otherwise Docker); they were run with RustFS 1.0.3 under Podman and under Docker 28.3.3, and nothing else is claimed. What they cannot prove:
+Two layers. The unit tests run in CI with no service: the real SDK against scripted responses, with the guard in place, plus a child-process probe under a hostile environment. The `S3Integration` tests (35 in all: 10 scenario tests and 25 parity cases) start `docker.io/rustfs/rustfs:1.0.3` themselves, pinned by its multi-architecture index digest (`@sha256:9ca95595…`, so a re-tagged image cannot change what runs), driven by Podman if it answers, otherwise Docker; they were run with RustFS 1.0.3 under Podman and under Docker, and nothing else is claimed. What they cannot prove:
 
-- RustFS emits a space as `%20` and a `+` as `%2B`, never a raw `+`. Stores that emit a raw `+` for a space (real S3, MinIO) are handled by form-decoding listed keys; that is guarded by the unit tests, not by the RustFS run.
-- The SDK cannot `PUT` a key with a leading `/` to RustFS, so the tests sign that one request themselves.
+- RustFS cannot discriminate the raw `+` in a listed key: it emits a space as `%20` and a `+` as `%2B`, never a raw `+`, so a decoder that read a raw `+` wrongly would pass the RustFS run. Stores that emit a raw `+` for a space (real S3, MinIO) are handled by form-decoding listed keys; the T1 tests (the real SDK against scripted pages, in CI) guard that, not the RustFS run.
+- The SDK cannot `PUT` a key with a leading `/` to RustFS, so the tests sign that one request themselves (SigV4, with the host's clock): the host and the container engine's clocks must agree to within 15 minutes, or that request is refused by the store.
 - The Native AOT probe was verified locally on Windows; the Linux and macOS legs run in CI.
 
 ## License
