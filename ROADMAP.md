@@ -4,7 +4,7 @@ OKF4net implements the [Open Knowledge Format (OKF) v0.2](https://github.com/Goo
 on the .NET base class library with zero third-party runtime dependencies.
 This file keeps the context behind shipped work and settled decisions. Planned
 work — features, bugs, design lots and open questions — is tracked as GitHub
-issues, grouped by milestone: [`v0.7.0`](https://github.com/jchable/okf4net/milestone/1)
+issues, grouped by milestone: [`v0.9.0`](https://github.com/jchable/okf4net/milestone/4)
 for the next release and [`v-next`](https://github.com/jchable/okf4net/milestone/2)
 for everything not yet scheduled. Issues labelled
 [`good first issue`](https://github.com/jchable/okf4net/labels/good%20first%20issue)
@@ -99,7 +99,17 @@ are the concrete entry points.
     marked) is the actual guard, and CI runs it as the `viewer sanitizer (JS)`
     job. Re-vendoring `marked.min.js` is the change most likely to regress the
     defense, and that job is what catches it.
-- **S3 bundle provider shipped** — `OKF4net.Providers.S3`
+- **Bundle provider seam shipped (0.8.0)** — a bundle is read from, and
+  written to, a key space of byte objects behind `IBundleProvider`
+  ([#139](https://github.com/jchable/okf4net/issues/139)), with an asynchronous
+  contract ([#152](https://github.com/jchable/okf4net/issues/152)), the
+  filesystem as the writable reference implementation
+  ([#140](https://github.com/jchable/okf4net/issues/140)) and a bundle shipped
+  inside an assembly, `OKF4net.Providers.EmbeddedResources`
+  ([#141](https://github.com/jchable/okf4net/issues/141)). Both new packages
+  went out on nuget.org with 0.8.0 through Trusted Publishing; the S3 provider
+  below is the third backend.
+- **S3 bundle provider shipped (0.8.0)** — `OKF4net.Providers.S3`
   ([#142](https://github.com/jchable/okf4net/issues/142), see its
   [design spec](docs/superpowers/specs/2026-11-16-s3-bundle-provider-design.md)):
   a bundle in Amazon S3 or an S3-compatible store, read-only and truly
@@ -146,21 +156,16 @@ are the concrete entry points.
 
 - Ecosystem integrations driven by user demand.
 - Tracking upstream OKF spec evolution beyond v0.2.
-- **Bundle providers beyond the filesystem.** The seam (`IBundleProvider`,
-  [#139](https://github.com/jchable/okf4net/issues/139)), its asynchronous contract
-  ([#152](https://github.com/jchable/okf4net/issues/152)) and the filesystem
-  reference implementation ([#140](https://github.com/jchable/okf4net/issues/140))
-  are on `dev`, and so are the embedded-resource provider
-  (`OKF4net.Providers.EmbeddedResources`,
-  [#141](https://github.com/jchable/okf4net/issues/141)) and the S3 provider
-  ([#142](https://github.com/jchable/okf4net/issues/142), described above); what
-  follows is tracked as issues: a built-in catalog factory for the embedded one
+- **Bundle providers beyond the filesystem — follow-ups.** The seam, its
+  asynchronous contract and the filesystem, embedded-resource and S3 providers
+  shipped in 0.8.0 (see "Shipped, with notes"); what follows is tracked as
+  issues: a built-in catalog factory for the embedded provider
   (`"provider": "embedded"` in `catalog.json`,
   [#236](https://github.com/jchable/okf4net/issues/236)) and for the S3 one
   ([#239](https://github.com/jchable/okf4net/issues/239)), `okf-mcp` over S3
   ([#238](https://github.com/jchable/okf4net/issues/238)), the S3 follow-ups
   [#283](https://github.com/jchable/okf4net/issues/283) to
-  [#293](https://github.com/jchable/okf4net/issues/293), and a per-user OS lock
+  [#292](https://github.com/jchable/okf4net/issues/292), and a per-user OS lock
   closing the cross-process window of the filesystem provider's conditional
   writes, deferred ([#178](https://github.com/jchable/okf4net/issues/178)).
 
