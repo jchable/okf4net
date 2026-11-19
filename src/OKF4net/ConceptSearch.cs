@@ -295,25 +295,41 @@ public static class ConceptSearch
     /// </summary>
     private static List<T> RoundRobin<T>(List<(string Family, Queue<T> Queue)> families, int count, int total)
     {
+        var visits = 0L;
+        return RoundRobin(families, count, total, ref visits);
+    }
+
+    /// <summary>
+    /// The rotation itself. A family leaves it as soon as its queue is drained,
+    /// so each item costs one visit instead of every rotation revisiting every
+    /// family (#279). <paramref name="visits"/> counts family visits so a test
+    /// can bound the work without timing it. Every family passed in must hold
+    /// at least one item.
+    /// </summary>
+    internal static List<T> RoundRobin<T>(List<(string Family, Queue<T> Queue)> families, int count, int total, ref long visits)
+    {
         var picked = new List<T>(Math.Min(count, total));
-        var drained = false;
-        while (!drained && picked.Count < count)
+        var live = families.Count;
+        while (live > 0 && picked.Count < count)
         {
-            drained = true;
-            foreach (var (_, queue) in families)
+            var keep = 0;
+            for (var i = 0; i < live; i++)
             {
-                if (queue.Count == 0)
+                var family = families[i];
+                visits++;
+                picked.Add(family.Queue.Dequeue());
+                if (family.Queue.Count > 0)
                 {
-                    continue;
+                    families[keep++] = family;
                 }
 
-                drained = false;
-                picked.Add(queue.Dequeue());
                 if (picked.Count == count)
                 {
-                    break;
+                    return picked;
                 }
             }
+
+            live = keep;
         }
 
         return picked;
