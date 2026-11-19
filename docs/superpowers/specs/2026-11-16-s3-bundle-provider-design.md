@@ -760,7 +760,7 @@ reste à confirmer ou à renverser, et son coût est dit. Les mesures portent su
 `AWSSDK.S3` 4.1.0 avec `AWSSDK.Core` 4.1.0 (et 4.1.0.1 pour la porte), RustFS 1.0.3,
 Windows 11.
 
-**À arbitrer par le mainteneur : C1 (`+` brut), C3 (3 envois par opération), C5c (ETag simple non hexadécimal). À confirmer : C4 — le changement du cœur D15 (b) s'étend au relevé des ressources exécutables, donc fait échouer le chargement pour *tous* les providers —, et C8. Les autres entrées (C2, C5 hors c, C6, C7, C9) sont des constats.**
+**À arbitrer par le mainteneur : C1 (`+` brut), C3 (3 envois par opération), C5c (ETag simple non hexadécimal), C10 (page tronquée sans clé), C11 (région de signature d'une source `ServiceUrl`), C12 (3) (en-têtes ambiants restants : `x-amzn-trace-id`, `AWS_INTERNAL_ENV`). À confirmer : C4 — le changement du cœur D15 (b) s'étend au relevé des ressources exécutables, donc fait échouer le chargement pour *tous* les providers —, et C8. Les autres entrées (C2, C5 hors c, C6, C7, C9) sont des constats.**
 
 **C1 — §4.3, décodage d'une clé listée.**
 *Le texte* : chaque `%XX` devient un octet, « tout autre caractère ses octets UTF-8 » (un `+` brut reste `+`).
@@ -866,3 +866,50 @@ autre hôte est bien refusée par le garde (`RefusedHost`) ; mais un 301 `Perman
 `AuthorizationHeaderMalformed` est classé `BucketUnavailable`. Le README du paquet dit les deux cas ; aucun des
 deux n'a été mesuré contre Amazon S3 réel. Formulation du corps à corriger à la prochaine révision.
 *Commit* : `22bc5ccd` (README). *Statut* : constat.
+
+**C10 — D9, §4.3 : page tronquée sans clé.**
+*Le texte* (D9) : « progrès exigé de chaque page tronquée » ; une page tronquée (`IsTruncated=true`) qui ne porte
+aucune clé est une incohérence de transport.
+*Constaté* : implémenté tel quel (`ListingWalker`) : une telle page est refusée (`InvalidResponse`) et **tout le
+chargement échoue**. Amazon S3 réel pourrait rendre de telles pages sur un bucket versionné, sous une longue suite de
+marqueurs de suppression (non mesuré ; relecteur sûr à 70 % environ) : un bundle placé là ne se chargerait jamais,
+en échec **fermé**. Le refus n'est pas nécessaire à la borne : le budget de `MaxEntries + 1` pages et le refus d'un
+jeton de continuation répété arrêtent déjà un store hostile. Alternative probable : accepter une page tronquée vide,
+comptée dans le budget de pages. Le README du paquet l'énonce comme précondition d'un store compatible. Un changement
+de code demande la passe locale `S3Integration` à 0 ignoré.
+*Commit* : celui de cette entrée (README et annexe). *Statut* : tranché par le contrôleur — à arbitrer par le mainteneur.
+
+**C11 — §4.4, D2 : région de signature d'une source `ServiceUrl`.**
+*Le texte* : la région d'authentification est `us-east-1` pour `ServiceUrl` ; `Region` et `ServiceUrl` sont
+exclusifs (`SourceRules`).
+*Constaté* : une source `ServiceUrl` signe **toujours** avec la région `us-east-1`, et `S3BundleSource` n'a aucune
+option de région de signature. Un store compatible qui vérifie la région de la portée SigV4 (Wasabi en point de
+terminaison régional, Scaleway, Backblaze B2, OVH, Garage, MinIO avec une région de site — selon le relecteur ;
+**aucun mesuré**) répond `400 AuthorizationHeaderMalformed`, que le provider rapporte en `BucketUnavailable`
+(`ErrorClassifier`) : le diagnostic désigne le bucket plutôt que la signature. API proposée si le mainteneur la
+veut : une propriété facultative `SigningRegion` sur `S3BundleSource`, incluse dans le hachage de l'`Id`. Le README
+du paquet l'énonce comme précondition d'un store compatible.
+*Commit* : celui de cette entrée (README et annexe). *Statut* : tranché par le contrôleur — à arbitrer par le mainteneur.
+
+**C12 — Annexe B, G2 : relevé systématique des réglages ambiants (2026-11-19).**
+*Le texte* (§4.4, G2) : le client durci envoie des requêtes identiques sous tout environnement hostile, sauf le
+jeton `exec-env/` retiré par le garde ; « le point de terminaison régional de `us-east-1` » est fixé.
+*Constaté* : toutes les chaînes `AWS_*` et toutes les clés de profil présentes dans `AWSSDK.Core` 4.1.0 et
+`AWSSDK.S3` 4.1.0 ont été relevées sur les binaires puis mesurées une à une (client ordinaire contre provider,
+source `Region` et source `ServiceUrl`, faux store local). Trois écarts : (1) `USEast1RegionalEndpointValue`
+n'était pas fixé — sous `AWS_S3_US_EAST_1_REGIONAL_ENDPOINT=legacy` (variable ou profil) toute opération d'une
+source `us-east-1` échouait `RefusedHost` sans aucun envoi ; (2) `AWS_ACCOUNT_ID_ENDPOINT_MODE` (variable ou
+profil) changeait la métrique du `User-Agent` (`P` → `R`). Les deux sont désormais fixés dans `ClientBuilder`
+(`Regional`, `PREFERRED`) et épinglés avec témoin positif (`AmbientEndpointTests` pour la variable us-east-1 — la clé de profil, que le SDK lit une fois par processus, a été mesurée en processus frais, avant et après —, `HostileEnvironmentTests`),
+ainsi que `AWS_DEFAULTS_MODE` en variable (seule la clé de profil l'était ; mesuré : sans `DefaultConfigurationMode = Standard` le provider envoie les mêmes requêtes sous `auto`, `mobile` ou `in-region` et ne contacte aucun IMDS — la ligne est une défense en profondeur que la mutation laisse verte). (3) **Restent ouverts**, sans
+changement de destination ni de signature (en-têtes non signés) : dans AWS Lambda (`AWS_LAMBDA_FUNCTION_NAME` et
+`_X_AMZN_TRACE_ID` posés), le SDK ajoute un en-tête `x-amzn-trace-id` portant la valeur ambiante, et le texte de
+`AWS_INTERNAL_ENV` est inséré tel quel dans le `User-Agent` (entre `md/aws-sdk-dotnet-core#…` et `api/S3#…`).
+Les retirer touche au garde au-delà de la conséquence 2 de l'Annexe B (retirer l'en-tête de trace, et reconstruire
+ou filtrer le `User-Agent` par position) : décision de conception laissée au mainteneur. Le README du paquet et
+CLAUDE.md les nomment au lieu de prétendre que tout réglage ambiant est neutralisé. Par ailleurs, §4.4 dit
+`AuthSchemePreference` « fixé à SigV4 » : le code ne le fixe pas, et la mesure montre que
+`AWS_AUTH_SCHEME_PREFERENCE=sigv4a` (avec `AWS_SIGV4A_SIGNING_REGION_SET`) ne change rien pour un bucket ordinaire
+(SigV4 seul offert ; ARN, points d'accès multirégions et buckets de répertoire refusés à la construction).
+*Commits* : `fix(s3)` de cette passe (code et tests), `docs(s3)` (README, CLAUDE.md, annexe). *Statut* : (1), (2)
+corrigés ; (3) à arbitrer par le mainteneur.

@@ -30,7 +30,8 @@ using OKF4net.Agents;
 using OKF4net.Providers;
 using OKF4net.Providers.S3;
 
-// Credentials are yours: any AWSCredentials. The provider never reads the environment, a profile or IMDS.
+// Credentials are yours: any AWSCredentials that resolves to an access key (anonymous access is not supported).
+// The provider never reads the environment, a profile or IMDS for them.
 AWSCredentials credentials = new BasicAWSCredentials(accessKey, secretKey);
 
 using var provider = new S3BundleProvider(credentials, new S3BundleSource
@@ -63,6 +64,8 @@ new S3BundleSource
 
 Rules enforced at construction (`ArgumentException`, no I/O): exactly one of `Region` and `ServiceUrl`; a general-purpose bucket name (access points, ARNs, aliases and directory buckets are refused); a bucket name containing `.` and an IP-address `ServiceUrl` both need `ForcePathStyle`; a region outside the `amazonaws.com` DNS partition (China, for instance) is refused (give a `ServiceUrl`); positive timeouts and bounds. `S3BundleSource` also carries `RequestTimeout` (30 s: one operation, retries and credential resolution included), `MaxConcurrentRequests` (16), `MaxObjectBytes` (the core's 256 MiB default) and `Checksums`.
 
+Every request is signed: `AnonymousAWSCredentials` resolves to no key, and every operation then fails as `S3FailureKind.Credentials`. Anonymous access to a public bucket is not supported by this version.
+
 Dispose the provider when you are done with it: `Dispose` releases, once, the client and the `HttpClient` it built. A `BundleHandle` does not dispose its provider, so dispose the handle first (as `using` declarations do). Disposing the provider while an operation is in flight interrupts it, and it fails as `S3FailureKind.Disposed`, like every later call (never a raw `ObjectDisposedException`).
 
 ## Cost of `OnAccess`
@@ -82,7 +85,7 @@ The bundle token (`s3v1:` + a SHA-256 over every listed name, ETag and size) is 
 
 ## What the guard covers, and what it does not
 
-Covered: every request this client sends to S3. The guard admits one authority (scheme, host, port) and one path prefix computed from the source and the addressing mode, only `GET`, and for a read exactly the encoded key expected, for a listing exactly the expected `prefix` and a closed set of query parameters. Anything else is refused before it is sent (`S3FailureKind.RefusedHost`). It also allows at most three sends per operation, redirects included. A 307 to another bucket's host (which the SDK would otherwise follow, re-sign and send your session token to), or between the two hostnames of the same bucket, is refused. Region detection and client-side monitoring (UDP), which bypass the HTTP client, are neutralized for this client only; every ambient setting the SDK would read (`AWS_ENDPOINT_URL*`, FIPS, dual-stack, retry mode, proxy variables, profile files, user-agent markers) is overridden explicitly.
+Covered: every request this client sends to S3. The guard admits one authority (scheme, host, port) and one path prefix computed from the source and the addressing mode, only `GET`, and for a read exactly the encoded key expected, for a listing exactly the expected `prefix` and a closed set of query parameters. Anything else is refused before it is sent (`S3FailureKind.RefusedHost`). It also allows at most three sends per operation, redirects included. A 307 to another bucket's host (which the SDK would otherwise follow, re-sign and send your session token to), or between the two hostnames of the same bucket, is refused. Region detection and client-side monitoring (UDP), which bypass the HTTP client, are neutralized for this client only. Every ambient setting found to change where a request goes or what it carries is overridden explicitly, from the environment and from the profile file alike: endpoint URLs, FIPS, dual-stack, the us-east-1 legacy global endpoint, defaults mode, retry mode and attempts, checksum modes, account-id endpoint mode, client-side monitoring, proxy variables, and the `app/` and `exec-env/` user-agent markers. Each is checked with a witness that a plain client does change under it: `HostileEnvironmentTests` (in a child process) and `AmbientEndpointTests` (in-process, Region sources). Two ambient header contents still reach the store, unsigned and without changing the destination: inside AWS Lambda (`AWS_LAMBDA_FUNCTION_NAME` and `_X_AMZN_TRACE_ID` set), the SDK adds an `x-amzn-trace-id` header; and the text of `AWS_INTERNAL_ENV` is inserted into the `User-Agent`.
 
 Not covered: the traffic of your credential providers (STS, IMDS, SSO, a refreshing provider's own calls) is yours. The provider calls your `AWSCredentials` isolated, once per operation, under that operation's deadline, and hands the SDK a snapshot, so a provider that blocks or hangs ends the operation as `S3FailureKind.Credentials` and never stalls the SDK.
 
@@ -99,6 +102,8 @@ Preconditions on a store other than Amazon S3:
 - It supports `ListObjectsV2` with `encoding-type=url` and answers `EncodingType` `url`.
 - It gives every listed object a non-empty ETag and a size.
 - It answers listings in the S3 XML namespace (`http://s3.amazonaws.com/doc/2006-03-01/`) or with no namespace. A store that uses another one is refused (`InvalidResponse`): Google Cloud Storage's S3-interoperability endpoint (`http://doc.s3.amazonaws.com/2006-03-01`) is one.
+- It never answers a listing page that is truncated (`IsTruncated` true) but holds no key. Such a page is refused (`InvalidResponse`) and the whole load fails. Amazon S3 itself may return one on a versioned bucket, under a long run of delete markers (not measured): a bundle there would never load, and fail closed. Whether to accept such pages, counted against the page budget, is open.
+- It accepts SigV4 requests scoped to region `us-east-1`. A `ServiceUrl` source always signs with `us-east-1`, and `S3BundleSource` has no signing-region option (`Region` and `ServiceUrl` are exclusive). A store that checks the region of the signature's scope answers `400 AuthorizationHeaderMalformed`, which the provider reports as `BucketUnavailable`, pointing at the bucket rather than at the signature. Stores believed to check it (none measured): Wasabi's regional endpoints, Scaleway, Backblaze B2, OVH, Garage, MinIO with a site region configured.
 - Its single-part ETags are MD5 hex digests, as S3's are. Measured on `AWSSDK.S3` 4.1.0: the SDK checks a single-part ETag against the bytes it reads. A non-hex single-part ETag makes the SDK's own check throw `FormatException`, which the provider reports as `Transport`: a store returning opaque single-part ETags would fail every read. A well-formed MD5 ETag that does not match the bytes is refused as `Integrity`. A multipart-shaped ETag (`<hex>-<parts>`) is not checked.
 
 Tested with RustFS 1.0.3 only (see Testing). Anything else is a precondition, not a claim.
