@@ -15,6 +15,8 @@ public class YamlEmitterEscapeInvisibleTests
 {
     public static TheoryData<string, char> Categories() => new()
     {
+        // Copilot review of #270: a NUL written literally is refused by okf_write_concept, so the shown YAML must escape it.
+        { "C0 NUL", '\u0000' },
         { "C0 VT", '\u000B' },
         { "C0 FF", '\u000C' },
         { "C0 SOH", '\u0001' },
