@@ -73,7 +73,9 @@ caller; what a 0.7.0 caller sees is listed below.
   `string` methods from 0.7.0 are `[Obsolete]` bridges, removed in the release
   after this one (#152, #224). They throw on a provider that does not complete
   synchronously. The synchronous `RunComputation`, obsolete since 0.7.0, is
-  removed. The tool names and schemas the model sees are unchanged.
+  removed. The async migration changes no tool name and no existing parameter;
+  the one schema change is the optional `reviewOutdated` parameter of
+  `okf_audit` (#156, below), so a host that caches tool schemas must refresh it.
 - The tools `okf_browse`, `okf_get_computation`, `okf_changes_since` and
   `okf_run_computation` return `Error: provider failure reading '…' (…)`;
   `okf_validate_bundle` returns `Error: …` instead of a report (#247).
@@ -150,8 +152,11 @@ caller; what a 0.7.0 caller sees is listed below.
   its last good image is reported `SourceStale`.
   `FileMemoryStore` also accepts one provider per tier (#140).
 - **Safer text for a model.** Every value an agent tool or the context provider
-  prints goes through one fold rule, which also removes invisible format
-  characters such as tag characters (#122, #249). `okf_read_concept` shows
+  interpolates into a result line goes through one fold rule, which also removes
+  invisible format characters such as tag characters (#122, #249). Fenced
+  content (a concept body, a computation's source) is shown as written inside a
+  fence, and frontmatter keeps its characters so it round-trips, so invisible
+  characters can still reach a model through those. `okf_read_concept` shows
   frontmatter as YAML that round-trips into `okf_write_concept` (#256), and
   `okf-mcp` returns tool results as plain text instead of JSON string literals
   (#255).
@@ -190,8 +195,10 @@ caller; what a 0.7.0 caller sees is listed below.
   modification-time tick can be missed until the next change.
 - `Bundle.EstimatedMemoryBytes` is an estimate, not a heap measurement, and a
   refresh holds the previous image too, so the peak can reach twice the ceiling.
-- Deleting a memory scope removes its objects and emptied directories but not
-  the ids carried by its parent directories.
+- Deleting a memory scope removes its objects but not the ids carried by its
+  parent directories. Emptied directories are removed only when `FileMemoryStore`
+  is built from tier-root paths; over host-supplied providers (even a
+  `FileSystemBundleProvider`) the scope's own directory stays too.
 - The tests of the S3 provider against a real store are excluded from CI by
   decision and run locally, with 0 skipped.
 
