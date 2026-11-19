@@ -6,21 +6,21 @@ using Amazon.S3.Model;
 namespace OKF4net.Tests.Providers.S3.Integration;
 
 /// <summary>
-/// docker.io/rustfs/rustfs:1.0.3, pinned by digest, on a free loopback port (spec T2, D14). Engine chosen explicitly: podman if it answers,
-/// else docker. No engine: <see cref="SkipReason"/> is set and every test reports skipped. An engine that answers but a
+/// A real S3-compatible store in a container, on a free loopback port (spec T2, D14): RustFS 1.0.3 by default, MinIO when the
+/// environment variable <c>OKF_S3IT_STORE</c> is <c>minio</c> (see <see cref="StoreProfile"/>; each image is pinned by digest).
+/// Engine chosen explicitly: podman if it answers, else docker. No engine: <see cref="SkipReason"/> is set and every test reports skipped. An engine that answers but a
 /// container that does not start: <see cref="InitializeAsync"/> throws, so every test FAILS. Each instance runs its own
 /// container (a unique name, <c>--rm</c>), removed at disposal and when the start fails.
 /// <para>The guarantee is one local command, outside CI: <c>dotnet test tests/OKF4net.Tests --filter
 /// Category=S3Integration</c>, believed only when the run reports <b>0 skipped</b>.</para>
 /// </summary>
-public sealed class RustFsFixture : IAsyncLifetime, IAsyncDisposable
+public sealed class StoreFixture : IAsyncLifetime, IAsyncDisposable
 {
-    /// <summary>
-    /// The tag AND the digest of the multi-architecture index (measured 2026-11-19 with <c>docker buildx imagetools inspect</c>:
-    /// linux/amd64 and linux/arm64): a re-tagged image cannot change what the tests talk to. Pulled and started under both Podman
-    /// and Docker; when the digest is bumped, run the local S3Integration suite under both (0 skipped).
-    /// </summary>
-    public const string Image = "docker.io/rustfs/rustfs:1.0.3@sha256:9ca9559533b537d10482fe923288b676ad08f92a7069d9a17327fbae3cab688b";
+    /// <summary>The store this run talks to, chosen by <c>OKF_S3IT_STORE</c> (default RustFS).</summary>
+    public static StoreProfile Profile { get; } = StoreProfile.FromEnvironment();
+
+    /// <summary>The image of <see cref="Profile"/>.</summary>
+    public static string Image => Profile.Image;
     public const string Bucket = "okf";
 
     /// <summary>The label every container this fixture starts carries, so a leftover can be found (and only ours).</summary>
@@ -59,7 +59,7 @@ public sealed class RustFsFixture : IAsyncLifetime, IAsyncDisposable
         {
             var creds = Credentials.GetCredentials();
             var name = "okf-s3it-" + Guid.NewGuid().ToString("N")[..12];
-            var run = await Run(_engine, TimeSpan.FromMinutes(5), "run", "-d", "--rm", "--name", name, "--label", Label, "-p", "127.0.0.1::9000", "-e", "RUSTFS_ACCESS_KEY=" + creds.AccessKey, "-e", "RUSTFS_SECRET_KEY=" + creds.SecretKey, Image);
+            var run = await Run(_engine, TimeSpan.FromMinutes(5), Profile.RunArguments(name, creds.AccessKey, creds.SecretKey));
             if (run.Code != 0)
             {
                 // The name is reserved even when the start failed half-way: remove it by name.
@@ -273,7 +273,7 @@ public sealed class RustFsFixture : IAsyncLifetime, IAsyncDisposable
 }
 
 [CollectionDefinition(Name)]
-public sealed class RustFsCollection : ICollectionFixture<RustFsFixture>
+public sealed class StoreCollection : ICollectionFixture<StoreFixture>
 {
     public const string Name = "RustFS";
 }

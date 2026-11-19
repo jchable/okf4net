@@ -795,7 +795,7 @@ nouveau rebase les change. Chacun est identifié par son sujet, qui survit :
 **Reste ouvert après les décisions du 2026-11-19 (ci-dessous) : C11 (région de signature d'une source `ServiceUrl`), reporté. À confirmer : C8. C1, C3, C4, C5c, C10 et C12 sont tranchés. Les autres entrées (C2, C5 hors c, C6, C7, C9) sont des constats.**
 
 **Décisions du mainteneur (2026-11-19).**
-- C1 : garder le décodage en formulaire des clés listées (`+` brut → espace) ; la mesure sur MinIO et Amazon S3 reste à faire (#292).
+- C1 : garder le décodage en formulaire des clés listées (`+` brut → espace) ; mesuré sur MinIO le 2026-11-19 (#292), reste à mesurer sur Amazon S3.
 - C3 : garder le plafond de 3 envois par opération ; à replier dans le corps de la spec (#287).
 - C4 : confirmé (l'extension de D15 (b) au relevé des ressources exécutables, pour tous les providers).
 - C5c : implémenté — une `FormatException` (contrôle MD5 du SDK sur un ETag simple non hexadécimal) est classée `InvalidResponse` ; le remède de fond (ne plus dépendre de ce contrôle) reste #286.
@@ -811,11 +811,13 @@ nouveau rebase les change. Chacun est identifié par son sujet, qui survit :
 devient une espace (0x20), `%2B` un `+`, le reste est décodé strictement comme avant. Le décodage strict
 (`TryDecode`) des chemins et des requêtes du garde est inchangé, et le **garde refuse en plus un `+` brut**
 dans toute valeur de requête admise (un store le lit comme une espace, le garde comme un `+`). RustFS ne peut pas
-trancher (G12) : il rend l'espace en `%20` et le `+` en `%2B`, jamais un `+` brut. Amazon S3 et MinIO rendent
-l'espace en `+` et le `+` littéral en `%2B` (relecteur sûr à 80–85 %, non mesuré ici). Échec **fermé** dans
+trancher (G12) : il rend l'espace en `%20` et le `+` en `%2B`, jamais un `+` brut. MinIO rend
+l'espace en `+` et le `+` littéral en `%2B` (mesuré le 2026-11-19, RELEASE.2026-11-16T00-11-40Z, #292 : la passe T2
+sur MinIO fait lire « a b.md » et « a+b.md » par ce décodage et échoue si la règle est inversée) ; Amazon S3 est
+crû faire de même (relecteur sûr à 80–85 %, non mesuré). Échec **fermé** dans
 les deux lectures possibles (ordre D9, ou 404 à la lecture) ; le coût d'une erreur est un nom avec espace ou
 `+` mal nommé sur un store qui rendrait un `+` brut pour un `+`. Gardé par les tests unitaires seuls
-(`CodecTests`, `ListPageParserTests`, `ListingWalkerTests`), pas par la passe RustFS.
+(`CodecTests`, `ListPageParserTests`, `ListingWalkerTests`) et par la passe T2 sur MinIO, pas par la passe RustFS.
 *Commit* : `fccbd988`. *Statut* : tranché par le contrôleur — à arbitrer par le mainteneur.
 
 **C2 — §4.4 et §5, redirection 307 entre les deux autorités d'un même bucket.**

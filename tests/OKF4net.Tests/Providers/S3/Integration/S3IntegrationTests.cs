@@ -16,15 +16,15 @@ namespace OKF4net.Tests.Providers.S3.Integration;
 /// reports 0 skipped. Each test works under its own key prefix.
 /// </summary>
 [Trait("Category", "S3Integration")]
-[Collection(RustFsCollection.Name)]
-public class S3IntegrationTests(RustFsFixture fx, ITestOutputHelper output)
+[Collection(StoreCollection.Name)]
+public class S3IntegrationTests(StoreFixture fx, ITestOutputHelper output)
 {
     private const string Note = "---\ntype: Note\ntitle: T\ndescription: D.\n---\n";
 
     private S3BundleProvider Provider(string prefix) => Provider(fx, prefix);
 
-    private static S3BundleProvider Provider(RustFsFixture store, string prefix, TimeSpan? timeout = null) =>
-        new(store.Credentials, new S3BundleSource { Bucket = RustFsFixture.Bucket, Prefix = prefix, ServiceUrl = store.Endpoint, ForcePathStyle = true, AllowInsecureHttp = true, RequestTimeout = timeout ?? TimeSpan.FromSeconds(60) });
+    private static S3BundleProvider Provider(StoreFixture store, string prefix, TimeSpan? timeout = null) =>
+        new(store.Credentials, new S3BundleSource { Bucket = StoreFixture.Bucket, Prefix = prefix, ServiceUrl = store.Endpoint, ForcePathStyle = true, AllowInsecureHttp = true, RequestTimeout = timeout ?? TimeSpan.FromSeconds(60) });
 
     [SkippableFact]
     public async Task The_server_refuses_dot_segments_and_double_slashes()
@@ -66,11 +66,19 @@ public class S3IntegrationTests(RustFsFixture fx, ITestOutputHelper output)
         var plain = await fx.ListAsync("t-names/");
         var oracle = plain.Select(o => o.Key["t-names/".Length..]).ToArray();
 
-        // Measurement only: what RustFS sends with EncodingType=url (the SDK does not decode it, gate G12).
+        // What the store sends with EncodingType=url (the SDK does not decode it, gate G12). Pinned per store, measured
+        // 2026-11-19 (#292, spec Annexe C1): RustFS writes a space as %20, MinIO as a raw '+' (a literal '+' is %2B on both).
+        // So against MinIO the provider's raw-'+' → space path (S3KeyCodec.TryDecodeListed) is exercised by a real store, and
+        // "a b.md" below can only be read back correctly if it decodes it. A store whose form changes fails this line: re-measure.
+        var wire = new List<string>();
         foreach (var o in await fx.ListAsync("t-names/", EncodingType.Url))
         {
             output.WriteLine($"listed (url): {o.Key}  ETag {o.ETag}  Size {o.Size}");
+            wire.Add(o.Key["t-names/".Length..]);
         }
+
+        Assert.Contains("a" + StoreFixture.Profile.WireSpace + "b.md", wire);
+        Assert.Contains("a%2Bb.md", wire);
 
         using var p = Provider("t-names");
         var listed = new List<string>();
@@ -263,13 +271,58 @@ public class S3IntegrationTests(RustFsFixture fx, ITestOutputHelper output)
         Assert.Null(bundle.OkfVersion);
     }
 
+    /// <summary>
+    /// The error table of spec §4.6 against a real store (#292): what each store answers for a missing bucket, an unknown
+    /// access key, a wrong secret and a missing key, and the kind the provider gives it. Every row passes on RustFS and on
+    /// MinIO (measured 2026-11-19). The status and the code are the store's own words: they are read here from
+    /// <see cref="Exception.InnerException"/>, never from the provider's message.
+    /// </summary>
+    [SkippableFact]
+    public async Task Real_store_errors_land_in_the_documented_kinds()
+    {
+        Skip.If(fx.SkipReason is not null, fx.SkipReason);
+        await fx.PutAsync("t-err/a.md", Encoding.UTF8.GetBytes(Note));
+
+        async Task<S3RequestException> ListFailure(Amazon.Runtime.AWSCredentials credentials, string bucket)
+        {
+            using var p = new S3BundleProvider(credentials, new S3BundleSource { Bucket = bucket, Prefix = "t-err", ServiceUrl = fx.Endpoint, ForcePathStyle = true, AllowInsecureHttp = true, RequestTimeout = TimeSpan.FromSeconds(30) });
+            var e = await Assert.ThrowsAsync<S3RequestException>(async () =>
+            {
+                await foreach (var _ in p.EnumerateAsync(null, BundleLimits.Default, default))
+                {
+                }
+            });
+            var service = Assert.IsAssignableFrom<Amazon.Runtime.AmazonServiceException>(e.InnerException);
+            output.WriteLine($"{e.Kind}: {(int)service.StatusCode} {service.ErrorCode}");
+            return e;
+        }
+
+        var missingBucket = await ListFailure(fx.Credentials, "okf-no-such-bucket-" + Guid.NewGuid().ToString("N")[..8]);
+        Assert.Equal(S3FailureKind.BucketUnavailable, missingBucket.Kind);
+        Assert.Equal(404, missingBucket.StatusCode);
+
+        var unknownKey = await ListFailure(new Amazon.Runtime.BasicAWSCredentials("AKIA" + Guid.NewGuid().ToString("N")[..12].ToUpperInvariant(), "x" + Guid.NewGuid().ToString("N")), StoreFixture.Bucket);
+        Assert.Equal(S3FailureKind.Credentials, unknownKey.Kind);
+        Assert.Equal(403, unknownKey.StatusCode);
+
+        var wrongSecret = await ListFailure(new Amazon.Runtime.BasicAWSCredentials(fx.Credentials.GetCredentials().AccessKey, "wrong" + Guid.NewGuid().ToString("N")), StoreFixture.Bucket);
+        Assert.Equal(S3FailureKind.Credentials, wrongSecret.Kind);
+        Assert.Equal(403, wrongSecret.StatusCode);
+
+        using var reader = Provider("t-err");
+        await Assert.ThrowsAsync<BundleObjectNotFoundException>(async () => (await reader.ReadAsync(BundleKey.Parse("absent.md"), null, default)).Dispose());
+        // Positive control: the key that exists reads, so the failure above is the key's, not the setup's.
+        using var present = await reader.ReadAsync(BundleKey.Parse("a.md"), null, default);
+        Assert.NotNull(present);
+    }
+
     [SkippableFact]
     public async Task A_stopped_store_keeps_the_previous_image_marked_stale()
     {
         Skip.If(fx.SkipReason is not null, fx.SkipReason);
 
         // A store of its own: stopping the shared one would fail every other test of the collection.
-        await using var own = new RustFsFixture();
+        await using var own = new StoreFixture();
         await own.InitializeAsync();
         Assert.Null(own.SkipReason);
         await own.PutAsync("t-down/a.md", Encoding.UTF8.GetBytes(Note));

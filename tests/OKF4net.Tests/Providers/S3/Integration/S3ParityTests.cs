@@ -12,8 +12,8 @@ namespace OKF4net.Tests.Providers.S3.Integration;
 /// a message that embeds the display root is compared with each side's Location replaced by "&lt;root&gt;".
 /// </summary>
 [Trait("Category", "S3Integration")]
-[Collection(RustFsCollection.Name)]
-public class S3ParityTests(RustFsFixture fx) : IAsyncLifetime
+[Collection(StoreCollection.Name)]
+public class S3ParityTests(StoreFixture fx) : IAsyncLifetime
 {
     private static readonly IOkfClock Clock = new FixedClock(new DateTimeOffset(2026, 11, 1, 0, 0, 0, TimeSpan.Zero));
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Lazy<Task>> Uploads = new(StringComparer.Ordinal);
@@ -48,7 +48,7 @@ public class S3ParityTests(RustFsFixture fx) : IAsyncLifetime
 
     private (IBundleProvider Fs, S3BundleProvider S3) Providers(string prefix, string relative) => (
         new FileSystemBundleProvider(Local(relative)),
-        new S3BundleProvider(fx.Credentials, new S3BundleSource { Bucket = RustFsFixture.Bucket, Prefix = prefix, ServiceUrl = fx.Endpoint, ForcePathStyle = true, AllowInsecureHttp = true, RequestTimeout = TimeSpan.FromSeconds(60) }));
+        new S3BundleProvider(fx.Credentials, new S3BundleSource { Bucket = StoreFixture.Bucket, Prefix = prefix, ServiceUrl = fx.Endpoint, ForcePathStyle = true, AllowInsecureHttp = true, RequestTimeout = TimeSpan.FromSeconds(60) }));
 
     private static async Task<SortedDictionary<string, byte[]>> Objects(IBundleProvider p)
     {

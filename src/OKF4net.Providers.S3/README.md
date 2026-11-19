@@ -106,7 +106,15 @@ Preconditions on a store other than Amazon S3:
 - It accepts SigV4 requests scoped to region `us-east-1`. A `ServiceUrl` source always signs with `us-east-1`, and `S3BundleSource` has no signing-region option (`Region` and `ServiceUrl` are exclusive). A store that checks the region of the signature's scope answers `400 AuthorizationHeaderMalformed`, which the provider reports as `BucketUnavailable`, pointing at the bucket rather than at the signature. Stores believed to check it (none measured): Wasabi's regional endpoints, Scaleway, Backblaze B2, OVH, Garage, MinIO with a site region configured.
 - Its single-part ETags are MD5 hex digests, as S3's are. Measured on `AWSSDK.S3` 4.1.0: the SDK checks a single-part ETag against the bytes it reads. A non-hex single-part ETag makes the SDK's own check throw `FormatException`, which the provider reports as `InvalidResponse`: a store returning opaque single-part ETags would fail every read (the remedy, not relying on the SDK's check, is tracked as #286). A well-formed MD5 ETag that does not match the bytes is refused as `Integrity`. A multipart-shaped ETag (`<hex>-<parts>`) is not checked.
 
-Tested with RustFS 1.0.3 only (see Testing). Anything else is a precondition, not a claim.
+### Tested with
+
+| Store | Version | Date | Result |
+|---|---|---|---|
+| RustFS | 1.0.3 | 2026-11-19 | the whole `S3Integration` suite, under Podman and Docker |
+| MinIO | `RELEASE.2026-11-16T00-11-40Z` (Chainguard build) | 2026-11-19 | the whole `S3Integration` suite (36 tests), 0 skipped, under Podman 5.4.2; the image also starts under Docker |
+| Amazon S3 | n/a | never | not measured: see "Running against Amazon S3" in Testing |
+
+Anything else is a precondition, not a claim. Measured on MinIO (#292): it writes a space in a URL-encoded listing as a **raw `+`** (a literal `+` as `%2B`), where RustFS writes `%20`, so the provider's form-decoding of listed keys is exercised by a real store; its answers for a missing bucket (`404 NoSuchBucket`), an unknown access key (`403 InvalidAccessKeyId`), a wrong secret (`403 SignatureDoesNotMatch`) and a missing key land in the same kinds as on RustFS. Not covered by MinIO: empty truncated listing pages (it did not send one), non-MD5 single-part ETags, throttling (`SlowDown`), an expired token, a wrong region, and a signing-region check (the run used the default site region).
 
 ## Checksums
 
@@ -172,11 +180,22 @@ Register it with `KnowledgeCatalogOptions.ProviderFactories`. The catalog never 
 
 ## Testing
 
-Two layers. The unit tests run in CI with no service: the real SDK against scripted responses, with the guard in place, plus a child-process probe under a hostile environment. The `S3Integration` tests (35 in all: 10 scenario tests and 25 parity cases) start `docker.io/rustfs/rustfs:1.0.3` themselves, pinned by its multi-architecture index digest (`@sha256:9ca95595…`, so a re-tagged image cannot change what runs), driven by Podman if it answers, otherwise Docker; they were run with RustFS 1.0.3 under Podman and under Docker, and nothing else is claimed. What they cannot prove:
+Two layers. The unit tests run in CI with no service: the real SDK against scripted responses, with the guard in place, plus a child-process probe under a hostile environment. The `S3Integration` tests (36 in all: 11 scenario tests and 25 parity cases) start a store themselves, each image pinned by its multi-architecture index digest so that a re-tagged image cannot change what runs, driven by Podman if it answers, otherwise Docker. `OKF_S3IT_STORE` chooses the store: `rustfs` (the default, `docker.io/rustfs/rustfs:1.0.3@sha256:9ca95595…`) or `minio` (`cgr.dev/chainguard/minio@sha256:dc5e0989…`, because MinIO Inc. no longer publishes its community image; Chainguard keeps only recent tags, so a pruned digest fails the pull, never silently). An unknown value fails the run. Run the suite once per store, each at **0 skipped**:
 
-- RustFS cannot discriminate the raw `+` in a listed key: it emits a space as `%20` and a `+` as `%2B`, never a raw `+`, so a decoder that read a raw `+` wrongly would pass the RustFS run. Stores that emit a raw `+` for a space (real S3, MinIO) are handled by form-decoding listed keys; the T1 tests (the real SDK against scripted pages, in CI) guard that, not the RustFS run.
+```sh
+dotnet test tests/OKF4net.Tests --filter Category=S3Integration                          # RustFS
+OKF_S3IT_STORE=minio dotnet test tests/OKF4net.Tests --filter Category=S3Integration     # MinIO
+```
+
+See "Tested with" for what each store was run with; nothing else is claimed. What the runs cannot prove:
+
+- RustFS cannot discriminate the raw `+` in a listed key (it writes a space as `%20`), so a decoder that read a raw `+` wrongly would pass the RustFS run. MinIO writes a raw `+` for a space, and the names test pins each store's own wire form, so the MinIO run is the one that exercises the decoding (measured: with the raw-`+` rule inverted, the MinIO run fails and the RustFS run does not); the T1 tests (the real SDK against scripted pages, in CI) guard it in CI.
 - The SDK cannot `PUT` a key with a leading `/` to RustFS, so the tests sign that one request themselves (SigV4, with the host's clock): the host and the container engine's clocks must agree to within 15 minutes, or that request is refused by the store.
 - The Native AOT probe was verified locally on Windows; the Linux and macOS legs run in CI.
+
+### Running against Amazon S3
+
+Nothing in this repository has run against Amazon S3 yet (#292): the T2 suite needs a store it can create the bucket in, and it must never be given real credentials by a file in the repository. To measure the behaviours only real S3 can show (a wrong region, throttling, an expired token, empty truncated pages on a versioned bucket, SSE-KMS ETags), use a throwaway bucket in an account you own, with credentials in your own environment (never committed), and a small program that lists and reads a bundle through `S3BundleProvider` with a `Region` source; record what it answers for each case above in the "Tested with" table.
 
 ## License
 
