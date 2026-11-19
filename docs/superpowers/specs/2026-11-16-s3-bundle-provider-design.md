@@ -951,7 +951,7 @@ terminaison régional, Scaleway, Backblaze B2, OVH, Garage, MinIO avec une régi
 (`ErrorClassifier`) : le diagnostic désigne le bucket plutôt que la signature. API proposée si le mainteneur la
 veut : une propriété facultative `SigningRegion` sur `S3BundleSource`, incluse dans le hachage de l'`Id`. Le README
 du paquet l'énonce comme précondition d'un store compatible.
-*Commit* : celui de cette entrée (README et annexe). *Statut* : tranché par le contrôleur — à arbitrer par le mainteneur.
+*Réalisé (#284, 2026-11-19)* : `S3BundleSource.SigningRegion` (source `ServiceUrl` seulement, 2 à 32 caractères minuscules, chiffres et tirets simples), `AuthenticationRegion = SigningRegion ?? "us-east-1"`, et un segment `|sign:<région>` dans l'identité de l'endpoint **seulement quand l'option est posée** : tous les `Id` existants sont inchangés (vecteurs connus des deux cas dans `SourceTests`, calculés hors du code). Test T1 : un store scripté qui impose la région de la portée lue dans l'en-tête `Authorization` refuse la source par défaut (400, `BucketUnavailable`) et accepte la source déclarée (mutation : ignorer l'option fait échouer le test). Le 400 reste classé `BucketUnavailable` ; le README dit de soupçonner la région de signature avant le bucket. Hors périmètre : `signingRegion` dans les `AcceptedSettings` de la fabrique de catalogue (la fabrique S3 n'existe pas encore, #239). *Statut* : tranché et réalisé.
 
 **C12 — Annexe B, G2 : relevé systématique des réglages ambiants (2026-11-19).**
 *Le texte* (§4.4, G2) : le client durci envoie des requêtes identiques sous tout environnement hostile, sauf le

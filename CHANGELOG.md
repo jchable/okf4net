@@ -8,6 +8,10 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `OKF4net.Providers.S3`: `S3BundleSource.SigningRegion` sets the region of the SigV4 credential scope for a `ServiceUrl` source, for a compatible store that validates it (the default stays `us-east-1`). It is part of the provider's `Id` only when set, so existing ids do not change (#284).
+
 ## [0.8.0] - 2026-11-19
 
 The headline is bundle providers: the storage seam under `Bundle`, an

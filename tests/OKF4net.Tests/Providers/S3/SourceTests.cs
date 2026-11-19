@@ -149,6 +149,44 @@ public class SourceTests
         Assert.Equal("s3:63d18a068ce5a930b78e4a652ad39cd2", SourceRules.Normalize(new S3BundleSource { Bucket = "demo", Region = RegionEndpoint.EUWest1 }).Id);
     }
 
+    // SigningRegion (#284). Known answer computed OUTSIDE the code under test, from the framing the spec documents plus the
+    // one new segment "|sign:<region>" appended to the endpoint identity (only when set, so every existing Id is unchanged):
+    //   printf 's3v1\nhttps://store.example:443|path|sign:eu-west-1\ndemo\nkb' | sha256sum   (first 32 hex digits)
+    //   printf 's3v1\nhttps://store.example:443|path\ndemo\nkb' | sha256sum                  (the same source without it)
+    [Fact]
+    public void A_signing_region_is_part_of_the_id_only_when_set()
+    {
+        var without = new S3BundleSource { Bucket = "demo", Prefix = "kb", ServiceUrl = new Uri("https://store.example"), ForcePathStyle = true };
+        Assert.Equal("s3:9c0dfc848f8fd95cc9489be35146063e", SourceRules.Normalize(without).Id);
+
+        var with = SourceRules.Normalize(without with { SigningRegion = "eu-west-1" });
+        Assert.Equal("s3:1f789a88909198c7f437af98993ff0d8", with.Id);
+        Assert.Equal("eu-west-1", with.SigningRegion);
+        Assert.Equal("https://store.example:443|path|sign:eu-west-1", with.EndpointIdentity);
+        Assert.Null(SourceRules.Normalize(without).SigningRegion);
+    }
+
+    public static TheoryData<string> BadSigningRegions() => new() { "", "US-EAST-1", "eu west 1", "eu-west-1\n", "-eu", "eu-", "a", new string('a', 33), "eu_west_1", "eu-west-1/x" };
+
+    [Theory]
+    [MemberData(nameof(BadSigningRegions))]
+    public void A_malformed_signing_region_is_refused(string region)
+    {
+        var ex = Assert.Throws<ArgumentException>(() => SourceRules.Normalize(Local() with { SigningRegion = region }));
+        Assert.Equal("source", ex.ParamName);
+        // The whole message is a constant: the refused value never echoes back.
+        Assert.Equal("SigningRegion must be 2 to 32 characters: lowercase letters, digits and single hyphens (for example eu-west-1). (Parameter 'source')", ex.Message);
+        // Positive control: the same source with a well-formed one is valid, so the refusal above is about the value only.
+        Assert.Equal("eu-west-1", SourceRules.Normalize(Local() with { SigningRegion = "eu-west-1" }).SigningRegion);
+    }
+
+    [Fact]
+    public void A_signing_region_needs_a_service_url()
+    {
+        var ex = Assert.Throws<ArgumentException>(() => SourceRules.Normalize(new S3BundleSource { Bucket = "demo", Region = RegionEndpoint.EUWest1, SigningRegion = "eu-west-1" }));
+        Assert.StartsWith("SigningRegion applies to a ServiceUrl source only", ex.Message, StringComparison.Ordinal);
+    }
+
     /// <summary>Counts its own disposal: the network object a provider builds and, when its source is refused, must not leave alive.</summary>
     private sealed class TrackedNetwork : HttpMessageHandler
     {

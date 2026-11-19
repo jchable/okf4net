@@ -11,7 +11,7 @@ namespace OKF4net.Providers.S3.Internal;
 internal sealed record NormalizedSource(
     string Bucket, string Prefix, string? DisplayName, RegionEndpoint? Region, Uri? ServiceUrl, bool PathStyle,
     TimeSpan RequestTimeout, int MaxConcurrentRequests, long MaxObjectBytes, S3ChecksumMode Checksums,
-    string Id, string Location, string EndpointIdentity);
+    string Id, string Location, string EndpointIdentity, string? SigningRegion = null);
 
 internal static partial class SourceRules
 {
@@ -23,6 +23,9 @@ internal static partial class SourceRules
 
     [GeneratedRegex(@"\A\d{1,3}(\.\d{1,3}){3}\z", RegexOptions.CultureInvariant)]
     private static partial Regex IpShape();
+
+    [GeneratedRegex(@"\A[a-z][a-z0-9]*(-[a-z0-9]+)*\z", RegexOptions.CultureInvariant)]
+    private static partial Regex SigningRegionShape();
 
     private static readonly string[] RefusedSuffixes = ["--x-s3", "--ol-s3", "-s3alias", "--table-s3"];
     private static readonly string[] RefusedPrefixes = ["xn--", "sthree-", "amzn-s3-demo-"];
@@ -52,6 +55,19 @@ internal static partial class SourceRules
         if ((source.Region is null) == (source.ServiceUrl is null))
         {
             throw new ArgumentException("Set exactly one of Region and ServiceUrl.", nameof(source));
+        }
+
+        if (source.SigningRegion is { } signing)
+        {
+            if (source.ServiceUrl is null)
+            {
+                throw new ArgumentException("SigningRegion applies to a ServiceUrl source only (an Amazon S3 source signs with its Region).", nameof(source));
+            }
+
+            if (signing.Length is < 2 or > 32 || !SigningRegionShape().IsMatch(signing))
+            {
+                throw new ArgumentException("SigningRegion must be 2 to 32 characters: lowercase letters, digits and single hyphens (for example eu-west-1).", nameof(source));
+            }
         }
 
         if (source.RequestTimeout <= TimeSpan.Zero || source.MaxConcurrentRequests <= 0
@@ -103,11 +119,16 @@ internal static partial class SourceRules
         }
 
         endpoint += source.ForcePathStyle ? "|path" : "|vhost";
+        if (source.SigningRegion is { } signingRegion)
+        {
+            endpoint += "|sign:" + signingRegion; // only when set: every Id computed before this option existed is unchanged
+        }
+
         var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes("s3v1\n" + endpoint + "\n" + bucket + "\n" + prefix)));
         var id = "s3:" + hash[..32];
         var location = "s3:" + (source.DisplayName ?? hash[..8]) + (prefix.Length == 0 ? "" : "/" + prefix);
         return new NormalizedSource(bucket, prefix, source.DisplayName, source.Region, serviceUrl, source.ForcePathStyle,
-            source.RequestTimeout, source.MaxConcurrentRequests, source.MaxObjectBytes, source.Checksums, id, location, endpoint);
+            source.RequestTimeout, source.MaxConcurrentRequests, source.MaxObjectBytes, source.Checksums, id, location, endpoint, source.SigningRegion);
     }
 
     internal static bool IsWellFormed(string text)

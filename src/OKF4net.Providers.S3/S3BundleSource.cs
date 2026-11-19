@@ -26,6 +26,15 @@ public sealed record S3BundleSource
     /// <summary>A compatible store's origin (scheme, host, port; no user info, path, query or fragment); exclusive of <see cref="Region"/>.</summary>
     public Uri? ServiceUrl { get; init; }
 
+    /// <summary>
+    /// The region of the SigV4 credential scope, for a <see cref="ServiceUrl"/> source only (default <c>us-east-1</c>). A
+    /// compatible store that validates it (believed: Wasabi regional endpoints, Scaleway, Garage; none measured) answers
+    /// <c>400 AuthorizationHeaderMalformed</c> to the default, which the provider reports as
+    /// <see cref="S3FailureKind.BucketUnavailable"/>. 2 to 32 characters: lowercase letters, digits and single hyphens.
+    /// Part of <see cref="IBundleProvider.Id"/> only when set, so every existing Id is unchanged.
+    /// </summary>
+    public string? SigningRegion { get; init; }
+
     /// <summary>Path-style addressing (<c>host/bucket/key</c>) instead of virtual-hosted (<c>bucket.host/key</c>); most compatible stores need it.</summary>
     public bool ForcePathStyle { get; init; }
 
