@@ -130,14 +130,16 @@ are the concrete entry points.
     and the Linux/macOS legs of the CI job had not run when this shipped
     ([#292](https://github.com/jchable/okf4net/issues/292),
     [#293](https://github.com/jchable/okf4net/issues/293)). The limits the final
-    review found are tickets, and the spec's Annexe C lists the ones awaiting the
-    maintainer's decision: an empty truncated listing page fails the load
-    ([#283](https://github.com/jchable/okf4net/issues/283)), a `ServiceUrl`
-    source always signs for `us-east-1`
-    ([#284](https://github.com/jchable/okf4net/issues/284)), two ambient values
-    still reach the store ([#285](https://github.com/jchable/okf4net/issues/285)),
-    opaque single-part ETags fail every read
-    ([#286](https://github.com/jchable/okf4net/issues/286)), anonymous access is
+    review found are tickets; the maintainer's decisions of 2026-11-19 are
+    implemented and recorded in the spec's Annexe C (an empty truncated listing
+    page is followed within a page budget, the guard drops the ambient headers
+    and rebuilds the User-Agent from numbers and closed sets, a non-hex
+    single-part ETag is an `InvalidResponse`), with residuals in
+    [#283](https://github.com/jchable/okf4net/issues/283),
+    [#285](https://github.com/jchable/okf4net/issues/285) and
+    [#286](https://github.com/jchable/okf4net/issues/286). Still open: a
+    `ServiceUrl` source always signs for `us-east-1`
+    ([#284](https://github.com/jchable/okf4net/issues/284)), anonymous access is
     unsupported ([#291](https://github.com/jchable/okf4net/issues/291)).
 
 ## Later
