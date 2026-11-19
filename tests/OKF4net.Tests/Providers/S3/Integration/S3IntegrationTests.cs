@@ -130,7 +130,8 @@ public class S3IntegrationTests(RustFsFixture fx, ITestOutputHelper output)
         Skip.If(fx.SkipReason is not null, fx.SkipReason);
         await fx.PutAsync("t-long/" + new string('a', 60) + ".md", Encoding.UTF8.GetBytes(Note));
         await fx.PutAsync("t-long/ok.md", Encoding.UTF8.GetBytes(Note));
-        var bundle = await Bundle.LoadAsync(Provider("t-long"), new BundleLoadOptions { Limits = BundleLimits.Default with { MaxKeyBytes = 32 } });
+        using var p = Provider("t-long");
+        var bundle = await Bundle.LoadAsync(p, new BundleLoadOptions { Limits = BundleLimits.Default with { MaxKeyBytes = 32 } });
         Assert.Contains(bundle.Concepts, c => c.Id.ToString() == "ok");
         Assert.Equal(new string('a', 60) + ".md", Assert.Single(bundle.ParseProblems).RawName);
     }
@@ -166,11 +167,13 @@ public class S3IntegrationTests(RustFsFixture fx, ITestOutputHelper output)
     {
         Skip.If(fx.SkipReason is not null, fx.SkipReason);
         await fx.PutAsync("t-fresh/a.md", Encoding.UTF8.GetBytes(Note));
-        using var onAccess = new BundleHandle(Provider("t-fresh"), refreshPolicy: BundleRefreshPolicy.OnAccess);
+        using var p1 = Provider("t-fresh");
+        using var p2 = Provider("t-fresh");
+        using var onAccess = new BundleHandle(p1, refreshPolicy: BundleRefreshPolicy.OnAccess);
         // The interval runs on a clock the test moves, so a loaded machine can neither pass nor fail it by accident; the
         // store, its listing and its token are real.
         var clock = new ManualClock();
-        using var every = new BundleHandle(Provider("t-fresh"), refreshPolicy: BundleRefreshPolicy.Every(TimeSpan.FromSeconds(3)), time: clock);
+        using var every = new BundleHandle(p2, refreshPolicy: BundleRefreshPolicy.Every(TimeSpan.FromSeconds(3)), time: clock);
         Assert.DoesNotContain((await onAccess.GetCurrentAsync()).Concepts, c => c.Id.ToString() == "b");
         Assert.DoesNotContain((await every.GetCurrentAsync()).Concepts, c => c.Id.ToString() == "b");
         await fx.PutAsync("t-fresh/b.md", Encoding.UTF8.GetBytes(Note));
@@ -187,10 +190,12 @@ public class S3IntegrationTests(RustFsFixture fx, ITestOutputHelper output)
         Skip.If(fx.SkipReason is not null, fx.SkipReason);
         await fx.PutAsync("t-bounds/big.md", Encoding.UTF8.GetBytes(Note + new string('x', 5000)));
         await fx.PutAsync("t-bounds/ok.md", Encoding.UTF8.GetBytes(Note));
-        var bundle = await Bundle.LoadAsync(Provider("t-bounds"), new BundleLoadOptions { Limits = BundleLimits.Default with { MaxObjectBytes = 1000 } });
+        using var p1 = Provider("t-bounds");
+        using var p2 = Provider("t-bounds");
+        var bundle = await Bundle.LoadAsync(p1, new BundleLoadOptions { Limits = BundleLimits.Default with { MaxObjectBytes = 1000 } });
         Assert.Contains(bundle.ParseProblems, x => x.RawName == "big.md");
         Assert.Contains(bundle.Concepts, c => c.Id.ToString() == "ok");
-        await Assert.ThrowsAsync<BundleLoadException>(async () => await Bundle.LoadAsync(Provider("t-bounds"), new BundleLoadOptions { Limits = BundleLimits.Default with { MaxEntries = 1 } }));
+        await Assert.ThrowsAsync<BundleLoadException>(async () => await Bundle.LoadAsync(p2, new BundleLoadOptions { Limits = BundleLimits.Default with { MaxEntries = 1 } }));
     }
 
     [SkippableFact]
@@ -199,7 +204,7 @@ public class S3IntegrationTests(RustFsFixture fx, ITestOutputHelper output)
         Skip.If(fx.SkipReason is not null, fx.SkipReason);
         await fx.PutAsync("t-race-concept/a.md", Encoding.UTF8.GetBytes(Note));
         await fx.PutAsync("t-race-concept/c.md", Encoding.UTF8.GetBytes(Note));
-        var racing = new DeletingProvider(Provider("t-race-concept"), "c.md", () => fx.DeleteAsync("t-race-concept/c.md"));
+        using var racing = new DeletingProvider(Provider("t-race-concept"), "c.md", () => fx.DeleteAsync("t-race-concept/c.md"));
         using var handle = new BundleHandle(racing, refreshPolicy: BundleRefreshPolicy.OnAccess);
         var first = await handle.GetCurrentAsync();
         Assert.Contains(first.Concepts, c => c.Id.ToString() == "c");
@@ -211,7 +216,14 @@ public class S3IntegrationTests(RustFsFixture fx, ITestOutputHelper output)
         Assert.True(racing.Deleted);
         Assert.Same(first, second);
         Assert.True(handle.IsStale);
-        Assert.IsType<BundleLoadException>(handle.LastLoadError);
+        // The cause, not only the type (measured: the load failure carries the not-found read of c.md, in the closed
+        // vocabulary — the key, never the bucket nor the endpoint).
+        var error = Assert.IsType<BundleLoadException>(handle.LastLoadError);
+        Assert.Equal("no object under 'c.md'", error.Message);
+        var cause = Assert.IsType<BundleObjectNotFoundException>(error.InnerException);
+        Assert.Equal(BundleKey.Parse("c.md"), cause.Key);
+        Assert.Equal("no object under 'c.md'", cause.Message);
+        Assert.Null(cause.InnerException); // nothing else (no server text, no endpoint) rides along
     }
 
     [SkippableFact]
@@ -221,7 +233,7 @@ public class S3IntegrationTests(RustFsFixture fx, ITestOutputHelper output)
         const string concept = "---\ntype: Attested Computation\ntitle: C\ndescription: D.\nruntime: bigquery\ncomputation: q.sql\n---\n";
         await fx.PutAsync("t-race-resource/c.md", Encoding.UTF8.GetBytes(concept));
         await fx.PutAsync("t-race-resource/q.sql", "SELECT 1\n"u8.ToArray());
-        var racing = new DeletingProvider(Provider("t-race-resource"), "q.sql", () => fx.DeleteAsync("t-race-resource/q.sql"));
+        using var racing = new DeletingProvider(Provider("t-race-resource"), "q.sql", () => fx.DeleteAsync("t-race-resource/q.sql"));
         var control = await Bundle.LoadAsync(racing); // a positive witness: before the race, the file is pinned
         Assert.Equal(ExecutableResourceState.Pinned, control.ExecutableResources[ConceptId.Parse("c")].Computation.State);
 
@@ -239,7 +251,7 @@ public class S3IntegrationTests(RustFsFixture fx, ITestOutputHelper output)
         Skip.If(fx.SkipReason is not null, fx.SkipReason);
         await fx.PutAsync("t-race-index/index.md", "---\nokf_version: \"0.2\"\n---\n\n# Index\n"u8.ToArray());
         await fx.PutAsync("t-race-index/a.md", Encoding.UTF8.GetBytes(Note));
-        var racing = new DeletingProvider(Provider("t-race-index"), "index.md", () => fx.DeleteAsync("t-race-index/index.md"));
+        using var racing = new DeletingProvider(Provider("t-race-index"), "index.md", () => fx.DeleteAsync("t-race-index/index.md"));
         var control = await Bundle.LoadAsync(racing); // a positive witness: before the race, the version is read
         Assert.Equal("0.2", control.OkfVersion);
 
@@ -261,7 +273,8 @@ public class S3IntegrationTests(RustFsFixture fx, ITestOutputHelper output)
         await own.InitializeAsync();
         Assert.Null(own.SkipReason);
         await own.PutAsync("t-down/a.md", Encoding.UTF8.GetBytes(Note));
-        using var handle = new BundleHandle(Provider(own, "t-down", TimeSpan.FromSeconds(10)), refreshPolicy: BundleRefreshPolicy.OnAccess);
+        using var p = Provider(own, "t-down", TimeSpan.FromSeconds(10));
+        using var handle = new BundleHandle(p, refreshPolicy: BundleRefreshPolicy.OnAccess);
         var first = await handle.GetCurrentAsync();
         Assert.False(handle.IsStale);
 

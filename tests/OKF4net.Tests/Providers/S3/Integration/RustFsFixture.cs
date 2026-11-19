@@ -39,27 +39,14 @@ public sealed class RustFsFixture : IAsyncLifetime, IAsyncDisposable
     /// <summary>The engine this fixture drives (podman or docker), or <see langword="null"/> when none answers.</summary>
     public string? Engine => _engine;
 
+    /// <summary>The deadline of one engine probe: generous, since a podman machine on a loaded host can be slow to answer.</summary>
+    public static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(60);
+
     public async Task InitializeAsync()
     {
-        foreach (var candidate in new[] { "podman", "docker" })
-        {
-            try
-            {
-                if ((await Run(candidate, TimeSpan.FromSeconds(20), "version", "--format", "{{.Server.Version}}")).Code == 0)
-                {
-                    _engine = candidate;
-                    break;
-                }
-            }
-            catch (TimeoutException)
-            {
-                // An engine that does not answer within its deadline is not chosen; the next one is tried.
-            }
-        }
-
+        (_engine, SkipReason) = await ProbeEnginesAsync(["podman", "docker"], ProbeTimeout, "version", "--format", "{{.Server.Version}}");
         if (_engine is null)
         {
-            SkipReason = "no container engine answers (podman, docker)";
             return;
         }
 
@@ -110,9 +97,56 @@ public sealed class RustFsFixture : IAsyncLifetime, IAsyncDisposable
         }
         catch
         {
-            await StopAsync(); // a container that started is removed even when the fixture fails
+            try
+            {
+                await StopAsync(); // a container that started is removed even when the fixture fails
+            }
+            catch (Exception)
+            {
+                // The removal failed too (its own deadline, say): the start failure is the one reported. The container
+                // carries Label, so a leftover stays findable (`<engine> ps -a --filter label=okf4net.test=s3integration`).
+            }
+
             throw;
         }
+    }
+
+    /// <summary>
+    /// Chooses the first candidate whose <paramref name="args"/> exit 0. A candidate that is missing (no binary) or answers
+    /// with a non-zero exit is passed over; when none answers, the skip reason names each one's outcome. A candidate that
+    /// does not finish within <paramref name="deadline"/> is FATAL: an engine that is present but hangs must fail the run,
+    /// never turn it into a skip.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">A candidate did not answer within <paramref name="deadline"/>.</exception>
+    internal static async Task<(string? Engine, string? SkipReason)> ProbeEnginesAsync(IReadOnlyList<string> candidates, TimeSpan deadline, params string[] args)
+    {
+        var outcomes = new List<string>();
+        foreach (var candidate in candidates)
+        {
+            (int Code, string Out, string Err) result;
+            try
+            {
+                result = await TestProcess.RunAsync(candidate, args, null, deadline);
+            }
+            catch (System.ComponentModel.Win32Exception)
+            {
+                outcomes.Add($"{candidate}: missing");
+                continue;
+            }
+            catch (TimeoutException e)
+            {
+                throw new InvalidOperationException($"container engine '{candidate}' did not answer within {deadline}: present but not answering, which fails the run rather than skipping it", e);
+            }
+
+            if (result.Code == 0)
+            {
+                return (candidate, null);
+            }
+
+            outcomes.Add($"{candidate}: exit code {result.Code}");
+        }
+
+        return (null, "no container engine answers (" + string.Join("; ", outcomes) + ")");
     }
 
     public async Task UploadDirectoryAsync(string localDir, string prefix)
@@ -135,6 +169,9 @@ public sealed class RustFsFixture : IAsyncLifetime, IAsyncDisposable
     /// (UNSIGNED-PAYLOAD) over that same path. The SDK cannot send a key with a leading '/' to RustFS: measured, both its
     /// PutObject and its pre-signed URL are refused 403 SignatureDoesNotMatch, so this is how the test reaches the store's
     /// own normalization of such a path. <paramref name="rawPath"/> must hold only RFC 3986 unreserved characters and '/'.
+    /// <para>Signed with this host's <see cref="DateTime.UtcNow"/>: when the clock of the engine's VM (a podman machine,
+    /// WSL) drifts from the host's by more than S3's allowed skew (about 15 minutes), the store answers 403
+    /// (RequestTimeTooSkewed or SignatureDoesNotMatch) and the test fails loudly on the status; it never passes silently.</para>
     /// </summary>
     public async Task<int> PutRawPathAsync(string rawPath, byte[] bytes)
     {
@@ -202,7 +239,16 @@ public sealed class RustFsFixture : IAsyncLifetime, IAsyncDisposable
     public async Task DisposeAsync()
     {
         Admin?.Dispose();
-        await StopAsync();
+        try
+        {
+            await StopAsync();
+        }
+        catch (TimeoutException)
+        {
+            // `rm -f` did not finish within its deadline (its process tree was killed): disposal never throws. The
+            // container carries Label (and --rm), so a leftover stays findable with
+            // `<engine> ps -a --filter label=okf4net.test=s3integration` and is removed by hand.
+        }
     }
 
     ValueTask IAsyncDisposable.DisposeAsync() => new(DisposeAsync());
