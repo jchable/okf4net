@@ -3,19 +3,34 @@ namespace OKF4net.Providers.S3.Internal;
 
 /// <summary>
 /// The provider's operation permits (spec D16): one per operation, from the call to the end of the body and of the
-/// cleanup. <paramref name="disposal"/> is the provider's own disposal: it is linked into every operation's token, so a
+/// cleanup. The constructor's <c>disposal</c> token is the provider's own disposal: it is linked into every operation's token, so a
 /// provider disposed in the middle of an operation interrupts it, and the operation fails as
 /// <see cref="S3FailureKind.Disposed"/> (spec §4.2), never as the transport failure the disposal caused.
 /// </summary>
-internal sealed class OperationGate(int maxConcurrent, TimeProvider time, CancellationToken disposal = default)
+internal sealed class OperationGate
 {
-    private readonly SemaphoreSlim _permits = new(maxConcurrent, maxConcurrent);
+    private readonly SemaphoreSlim _permits;
+    private readonly TimeProvider _time;
+    private readonly CancellationToken _disposal;
+
+    public OperationGate(int maxConcurrent, TimeProvider time, CancellationToken disposal = default)
+        : this(new SemaphoreSlim(maxConcurrent, maxConcurrent), time, disposal)
+    {
+    }
+
+    /// <summary>Tests only: the permits are given, so a test can make the wait itself fail in a way no cancellation explains (a disposed semaphore).</summary>
+    internal OperationGate(SemaphoreSlim permits, TimeProvider time, CancellationToken disposal = default)
+    {
+        _permits = permits;
+        _time = time;
+        _disposal = disposal;
+    }
 
     /// <summary>Waits for a permit under the operation's deadline, which starts now (spec §4.5).</summary>
     public async ValueTask<OperationScope> EnterAsync(S3Operation operation, TimeSpan timeout, CancellationToken caller, BundleKey? key)
     {
-        var deadline = new CancellationTokenSource(timeout, time);
-        var linked = CancellationTokenSource.CreateLinkedTokenSource(caller, deadline.Token, disposal);
+        var deadline = new CancellationTokenSource(timeout, _time);
+        var linked = CancellationTokenSource.CreateLinkedTokenSource(caller, deadline.Token, _disposal);
         try
         {
             await _permits.WaitAsync(linked.Token).ConfigureAwait(false);
@@ -26,7 +41,7 @@ internal sealed class OperationGate(int maxConcurrent, TimeProvider time, Cancel
             // Every exit is classified: anything but a cancellation (none is expected from a semaphore that is never
             // disposed) is a Transport failure carrying the original, stack intact, as its inner exception.
             Exception failure = caller.IsCancellationRequested ? OperationScope.CallerCancellation(e, caller)
-                : disposal.IsCancellationRequested ? new S3RequestException(operation, S3FailureKind.Disposed, null, key, e)
+                : _disposal.IsCancellationRequested ? new S3RequestException(operation, S3FailureKind.Disposed, null, key, e)
                 : e is OperationCanceledException ? new S3RequestException(operation, S3FailureKind.Timeout, null, key)
                 : new S3RequestException(operation, S3FailureKind.Transport, null, key, e);
             linked.Dispose();
@@ -34,7 +49,7 @@ internal sealed class OperationGate(int maxConcurrent, TimeProvider time, Cancel
             throw failure;
         }
 
-        return new OperationScope(_permits, operation, key, caller, disposal, deadline, linked);
+        return new OperationScope(_permits, operation, key, caller, _disposal, deadline, linked);
     }
 }
 

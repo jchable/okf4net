@@ -20,11 +20,19 @@ internal sealed class BoundingHandler : DelegatingHandler
 
     private const int InitialBuffer = 16 * 1024;
 
+    /// <summary>The most a body buffer is allocated up front, whatever length the store declares: the buffer grows with what actually arrives.</summary>
+    private const int FirstBufferCap = 256 * 1024;
+
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
         var response = await base.SendAsync(request, ct).ConfigureAwait(false);
         var operation = OperationContext.Current.Value;
         var isList = operation?.Operation is S3Operation.List or S3Operation.Exists;
+        if (isList)
+        {
+            operation!.Capture?.Body = null; // the capture is the LAST response's page: an earlier attempt of the same SDK call (a retry) must not outlive a later one that failed (#290)
+        }
+
         var status = (int)response.StatusCode;
         int? bound = status >= 300 ? ErrorBodyBytes : isList ? ListBodyBytes : null;
         if (bound is null)
@@ -129,7 +137,7 @@ internal sealed class BoundingHandler : DelegatingHandler
         }
 
         var limit = bound + 1;
-        var buffer = new byte[(int)Math.Min(limit, declared is { } d ? d + 1 : InitialBuffer)];
+        var buffer = new byte[(int)Math.Min(FirstBufferCap, Math.Min(limit, declared is { } d ? d + 1 : InitialBuffer))]; // a declared length is the store's claim: it never pre-allocates more than FirstBufferCap (#290)
         var total = 0;
         var stream = await content.ReadAsStreamAsync(ct).ConfigureAwait(false);
         await using (stream.ConfigureAwait(false))

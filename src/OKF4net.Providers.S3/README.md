@@ -83,7 +83,7 @@ Dispose the provider when you are done with it: `Dispose` releases, once, the cl
 
 ## Cost of `OnAccess`
 
-A load costs one listing for the bundle version, a second listing for the names, and one `GET` per object read. With `BundleRefreshPolicy.OnAccess` (the **catalog's default** per source, `KnowledgeCatalogOptions.RefreshPolicy`; the `BundleHandle` default is `Manual`) the version is compared at every access: one `ListObjectsV2` request per 1,000 objects, every time. Prefer `BundleRefreshPolicy.Every(...)`, or `KnowledgeCatalogOptions.RefreshPolicyFor` for an S3 source.
+A load costs one listing for the bundle version, a second listing for the names, and one `GET` per object read. With `BundleRefreshPolicy.OnAccess` (the **catalog's default** per source, `KnowledgeCatalogOptions.RefreshPolicy`; the `BundleHandle` default is `Manual`) the version is compared at every access: one `ListObjectsV2` request per 1,000 objects, every time. Prefer `BundleRefreshPolicy.Every(...)`, or `KnowledgeCatalogOptions.RefreshPolicyFor` for an S3 source. `BundleRefreshPolicy.Notify` is refused when the handle is built (an `ArgumentException`): S3 sends a polling client no change signal, so this provider is not an `IBundleChangeNotifier`.
 
 ## Memory
 

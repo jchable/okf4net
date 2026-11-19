@@ -34,6 +34,22 @@ public class ConsumersTests
     }
 
     [Fact]
+    public void The_Notify_refresh_policy_is_refused_up_front_and_the_polling_policies_are_not()
+    {
+        // #290: examined. This provider has no change signal (S3 sends none to a client that polls), so it is not an
+        // IBundleChangeNotifier, and BundleHandle refuses Notify at construction (spec §5.3): an explicit configuration
+        // error, never a handle that silently never refreshes. Polling is OnAccess or Every.
+        using var p = Provider();
+        Assert.IsNotAssignableFrom<IBundleChangeNotifier>(p);
+        var e = Assert.Throws<ArgumentException>(() => new BundleHandle(p, refreshPolicy: BundleRefreshPolicy.Notify));
+        Assert.Equal("refreshPolicy", e.ParamName);
+
+        // Positive controls: the same provider takes the polling policies.
+        using var onAccess = new BundleHandle(p, refreshPolicy: BundleRefreshPolicy.OnAccess);
+        using var every = new BundleHandle(p, refreshPolicy: BundleRefreshPolicy.Every(TimeSpan.FromMinutes(5)));
+    }
+
+    [Fact]
     public void The_tool_set_offers_no_write_tool()
     {
         using var handle = new BundleHandle(Provider());

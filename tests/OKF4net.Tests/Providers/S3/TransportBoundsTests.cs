@@ -320,6 +320,66 @@ public class TransportBoundsTests
         }
     }
 
+    [Fact]
+    public async Task A_declared_length_equal_to_the_bound_does_not_allocate_the_whole_bound_for_a_small_body()
+    {
+        // #290: the buffer was sized from the DECLARED length, so a store declaring the bound and sending a few bytes cost
+        // 8 MiB + 1 per page. The first buffer is small now and grows with what arrives. Same measuring technique as above
+        // (everything completes synchronously on this thread).
+        var body = new byte[10];
+        var content = new WitnessContent(body);
+        content.Headers.ContentLength = BoundingHandler.ListBodyBytes;
+        var context = new OperationContext(S3Operation.List) { Capture = new ListPageCapture() };
+        var inner = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content }) };
+        using var invoker = new HttpMessageInvoker(new BoundingHandler { InnerHandler = inner });
+        OperationContext.Current.Value = context;
+        try
+        {
+            var warm = new WitnessContent(body);
+            warm.Headers.ContentLength = BoundingHandler.ListBodyBytes;
+            inner.Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = warm });
+            (await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "http://127.0.0.1:9000/okf/"), default)).Dispose(); // warm-up
+
+            inner.Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            var task = invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "http://127.0.0.1:9000/okf/"), default);
+            var after = GC.GetAllocatedBytesForCurrentThread();
+            Assert.True(task.IsCompleted, "the measured send must complete on this thread");
+            using var response = await task;
+            Assert.True(after - before < 1024 * 1024, $"a 10-byte page declaring the bound allocated {after - before} bytes");
+            Assert.Equal(body.Length, context.Capture!.Body!.Length);
+        }
+        finally
+        {
+            OperationContext.Current.Value = null;
+        }
+    }
+
+    [Fact]
+    public async Task A_failed_attempt_does_not_leave_the_body_of_an_earlier_one_in_the_capture()
+    {
+        // #290: one SDK call may send several requests (retries) under ONE operation context. A page captured by an
+        // earlier attempt must not outlive a later attempt that failed: the provider re-reads the capture to judge a
+        // deserializer failure, and it must judge the response that failed, never a stale one.
+        var context = new OperationContext(S3Operation.List) { Capture = new ListPageCapture() };
+        var statuses = new Queue<HttpStatusCode>([HttpStatusCode.OK, HttpStatusCode.ServiceUnavailable]);
+        var inner = new FakeS3Handler { Respond = (_, _) => Task.FromResult(new HttpResponseMessage(statuses.Dequeue()) { Content = new ByteArrayContent("<x/>"u8.ToArray()) }) };
+        using var invoker = new HttpMessageInvoker(new BoundingHandler { InnerHandler = inner });
+        OperationContext.Current.Value = context;
+        try
+        {
+            (await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "http://127.0.0.1:9000/okf/"), default)).Dispose();
+            Assert.NotNull(context.Capture!.Body); // positive control: the first attempt did capture its page
+
+            (await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "http://127.0.0.1:9000/okf/"), default)).Dispose();
+            Assert.Null(context.Capture.Body);
+        }
+        finally
+        {
+            OperationContext.Current.Value = null;
+        }
+    }
+
     /// <summary>A response that forgets its metadata when disposed: a copy made after disposal would lose it.</summary>
     private sealed class ForgetfulResponse : HttpResponseMessage
     {
