@@ -69,7 +69,7 @@ public class PipelineTests
 
     /// <summary>
     /// Layer 1 of the app id's neutralization (gate G4: "" removes AWS_SDK_UA_APP_ID / sdk_ua_app_id, null falls back to
-    /// them); layer 2, the guard's removal of any app/ token, is pinned by GuardTests.
+    /// them); layer 2, the guard's User-Agent allowlist, which drops any app/ token, is pinned by GuardTests.
     /// </summary>
     [Fact]
     public void The_providers_client_sets_an_empty_app_id()

@@ -67,9 +67,10 @@ internal static class ClientBuilder
     /// The configuration rows of gate G2/G4 (spec Annexe B): the other ambient settings found to change a request are
     /// overridden explicitly in <see cref="Configure"/> (measured: identical requests under a hostile environment and
     /// profile; the systematic sweep of 2026-11-19 is spec Annexe C12). The per-client neutralization of CSM and region
-    /// detection (G1) is <see cref="ProviderS3Client"/>; the User-Agent token AWS_EXECUTION_ENV adds, which no setting
-    /// removes, is stripped by <see cref="PinningHandler"/>. Still sent, open in Annexe C12: the x-amzn-trace-id header
-    /// the SDK adds inside AWS Lambda, and the text of AWS_INTERNAL_ENV in the User-Agent.
+    /// detection (G1) is <see cref="ProviderS3Client"/>. What no setting removes is removed by <see cref="PinningHandler"/>
+    /// (Annexe C12, maintainer's decision 2026-11-19): the x-amzn-trace-id header the SDK adds inside AWS Lambda is
+    /// dropped, and the User-Agent is rebuilt from a fixed allowlist of token forms, so the exec-env/ token of
+    /// AWS_EXECUTION_ENV, any app/ token and the text of AWS_INTERNAL_ENV never reach the store.
     /// </summary>
     private static void ApplyGateRows(AmazonS3Config config)
     {

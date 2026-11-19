@@ -22,13 +22,14 @@ namespace OKF4net.Tests.Providers.S3;
 /// What this test does NOT pin by itself (mutation runs, 2026-11-18): removing IgnoreConfiguredEndpointUrls leaves it
 /// green, because the provider here is configured with an explicit ServiceUrl, which wins over every ambient endpoint
 /// setting (the plain witness measured the same). A Region source here would send its clean run off the machine, so
-/// that row is pinned in-process instead, over the scripted fake, by <see cref="AmbientEndpointTests"/>. ClientAppId = "" and the guard's removal of app/ tokens are two layers: removing either alone leaves this
-/// test green (GuardTests pins the guard's), removing both turns it red.
+/// that row is pinned in-process instead, over the scripted fake, by <see cref="AmbientEndpointTests"/>. ClientAppId = "" and the guard's User-Agent allowlist (which drops any app/ token) are two layers: removing either alone leaves the
+/// app/ witness green here (GuardTests pins the guard's), removing both turns it red.
 /// Removing DefaultConfigurationMode = Standard also leaves it green (mutation run, 2026-11-19): measured, the provider's
 /// requests are the same without it under AWS_DEFAULTS_MODE auto, mobile or in-region, and it contacts no
 /// instance-metadata endpoint, since every value a defaults mode would choose is set explicitly; the two defaults-mode
 /// cases keep that so on every SDK bump. Sweep of every AWS_* variable and profile key in AWSSDK.Core/S3 4.1.0, its
-/// classification and the two header contents still sent (x-amzn-trace-id in Lambda, AWS_INTERNAL_ENV): spec Annexe C12.
+/// classification and the two header contents the guard now removes (x-amzn-trace-id in Lambda, dropped; AWS_INTERNAL_ENV's
+/// text, dropped by the User-Agent allowlist; case variables-lambda-internal-env): spec Annexe C12.
 /// </remarks>
 public sealed class HostileEnvironmentTests(HostileEnvironmentTests.Baseline baseline) : IClassFixture<HostileEnvironmentTests.Baseline>
 {
@@ -87,13 +88,14 @@ public sealed class HostileEnvironmentTests(HostileEnvironmentTests.Baseline bas
         }
 
         /// <summary>
-        /// The inherited environment without any AWS_* or proxy variable (NO_PROXY included, any case), with an empty
+        /// The inherited environment without any AWS_*, _X_AMZN_TRACE_ID or proxy variable (NO_PROXY included, any case), with an empty
         /// config and credentials file instead of the machine's ~/.aws, and the instance-metadata service off.
         /// </summary>
         public Dictionary<string, string?> Clean()
         {
             var env = Environment.GetEnvironmentVariables().Keys.Cast<string>()
-                .Where(k => k.StartsWith("AWS_", StringComparison.OrdinalIgnoreCase) || k.EndsWith("_PROXY", StringComparison.OrdinalIgnoreCase))
+                .Where(k => k.StartsWith("AWS_", StringComparison.OrdinalIgnoreCase) || k.EndsWith("_PROXY", StringComparison.OrdinalIgnoreCase)
+                    || k.Equals("_X_AMZN_TRACE_ID", StringComparison.OrdinalIgnoreCase))
                 .ToDictionary(k => k, _ => (string?)null);
             var empty = Path.Combine(Home.Path, "empty");
             env["AWS_CONFIG_FILE"] = empty;
@@ -114,7 +116,7 @@ public sealed class HostileEnvironmentTests(HostileEnvironmentTests.Baseline bas
     }
 
     public static TheoryData<string> Cases() =>
-        ["variables", "variables-fips-dualstack", "variables-us-east-1-legacy", "variables-defaults-mode", "profile", "profile-fips-dualstack", "profile-defaults-mode"];
+        ["variables", "variables-fips-dualstack", "variables-us-east-1-legacy", "variables-defaults-mode", "profile", "profile-fips-dualstack", "profile-defaults-mode", "variables-lambda-internal-env"];
 
     [Theory]
     [MemberData(nameof(Cases))]
@@ -159,6 +161,8 @@ public sealed class HostileEnvironmentTests(HostileEnvironmentTests.Baseline bas
             Assert.Contains("x-amz-checksum-mode=ENABLED", ua, StringComparison.Ordinal);
             Assert.DoesNotContain(" app/", ua, StringComparison.Ordinal);
             Assert.DoesNotContain(" exec-env/", ua, StringComparison.Ordinal);
+            Assert.DoesNotContain("x-amzn-trace-id", ua, StringComparison.Ordinal);
+            Assert.DoesNotContain("IENVMARK", ua, StringComparison.Ordinal);
             Assert.Contains("E", Metrics(ua)); // the standard retry mode's business metric
             Assert.DoesNotContain("F", Metrics(ua)); // the adaptive one's
             Assert.Contains("P", Metrics(ua)); // the preferred account-id endpoint mode's
@@ -236,6 +240,16 @@ public sealed class HostileEnvironmentTests(HostileEnvironmentTests.Baseline bas
             case "variables-defaults-mode":
                 // The variable's spelling of profile-defaults-mode: "in-region" is refused by this SDK (measured).
                 Set(env, new() { ["AWS_DEFAULTS_MODE"] = "in-region" });
+                break;
+            case "variables-lambda-internal-env":
+                // Inside AWS Lambda the SDK adds x-amzn-trace-id from _X_AMZN_TRACE_ID (only when AWS_LAMBDA_FUNCTION_NAME
+                // is set), and inserts AWS_INTERNAL_ENV's text verbatim into the User-Agent (spec Annexe C12, measured).
+                Set(env, new()
+                {
+                    ["AWS_LAMBDA_FUNCTION_NAME"] = "fnMARK",
+                    ["_X_AMZN_TRACE_ID"] = "Root=1-00000000-TRACEMARK",
+                    ["AWS_INTERNAL_ENV"] = "IENVMARK",
+                });
                 break;
             case "profile":
                 // A NAMED profile (AWS_PROFILE is honoured too: the witness shows its marker). Set but not observable here
@@ -358,6 +372,17 @@ public sealed class HostileEnvironmentTests(HostileEnvironmentTests.Baseline bas
                     // Account-id endpoint mode: account_id_endpoint_mode = required, business metric R (P when clean).
                     Assert.Contains("R", Metrics(ua));
                     Assert.DoesNotContain("P", Metrics(ua));
+                    break;
+                }
+
+            case "variables-lambda-internal-env":
+                {
+                    // Measured 2026-11-19: the header carries the ambient trace id, unsigned (the clean run sends none), and the
+                    // marker sits between md/aws-sdk-dotnet-core#… and api/S3#… in the User-Agent.
+                    var ua = Single(hostile, "ua");
+                    Assert.Contains(" | x-amzn-trace-id=Root=1-00000000-TRACEMARK", ua, StringComparison.Ordinal);
+                    Assert.DoesNotContain("x-amzn-trace-id", ua.Split(" | ").Single(f => f.StartsWith("signed=", StringComparison.Ordinal)), StringComparison.Ordinal);
+                    Assert.Contains(" IENVMARK api/S3#", ua, StringComparison.Ordinal);
                     break;
                 }
 

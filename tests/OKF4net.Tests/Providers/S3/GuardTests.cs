@@ -335,23 +335,92 @@ public sealed class GuardTests : IDisposable
         Assert.Equal(PinningHandler.MaxSendsPerOperation, fake.Requests.Count);
     }
 
-    [Fact]
-    public async Task Ambient_user_agent_tokens_never_leave_and_the_signature_does_not_cover_them()
+    /// <summary>The User-Agent AWSSDK.S3/Core 4.1.0 sends in a clean environment, measured (2026-11-19, Windows 11, .NET 10).</summary>
+    private const string CleanUserAgent = "aws-sdk-dotnet-coreclr/4.1.0.0 ua/2.1 os/windows#10.0.26200.0 md/ARCH#X64 lang/.NET_Core#10.0.15 md/aws-sdk-dotnet-core#4.1.0.0 api/S3#4.1.0.0 md/ClientAsync cfg/init-coll#0 m/b,P,N,E";
+
+    /// <summary>Sends one request through the guard alone, inside a read's context, with <paramref name="headers"/>; returns what reached the network and the response.</summary>
+    private static async Task<(HttpRequestMessage Sent, HttpStatusCode Status)> SendThroughGuard(params (string Name, string Value)[] headers)
     {
         var (invoker, fake) = Guard();
         var request = new HttpRequestMessage(HttpMethod.Get, "http://127.0.0.1:9000/okf/kb/a.md");
-        request.Headers.TryAddWithoutValidation("User-Agent", "aws-sdk-dotnet-coreclr/4.1.0.0 lang/.NET_Core#10.0 exec-env/AMBIENTEXEC api/S3#4.1.0.0 app/AMBIENTMARK md/ClientAsync");
+        foreach (var (name, value) in headers)
+        {
+            request.Headers.TryAddWithoutValidation(name, value);
+        }
+
         OperationContext.Current.Value = new OperationContext(S3Operation.Read) { ExpectedObjectS3Key = "kb/a.md", Credentials = Creds };
         try
         {
-            using var _ = await invoker.SendAsync(request, default);
+            using var response = await invoker.SendAsync(request, default);
+            return (fake.Requests.Single(), response.StatusCode);
         }
         finally
         {
             OperationContext.Current.Value = null;
         }
+    }
 
-        var ua = string.Join(' ', fake.Requests.Single().Headers.GetValues("User-Agent"));
+    private static string? UserAgentOf(HttpRequestMessage sent) =>
+        sent.Headers.TryGetValues("User-Agent", out var values) ? string.Join(' ', values) : null;
+
+    /// <summary>
+    /// Spec Annexe C12 (maintainer's decision 2026-11-19): the guard rebuilds the User-Agent from a fixed allowlist of
+    /// token forms, in a fixed order; an unknown token is dropped, and a slot that comes twice with different values
+    /// (an ambient text imitating a known token) is dropped whole. Rows: (input, expected output).
+    /// </summary>
+    public static TheoryData<string, string?> UserAgents => new()
+    {
+        // The clean SDK value is kept as it is.
+        { CleanUserAgent, CleanUserAgent },
+        // AWS_EXECUTION_ENV, AWS_SDK_UA_APP_ID and AWS_INTERNAL_ENV, where the SDK puts them (measured).
+        { "aws-sdk-dotnet-coreclr/4.1.0.0 ua/2.1 os/windows#10.0.26200.0 md/ARCH#X64 lang/.NET_Core#10.0.15 exec-env/EXECMARK md/aws-sdk-dotnet-core#4.1.0.0 IENVMARK api/S3#4.1.0.0 app/APPMARK md/ClientAsync cfg/init-coll#0 m/b,P,N,E", CleanUserAgent },
+        // AWS_INTERNAL_ENV with spaces, imitating two known tokens: both slots become ambiguous and are dropped.
+        { "aws-sdk-dotnet-coreclr/4.1.0.0 ua/2.1 os/windows#10.0.26200.0 md/ARCH#X64 lang/.NET_Core#10.0.15 md/aws-sdk-dotnet-core#4.1.0.0 md/ARCH#EVILMARK api/S3#MARK api/S3#4.1.0.0 md/ClientAsync cfg/init-coll#0 m/b,P,N,E",
+          "aws-sdk-dotnet-coreclr/4.1.0.0 ua/2.1 os/windows#10.0.26200.0 lang/.NET_Core#10.0.15 md/aws-sdk-dotnet-core#4.1.0.0 md/ClientAsync cfg/init-coll#0 m/b,P,N,E" },
+        // An exact copy of a known token adds nothing: kept once.
+        { "aws-sdk-dotnet-coreclr/4.1.0.0 api/S3#4.1.0.0 api/S3#4.1.0.0 m/b,P,N,E", "aws-sdk-dotnet-coreclr/4.1.0.0 api/S3#4.1.0.0 m/b,P,N,E" },
+        // The fixed order, whatever the order received; tabs and repeated spaces separate tokens too.
+        { "m/b,P,N,E\tmd/ClientAsync  api/S3#4.1.0.0 aws-sdk-dotnet-coreclr/4.1.0.0", "aws-sdk-dotnet-coreclr/4.1.0.0 api/S3#4.1.0.0 md/ClientAsync m/b,P,N,E" },
+        // Native AOT's feature token and the synchronous client marker (the SDK's own format strings).
+        { "aws-sdk-dotnet-coreclr/4.1.0.0 ft/aot api/S3#4.1.0.0 md/ClientSync", "aws-sdk-dotnet-coreclr/4.1.0.0 ft/aot api/S3#4.1.0.0 md/ClientSync" },
+        // A known prefix with a value outside its form: dropped.
+        { "aws-sdk-dotnet-coreclr/4.1.0.0 api/S3#MARK(x) md/ClientMARK ft/MARK m/b;MARK os/MARK lang/.NET_Core#1#MARK md/ARCH#", "aws-sdk-dotnet-coreclr/4.1.0.0" },
+        // Prefixes the SDK may emit but the provider never needs, and anything unknown: dropped.
+        { "aws-sdk-dotnet-coreclr/4.1.0.0 md/UploadNonSeekableStream lib/MARK APP/MARK AWS-SDK-DOTNET-CORECLR/9 Api/S3#1", "aws-sdk-dotnet-coreclr/4.1.0.0" },
+        // Nothing known (a newer SDK that changed every form): no User-Agent at all, and the request is still sent.
+        { "something/1.0 else MARK", null },
+        { "", null },
+    };
+
+    [Theory]
+    [MemberData(nameof(UserAgents))]
+    public async Task The_User_Agent_is_rebuilt_from_the_allowlist(string received, string? expected)
+    {
+        var (sent, status) = await SendThroughGuard(("User-Agent", received));
+        Assert.Equal(HttpStatusCode.OK, status); // an allowlist too narrow only reduces information, never breaks a request
+        Assert.Equal(expected, UserAgentOf(sent));
+        Assert.DoesNotContain("MARK", UserAgentOf(sent) ?? "", StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("x-amzn-trace-id")]
+    [InlineData("X-Amzn-Trace-Id")]
+    [InlineData("X-AMZN-TRACE-ID")]
+    public async Task The_trace_id_header_is_dropped_whatever_its_case(string name)
+    {
+        // Spec Annexe C12: the SDK adds it inside AWS Lambda (AWS_LAMBDA_FUNCTION_NAME and _X_AMZN_TRACE_ID set), unsigned.
+        var (sent, status) = await SendThroughGuard((name, "Root=1-00000000-TRACEMARK"), ("User-Agent", CleanUserAgent));
+        Assert.Equal(HttpStatusCode.OK, status);
+        Assert.False(sent.Headers.Contains("x-amzn-trace-id"));
+        Assert.DoesNotContain(sent.Headers, h => h.Value.Any(v => v.Contains("TRACEMARK", StringComparison.Ordinal)));
+        Assert.Equal(CleanUserAgent, UserAgentOf(sent));
+    }
+
+    [Fact]
+    public async Task Ambient_user_agent_tokens_never_leave_and_the_signature_does_not_cover_them()
+    {
+        var (sent, _) = await SendThroughGuard(("User-Agent", "aws-sdk-dotnet-coreclr/4.1.0.0 lang/.NET_Core#10.0 exec-env/AMBIENTEXEC api/S3#4.1.0.0 app/AMBIENTMARK md/ClientAsync"));
+        var ua = UserAgentOf(sent)!;
         Assert.DoesNotContain("exec-env/", ua, StringComparison.Ordinal);
         Assert.DoesNotContain("app/", ua, StringComparison.Ordinal);
         Assert.Contains("api/S3#4.1.0.0", ua, StringComparison.Ordinal);
