@@ -35,6 +35,16 @@ public sealed record S3BundleSource
     /// </summary>
     public string? SigningRegion { get; init; }
 
+    /// <summary>
+    /// Reads a public bucket without credentials (#291): no request is signed and the host's credentials are never asked
+    /// for. Explicit on purpose: an anonymous source is built with the <see cref="S3BundleProvider(S3BundleSource)"/>
+    /// constructor, and the constructor that takes credentials refuses it (and the reverse), so a missing credential is
+    /// never turned into an unsigned request by accident. The request guard is unchanged (same authority, same path
+    /// prefix, <c>GET</c> only). Part of <see cref="IBundleProvider.Id"/> only when set: the same bucket read with and
+    /// without credentials may show different objects, so they are different sources.
+    /// </summary>
+    public bool Anonymous { get; init; }
+
     /// <summary>Path-style addressing (<c>host/bucket/key</c>) instead of virtual-hosted (<c>bucket.host/key</c>); most compatible stores need it.</summary>
     public bool ForcePathStyle { get; init; }
 

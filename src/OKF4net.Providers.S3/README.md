@@ -30,7 +30,7 @@ using OKF4net.Agents;
 using OKF4net.Providers;
 using OKF4net.Providers.S3;
 
-// Credentials are yours: any AWSCredentials that resolves to an access key (anonymous access is not supported).
+// Credentials are yours: any AWSCredentials that resolves to an access key (a public bucket: see "Anonymous access").
 // The provider never reads the environment, a profile or IMDS for them.
 AWSCredentials credentials = new BasicAWSCredentials(accessKey, secretKey);
 
@@ -64,7 +64,20 @@ new S3BundleSource
 
 Rules enforced at construction (`ArgumentException`, no I/O): exactly one of `Region` and `ServiceUrl`; a general-purpose bucket name (access points, ARNs, aliases and directory buckets are refused); a bucket name containing `.` and an IP-address `ServiceUrl` both need `ForcePathStyle`; a region outside the `amazonaws.com` DNS partition (China, for instance) is refused (give a `ServiceUrl`); positive timeouts and bounds. `S3BundleSource` also carries `RequestTimeout` (30 s: one operation, retries and credential resolution included), `MaxConcurrentRequests` (16), `MaxObjectBytes` (the core's 256 MiB default) and `Checksums`.
 
-Every request is signed: `AnonymousAWSCredentials` resolves to no key, and every operation then fails as `S3FailureKind.Credentials`. Anonymous access to a public bucket is not supported by this version.
+Every request is signed with the credentials you give, except for an explicit anonymous source (next section). `AnonymousAWSCredentials` passed to the credentials constructor resolves to no key and every operation fails as `S3FailureKind.Credentials`: use `Anonymous` instead.
+
+### Anonymous access
+
+A public, read-only bucket is read without credentials by setting `S3BundleSource.Anonymous` and using the constructor that takes no credentials:
+
+```csharp
+using var provider = new S3BundleProvider(new S3BundleSource
+{
+    Bucket = "public-knowledge", Prefix = "okf", Region = RegionEndpoint.EUWest1, Anonymous = true,
+});
+```
+
+No request is signed and no host credential is asked for. It is explicit on purpose: the constructor that takes credentials refuses an `Anonymous` source, and the anonymous constructor refuses any other, so a missing credential is never turned into an unsigned request by accident. The request guard is unchanged (one authority, one path prefix, `GET` only). `Anonymous` is part of the provider's `Id` only when set, since the same bucket read unsigned may show other objects. A bucket that is not public answers `403`, reported as `ClientError` with status 403 (a read of one key: `BundleAccessRefusedException`). Measured on RustFS and MinIO with a bucket policy that makes one prefix public: that prefix loads anonymously and a neighbouring private prefix is refused 403.
 
 Dispose the provider when you are done with it: `Dispose` releases, once, the client and the `HttpClient` it built. A `BundleHandle` does not dispose its provider, so dispose the handle first (as `using` declarations do). Disposing the provider while an operation is in flight interrupts it, and it fails as `S3FailureKind.Disposed`, like every later call (never a raw `ObjectDisposedException`).
 

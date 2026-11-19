@@ -316,6 +316,51 @@ public class S3IntegrationTests(StoreFixture fx, ITestOutputHelper output)
         Assert.NotNull(present);
     }
 
+    /// <summary>
+    /// #291 against a real store: a bucket policy makes ONE prefix public (anyone may list it and read its objects); an
+    /// anonymous provider then loads it, sending no signature, while the same source over the neighbouring private prefix
+    /// is refused by the store. Every row passes on RustFS and on MinIO (measured 2026-11-19).
+    /// </summary>
+    [SkippableFact]
+    public async Task An_anonymous_source_reads_a_public_prefix_and_is_refused_on_a_private_one()
+    {
+        Skip.If(fx.SkipReason is not null, fx.SkipReason);
+        await fx.PutAsync("t-anon/a.md", Encoding.UTF8.GetBytes(Note));
+        await fx.PutAsync("t-anon-private/a.md", Encoding.UTF8.GetBytes(Note));
+        using (var cts = new CancellationTokenSource(StoreFixture.CallTimeout))
+        {
+            await fx.Admin.PutBucketPolicyAsync(new Amazon.S3.Model.PutBucketPolicyRequest
+            {
+                BucketName = StoreFixture.Bucket,
+                Policy = """
+                {"Version":"2012-10-17","Statement":[
+                  {"Effect":"Allow","Principal":"*","Action":["s3:GetObject"],"Resource":["arn:aws:s3:::okf/t-anon/*"]},
+                  {"Effect":"Allow","Principal":"*","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::okf"],"Condition":{"StringLike":{"s3:prefix":["t-anon/*"]}}}
+                ]}
+                """,
+            }, cts.Token);
+        }
+
+        S3BundleProvider Anonymous(string prefix) => new(new S3BundleSource { Bucket = StoreFixture.Bucket, Prefix = prefix, ServiceUrl = fx.Endpoint, ForcePathStyle = true, AllowInsecureHttp = true, Anonymous = true, RequestTimeout = TimeSpan.FromSeconds(30) });
+
+        using var publicProvider = Anonymous("t-anon");
+        var bundle = await Bundle.LoadAsync(publicProvider);
+        Assert.Contains(bundle.Concepts, c => c.Id.ToString() == "a");
+
+        // Positive control: the SAME private prefix loads with credentials, so the refusal below is the store's policy,
+        // not a missing object or a setup mistake.
+        using (var signed = Provider("t-anon-private"))
+        {
+            Assert.Contains((await Bundle.LoadAsync(signed)).Concepts, c => c.Id.ToString() == "a");
+        }
+
+        using var privateProvider = Anonymous("t-anon-private");
+        var refused = await Assert.ThrowsAsync<BundleLoadException>(async () => await Bundle.LoadAsync(privateProvider));
+        var inner = Assert.IsType<S3RequestException>(refused.InnerException);
+        output.WriteLine($"private prefix, anonymous: {inner.Kind} {inner.StatusCode}");
+        Assert.Equal(403, inner.StatusCode);
+    }
+
     [SkippableFact]
     public async Task A_stopped_store_keeps_the_previous_image_marked_stale()
     {

@@ -195,7 +195,7 @@ public class CredentialsTests
                 OperationContext.Current.Value = new OperationContext(S3Operation.Read) { Credentials = snapshot };
                 resolved.SetResult();
                 await go.Task;
-                return (snapshot.AccessKey, sdkView.GetCredentials().AccessKey);
+                return (snapshot!.AccessKey, sdkView.GetCredentials().AccessKey);
             }
         }
 

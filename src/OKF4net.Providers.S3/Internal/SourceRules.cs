@@ -11,7 +11,7 @@ namespace OKF4net.Providers.S3.Internal;
 internal sealed record NormalizedSource(
     string Bucket, string Prefix, string? DisplayName, RegionEndpoint? Region, Uri? ServiceUrl, bool PathStyle,
     TimeSpan RequestTimeout, int MaxConcurrentRequests, long MaxObjectBytes, S3ChecksumMode Checksums,
-    string Id, string Location, string EndpointIdentity, string? SigningRegion = null);
+    string Id, string Location, string EndpointIdentity, string? SigningRegion = null, bool Anonymous = false);
 
 internal static partial class SourceRules
 {
@@ -124,11 +124,16 @@ internal static partial class SourceRules
             endpoint += "|sign:" + signingRegion; // only when set: every Id computed before this option existed is unchanged
         }
 
+        if (source.Anonymous)
+        {
+            endpoint += "|anon"; // same rule: the same bucket read unsigned may show other objects, so it is another source
+        }
+
         var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes("s3v1\n" + endpoint + "\n" + bucket + "\n" + prefix)));
         var id = "s3:" + hash[..32];
         var location = "s3:" + (source.DisplayName ?? hash[..8]) + (prefix.Length == 0 ? "" : "/" + prefix);
         return new NormalizedSource(bucket, prefix, source.DisplayName, source.Region, serviceUrl, source.ForcePathStyle,
-            source.RequestTimeout, source.MaxConcurrentRequests, source.MaxObjectBytes, source.Checksums, id, location, endpoint, source.SigningRegion);
+            source.RequestTimeout, source.MaxConcurrentRequests, source.MaxObjectBytes, source.Checksums, id, location, endpoint, source.SigningRegion, source.Anonymous);
     }
 
     internal static bool IsWellFormed(string text)
