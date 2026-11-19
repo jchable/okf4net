@@ -291,7 +291,7 @@ instance, is reported the same way, by type name).
 A source may name its storage:
 
 ```json
-{ "id": "remote", "provider": "s3", "settings": { "bucket": "docs", "prefix": "okf/" } }
+{ "id": "remote", "provider": "s3", "settings": { "bucket": "docs", "prefix": "okf/prod" } }
 ```
 
 `provider` defaults to `filesystem` (the only type shipped here, named by

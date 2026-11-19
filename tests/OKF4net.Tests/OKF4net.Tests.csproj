@@ -31,6 +31,7 @@
     <ProjectReference Include="..\..\src\OKF4net.Attestation.Containers\OKF4net.Attestation.Containers.csproj" />
     <ProjectReference Include="..\..\src\OKF4net.Viewer\OKF4net.Viewer.csproj" />
     <ProjectReference Include="..\..\src\OKF4net.Providers.EmbeddedResources\OKF4net.Providers.EmbeddedResources.csproj" />
+    <ProjectReference Include="..\..\src\OKF4net.Providers.S3\OKF4net.Providers.S3.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -41,6 +42,12 @@
       every build of the tests build the probe first, in the same configuration.
     -->
     <ProjectReference Include="..\YamlHostileProbe\YamlHostileProbe.csproj" ReferenceOutputAssembly="false" />
+    <!--
+      Built, never referenced, for the same reason: Providers/S3/HostileEnvironmentTests.cs runs it as a child process
+      (dotnet S3HostileEnvProbe.dll ...) under environments the test host must not take on (spec T1), and
+      TestProcessTests.cs uses its "sleep" mode as a process tree that never ends by itself.
+    -->
+    <ProjectReference Include="..\S3HostileEnvProbe\S3HostileEnvProbe.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <!--
