@@ -61,6 +61,30 @@ public class ReadOnlyBundleProviderTests
     }
 
     [Fact]
+    public void AsReadOnly_keeps_a_notifying_provider_notifying()
+    {
+        var notifying = new NotifyingBundleProvider(new RecordingProvider());
+        var ro = notifying.AsReadOnly();
+        Assert.False(ro.Capabilities.CanWrite);
+        Assert.IsAssignableFrom<IBundleChangeNotifier>(ro);
+        Assert.Same(ro, ro.AsReadOnly());
+
+        // The Notify policy, which needs a notifier, is accepted over the downgrade and its signal reaches the inner provider's subscribers.
+        using var handle = new BundleHandle(ro, refreshPolicy: BundleRefreshPolicy.Notify);
+        Assert.Equal(1, notifying.Subscribers);
+        handle.Dispose();
+        Assert.Equal(0, notifying.Subscribers);
+    }
+
+    [Fact]
+    public void AsReadOnly_does_not_invent_a_notifier_for_a_provider_without_one()
+    {
+        var ro = new RecordingProvider().AsReadOnly();
+        Assert.False(ro is IBundleChangeNotifier);
+        Assert.Throws<ArgumentException>(() => new BundleHandle(ro, refreshPolicy: BundleRefreshPolicy.Notify));
+    }
+
+    [Fact]
     public void Default_limits_match_the_spec()
     {
         var l = BundleLimits.Default;

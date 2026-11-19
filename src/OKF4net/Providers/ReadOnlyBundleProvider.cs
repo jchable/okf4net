@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 namespace OKF4net.Providers;
 
-/// <summary>Downgrades a provider to read-only (spec §3): every read delegates, every write throws <see cref="BundleReadOnlyException"/> before reaching the inner provider.</summary>
-public sealed class ReadOnlyBundleProvider : IBundleProvider, IProviderScope
+/// <summary>
+/// Downgrades a provider to read-only (spec §3): every read delegates, every write throws <see cref="BundleReadOnlyException"/> before reaching the inner provider.
+/// Build it through <see cref="BundleProviderExtensions.AsReadOnly"/>: that is what keeps a notifying provider notifying
+/// (<see cref="IBundleChangeNotifier"/>, so <see cref="BundleRefreshPolicy.Notify"/> still works over the downgrade). The constructor
+/// alone returns a decorator that does not forward change signals.
+/// </summary>
+public class ReadOnlyBundleProvider : IBundleProvider, IProviderScope
 {
     private readonly IBundleProvider _inner;
 
@@ -55,6 +60,26 @@ public static class BundleProviderExtensions
     public static IBundleProvider AsReadOnly(this IBundleProvider provider)
     {
         ArgumentNullException.ThrowIfNull(provider);
-        return provider is ReadOnlyBundleProvider ? provider : new ReadOnlyBundleProvider(provider);
+        return provider switch
+        {
+            ReadOnlyBundleProvider => provider,
+            IBundleChangeNotifier notifier => new NotifyingReadOnlyBundleProvider(provider, notifier),
+            _ => new ReadOnlyBundleProvider(provider),
+        };
     }
+}
+
+/// <summary>The read-only view of a provider that signals changes: the downgrade changes what can be written, never how a change is learnt (spec §5.3).</summary>
+internal sealed class NotifyingReadOnlyBundleProvider : ReadOnlyBundleProvider, IBundleChangeNotifier
+{
+    private readonly IBundleChangeNotifier _notifier;
+
+    internal NotifyingReadOnlyBundleProvider(IBundleProvider inner, IBundleChangeNotifier notifier)
+        : base(inner)
+    {
+        _notifier = notifier;
+    }
+
+    /// <inheritdoc/>
+    public IDisposable Subscribe(Action onChange) => _notifier.Subscribe(onChange);
 }
