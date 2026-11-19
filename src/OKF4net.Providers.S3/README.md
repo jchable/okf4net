@@ -147,7 +147,7 @@ While a validation reads `index.md` or `log.md`, a store that fails shows as an 
 
 ## Versions
 
-The package declares `AWSSDK.S3 >= 4.1.0` (a minimum, not an exact pin), which admits `AWSSDK.Core` 4.1.0 up to, but excluding, 5.0.0. The guarantees above are checked at run time and by tests rather than assumed: ci.yml's `S3 provider AOT smoke test` publishes a Native AOT probe against the packed packages at the declared minimum and at the latest published versions, and checks the guard under AOT. The local `S3Integration` run (above) is required on every bump of `AWSSDK.S3` or `AWSSDK.Core`.
+The package declares `AWSSDK.S3 >= 4.1.0` (a minimum, not an exact pin), which admits `AWSSDK.Core` 4.1.0 up to, but excluding, 5.0.0. The guarantees above are checked at run time and by tests rather than assumed: ci.yml's `S3 provider AOT smoke test` publishes a Native AOT probe against the packed packages at the declared minimum and at the latest published versions, and checks the guard under AOT; a second job (`S3 provider tests at the latest AWSSDK`) runs the provider's whole test slice, the hostile-environment probe included, at the latest published versions. The local `S3Integration` run (above) is required on every bump of `AWSSDK.S3` or `AWSSDK.Core`.
 
 ## In a knowledge catalog
 
