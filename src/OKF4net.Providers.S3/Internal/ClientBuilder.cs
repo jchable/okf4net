@@ -37,6 +37,8 @@ internal static class ClientBuilder
             UseAccelerateEndpoint = false,
             UseArnRegion = false,
             DisableMultiregionAccessPoints = true,
+            USEast1RegionalEndpointValue = S3UsEast1RegionalEndpointValue.Regional, // AWS_S3_US_EAST_1_REGIONAL_ENDPOINT / s3_us_east_1_regional_endpoint = legacy would send us-east-1 to s3.amazonaws.com
+            AccountIdEndpointMode = AccountIdEndpointMode.PREFERRED, // AWS_ACCOUNT_ID_ENDPOINT_MODE / account_id_endpoint_mode would change the User-Agent's business metrics
             DefaultConfigurationMode = DefaultConfigurationMode.Standard,
             DisableClockSkewCorrection = false,
             ForcePathStyle = source.PathStyle,
@@ -62,10 +64,12 @@ internal static class ClientBuilder
     }
 
     /// <summary>
-    /// The configuration rows of gate G2/G4 (spec Annexe B): every other ambient setting is already overridden
-    /// explicitly in <see cref="Configure"/> (measured: identical requests under a hostile environment and profile).
-    /// The per-client neutralization of CSM and region detection (G1) is <see cref="ProviderS3Client"/>; the
-    /// User-Agent token AWS_EXECUTION_ENV adds, which no setting removes, is stripped by <see cref="PinningHandler"/>.
+    /// The configuration rows of gate G2/G4 (spec Annexe B): the other ambient settings found to change a request are
+    /// overridden explicitly in <see cref="Configure"/> (measured: identical requests under a hostile environment and
+    /// profile; the systematic sweep of 2026-11-19 is spec Annexe C12). The per-client neutralization of CSM and region
+    /// detection (G1) is <see cref="ProviderS3Client"/>; the User-Agent token AWS_EXECUTION_ENV adds, which no setting
+    /// removes, is stripped by <see cref="PinningHandler"/>. Still sent, open in Annexe C12: the x-amzn-trace-id header
+    /// the SDK adds inside AWS Lambda, and the text of AWS_INTERNAL_ENV in the User-Agent.
     /// </summary>
     private static void ApplyGateRows(AmazonS3Config config)
     {

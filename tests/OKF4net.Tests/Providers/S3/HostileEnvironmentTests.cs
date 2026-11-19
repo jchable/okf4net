@@ -24,6 +24,11 @@ namespace OKF4net.Tests.Providers.S3;
 /// setting (the plain witness measured the same). A Region source here would send its clean run off the machine, so
 /// that row is pinned in-process instead, over the scripted fake, by <see cref="AmbientEndpointTests"/>. ClientAppId = "" and the guard's removal of app/ tokens are two layers: removing either alone leaves this
 /// test green (GuardTests pins the guard's), removing both turns it red.
+/// Removing DefaultConfigurationMode = Standard also leaves it green (mutation run, 2026-11-19): measured, the provider's
+/// requests are the same without it under AWS_DEFAULTS_MODE auto, mobile or in-region, and it contacts no
+/// instance-metadata endpoint, since every value a defaults mode would choose is set explicitly; the two defaults-mode
+/// cases keep that so on every SDK bump. Sweep of every AWS_* variable and profile key in AWSSDK.Core/S3 4.1.0, its
+/// classification and the two header contents still sent (x-amzn-trace-id in Lambda, AWS_INTERNAL_ENV): spec Annexe C12.
 /// </remarks>
 public sealed class HostileEnvironmentTests(HostileEnvironmentTests.Baseline baseline) : IClassFixture<HostileEnvironmentTests.Baseline>
 {
@@ -109,7 +114,7 @@ public sealed class HostileEnvironmentTests(HostileEnvironmentTests.Baseline bas
     }
 
     public static TheoryData<string> Cases() =>
-        ["variables", "variables-fips-dualstack", "variables-us-east-1-legacy", "profile", "profile-fips-dualstack", "profile-defaults-mode"];
+        ["variables", "variables-fips-dualstack", "variables-us-east-1-legacy", "variables-defaults-mode", "profile", "profile-fips-dualstack", "profile-defaults-mode"];
 
     [Theory]
     [MemberData(nameof(Cases))]
@@ -156,6 +161,8 @@ public sealed class HostileEnvironmentTests(HostileEnvironmentTests.Baseline bas
             Assert.DoesNotContain(" exec-env/", ua, StringComparison.Ordinal);
             Assert.Contains("E", Metrics(ua)); // the standard retry mode's business metric
             Assert.DoesNotContain("F", Metrics(ua)); // the adaptive one's
+            Assert.Contains("P", Metrics(ua)); // the preferred account-id endpoint mode's
+            Assert.DoesNotContain("R", Metrics(ua)); // the required one's
         });
     }
 
@@ -207,6 +214,7 @@ public sealed class HostileEnvironmentTests(HostileEnvironmentTests.Baseline bas
                     ["AWS_AUTH_SCHEME_PREFERENCE"] = "sigv4a",
                     ["AWS_DISABLE_CLOCK_SKEW_CORRECTION"] = "true",
                     ["AWS_ACCOUNT_ID"] = "111122223333",
+                    ["AWS_ACCOUNT_ID_ENDPOINT_MODE"] = "required",
                     ["AWS_REGION"] = "eu-west-3",
                     ["AWS_DEFAULT_REGION"] = "eu-west-3",
                     ["AWS_S3_US_EAST_1_REGIONAL_ENDPOINT"] = "legacy",
@@ -225,6 +233,10 @@ public sealed class HostileEnvironmentTests(HostileEnvironmentTests.Baseline bas
             case "variables-us-east-1-legacy":
                 Set(env, new() { ["AWS_S3_US_EAST_1_REGIONAL_ENDPOINT"] = "legacy" });
                 break;
+            case "variables-defaults-mode":
+                // The variable's spelling of profile-defaults-mode: "in-region" is refused by this SDK (measured).
+                Set(env, new() { ["AWS_DEFAULTS_MODE"] = "in-region" });
+                break;
             case "profile":
                 // A NAMED profile (AWS_PROFILE is honoured too: the witness shows its marker). Set but not observable here
                 // (measured, as for the variables): auth_scheme_preference, region, the credentials, the access-point
@@ -233,7 +245,7 @@ public sealed class HostileEnvironmentTests(HostileEnvironmentTests.Baseline bas
                     $"endpoint_url = {evil}", "ignore_configured_endpoint_urls = false", "sdk_ua_app_id = FILEMARK",
                     "retry_mode = adaptive", "max_attempts = 7", "request_checksum_calculation = when_required",
                     "response_checksum_validation = when_required", "csm_enabled = true", $"csm_port = {udp}", "csm_host = 127.0.0.1",
-                    "csm_client_id = CSMMARK", "auth_scheme_preference = sigv4a", "region = eu-west-3",
+                    "csm_client_id = CSMMARK", "auth_scheme_preference = sigv4a", "region = eu-west-3", "account_id_endpoint_mode = required",
                     "s3_us_east_1_regional_endpoint = legacy", "s3_disable_multiregion_access_points = false",
                     "aws_access_key_id = AKIDPROFILEMARK", "aws_secret_access_key = profile", "aws_session_token = TOKENMARK");
                 env["AWS_PROFILE"] = HostileProfile;
@@ -298,6 +310,11 @@ public sealed class HostileEnvironmentTests(HostileEnvironmentTests.Baseline bas
 
                     // Checksum: AWS_RESPONSE_CHECKSUM_VALIDATION=when_required drops x-amz-checksum-mode (ENABLED in the clean run).
                     Assert.DoesNotContain("x-amz-checksum-mode", ua, StringComparison.Ordinal);
+
+                    // Account-id endpoint mode: AWS_ACCOUNT_ID_ENDPOINT_MODE=required is reported in the business metrics as R
+                    // instead of P (measured alone, 2026-11-19: m/b,P,E -> m/b,R,E).
+                    Assert.Contains("R", Metrics(ua));
+                    Assert.DoesNotContain("P", Metrics(ua));
                     break;
                 }
 
@@ -337,9 +354,14 @@ public sealed class HostileEnvironmentTests(HostileEnvironmentTests.Baseline bas
 
                     // Checksum: response_checksum_validation = when_required drops x-amz-checksum-mode.
                     Assert.DoesNotContain("x-amz-checksum-mode", ua, StringComparison.Ordinal);
+
+                    // Account-id endpoint mode: account_id_endpoint_mode = required, business metric R (P when clean).
+                    Assert.Contains("R", Metrics(ua));
+                    Assert.DoesNotContain("P", Metrics(ua));
                     break;
                 }
 
+            case "variables-defaults-mode":
             case "profile-defaults-mode":
                 // The unguarded client cannot even be configured: every scenario fails, naming the defaults mode.
                 Assert.Contains(hostile, l => l.StartsWith("plain ua=error:AmazonClientException:", StringComparison.Ordinal) && l.Contains("Default Configuration Mode", StringComparison.Ordinal));
