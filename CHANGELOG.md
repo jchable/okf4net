@@ -331,9 +331,10 @@ and this project adheres to
   environment), guards every request (one authority, one path prefix, at most
   three sends per operation) and versions objects by the SHA-256 of their bytes.
   The bucket never reaches a model: `Location` is `s3:<DisplayName or 8
-  hex>/<prefix>` and every message is a closed vocabulary. It depends on
-  `AWSSDK.S3` ≥ 4.1.0 (a minimum), the one explicit dependency exception
-  besides `OKF4net.Catalog.Hosting`'s. The tests against a real store
+  hex>`, plus `/<prefix>` when the prefix is not empty, and every message is a
+  closed vocabulary. It depends on `AWSSDK.S3` ≥ 4.1.0 (a minimum); like
+  `OKF4net.Agents`, `OKF4net.Catalog.Hosting` and `OKF4net.Mcp`, it carries a
+  third-party dependency, which the core and the other providers do not. The tests against a real store
   (`Category=S3Integration`, RustFS 1.0.3 in Podman or Docker) are excluded from
   CI by decision, like `Category=ContainerIntegration`, and run locally with 0
   skipped; ci.yml's `S3 provider AOT smoke test` covers the minimum and the

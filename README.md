@@ -1202,6 +1202,7 @@ That applies to everything this project builds: every OKF4net library and
 binary is original work, LGPL-3.0-or-later in its entirety. The `okf` binary
 and the packages published to NuGet — `OKF4net`, `OKF4net.Agents`,
 `OKF4net.Catalog`, `OKF4net.Catalog.Hosting`, `OKF4net.Attestation`,
+`OKF4net.Providers.EmbeddedResources`, `OKF4net.Providers.S3`,
 `OKF4net.Cli`, `OKF4net.Mcp` — carry that one licence and include no third-party source
 code.
 

@@ -750,14 +750,17 @@ dans le plan ; aucune ne contredit une décision D1–D16) :
 
 ## Annexe C — Écarts constatés à l'exécution (2026-11-18)
 
-Ajoutée à la fin de l'exécution (tâches 1 à 12), **sans réécrire le corps** : la
-révision 4 et l'annexe B restent le texte d'origine. Chaque entrée dit ce que le
+Ajoutée à la fin de l'exécution (tâches 1 à 12). Cette annexe ne réécrit pas le
+corps ; les retouches faites pendant l'exécution (tâches 6, 8, 11) sont citées
+entrée par entrée. Chaque entrée dit ce que le
 texte énonçait, ce qui a été mesuré ou décidé, le commit qui le porte et son
 statut. « Tranché par le contrôleur — à arbitrer par le mainteneur » désigne une
 décision prise pendant l'exécution, faute de pouvoir interroger le mainteneur ; elle
 reste à confirmer ou à renverser, et son coût est dit. Les mesures portent sur
 `AWSSDK.S3` 4.1.0 avec `AWSSDK.Core` 4.1.0 (et 4.1.0.1 pour la porte), RustFS 1.0.3,
 Windows 11.
+
+**À arbitrer par le mainteneur : C1 (`+` brut), C3 (3 envois par opération), C5c (ETag simple non hexadécimal). À confirmer : C4 — le changement du cœur D15 (b) s'étend au relevé des ressources exécutables, donc fait échouer le chargement pour *tous* les providers —, et C8. Les autres entrées (C2, C5 hors c, C6, C7, C9) sont des constats.**
 
 **C1 — §4.3, décodage d'une clé listée.**
 *Le texte* : chaque `%XX` devient un octet, « tout autre caractère ses octets UTF-8 » (un `+` brut reste `+`).
@@ -855,3 +858,11 @@ Limite consignée au README.
 construction** (`ArgumentException`) ; ce cas passe par un `ServiceUrl`. Les autorités des régions `amazonaws.com`
 sont celles de la table de §4.4.
 *Commit* : `e27a5db9`. *Statut* : décision d'implémentation, à confirmer par le mainteneur.
+
+**C9 — §4.4 : « une région mal configurée se manifeste par un refus du garde ».**
+*Le texte* (§4.4, avant-dernier paragraphe) : une région mal configurée se manifeste par un refus du garde.
+*Constaté* : cette phrase contredit le tableau de §4.6 de la même spec et le code. Une redirection 307 vers un
+autre hôte est bien refusée par le garde (`RefusedHost`) ; mais un 301 `PermanentRedirect` ou un 400
+`AuthorizationHeaderMalformed` est classé `BucketUnavailable`. Le README du paquet dit les deux cas ; aucun des
+deux n'a été mesuré contre Amazon S3 réel. Formulation du corps à corriger à la prochaine révision.
+*Commit* : `22bc5ccd` (README). *Statut* : constat.

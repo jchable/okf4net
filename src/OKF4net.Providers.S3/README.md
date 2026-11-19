@@ -18,7 +18,7 @@ Serve an [OKF](https://github.com/jchable/okf4net) knowledge bundle from Amazon 
 
 It depends on `AWSSDK.S3`, and on nothing else besides `OKF4net`. The provider builds and owns its own S3 client, with a fixed configuration, and puts a guard under it that refuses every request that is not for this bucket and prefix: no overload accepts an `IAmazonS3` of yours, because the guard could not then hold. Each object's version is the lowercase hex SHA-256 of its bytes (the filesystem provider's format), so pinning sanctioned code never depends on an ETag or on the store honouring a conditional header.
 
-`provider.Location` is `s3:<DisplayName or 8 hex digits>/<prefix>`: **the bucket name never reaches a model**, neither in `Location` (and so in no display path) nor in any exception message.
+`provider.Location` is `s3:<DisplayName or 8 hex digits>`, followed by `/<prefix>` when the prefix is not empty: **the bucket name never reaches a model**, neither in `Location` (and so in no display path) nor in any exception message.
 
 ## Recipe
 
@@ -161,7 +161,9 @@ sealed class S3Factory(AWSCredentials credentials) : IBundleProviderFactory, IDi
   "settings": { "bucket": "my-knowledge", "prefix": "okf/prod", "region": "eu-west-3", "displayName": "prod-kb" } } ] }
 ```
 
-Register it with `KnowledgeCatalogOptions.ProviderFactories`. The catalog never disposes a provider: the factory owns them, as above. A setting the factory does not list is rejected before anything is created, and a factory that throws (a missing `bucket`, a source outside the domain above) makes the source `ProviderUnavailable`, naming the exception type only.
+Register it with `KnowledgeCatalogOptions.ProviderFactories`. The catalog never disposes a provider, and this factory keeps every provider it creates until the factory itself is disposed: a reload that changes a source's configuration replaces that source's handle but not the old provider (nor its `HttpClient`), and a rejected reload leaves behind the providers built for the other sources. That is acceptable for a catalog that reloads rarely; a host that reloads often should track providers per source and dispose the ones whose handle left.
+
+**One bad source freezes the whole catalog.** A setting the factory does not list (`IllegalSetting`), or a factory that throws (`ProviderUnavailable`, naming the exception type only), rejects the **whole** reload: the catalog keeps serving its previous snapshot and reports the problem in `LastReloadDiagnostics` (at construction, the first load throws `CatalogException` instead). With the factory above, any of these does it, for every source of the catalog: a missing `bucket`; a `prefix` with a trailing `/` (`okf/`) or any other value `S3BundleSource` refuses; an `http://` `serviceUrl` (`allowInsecureHttp` is not an accepted setting, so a catalog source cannot reach a plain-HTTP store through this factory); a `region` outside the `amazonaws.com` partition (`cn-north-1`). Validate your manifest before you deploy it.
 
 ## Testing
 
