@@ -19,6 +19,11 @@ on:
       - "ROADMAP.md"
       - "CLAUDE.md"
 
+# No job pushes, comments or publishes: the GITHUB_TOKEN only needs to read the repository (CodeQL
+# actions/missing-workflow-permissions, alerts 19 and 20).
+permissions:
+  contents: read
+
 jobs:
   build-test:
     name: build & test (${{ matrix.os }})

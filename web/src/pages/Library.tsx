@@ -74,8 +74,9 @@ export default function Library() {
 
         <Chapter id="bundles" title="Load a bundle, walk the graph" refText="§3, §6 — Bundle · LinkScanner">
           <p>
-            <code>Bundle.Load</code> walks the directory tree (or any <code>IBundleProvider</code>), parses every concept, and builds the cross-link graph
-            with backlinks. It is <strong>permissive by design</strong>: a bad file never aborts the load.
+            <code>Bundle.Load(path)</code> walks a directory tree, and <code>await Bundle.LoadAsync(provider)</code> does the same over any
+            <code>IBundleProvider</code> (the embedded-resource and S3 providers included; S3 needs the asynchronous form). Both parse every
+            concept and build the cross-link graph with backlinks. Loading is <strong>permissive by design</strong>: a bad file never aborts the load.
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: bundleWalkHtml }} />
           <p>

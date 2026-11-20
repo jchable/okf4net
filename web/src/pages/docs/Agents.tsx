@@ -77,9 +77,12 @@ export default function Agents() {
           <p>
             Each tool is a plain string in, string out <code>AIFunction</code>. On any failure — the tool
             returns a plain-text failure message (<code>Error: ...</code>, <code>Concept '...' not found</code>,
-            or <code>Usage: ...</code>) instead of throwing, so a single bad call never crashes the agent loop. Every value a
-            tool or the context provider prints goes through one fold rule, which also removes invisible format
-            characters such as tag characters.
+            or <code>Usage: ...</code>) instead of throwing, so a single bad call never crashes the agent loop. Every value
+            a tool or the context provider interpolates into a result line (a title, an id, a path, a message) goes
+            through one fold rule, which also removes invisible format characters such as tag characters. Fenced
+            content — a concept body, a computation's source, an index — is shown as written inside a fence longer than
+            any run it contains, and a concept's frontmatter keeps its characters so it round-trips, so invisible
+            characters can still appear there.
           </p>
           <MapTable
             head={['Tool', 'Does']}
