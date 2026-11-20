@@ -47,8 +47,21 @@ public sealed class S3BundleProvider : IBundleProvider, IDisposable
     /// <summary>Serves the bundle <paramref name="source"/> names, reading with <paramref name="credentials"/>. No I/O.</summary>
     /// <exception cref="ArgumentNullException">An argument is null.</exception>
     /// <exception cref="ArgumentException"><paramref name="source"/> is outside the documented domain (see <see cref="S3BundleSource"/>).</exception>
+    /// <exception cref="ArgumentException"><paramref name="source"/> is <see cref="S3BundleSource.Anonymous"/>: an anonymous source takes no credentials (#291).</exception>
     public S3BundleProvider(AWSCredentials credentials, S3BundleSource source)
         : this(credentials, source, static () => ClientBuilder.Network(), TimeProvider.System)
+    {
+    }
+
+    /// <summary>
+    /// Serves the PUBLIC bundle <paramref name="source"/> names, without credentials (#291): no request is signed and
+    /// no host credential is ever asked for. <paramref name="source"/> must be <see cref="S3BundleSource.Anonymous"/>, so
+    /// an unsigned request is always a decision written in the source, never a missing credential. No I/O.
+    /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="source"/> is null.</exception>
+    /// <exception cref="ArgumentException"><paramref name="source"/> is outside the documented domain, or is not <see cref="S3BundleSource.Anonymous"/>.</exception>
+    public S3BundleProvider(S3BundleSource source)
+        : this(null, anonymous: true, source, static () => ClientBuilder.Network(), TimeProvider.System)
     {
     }
 
@@ -58,20 +71,37 @@ public sealed class S3BundleProvider : IBundleProvider, IDisposable
     {
     }
 
+    /// <summary>Tests only: an anonymous provider over a replaced network handler.</summary>
+    internal S3BundleProvider(S3BundleSource source, HttpMessageHandler network, TimeProvider? time = null)
+        : this(null, anonymous: true, source, Supplying(network), time)
+    {
+    }
+
     /// <summary>Tests only: the network handler comes from a factory, called once the source is validated.</summary>
     internal S3BundleProvider(AWSCredentials credentials, S3BundleSource source, Func<HttpMessageHandler> networkFactory, TimeProvider? time = null)
+        : this(credentials ?? throw new ArgumentNullException(nameof(credentials)), anonymous: false, source, networkFactory, time)
     {
-        ArgumentNullException.ThrowIfNull(credentials);
+    }
+
+    private S3BundleProvider(AWSCredentials? credentials, bool anonymous, S3BundleSource source, Func<HttpMessageHandler> networkFactory, TimeProvider? time)
+    {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(networkFactory);
         _source = SourceRules.Normalize(source);
+        if (_source.Anonymous != anonymous)
+        {
+            throw new ArgumentException(
+                anonymous ? "A source without Anonymous needs credentials: use the constructor that takes them." : "An anonymous source takes no credentials: use the constructor without them.",
+                nameof(source));
+        }
+
         _plan = AddressingPlan.For(_source);
 
         // Built only now that nothing left can refuse the configuration: a refused source never owns a handler, so it
         // has nothing to dispose. From here the HttpClient owns the handler, and Dispose releases both.
         var network = networkFactory();
         ArgumentNullException.ThrowIfNull(network);
-        _client = ClientBuilder.Build(new SnapshotCredentials(), _source, network, out _http);
+        _client = ClientBuilder.Build(anonymous ? new AnonymousAWSCredentials() : new SnapshotCredentials(), _source, network, out _http);
         _gate = new OperationGate(_source.MaxConcurrentRequests, time ?? TimeProvider.System, _disposal.Token);
         _credentials = new CredentialResolver(credentials);
         _walker = new ListingWalker(_client, _source.Bucket, _gate, _credentials);

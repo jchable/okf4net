@@ -20,15 +20,28 @@ internal sealed class BoundingHandler : DelegatingHandler
 
     private const int InitialBuffer = 16 * 1024;
 
+    /// <summary>The most a body buffer is allocated up front, whatever length the store declares: the buffer grows with what actually arrives.</summary>
+    private const int FirstBufferCap = 256 * 1024;
+
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
         var response = await base.SendAsync(request, ct).ConfigureAwait(false);
         var operation = OperationContext.Current.Value;
         var isList = operation?.Operation is S3Operation.List or S3Operation.Exists;
+        if (isList)
+        {
+            operation!.Capture?.Body = null; // the capture is the LAST response's page: an earlier attempt of the same SDK call (a retry) must not outlive a later one that failed (#290)
+        }
+
         var status = (int)response.StatusCode;
         int? bound = status >= 300 ? ErrorBodyBytes : isList ? ListBodyBytes : null;
         if (bound is null)
         {
+            if (operation?.Operation == S3Operation.Read)
+            {
+                DropEtagTheSdkCannotCheck(response);
+            }
+
             return response;
         }
 
@@ -89,6 +102,31 @@ internal sealed class BoundingHandler : DelegatingHandler
         return copy;
     }
 
+    /// <summary>
+    /// The SDK checks the body of a successful GetObject against its ETag, as an MD5 digest, whenever the ETag is a single
+    /// part (no '-'): it hex-decodes the ETag and compares. An ETag that is not 32 hexadecimal digits is not an MD5, so the
+    /// check can only fail, wrongly: a non-hex value throws a FormatException, a hex digest of another length (SHA-1, SHA-256)
+    /// fails as an integrity error (measured on AWSSDK.S3 4.1.0, #286). The header is dropped from such a response, so the SDK
+    /// has nothing to check; the provider's own integrity is the version, the SHA-256 of the bytes it read, whatever the ETag
+    /// says. A genuine MD5 ETag (32 hex digits) and a multipart-shaped one (<c>&lt;hex&gt;-&lt;parts&gt;</c>, which the SDK skips)
+    /// are left alone, so a body that does not match a real MD5 is still refused as <see cref="S3FailureKind.Integrity"/>.
+    /// </summary>
+    private static void DropEtagTheSdkCannotCheck(HttpResponseMessage response)
+    {
+        if (!response.Headers.TryGetValues("ETag", out var values))
+        {
+            return;
+        }
+
+        var etag = string.Concat(values).Trim().Trim('"');
+        if (etag.Contains('-', StringComparison.Ordinal) || (etag.Length == 32 && etag.All(char.IsAsciiHexDigit)))
+        {
+            return;
+        }
+
+        response.Headers.Remove("ETag");
+    }
+
     /// <returns>The body, or null when it is longer than <paramref name="bound"/>. Never reads more than B + 1 bytes.</returns>
     private static async Task<byte[]?> ReadBoundedAsync(HttpContent content, int bound, bool bodiless, CancellationToken ct)
     {
@@ -99,7 +137,7 @@ internal sealed class BoundingHandler : DelegatingHandler
         }
 
         var limit = bound + 1;
-        var buffer = new byte[(int)Math.Min(limit, declared is { } d ? d + 1 : InitialBuffer)];
+        var buffer = new byte[(int)Math.Min(FirstBufferCap, Math.Min(limit, declared is { } d ? d + 1 : InitialBuffer))]; // a declared length is the store's claim: it never pre-allocates more than FirstBufferCap (#290)
         var total = 0;
         var stream = await content.ReadAsStreamAsync(ct).ConfigureAwait(false);
         await using (stream.ConfigureAwait(false))

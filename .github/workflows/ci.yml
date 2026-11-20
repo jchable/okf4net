@@ -617,3 +617,53 @@ jobs:
           $lines | ForEach-Object { Write-Host $_ }
           # A probe that loaded nothing would compare two empty summaries as equal: its first line is the S3 load's count.
           if (-not ($lines[0] -match '^concepts=[1-9]')) { throw "no concept loaded through S3: $($lines[0])" }
+
+  # #288: the S3 provider's guards (the request guard, the ambient-environment probes, the retry and region-detection
+  # neutralisations) are tests, and `s3-aot` only runs the Native AOT probe at the latest AWSSDK. A newer SDK that adds a
+  # second retry path or a new ambient setting would pass there and fail here. The declared range is `>= 4.1.0` with no
+  # upper bound, so the slice runs once with the test project AND the hostile-environment probe (a child process, built
+  # from the solution) moved to the newest published AWSSDK.S3 and AWSSDK.Core. The packages are added to the two test
+  # projects in this checkout only: a direct reference higher than the provider's own minimum wins the resolution, and the
+  # step after checks it did, so a leg that silently ran at the minimum cannot pass.
+  s3-latest-sdk:
+    name: S3 provider tests at the latest AWSSDK (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Move the test projects to the latest AWSSDK.S3 and AWSSDK.Core
+        shell: pwsh
+        run: |
+          function Latest($id) { (Invoke-RestMethod "https://api.nuget.org/v3-flatcontainer/$id/index.json").versions | Where-Object { $_ -notmatch '-' } | Select-Object -Last 1 }
+          $sdk = Latest 'awssdk.s3'
+          $core = Latest 'awssdk.core'
+          if (-not $sdk -or -not $core) { throw "could not determine the AWSSDK versions (S3 '$sdk', Core '$core')" }
+          Write-Host "AWSSDK.S3 $sdk, AWSSDK.Core $core"
+          echo "AWS_SDK_VERSION=$sdk" >> $env:GITHUB_ENV
+          foreach ($project in 'tests/OKF4net.Tests/OKF4net.Tests.csproj', 'tests/S3HostileEnvProbe/S3HostileEnvProbe.csproj') {
+            dotnet add $project package AWSSDK.S3 --version $sdk
+            if ($LASTEXITCODE -ne 0) { throw "dotnet add package AWSSDK.S3 failed: $project" }
+            dotnet add $project package AWSSDK.Core --version $core
+            if ($LASTEXITCODE -ne 0) { throw "dotnet add package AWSSDK.Core failed: $project" }
+          }
+
+      - name: Build
+        run: dotnet build OKF4net.sln -c Release
+
+      # The assembly the tests load, and the one the probe child process loads, are the latest, not the minimum.
+      - name: Check the assemblies are the latest
+        shell: pwsh
+        run: |
+          foreach ($dll in 'tests/OKF4net.Tests/bin/Release/net10.0/AWSSDK.S3.dll', 'tests/S3HostileEnvProbe/bin/Release/net10.0/AWSSDK.S3.dll') {
+            $version = [version][System.Diagnostics.FileVersionInfo]::GetVersionInfo((Resolve-Path $dll)).FileVersion # the AssemblyVersion is 4.0.0.0 for every 4.x: only the file version carries the package version
+            Write-Host "$dll $version"
+            if (-not $env:AWS_SDK_VERSION.StartsWith("$($version.Major).$($version.Minor).$($version.Build)")) { throw "$dll is $version, expected $env:AWS_SDK_VERSION" }
+          }
+
+      - name: Test the S3 provider slice
+        run: dotnet test tests/OKF4net.Tests -c Release --no-build --filter "FullyQualifiedName~Providers.S3&Category!=S3Integration"

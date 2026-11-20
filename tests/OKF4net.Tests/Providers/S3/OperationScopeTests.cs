@@ -282,4 +282,27 @@ public class OperationScopeTests
         {
         }
     }
+
+    [Fact]
+    public async Task A_permit_wait_that_fails_for_a_reason_no_cancellation_explains_is_a_Transport_failure_that_carries_the_original()
+    {
+        // The raw-failure exit of EnterAsync (spec §4.5: every exit is classified). Nothing in the provider disposes its
+        // semaphore, so the test gives the gate one it has disposed: the wait then throws ObjectDisposedException, which is
+        // neither the caller's cancellation, the provider's disposal nor a deadline.
+        var permits = new SemaphoreSlim(1, 1);
+        permits.Dispose();
+        var gate = new OperationGate(permits, new ManualClock());
+        var key = BundleKey.Parse("a.md");
+
+        var e = await Assert.ThrowsAsync<S3RequestException>(async () => await gate.EnterAsync(S3Operation.Read, Long, default, key));
+
+        Assert.Equal(S3FailureKind.Transport, e.Kind);
+        Assert.Equal(S3Operation.Read, e.Operation);
+        Assert.Equal("S3 read failed: Transport for 'a.md'", e.Message); // the closed message names the key
+        Assert.IsType<ObjectDisposedException>(e.InnerException);
+
+        // Positive control: a live semaphore admits, so the failure above is the semaphore's, not the gate's.
+        await using var scope = await new OperationGate(new SemaphoreSlim(1, 1), new ManualClock()).EnterAsync(S3Operation.Read, Long, default, key);
+        Assert.Equal(S3Operation.Read, scope.Operation);
+    }
 }

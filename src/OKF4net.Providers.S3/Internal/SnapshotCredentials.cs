@@ -17,8 +17,9 @@ internal sealed class SnapshotCredentials : AWSCredentials
 /// synchronously cannot hold the caller; under the operation's deadline; a late result is dropped, and the permit
 /// stays held until the abandoned call really ends — at most MaxConcurrentRequests threads per provider.
 /// </summary>
-internal sealed class CredentialResolver(AWSCredentials host)
+internal sealed class CredentialResolver(AWSCredentials? host)
 {
+    /// <summary>An anonymous source (#291): there is no host credential to ask, and the operation carries no snapshot.</summary>
     /// <summary>
     /// Resolves, or throws an exception that is ALREADY final: an S3RequestException with Kind Credentials (a
     /// failure, a null result, or the deadline reached while waiting) or Disposed (the provider disposed while
@@ -26,8 +27,13 @@ internal sealed class CredentialResolver(AWSCredentials host)
     /// <see cref="OperationScope.Fail"/>: the caller's catch passes that final exception to Fail first, which keeps
     /// it as is (spec §4.5), so a credentials timeout reads Credentials through every member.
     /// </summary>
-    public async Task<ImmutableCredentials> ResolveAsync(OperationScope scope)
+    public async Task<ImmutableCredentials?> ResolveAsync(OperationScope scope)
     {
+        if (host is null)
+        {
+            return null; // anonymous: nothing is resolved, nothing is signed (the client carries AnonymousAWSCredentials)
+        }
+
         // The asynchronous member a refreshing provider overrides, isolated on the pool: a provider whose async
         // path runs a synchronous call before returning its task cannot hold the caller's thread either.
         var call = Task.Run(() => host.GetCredentialsAsync(), CancellationToken.None);

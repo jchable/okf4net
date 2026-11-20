@@ -26,6 +26,25 @@ public sealed record S3BundleSource
     /// <summary>A compatible store's origin (scheme, host, port; no user info, path, query or fragment); exclusive of <see cref="Region"/>.</summary>
     public Uri? ServiceUrl { get; init; }
 
+    /// <summary>
+    /// The region of the SigV4 credential scope, for a <see cref="ServiceUrl"/> source only (default <c>us-east-1</c>). A
+    /// compatible store that validates it (believed: Wasabi regional endpoints, Scaleway, Garage; none measured) answers
+    /// <c>400 AuthorizationHeaderMalformed</c> to the default, which the provider reports as
+    /// <see cref="S3FailureKind.BucketUnavailable"/>. 2 to 32 characters: lowercase letters, digits and single hyphens.
+    /// Part of <see cref="IBundleProvider.Id"/> only when set, so every existing Id is unchanged.
+    /// </summary>
+    public string? SigningRegion { get; init; }
+
+    /// <summary>
+    /// Reads a public bucket without credentials (#291): no request is signed and the host's credentials are never asked
+    /// for. Explicit on purpose: an anonymous source is built with the <see cref="S3BundleProvider(S3BundleSource)"/>
+    /// constructor, and the constructor that takes credentials refuses it (and the reverse), so a missing credential is
+    /// never turned into an unsigned request by accident. The request guard is unchanged (same authority, same path
+    /// prefix, <c>GET</c> only). Part of <see cref="IBundleProvider.Id"/> only when set: the same bucket read with and
+    /// without credentials may show different objects, so they are different sources.
+    /// </summary>
+    public bool Anonymous { get; init; }
+
     /// <summary>Path-style addressing (<c>host/bucket/key</c>) instead of virtual-hosted (<c>bucket.host/key</c>); most compatible stores need it.</summary>
     public bool ForcePathStyle { get; init; }
 

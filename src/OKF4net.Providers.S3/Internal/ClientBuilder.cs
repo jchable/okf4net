@@ -65,7 +65,7 @@ internal static class ClientBuilder
         if (source.ServiceUrl is { } url)
         {
             config.ServiceURL = url.ToString();
-            config.AuthenticationRegion = "us-east-1";
+            config.AuthenticationRegion = source.SigningRegion ?? "us-east-1";
         }
         else
         {
