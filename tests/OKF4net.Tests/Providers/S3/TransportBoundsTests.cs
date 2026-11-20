@@ -380,6 +380,35 @@ public class TransportBoundsTests
         }
     }
 
+    [Fact]
+    public async Task An_attempt_that_throws_before_any_response_does_not_leave_the_body_of_an_earlier_one_in_the_capture()
+    {
+        // #290 (Copilot review of #304): the capture is cleared before the send, so a retry that fails with a transport
+        // error (no response at all) cannot leave the previous attempt's page for the provider to judge.
+        var context = new OperationContext(S3Operation.List) { Capture = new ListPageCapture() };
+        var sends = 0;
+        var inner = new FakeS3Handler
+        {
+            Respond = (_, _) => ++sends == 1
+                ? Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent("<x/>"u8.ToArray()) })
+                : throw new HttpRequestException("connection reset"),
+        };
+        using var invoker = new HttpMessageInvoker(new BoundingHandler { InnerHandler = inner });
+        OperationContext.Current.Value = context;
+        try
+        {
+            (await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "http://127.0.0.1:9000/okf/"), default)).Dispose();
+            Assert.NotNull(context.Capture!.Body); // positive control: the first attempt did capture its page
+
+            await Assert.ThrowsAsync<HttpRequestException>(() => invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "http://127.0.0.1:9000/okf/"), default));
+            Assert.Null(context.Capture.Body);
+        }
+        finally
+        {
+            OperationContext.Current.Value = null;
+        }
+    }
+
     /// <summary>A response that forgets its metadata when disposed: a copy made after disposal would lose it.</summary>
     private sealed class ForgetfulResponse : HttpResponseMessage
     {

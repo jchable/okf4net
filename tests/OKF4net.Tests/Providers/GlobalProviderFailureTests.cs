@@ -305,6 +305,7 @@ public class GlobalProviderFailureTests
         var storage = Storage();
         using var handle = new BundleHandle(storage);
         var tools = new OkfBundleTools(handle);
+        _ = await handle.GetCurrentAsync(CancellationToken.None); // the handle loads lazily: load it BEFORE the failure, or it is the load (the survey) that fails and the computation-file read is never reached
 
         storage.FailReadOf("q.sql", StorageUnreachable());
         var shown = await tools.GetComputationAsync("rev");

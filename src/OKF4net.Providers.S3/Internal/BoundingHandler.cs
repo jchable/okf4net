@@ -25,13 +25,18 @@ internal sealed class BoundingHandler : DelegatingHandler
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
-        var response = await base.SendAsync(request, ct).ConfigureAwait(false);
         var operation = OperationContext.Current.Value;
         var isList = operation?.Operation is S3Operation.List or S3Operation.Exists;
         if (isList)
         {
-            operation!.Capture?.Body = null; // the capture is the LAST response's page: an earlier attempt of the same SDK call (a retry) must not outlive a later one that failed (#290)
+            // The capture is the LAST attempt's page: an earlier attempt of the same SDK call (a retry) must not outlive a
+            // later one that failed (#290). Cleared BEFORE sending, so an attempt that throws without any response (a
+            // connection failure) leaves nothing behind either: the provider would otherwise judge the stale page and
+            // report InvalidResponse in place of the transport cause.
+            operation!.Capture?.Body = null;
         }
+
+        var response = await base.SendAsync(request, ct).ConfigureAwait(false);
 
         var status = (int)response.StatusCode;
         int? bound = status >= 300 ? ErrorBodyBytes : isList ? ListBodyBytes : null;
