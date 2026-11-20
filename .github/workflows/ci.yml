@@ -655,7 +655,7 @@ jobs:
         shell: pwsh
         run: |
           foreach ($dll in 'tests/OKF4net.Tests/bin/Release/net10.0/AWSSDK.S3.dll', 'tests/S3HostileEnvProbe/bin/Release/net10.0/AWSSDK.S3.dll') {
-            $version = [System.Reflection.AssemblyName]::GetAssemblyName((Resolve-Path $dll)).Version
+            $version = [version][System.Diagnostics.FileVersionInfo]::GetVersionInfo((Resolve-Path $dll)).FileVersion # the AssemblyVersion is 4.0.0.0 for every 4.x: only the file version carries the package version
             Write-Host "$dll $version"
             if (-not $env:AWS_SDK_VERSION.StartsWith("$($version.Major).$($version.Minor).$($version.Build)")) { throw "$dll is $version, expected $env:AWS_SDK_VERSION" }
           }
