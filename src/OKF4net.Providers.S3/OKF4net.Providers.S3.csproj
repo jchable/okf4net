@@ -35,7 +35,7 @@
     <!-- The one dependency-policy exception of this project (CLAUDE.md, spec D1): a MINIMUM
          version. Every bump of AWSSDK.S3 or AWSSDK.Core needs the local S3Integration run at
          0 skipped and the s3-aot CI job green. -->
-    <PackageReference Include="AWSSDK.S3" Version="4.1.0" />
+    <PackageReference Include="AWSSDK.S3" Version="4.1.2" />
   </ItemGroup>
 
   <ItemGroup>
